@@ -1,0 +1,22 @@
+# Generated configs and secrets — never commit
+config.env
+CREDENTIALS.md
+*.key
+*.psk
+*.pem
+*.conf
+.env
+
+# State files
+state
+.vpn-setup-state
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+/tmp/
+*.log
