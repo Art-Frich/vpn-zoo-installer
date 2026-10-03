@@ -1,0 +1,1248 @@
+[
+ {
+  "candidates": [
+   {
+    "name": "vk-turn-proxy (TURN-туннель через звонки VK / семейство WDTT, qWDTT, turnguard)",
+    "kind": "new",
+    "what": "Сервер на VPS принимает UDP. Клиент получает анонимные TURN-креды из ссылки на звонок VK (раньше и Яндекс Телемоста), шифрует WireGuard/Hysteria-трафик в DTLS 1.2 и шлёт его несколькими параллельными потоками по TCP/UDP через TURN-релеи VK (STUN ChannelData). От релея пакеты идут по UDP на ваш сервер, где расшифровываются и передаются в WireGuard. Для ТСПУ это выглядит как медиатрафик звонка до IP VK из белого списка. С v1.8.0 есть режим VLESS (KCP+smux поверх TURN).",
+    "why_now": "Появился зимой–весной 2026 как ответ на мобильные белые списки, потому что TURN-серверы VK в списке. Релизы cacggghp/vk-turn-proxy: v1.7.0 (08.04.2026, PoC обхода слайдер-капчи), v1.8.0 (08.04.2026, VLESS-режим, многосессионный TCP), v1.8.3 (16.04.2026, checkbox-капча). Вокруг выросла экосистема: WDTT от amurcanov (заархивирован 24.08 или 11.09.2026, источники расходятся), его независимое продолжение qWDTT, iOS-порт anton48/vk-turn-proxy-ios, MYSOREZ/vk-turn-proxy-android, kiper292 (multi-stream DTLS), NikKuz99/turnguard (desktop, SRTP-мимикрия). 12.09.2026 в 3x-ui открыт запрос #6487 на поддержку qWDTT/OlcRTC/OpenFlux.",
+    "status": "Самый популярный инструмент направления: около 4k звёзд. Сервер — один Go-бинарник (`server -listen 0.0.0.0:56000 -connect 127.0.0.1:<wg_port>`), также есть docker-образ ghcr.io/cacggghp/vk-turn-proxy и systemd-юнит. Клиенты: Android (нативные приложения и Termux), iOS, Windows, macOS, Linux. Ограничения: VK режет скорость примерно до 5 Мбит/с на поток (обходится параметром -n), креды из ссылки протухают, VK периодически вводит капчу (апрель 2026). Телемост, по README, «закрыли».",
+    "works_in_ru": "На ntc.party в марте–апреле 2026 сообщали, что метод работает под белыми списками, скорость около 25 Мбит/с с несколькими потоками. На Хабре 25.04.2026 его оценили так: «банят быстро», срок жизни непредсказуем. 01.10.2026 в iOS-клиенте открыт issue #97 «Перестал работать» без объяснения причины. Пока это рабочий, но хрупкий канал «на чёрный день». Есть риск блокировки аккаунта или ссылки со стороны VK, это злоупотребление сервисом VK вопреки его ToS.",
+    "installer_fit": "Хорошо подходит как надстройка над уже имеющимся WireGuard/AmneziaWG: на сервер ставится бинарник из GitHub Releases (amd64/arm64) и systemd-юнит, открывается UDP-порт, и он пробрасывается на локальный порт WG. Зависимостей нет. Нужно проверить, проходит ли AWG 2.0 с junk-пакетами внутри DTLS, надёжнее завести отдельный WG-интерфейс. Ссылку на звонок VK клиент получает сам. Предлагаю делать опциональной фазой с пометкой «экспериментально».",
+    "sources": [
+     "https://github.com/cacggghp/vk-turn-proxy",
+     "https://github.com/cacggghp/vk-turn-proxy/releases",
+     "https://github.com/SpaceNeuroX/proxy-turn-vk-android",
+     "https://github.com/amurcanov/proxy-turn-vk-android",
+     "https://github.com/anton48/vk-turn-proxy-ios/issues/97",
+     "https://github.com/NikKuz99/turnguard",
+     "https://github.com/MHSanaei/3x-ui/issues/6487",
+     "https://ntc.party/t/%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%BE%D0%B2/21884?page=11",
+     "https://www.pvsm.ru/vpn/450362"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Turnable",
+    "kind": "new",
+    "what": "Модульное VPN-ядро на Go для туннелирования TCP/UDP через TURN-релеи или SFU платформ (сейчас VK). Трафик похож на WebRTC-медиа, шифруется, мультиплексируется и распределяется по нескольким peer-соединениям, чтобы обходить лимиты скорости. Режимы: Relay (через свой сервер Turnable), Direct Relay, P2P через SFU (в разработке). Для TCP используется KCP. Есть управление пользователями и маршрутами с аутентификацией.",
+    "why_now": "Представлен на ntc.party 22.04.2026 как альтернатива «монолитному» vk-turn-proxy, отдельная ветка «Turnable: VPN/прокси через TURN (обход БС)». Релизы 0.6.x.",
+    "status": "TheAirBlow/Turnable: около 315 звёзд, GPL-2.0, релизы 0.6.1–0.6.4 с исправлениями переподключения. Серверные бинарники в Releases или сборка `go build`. Android-клиента пока нет (указан в планах).",
+    "works_in_ru": "Работает на той же основе, что vk-turn-proxy (TURN VK из белого списка), поэтому уязвим к тем же мерам VK: капча, лимиты, отзыв анонимных токенов. Отдельной статистики эффективности не нашёл. ToS VK нарушается так же.",
+    "installer_fit": "Технически несложно: Go-бинарник и systemd. Но без мобильного клиента польза для пользователей с телефонов мала. Пока стоит только отслеживать.",
+    "sources": [
+     "https://github.com/TheAirBlow/Turnable",
+     "https://github.com/TheAirBlow/Turnable/releases/tag/0.6.4",
+     "https://ntc.rkn.quest/t/turnable-vpn%D0%BF%D1%80%D0%BE%D0%BA%D1%81%D0%B8-%D1%87%D0%B5%D1%80%D0%B5%D0%B7-turn-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D1%81/24402"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "olcRTC (Ghostlane)",
+    "kind": "new",
+    "what": "Зашифрованный (XChaCha20-Poly1305) мультиплексированный TCP-over-WebRTC туннель. Сервер и клиент заходят в одну «комнату» видеозвонка на разрешённом сервисе и обмениваются данными через DataChannel или внутри видеопотока. Транспорты: datachannel, vp8channel, seichannel, videochannel. Провайдеры: Jitsi, Яндекс Телемост, WB Stream (Wildberries), в форке Ghostlane также Sber SaluteJazz и VK Calls. Медиа идёт через серверы российских платформ из белого списка.",
+    "why_now": "Создан в 2026 году специально под белые списки. Хабр 25.04.2026 называет WB Stream самым стабильным вариантом. На Хабре 09.04.2026 olcRTC описан как аварийный слой в 4-уровневой архитектуре. Оригинальный openlibrecommunity/olcrtc (около 2k звёзд, WTFPL, релизов не было) заархивирован 30.09.2026, перенос заявлен в owenewans/snolc (модульный сетевой движок на Rust). Разработка продолжается в форке ghostlane-project/olcrtc, ветка proofkit, Apache-2.0.",
+    "status": "Бета или pre-alpha. Сервер на Linux ставится one-click скриптом `curl …/ghostlane-project/olcrtc/proofkit/install.sh | bash`, который собирает бинарник в Podman-контейнере. Клиенты: Ghostlane (KMP: Android, iOS, macOS, Windows, Linux), olcbox, veil (форк v2ray для Android), owenclave. Upstream при архивации предупреждал: «PR не принимаются, issues не чинятся».",
+    "works_in_ru": "По Хабру (апрель 2026) работает под белыми списками со средней стабильностью, DataChannel даёт до около 10 МБ/с. Телемост в других проектах (vk-turn-proxy) отмечен как закрытый, WB Stream считается стабильнее. Свежих замеров за сентябрь–октябрь 2026 не нашёл. Нарушает ToS видеосервисов, возможны баны комнат и аккаунтов.",
+    "installer_fit": "Средне. Серверная часть ставится скриптом через Podman, а это тяжёлая зависимость и сборка из исходников. Проект в переходном состоянии (архив upstream, форк с 2 звёздами). Добавлять стоит только после стабилизации Ghostlane, сейчас — отслеживать.",
+    "sources": [
+     "https://github.com/openlibrecommunity/olcrtc",
+     "https://github.com/ghostlane-project/olcrtc",
+     "https://github.com/owenewans/snolc",
+     "https://www.pvsm.ru/vpn/450362",
+     "https://www.pvsm.ru/vpn/449328",
+     "https://github.com/MHSanaei/3x-ui/issues/6487"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "OpenFlux",
+    "kind": "new",
+    "what": "Исследовательский IPv4 TCP/UDP-туннель с подключаемыми транспортами (кодек batched+zstd). Трафик маскируется под совместное редактирование документов или под звонок. Транспорты: Яндекс.Документы (WS), Yandex Volga (HTTP relay+WS), Yandex Board, MAX/OneMe (WebRTC DataChannel), Cups.online (комнаты Centrifugo), Mail.ru Docs (WS) и Direct. Выходная нода работает в двух режимах: L3 (SNAT/DNAT, root на Linux) и L4 (прокси на gVisor). Некоторые транспорты позволяют держать выход даже на PHP-хостинге.",
+    "why_now": "Репозиторий создан в июне 2026, примерно за 3 месяца набрал около 1,9k звёзд, последний коммит в сентябре 2026. 12.09.2026 запрошен в 3x-ui (#6487). Использует сервисы Яндекса, Mail.ru и мессенджер MAX, которые гарантированно есть в белом списке.",
+    "status": "p1neappleXpress/OpenFlux, GPL-3.0, много форков. Клиенты: macOS (utun), Linux (CLI/SOCKS5), Windows (Wintun), iOS (TestFlight), Android (OpenFluxAndroid, форк damnurmum/OpenFlux-Android). Номеров релизов не нашёл.",
+    "works_in_ru": "Задуман для мобильных белых списков. Публичных замеров эффективности с датами не нашёл. Авторы предупреждают, что MAX-транспорт экспериментальный и может привести к ограничению аккаунта MAX, даже после того как OpenFlux остановлен. Это злоупотребление сервисами Яндекса, Mail.ru и MAX, есть риск банов аккаунтов, а MAX — государственный мессенджер.",
+    "installer_fit": "Exit-нода на Linux технически ставится (бинарник, L4-режим без root). Но нужны аккаунты и токены сторонних сервисов, привязку к которым инсталлятор автоматизировать не может. Подходит максимум как экспериментальная опция, сейчас — отслеживать.",
+    "sources": [
+     "https://github.com/p1neappleXpress/OpenFlux",
+     "https://github.com/damnurmum/OpenFlux-Android",
+     "https://www.opensourcealternatives.to/item/openflux",
+     "https://github.com/MHSanaei/3x-ui/issues/6487"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Мост или каскад через российский VPS с «белым» IP (VLESS+Reality со SNI из белого списка → зарубежный VPS)",
+    "kind": "evolved",
+    "what": "Клиент подключается к российскому VPS, чей IP входит в CIDR белого списка (Yandex Cloud, VK Cloud, Timeweb, Selectel), по VLESS+Reality+Vision или XHTTP. Reality маскируется под SNI белого домена, рекомендуют storage.yandex.net, userapi.com, cdnvideo.ru, ya.ru. Дальше трафик идёт на зарубежный VPS через XHTTP, VLESS, IPsec/SSH или iptables DNAT. Это закрывает обе проверки: L3 по IP и L7 по SNI, включая проверку соответствия SNI и IP, описанную в декабре 2025.",
+    "why_now": "Стал основным методом после введения белых списков (первая версия в сентябре 2025, расширения до декабря 2025). Гайд на VK Cloud — 31.12.2025, около 1500 ₽/мес. 24–26.01.2026 VPN-сервисы массово потеряли серверы: РКН, по данным СМИ, потребовал от облаков разделить IP-пулы. Sergei-thinker/vpn-setup 17.04.2026 убрал Yandex Cloud из «гарантированных» (AS Yandex.Cloud и AS YANDEX считаются разными). На ntc 03.05.2026 писали: «белый IP почти невозможно получить, кроме Яндекса». 31.08.2026 Минцифры потребовало от хостеров и CDN вынести адреса белого списка в отдельные подсети.",
+    "status": "Метод, а не отдельный продукт: Xray/3x-ui на обоих концах. Белые IP проверяют по спискам сканов: openlibrecommunity/twl (заархивирован 30.09.2026, переехал в openlibrecommunity/rewl), hxehex/russia-mobile-internet-whitelist. Timeweb позволяет бесплатно перевыпускать IP, VK Cloud теперь только для ИП/юрлиц, в Yandex Cloud сообщают о вечных банах за прокси.",
+    "works_in_ru": "Хабр 25.04.2026: «высокая стабильность, высокая скорость», если IP белый. Реальность хуже: в январе 2026 IP VK Cloud перестали работать, в net4people #650 (19.08.2026) у пользователей с IP Yandex Cloud результаты разные, у одного блэкаут без доступа даже к Госуслугам. Метод работает, пока IP белый, и Минцифры его целенаправленно закрывает. Хостеры (VK Cloud, Yandex Cloud) банят за прокси, использование ради обхода нарушает их ToS.",
+    "installer_fit": "Хорошо подходит: инсталлятор уже ставит Xray и Reality. Можно добавить режим «bridge» для запуска на российском VPS: inbound VLESS+Reality с выбором SNI из белого списка, outbound на зарубежную ноду по XHTTP или VLESS, плюс проверку IP по спискам rewl/twl. Белый IP пользователь получает сам.",
+    "sources": [
+     "https://github.com/kort0881/russia-whitelist/discussions/21",
+     "https://habr.com/ru/articles/979128/",
+     "https://www.pvsm.ru/vpn/450362",
+     "https://www.pvsm.ru/vpn/449328",
+     "https://github.com/Sergei-thinker/vpn-setup",
+     "https://ntc.party/t/vpsvds-%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B0%D1%8E%D1%89%D0%B8%D0%B5-%D0%BF%D1%80%D0%B8-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B0%D1%85/24230",
+     "https://github.com/net4people/bbs/issues/650",
+     "https://xakep.ru/2026/01/26/rkn-whitelist/",
+     "https://www.cnews.ru/news/top/2026-08-31_mintsifry_potrebovalo_ot",
+     "https://github.com/openlibrecommunity/twl",
+     "https://github.com/hxehex/russia-mobile-internet-whitelist"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Xray VLESS Reverse Proxy (новый упрощённый reverse)",
+    "kind": "evolved",
+    "what": "Встроенный в VLESS обратный туннель. Внутренняя нода сама устанавливает исходящее VLESS(+Reality) соединение к публичной и регистрирует reverse-туннель по тегу. Публичная нода в inbound на уровне UUID указывает `\"reverse\": {\"tag\": \"…\"}` и отправляет трафик в этот туннель. Можно держать несколько маршрутов, в том числе через CDN, с отказоустойчивостью.",
+    "why_now": "PR XTLS/Xray-core #5101 влит 09.09.2025 и появился в релизах после v25.9.5. Legacy reverse удалён, на этом ломались старые конфиги в 3x-ui (#4115). В связке «РФ-мост ↔ зарубежная нода» позволяет инициировать соединение с любой стороны: например, зарубежная нода подключается к российскому мосту, если исходящие из РФ-облака на зарубежный IP режутся или троттлятся ТСПУ. Обсуждается в русскоязычных гайдах по цепочкам под белые списки.",
+    "status": "Стабильная часть Xray-core 25.9+. Поддержка в 3x-ui частичная (ошибки с legacy reverse).",
+    "works_in_ru": "Сам по себе белые списки не обходит, это строительный блок для каскада с белым IP. Отдельных датированных отчётов об эффективности именно reverse под белыми списками не нашёл.",
+    "installer_fit": "Высокая: это только JSON-конфиг Xray без новых зависимостей. Можно генерировать пару «мост РФ / выход за рубежом» одним флагом. Нужно учесть, что 3x-ui UI может не поддерживать поле reverse, поэтому конфиг лучше писать напрямую.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/pull/5101",
+     "https://xtls.github.io/en/config/outbounds/vless.html",
+     "https://github.com/MHSanaei/3x-ui/issues/4115",
+     "https://habr.com/ru/articles/985674/comments/"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "XHTTP через российские CDN (возрождённый domain fronting)",
+    "kind": "revived",
+    "what": "Цепочка VLESS → XHTTP → TLS → российский CDN (Yandex Cloud CDN, VK Cloud, Selectel, Timeweb/Beget, Beeline, MWS) → TLS → nginx → Xray. Клиент подключается к edge-адресам CDN из белого списка с белым SNI, а CDN проксирует HTTP-запросы на ваш origin. По сути это классический domain fronting или CDN-фронтинг, только с российскими CDN вместо Cloudflare (Cloudflare в белом списке нет). Режим XHTTP packet-up дробит трафик на мелкие запросы, похожие на API-вызовы.",
+    "why_now": "Ожил с белыми списками в конце 2025 — 2026: Cloudflare-фронтинг на мобильных перестал работать, российские CDN остались. Описан в репозитории frank-underwood64/whitelists_bypass (2026) и в статье Хабра от 25.04.2026 (метод «domain fronting»). Против него напрямую направлено требование Минцифры от 31.08.2026 выделить белые IP хостеров и CDN в отдельные подсети.",
+    "status": "Метод на Xray-core XHTTP. Конфигурация под каждый CDN своя. В обсуждениях пишут, что Yandex CDN начал ограничивать POST, VK Cloud работает только с GET-конфигурацией. Публичные конфиги «рассыпались», автор продаёт платные гайды.",
+    "works_in_ru": "По отчётам в репозитории частично работает в 2026, но провайдеры CDN адаптируются (ограничения POST). Хабр 25.04.2026: «работает, пока оператор не потребует разделения IP», и это требование выдвинуто 31.08.2026. Использование CDN для прокси может нарушать ToS провайдера.",
+    "installer_fit": "Средняя: XHTTP-inbound за nginx инсталлятор может поднять, нужны домен и сертификат. Настройку CDN-ресурса у Yandex, VK или Selectel пользователь делает вручную. Разумно добавить фазу «XHTTP за CDN/nginx» как универсальную (она пригодится и для Cloudflare на домашнем интернете), а для российских CDN дать инструкцию.",
+    "sources": [
+     "https://github.com/frank-underwood64/whitelists_bypass",
+     "https://github.com/frank-underwood64/whitelists_bypass/discussions/1",
+     "https://www.pvsm.ru/vpn/450362",
+     "https://habr.com/ru/articles/979128/",
+     "https://www.cnews.ru/news/top/2026-08-31_mintsifry_potrebovalo_ot"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Туннели через Yandex Cloud Serverless и API Gateway (yac-ws-bridge, Cloud Functions)",
+    "kind": "new",
+    "what": "Трафик идёт через домены *.apigw.yandexcloud.net и functions.yandexcloud.net, которые есть в белом списке. yac-ws-bridge: адаптер на VPS и helper на клиенте держат по одному WebSocket-соединению к YC API Gateway, данные передаются через gRPC wsSend WebSocket API, Serverless Function нужна только для discovery. Все TCP-потоки мультиплексируются в два WS. Варианты: SOCKS5 через Cloud Functions, API Gateway как HTTP reverse proxy со своим доменом и сертификатом от Certificate Manager.",
+    "why_now": "Появился в 2026. Обсуждение на ntc.party «Как обойти белые списки используя wss и yandex cloud» в мае–июне 2026, 15.05.2026 вышло обновление yac-ws-bridge (переупорядочивание фреймов, асинхронные очереди записи). На Хабре 25.04.2026 это методы №2 и №3: бесплатно в рамках free tier, около 1 млн вызовов в месяц.",
+    "status": "noiseonwires/yac-ws-bridge: около 198 звёзд, Go-бинарники (adapter/helper), клиент на MAUI. Скорость до около 20 Мбит/с, если адаптер близко к Яндексу. Для регистрации в YC нужна банковская карта.",
+    "works_in_ru": "Работает под белыми списками (апрель–июнь 2026), но на ntc сообщают, что API Gateway обрывает соединения: «классический WSS там не работает», страницы грузятся по 5+ секунд. Автор прямо пишет: «Сколько пройдёт до бана от Яндекса — непонятно». Это прямое нарушение ToS Yandex Cloud, возможен бан всего аккаунта.",
+    "installer_fit": "Низкая или средняя. Серверный adapter (Go-бинарник) инсталлятор поставить может, но развёртывание функции и шлюза в YC требует аккаунта, карты и yc CLI, то есть ручных шагов. Подходит только как документированная ручная опция.",
+    "sources": [
+     "https://github.com/noiseonwires/yac-ws-bridge",
+     "https://github.com/noiseonwires/yac-ws-bridge/blob/main/README_RU.md",
+     "https://ntc.party/t/%D0%BA%D0%B0%D0%BA-%D0%BE%D0%B1%D0%BE%D0%B9%D1%82%D0%B8-%D0%B1%D0%B5%D0%BB%D1%8B%D0%B5-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B8-%D0%B8%D1%81%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D1%83%D1%8F-wss-%D0%B8-yandex-cloud/24735",
+     "https://www.pvsm.ru/vpn/450362"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "DNS-туннели: dnstt / Slipstream / NoizDNS / VayDNS (через резолверы оператора и НСДИ)",
+    "kind": "revived",
+    "what": "Старый DNS-туннелинг. Покупается домен, NS поддомена делегируется на свой сервер, данные кодируются в DNS-запросах и ответах через рекурсивный резолвер, а он в режиме белых списков остаётся доступен (оператор перехватывает UDP/53 и пересылает запросы). dnstt (David Fifield, Turbo Tunnel), Slipstream (EndPositive, QUIC multipath по нескольким резолверам, заголовки на 60% компактнее dnstt), NoizDNS и VayDNS (KCP + Curve25519). Сервер SlipGate ставит всё это вместе с NaiveProxy и StunTLS, клиент для Android — SlipNet со встроенным сканером DNS.",
+    "why_now": "Ожил с белыми списками. Ветка ntc «Актуальность slipstream/dnstt для обхода БС» (03–26.04.2026). Meduza 14.05.2026 описала использование резолверов НСДИ 195.208.4.1/195.208.5.1, то есть инфраструктуры РКН, со скоростью до 2–3 Мбит/с. Инструменты массово развивались для Ирана (SlipGate с гайдами на фарси, SlipNet обновлён 26.05.2026). В августе 2026 (21–28.08) ТСПУ начали DNAT-перенаправлять 8.8.8.8 и 1.1.1.1 на НСДИ, сама НСДИ при этом осталась доступна.",
+    "status": "Зрелые open-source проекты: anonvector/slipgate (около 422 звёзд, install.sh, Ubuntu 20.04+ и Debian 10+), EndPositive/slipstream (около 320 звёзд, Apache-2.0, ghcr-образы), anonvector/SlipNet (Android), клиент AnyBridge для iOS (только dnstt).",
+    "works_in_ru": "Tele2 СПб (ValdikSS, апрель 2026): 11,1 Мбит/с вниз и 1,32 Мбит/с вверх через резолвер оператора. МТС Москва: 100–200 Кбит/с, нестабильно после около 10 минут. МегаФон: жёсткий rate-limit. Через НСДИ 195.208.4.1 «работает сносно». Консенсус — аварийный канал, когда VK TURN недоступен. Риск: детект DNS-туннелей и rate-limit резолверов. Юридически серо, как любой обход.",
+    "installer_fit": "Хорошая: серверная часть — бинарники и systemd, нужен UDP/53 (следить за конфликтом с systemd-resolved на Ubuntu) и домен с NS-делегированием. Можно встроить Slipstream и dnstt напрямую или вызвать SlipGate. Клиент SlipNet есть на Android. Рекомендую как аварийную фазу «на чёрный день».",
+    "sources": [
+     "https://ntc.party/t/%D0%B0%D0%BA%D1%82%D1%83%D0%B0%D0%BB%D1%8C%D0%BD%D0%BE%D1%81%D1%82%D1%8C-slipstream%D0%B4nstt-%D0%B4%D0%BB%D1%8F-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4%D0%B0-%D0%B1%D1%81/23730",
+     "https://meduza.io/cards/my-uzhe-rasskazyvali-o-nekotoryh-metodah-obhoda-belyh-spiskov-vot-esche-odin-ot-roskomnadzora-chto",
+     "https://github.com/anonvector/slipgate",
+     "https://github.com/anonvector/SlipNet",
+     "https://github.com/EndPositive/slipstream",
+     "https://wiki.zapret.moe/DPI/tspu-dns-nsdi-dnat-august-2026",
+     "https://ntc.party/t/dnstt-%D0%BA%D0%B0%D0%BA-%D1%81%D0%BF%D0%BE%D1%81%D0%BE%D0%B1-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4%D0%B0-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%BE%D0%B2-%D0%BF%D0%B0%D1%80%D0%B0-%D0%B2%D0%BE%D0%BF%D1%80%D0%BE%D1%81%D0%BE%D0%B2/20212"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Cheburnet (covert channel через API VK, OK, Яндекс.Диска и почты)",
+    "kind": "new",
+    "what": "SOCKS-прокси, который передаёт данные через сообщения, посты, комментарии, фото, видео и товары сообществ VK, через VK user API, Одноклассники, Яндекс.Диск и IMAP почты (Яндекс, Mail.ru, Rambler). Это текстовые и файловые скрытые каналы внутри сервисов из белого списка, без прямого сетевого соединения с зарубежным сервером.",
+    "why_now": "Представлен на ntc.party 29.03.2026 в ветке «Обход белого списка через ВК сообщения» как ответ на полный whitelist-режим.",
+    "status": "nil2x/cheburnet: около 109 звёзд, около 74 коммитов, Docker, Linux, Windows, Android, macOS. Автор: «не замена VPN», скорость, задержки и потери «будут грустными». Подходит для лёгких сайтов и Telegram раз в 15 минут.",
+    "works_in_ru": "Работает, пока сервисы не борются с таким абузом (на март 2026). Ограничен flood control VK. Требует аккаунтов и сообществ VK, есть риск бана, это нарушение ToS VK.",
+    "installer_fit": "Низкая: это аварийный канал минимальной ёмкости, требует аккаунтов VK. Достаточно упомянуть в документации.",
+    "sources": [
+     "https://github.com/nil2x/cheburnet",
+     "https://ntc.party/t/%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D0%B5%D0%BB%D0%BE%D0%B3%D0%BE-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B0-%D1%87%D0%B5%D1%80%D0%B5%D0%B7-%D0%B2%D0%BA-%D1%81%D0%BE%D0%BE%D0%B1%D1%89%D0%B5%D0%BD%D0%B8%D1%8F/23445"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "«Белый SNI» и fake-TLS десинхронизация против отсечки 16 КБ (zapret и аналоги)",
+    "kind": "revived",
+    "what": "Против ТСПУ-«отсечки» соединений к зарубежным хостингам (обрыв после 10–14 пакетов, около 14–25 КБ) снова работает старый приём DPI-десинхронизации: клиент шлёт фейковый ClientHello с SNI домена из «CDN-белого» списка, к которому отсечка не применяется. Пример с ntc, март 2026: `--dpi-desync=fake --dpi-desync-fooling=ts --dpi-desync-fake-tls-mod=rnd,sni=packagist.org`. На стороне VPN аналог — SNI или Reality-dest на домене, которого отсечка не касается.",
+    "why_now": "Отсечка 16 КБ на зарубежные хостинги массово проявилась в 2025–2026, в том числе в Москве (статья на Хабре №1008164, около марта 2026; ветка ntc «16кб блокировка», март 2026). Бывший «десктопный» приём zapret стал актуален и для серверных VPN.",
+    "status": "bol-van/zapret и производные (Zapret GUI и др.) — клиентская или роутерная сторона. Поведение зависит от провайдера и узла, отдельные IP не обходятся.",
+    "works_in_ru": "Работает на проводном и мобильном интернете вне режима белых списков (март 2026). При полном whitelist-режиме по L3 не помогает.",
+    "installer_fit": "На сервере почти ничего ставить не нужно. Практический вывод для инсталлятора: выбирать dest и SNI Reality из доменов, не подпадающих под отсечку, и дать проверку «16KB-теста» (скачать больше 64 КБ через туннель). Сам zapret — клиентский инструмент, в серверный инсталлятор не входит.",
+    "sources": [
+     "https://habr.com/ru/articles/1008164/",
+     "https://ntc.party/t/16%D0%BA%D0%B1-%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0/22516?page=4",
+     "https://ntc.rkn.quest/t/16%D0%BA%D0%B1-%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0/22516",
+     "https://github.com/bol-van/zapret"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "XHTTP с xmux / gRPC на 443 против «сибирской» блокировки по числу сессий",
+    "kind": "evolved",
+    "what": "Против ТСПУ-механизма, который на время (около 10 минут) блокирует IP VPS при большом числе параллельных сессий, рекомендуют сократить число TCP-соединений: XHTTP с мультиплексированием xmux (лимит 1–4 соединения) или gRPC на 443. Плюс режим XHTTP packet-up, который дробит трафик под API-запросы. Это не новый протокол, а настройка транспорта.",
+    "why_now": "На ntc 22.05.2026 пользователь сообщил, что VLESS+Reality перестал работать, а Hysteria2 и xHTTP вызывали временные блокировки VPS. В ответах это объяснили «сибирской блокировкой» по числу сессий и посоветовали xmux, gRPC и relay через Яндекс. Хабр 21.12.2025 рекомендовал XHTTP packet-up для мобильных. Статья на Хабре №1009542 (2026): «Как ТСПУ ловит VLESS в 2026 и почему XHTTP — следующий шаг».",
+    "status": "Встроено в Xray-core (XHTTP, xmux) и поддерживается 3x-ui и основными клиентами (v2rayN, Happ, v2RayTun, sing-box частично).",
+    "works_in_ru": "Помогает против блокировок по поведению или числу сессий на обычном и мобильном интернете (май 2026). Против L3-белого списка без белого IP не помогает.",
+    "installer_fit": "Высокая и дешёвая: добавить второй inbound VLESS+XHTTP(+Reality) с xmux-рекомендациями в клиентских ссылках, опционально gRPC. Новых зависимостей нет.",
+    "sources": [
+     "https://ntc.party/t/%D0%BA%D0%B0%D0%BA%D0%B8%D0%B5-%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D0%BA%D0%BE%D0%BB%D1%8B-%D0%BE%D1%81%D1%82%D0%B0%D0%BB%D0%B8%D1%81%D1%8C-%D1%82%D1%81%D0%BF%D1%83-%D0%B1%D0%BB%D0%BE%D1%87%D0%B8%D1%82-%D0%B2%D1%81%D1%91-%D1%87%D1%82%D0%BE-%D1%8F-%D0%BF%D1%80%D0%BE%D0%B1%D0%BE%D0%B2%D0%B0%D0%BB/24845",
+     "https://habr.com/en/articles/1009542/comments/",
+     "https://habr.com/ru/articles/979128/"
+    ],
+    "confidence": "medium"
+   }
+  ]
+ },
+ {
+  "candidates": [
+   {
+    "name": "TURN-туннели через медиасерверы VK / Яндекс / MAX (vk-turn-proxy, Turnable, Turnel, WDTT/qWDTT)",
+    "kind": "new",
+    "what": "WireGuard/AmneziaWG (в vk-turn-proxy также Hysteria) заворачивается в DTLS 1.2 и отправляется через TURN-релеи сервисов видеозвонков VK (в форках также Яндекс Телемост и MAX) по STUN ChannelData. Логин и пароль TURN берутся из ссылки на звонок. С TURN-сервера трафик идёт по UDP на ваш VPS, там server-бинарь снимает DTLS и отдаёт пакеты в WG. Для DPI это выглядит как медиатрафик звонка VK на IP из белого списка. В Turnel есть режим, который маскирует трафик под SRTP.",
+    "why_now": "Появились в январе 2026 как ответ на белые списки мобильного интернета: TSPU пропускает только адреса из списка. На ntc.party 25.01.2026 jadiko выложил Turnel (TURN Яндекса/MAX), necub — vk-turn-proxy. 12.09.2026 в 3x-ui открыт feature request #6487 на интеграцию qWDTT, OlcRTC и OpenFlux. Активно развивается Turnable: v0.6.4 от 26.09.2026, режимы TURN и SFU.",
+    "status": "cacggghp/vk-turn-proxy: v1.8.3 (16.04.2026), около 4k звёзд. Есть server-linux-amd64/arm64, Docker-образ в ghcr, клиенты под Android (MYSOREZ/vk-turn-proxy-android, amurcanov/proxy-turn-vk-android), Windows, macOS и Linux. Есть форки, например kiper292/vk-turn-proxy. KillTheCensorship/Turnel переведён в архив 29.01.2026. TheAirBlow/Turnable 0.6.4 (26.09.2026), GPLv2, режим SFU ещё в разработке.",
+    "works_in_ru": "ntc.party, январь 2026: «Проверил на нескольких операторах при белых списках — работает» (Turnel через MAX/Яндекс). Для VK сообщают около 5 Мбит/с на поток, примерно 25 Мбит/с при 16 параллельных потоках. Яндекс иногда временно блокирует IP за «переполнение фейковыми участниками». Риски: зависимость от ToS и API VK/Яндекса/MAX, детектирование по объёму трафика и аномалиям звонков, сервис может отозвать учётные данные.",
+    "installer_fit": "Хорошо подходит. На сервере один Go-бинарь и systemd-юнит (`./server -listen 0.0.0.0:56000 -connect 127.0.0.1:<wg_port>`) перед уже установленным AmneziaWG/WG. Нужен лишь открытый UDP-порт. Сложность и хрупкость на стороне клиента: ссылка на звонок VK, отдельное приложение. Разумно сделать опциональным модулем «режим белых списков» поверх AWG.",
+    "sources": [
+     "https://ntc.party/t/%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%BE%D0%B2/21884",
+     "https://github.com/cacggghp/vk-turn-proxy",
+     "https://github.com/TheAirBlow/Turnable",
+     "https://github.com/KillTheCensorship/Turnel",
+     "https://github.com/MHSanaei/3x-ui/issues/6487",
+     "https://github.com/kort0881/russia-whitelist/discussions/21"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "WebRTC/SFU-туннели внутри видеозвонков (olcRTC → snolc, kulikov0/whitelist-bypass, OpenFlux)",
+    "kind": "new",
+    "what": "TCP/UDP туннелируется внутри настоящего видеозвонка на платформе из белого списка: Яндекс Телемост, VK Звонки, WB Stream (LiveKit), Jitsi, DION, Bitrix. В OpenFlux также Яндекс.Документы, Яндекс Доска, MAX/OneMe и Mail.ru Docs. Есть два способа передачи: SCTP DataChannel через SFU платформы или данные, встроенные в VP8-видеотрек. Шифрование XChaCha20-Poly1305 с ключом из ссылки на звонок, мультиплексирование smux. Обе стороны работают на headless Pion, без браузера.",
+    "why_now": "Идея описана на net4people #618 (20.05.2026, «Tunneling IP traffic through whitelisted WebRTC carriers»). Репозитории активно обновлялись в мае–сентябре 2026. 12.09.2026 появился запрос на интеграцию в 3x-ui (#6487). 30.09.2026 olcRTC переведён в архив и объявлен end-of-life с переносом в проект «snolc», но сборки форка sh5ed/olcrtc выходят до сих пор (v2026.10.01).",
+    "status": "kulikov0/whitelist-bypass: v0.4.4 (22.09.2026), около 1.7k звёзд. Creator (сторона без цензуры) работает headless на Linux/Win/macOS, joiner — на Android/iOS/Linux. p1neappleXpress/OpenFlux: v0.3.0 (30.09.2026), около 1.9k звёзд, exit-нода на Linux VPS (L3 raw с root или L4 через gVisor). openlibrecommunity/olcrtc в архиве с 30.09.2026, ставился через Podman-скрипт.",
+    "works_in_ru": "Авторы и сообщество позиционируют эти инструменты как обход белых списков РФ (2026). Систематических замеров нет. Скорость и стабильность ограничены лимитами SFU/DataChannel, отсюда видео-режим. Всё зависит от политики платформ: аккаунты и звонки можно заблокировать, а оператор SFU может оказаться самим цензором (#618).",
+    "installer_fit": "Ниже среднего. Серверную часть (headless creator или exit-нода OpenFlux) можно поставить бинарём и systemd-юнитом. Но нужны аккаунты или ссылки на звонки на конкретных платформах, проекты нестабильны (olcRTC закрыт, API платформ меняются), протоколы клиентов между собой несовместимы. Лучше пометить как экспериментальный модуль или только упомянуть в документации.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/618",
+     "https://github.com/kulikov0/whitelist-bypass",
+     "https://github.com/p1neappleXpress/OpenFlux",
+     "https://github.com/openlibrecommunity/olcrtc",
+     "https://github.com/sh5ed/olcrtc/releases/tag/v2026.10.01-2642839",
+     "https://www.darknet.org.uk/2026/09/whitelist-bypass-webrtc-tunnels-through-video-calling-platforms/"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "VLESS + XHTTP через российские CDN (Yandex Cloud CDN, VK Cloud, Билайн, Selectel, Timeweb, Beget)",
+    "kind": "revived",
+    "what": "Доменный фронтинг и CDN-проксирование вернулись, теперь через российские CDN. Схема: клиент → TLS на домен раздачи CDN (узлы CDN в белых списках или на «чистых» российских IP) → CDN → TLS → nginx на зарубежном VPS → локальный Xray (VLESS inbound + XHTTP). XHTTP раскладывает поток на обычные HTTP-запросы (packet-up: POST вверх и потоковый GET вниз), поэтому проходит через CDN, настроенный на «статику».",
+    "why_now": "Каскад через «белые» российские IP подорожал: такие IP теперь продают только перекупщики. Поэтому летом 2026 CDN-схема стала основным советом сообщества: frank-underwood64/whitelists_bypass, Discussion #1 от 27.07.2026. Для работы нужен Xray новее 26.6.27 (Happ и INCY 2.7.11). В Xray и 3x-ui добавлены опции XHTTP «для обхода детекта CDN» (3x-ui 2.8.9).",
+    "status": "Технология зрелая: XHTTP в Xray с декабря 2024. Свежий Xray — v26.9.30 (30.09.2026). Серверная часть: nginx + Xray (VLESS-XHTTP inbound на 127.0.0.1) + сертификат для origin. Плюс ручная настройка CDN-ресурса у провайдера (Host header, разрешённые методы, таймаут 5 с у Яндекса).",
+    "works_in_ru": "Комментарии к Discussion #1: 30.07.2026 «не работает больше yandex блочит post»; 13.08.2026 «Способ рабочий… через vk»; 15.08.2026 «У Яндекса не бомбит»; 29.09.2026 на вопрос про ПФО ответили «Работает»; 30.09.2026 «Похоже Яндекс всё». Обходной приём: перевести upstream на GET, потому что CDN часто пропускают только GET/HEAD/OPTIONS (ошибка 405). Обсуждение на ntc.party про wss + Yandex Cloud тоже 2026 года. Результат неоднороден по регионам и операторам, и CDN могут закрыть лавочку.",
+    "installer_fit": "Средне. Серверную половину (nginx + XHTTP inbound в 3x-ui с путём и режимом packet-up или GET-upstream, сертификат для origin-домена) установщик может развернуть автоматически. Аккаунт в CDN, второй домен и настройку раздачи пользователь делает вручную, по инструкции. Нужен свой домен.",
+    "sources": [
+     "https://github.com/frank-underwood64/whitelists_bypass/discussions/1",
+     "https://github.com/frank-underwood64/whitelists_bypass",
+     "https://ntc.rkn.quest/t/%D0%BA%D0%B0%D0%BA-%D0%BE%D0%B1%D0%BE%D0%B9%D1%82%D0%B8-%D0%B1%D0%B5%D0%BB%D1%8B%D0%B5-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B8-%D0%B8%D1%81%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D1%83%D1%8F-wss-%D0%B8-yandex-cloud/24735",
+     "https://habr.com/ru/articles/1021160/"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "XHTTP (VLESS+XHTTP+REALITY, XHTTP/3) как основной транспорт вместо RAW+Vision",
+    "kind": "evolved",
+    "what": "Транспорт Xray, который режет VLESS-поток на HTTP-запросы и ответы (stream-one, stream-up, packet-up), с XMUX, паддингом заголовков, разделением upstream и downstream и возможностью вести downstream по отдельному GET или через другой IP/CDN. С REALITY или TLS, также поверх HTTP/3. Вместо gRPC, который объявлен deprecated.",
+    "why_now": "Habr 1047442 (июнь 2026): с 5 июня 2026 TSPU перешёл к поведенческой «заморозке» примерно на 120 с. Срабатывает на подозрительный AS, uTLS-отпечаток Chrome и больше трёх параллельных TLS-рукопожатий на один SNI. По этой статье VLESS+REALITY+TCP «падает», а xHTTP и gRPC+REALITY устойчивее. Habr 1009542: «Как ТСПУ ловит VLESS в 2026 и почему XHTTP — следующий шаг». В Xray-core v26.3.27 (27.03.2026) XHTTP/3 по умолчанию работает с BBR и поддерживает Finalmask quicParams. Запрос #6858 просит рандомизацию путей, потому что статичный path — это отпечаток.",
+    "status": "Встроен в Xray-core (текущая версия v26.9.30 от 30.09.2026). Поддерживается в 3x-ui (v2.8.9+, v3.x; v3.9.0 вышла 03.10.2026 на Xray v26.9.30), Remnawave, Happ, INCY, v2rayN и mihomo (полный маппинг полей XHTTP в 3x-ui v3.4.0). Есть готовые схемы двойного хопа, например petrochen/xray-double-hop (проверено в апреле 2026).",
+    "works_in_ru": "По сообщениям (Habr, июнь 2026; ntc.party, апрель 2026: «VLESS + xHTTP + Reality working reliably») XHTTP переносит поведенческую детекцию лучше RAW+Vision. Есть и противоположные отчёты: в мае 2026 в отдельных регионах ломались и xHTTP-настройки. При режиме белых списков сам по себе не помогает, нужен CDN или «белый» IP.",
+    "installer_fit": "Отлично подходит. Это ещё один inbound в уже установленном 3x-ui/Xray, без новых зависимостей. Можно ставить вторым inbound рядом с RAW+Vision на том же REALITY или на отдельном порту/домене. Нужно следить за совместимостью клиентов (Xray ≥ 26.x).",
+    "sources": [
+     "https://habr.com/ru/articles/1047442/",
+     "https://habr.com/en/articles/1009542/comments/",
+     "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+     "https://github.com/XTLS/Xray-core/issues/6858",
+     "https://github.com/petrochen/xray-double-hop",
+     "https://github.com/XTLS/Xray-core/discussions/4113"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Xray Finalmask (header-custom, Sudoku, fragment, noise, XMC «Minecraft», XDNS, XICMP, quicParams/udphop)",
+    "kind": "new",
+    "what": "Новый слой «финальной маскировки» в Xray-core. Любой трафик Xray (TCP и UDP, включая XHTTP/3, Hysteria2, WireGuard и mKCP) можно обернуть в произвольную маску. Варианты: свой заголовок (header-custom), Sudoku (байты отображаются на таблицы в стиле судоку и выглядят как ASCII или шум), фрагментация, UDP-noise, XMC (имитация логина в Minecraft 26.1.2), XDNS (туннель через DNS поверх mKCP) и XICMP (туннель в ICMP). Параметры передаются в share-ссылках через `fm`.",
+    "why_now": "В Xray-core v26.3.27 (27.03.2026) добавлены header-custom, Sudoku, fragment и noise, исправлены XDNS/XICMP. Release notes: «XDNS 相较于 DNSTT/Slipstream 可以通过更多 DNS，且支持代理 UDP» (XDNS проходит через большее число DNS-серверов, чем DNSTT/Slipstream, и проксирует UDP). Летом 2026 добавлен XMC (Minecraft). В v26.7.28 в XMC появился обязательный массив profiles. В v26.9.30 XDNS переписан, port hopping перенесён в маску udphop. 3x-ui v3.9.0 (03.10.2026) автоматически мигрирует сохранённые XDNS-маски.",
+    "status": "Активно развивается, есть breaking changes между версиями (v26.7.28, v26.9.30). Сервер: Xray-core ≥ v26.3.27, панель 3x-ui ≥ 2.8.9. Клиенты на ядре Xray нужно обновлять. mihomo и sing-box маски Xray не понимают (issue mihomo #2604; issue 3x-ui #5982: параметр fm ломает парсинг подписок в mihomo/sing-box).",
+    "works_in_ru": "Прямых массовых отчётов по РФ мало. Есть рабочий конфиг для Remnawave «VLESS+REALITY + finalmask xdns → Яндекс.DNS» (internetkafe/InternetkafeXDNS). XDNS/XICMP имеют смысл как резерв при белых списках и при блокировке TCP до IP: в net4people #671 (02.10.2026) у одного VPS заблокирован TCP по всей РФ, при этом «udp and icmp are working fine».",
+    "installer_fit": "Средне. Включается в конфиге уже установленного Xray, отдельных бинарей не нужно. Но схема конфигов часто меняется, клиентская поддержка узкая (только Xray-клиенты), а XDNS требует делегировать NS-запись домена на VPS. Лучше начать с опционального fragment/noise и XDNS как резервного канала.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+     "https://github.com/XTLS/Xray-core/issues/6732",
+     "https://github.com/XTLS/Xray-core/pull/6769",
+     "https://github.com/MHSanaei/3x-ui/issues/5982",
+     "https://github.com/internetkafe/InternetkafeXDNS",
+     "https://github.com/Jolymmiles/Xray-core/pull/14",
+     "https://github.com/net4people/bbs/issues/671"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "DNS-туннели: dnstt, slipstream (и XDNS) через резолверы операторов / Яндекса / НСДИ",
+    "kind": "revived",
+    "what": "Старая техника: данные кодируются в DNS-запросах к своему поддомену, рекурсивный резолвер пересылает их на ваш authoritative-сервер. dnstt использует KCP + Noise (DoH/DoT/UDP). slipstream — это QUIC поверх DNS, примерно в 5 раз быстрее, умеет работать через несколько резолверов одновременно. Работает там, где разрешён только DNS к «своим» резолверам.",
+    "why_now": "При белых списках разрешённые DNS-резолверы оказались одной из немногих дыр. Meduza описала туннелирование через резолверы НСДИ 195.208.4.1 и 195.208.5.1 (2–3 Мбит/с). На ntc.party в апреле 2026 тема «Актуальность slipstream/dnstt для обхода БС». 01.05.2026 вышел dnstt v1.20260501.0 с исправлением «зависания» сервера под нагрузкой, net4people #609 отмечает «many deployments of dnstt lately». slipstream v0.1.1 вышел 12.04.2026.",
+    "status": "dnstt v1.20260501.0 (bamsoftware, repo.or.cz). EndPositive/slipstream v0.1.1 (12.04.2026). Клиенты: dnstt.xyz app (Android и др.), SlipNet (Android, обновлён в мае 2026), AnyBridge (iOS, только dnstt). Есть скрипты деплоя (dnstt-xyz/slipstream-socks-deploy, dnstm-setup) и сканер резолверов SamNet-dev/findns.",
+    "works_in_ru": "ntc.party, апрель 2026. Tele2 (СПб): 11.1 Мбит/с вниз и 1.32 Мбит/с вверх через штатный резолвер. Билайн (Поволжье): около 50 доступных резолверов из более чем 4000, примерно 1.5 Мбит/с. МегаФон: жёсткие rate-limit, мало пригодных резолверов. Обычно 0.5–1.5 Мбит/с с частыми обрывами. Вывод сообщества: «только как запасной вариант».",
+    "installer_fit": "Средне. Нужен домен с NS-делегированием на VPS и свободный UDP/53 (конфликтует с systemd-resolved). Ставится один Go- или Rust-бинарь с systemd, за ним SOCKS или уже установленный Xray. Как аварийный канал при белых списках подходит хорошо. Альтернатива — XDNS в Xray.",
+    "sources": [
+     "https://ntc.party/t/%D0%B0%D0%BA%D1%82%D1%83%D0%B0%D0%BB%D1%8C%D0%BD%D0%BE%D1%81%D1%82%D1%8C-slipstreamdnstt-%D0%B4%D0%BB%D1%8F-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4%D0%B0-%D0%B1%D1%81/23730",
+     "https://github.com/net4people/bbs/issues/609",
+     "https://meduza.io/cards/my-uzhe-rasskazyvali-o-nekotoryh-metodah-obhoda-belyh-spiskov-vot-esche-odin-ot-roskomnadzora-chto",
+     "https://github.com/EndPositive/slipstream",
+     "https://dnstt.xyz/",
+     "https://github.com/SamNet-dev/findns"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "TrustTunnel (протокол AdGuard VPN)",
+    "kind": "new",
+    "what": "VPN-протокол, который маскируется под обычный HTTPS: туннель TCP/UDP/ICMP поверх TLS с HTTP/1.1, HTTP/2 или HTTP/3 (QUIC), с мультиплексированием потоков. Сервер (endpoint) написан на Rust, есть мастер настройки, Let's Encrypt и опциональный endpoint подписок.",
+    "why_now": "AdGuard открыл исходники 22.01.2026 (Apache 2.0): спецификация, endpoint и клиенты. Быстро развивается: v1.0.7 (26.02.2026) → v1.1.0 (01.09.2026) → v1.3.0-beta.1 (01.10.2026). Поддержка inbound и outbound появилась в mihomo с v1.19.21.",
+    "status": "TrustTunnel/TrustTunnel, около 3.5k звёзд, стабильная версия v1.1.0 (01.09.2026). Официальный install.sh ставит в /opt/trusttunnel, Linux amd64/arm64. Клиенты: официальные TrustTunnel для iOS, macOS и Android (App Store, Play), CLI/библиотека TrustTunnelClient, Flutter GUI, mihomo (Clash Meta, FlClash и др.).",
+    "works_in_ru": "ntc.party, тема от 31.01.2026: «где VLESS TLS не работает — TrustTunnel тоже не будет, и наоборот», то есть это обычная TLS-маскировка. Пользовательский тест на ntc: все пять проверенных протоколов, включая TrustTunnel, работают внутри РФ. Против белых списков сам по себе не помогает. Отдельных замеров против поведенческой «заморозки» июня 2026 нет.",
+    "installer_fit": "Хорошо подходит. Официальный скрипт и неинтерактивная конфигурация (vpn.toml), нужен домен и сертификат либо self-signed. Отдельный порт 443/TCP+UDP конфликтует с REALITY на 443, поэтому нужен другой IP/порт или SNI-маршрутизация. Плюс в наличии официальных мобильных клиентов, понятных простому пользователю.",
+    "sources": [
+     "https://github.com/TrustTunnel/TrustTunnel",
+     "https://adguard-vpn.com/en/blog/adguard-vpn-protocol-goes-open-source-meet-trusttunnel.html",
+     "https://ntc.party/t/trusttunnel-stealth-vpn-%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D0%BA%D0%BE%D0%BB-%D0%BE%D1%82-%D0%B0%D0%B2%D1%82%D0%BE%D1%80%D0%BE%D0%B2-adguard-vpn/21835",
+     "https://habr.com/ru/companies/femida_search/articles/988466/",
+     "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.21",
+     "https://www.cnx-software.com/2026/02/02/trusttunnel-open-source-high-performance-vpn-protocol-thats-hard-to-detect-and-block/"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "NaiveProxy",
+    "kind": "revived",
+    "what": "HTTP/2 (и QUIC) CONNECT-прокси, клиент которого собран на сетевом стеке Chromium. TLS-отпечаток, тайминги и фреймы совпадают с настоящим Chrome, есть паддинг и мультиплексирование. Сервер — Caddy с forwardproxy (форк klzgrad) или naive inbound в sing-box, перед ним настоящий сайт.",
+    "why_now": "Старый (2019) проект вернулся в обсуждения после поведенческой детекции uTLS-отпечатков (июнь 2026). Тема на ntc.party «Naive proxy — пока лучший вариант» открыта 06.04.2026. В sing-box 1.13.0 появился outbound NaiveProxy с QUIC и ECH (issue openwrt/packages #28675 от 04.03.2026), что дало клиентов на ядре sing-box. При обсуждении найдена и исправлена утечка неинициализированной памяти в паддинге sing-box (hdrover).",
+    "status": "klzgrad/naiveproxy v154.0.8037.49-2 (25.09.2026), около 9.5k звёзд, синхронизируется с Chromium. Стабильная ветка sing-box: v1.14.2 (24.09.2026). Есть однокомандные скрипты, например fscarmen/sing-box и Wassay380/NaiveProxy. Клиенты: NekoBox, Throne, sing-box SFA/SFI, mihomo.",
+    "works_in_ru": "По ntc (апрель 2026) и Habr (июнь 2026) «стабильно проходит ТСПУ». Есть встречные мнения, что правильно настроенный VLESS+XHTTP+Reality работает не хуже, независимой проверки нет. Важна та же проблема IP/AS: массовые баны IP популярных хостеров 4 августа и 21 сентября 2026 (net4people #671).",
+    "installer_fit": "Средне. Нужны свой домен и сертификат (ACME), Caddy с плагином (xcaddy) или sing-box как отдельный сервис на 443, конфликт с REALITY по порту. Пользователей на настоящих мобильных клиентах меньше, чем у VLESS.",
+    "sources": [
+     "https://ntc.party/t/naive-proxy-%D0%BF%D0%BE%D0%BA%D0%B0-%D0%BB%D1%83%D1%87%D1%88%D0%B8%D0%B9-%D0%B2%D0%B0%D1%80%D0%B8%D0%B0%D0%BD%D1%82/23843",
+     "https://github.com/klzgrad/naiveproxy",
+     "https://github.com/openwrt/packages/issues/28675",
+     "https://sing-box.sagernet.org/changelog/",
+     "https://habr.com/ru/articles/1047442/"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Каскад через «белый» российский IP (RU-мост → зарубежный выход, double-hop)",
+    "kind": "revived",
+    "what": "Старая схема мостов: клиент подключается к VPS в РФ, чей IP или подсеть входит в белый список или не помечен как «подозрительный AS» (VK Cloud, Yandex Cloud, Selectel, Timeweb и т.п.), а мост пересылает трафик на зарубежный VPS по VLESS+XHTTP/REALITY. Против блокировки по IP/ASN и белых списков работает лучше любой маскировки протокола.",
+    "why_now": "TSPU блокирует зарубежные IP хостеров на уровне ASN, а в белые списки входят только российские адреса. В 2026 каскад стал стандартным советом (Habr 990206, petrochen/xray-double-hop, проверено в апреле 2026). Но к лету 2026 «белые» IP почти нельзя получить у хостеров, их перепродают втридорога (frank-underwood64, 27.07.2026). Yandex Cloud-relay в апреле 2026 исключили из схемы Sergei-thinker/vpn-setup, потому что Yandex Cloud фильтруется отдельно от Яндекса.",
+    "status": "Готовые решения на Xray (bridge + egress), 3x-ui/Remnawave с нодами. Новый 3x-ui v3.9.0 (03.10.2026) умеет разворачивать AmneziaWG, TUIC и MTProto-inbound прямо на нодах.",
+    "works_in_ru": "net4people #650 (19.08.2026, МТС Москва): IP из Yandex Cloud не помогли, при полном блэкауте недоступны даже ресурсы из белого списка. В другом случае REALITY со SNI vk.com/cloudflare.com «работает неделями». Результат сильно зависит от оператора и региона.",
+    "installer_fit": "Средне. Установщик может получить режим «мост»: на втором (российском) VPS ставится Xray с outbound на основной сервер. Логика близка к существующей, но нужен второй сервер, а «белый» IP — за пользователем.",
+    "sources": [
+     "https://github.com/petrochen/xray-double-hop",
+     "https://habr.com/en/articles/990206/",
+     "https://github.com/frank-underwood64/whitelists_bypass/discussions/1",
+     "https://github.com/Sergei-thinker/vpn-setup",
+     "https://github.com/net4people/bbs/issues/650",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Hysteria2 внутри Xray (+Salamander/Finalmask, port hopping, Hysteria Realms)",
+    "kind": "evolved",
+    "what": "Hysteria2 (QUIC + Brutal) теперь поддерживается и в Xray-core: полноценный inbound и транспорт. Salamander и другие маски задаются через Finalmask, port hopping — через udpHop в quicParams. В самом apernet/hysteria появились Realms: rendezvous-сервер для пробивки NAT, позволяющий держать Hy2-сервер за NAT или CGNAT.",
+    "why_now": "Xray-core v26.3.27 (27.03.2026): «新增 Hysteria 2 入站与传输层» (добавлены Hysteria 2 inbound и транспорт). 3x-ui получил Hy2 и в v3.4.0 поддержку Salamander packetSize и Realm tlsConfig. Hysteria app/v2.12.3 вышла 16.09.2026. По Habr 1047442 (июнь 2026) Hysteria2 с Salamander устойчивее к поведенческой «заморозке», чем VLESS+REALITY+TCP.",
+    "status": "apernet/hysteria app/v2.12.3 (16.09.2026), около 22.6k звёзд. Realm-сервер — apernet/hysteria-realm-server, есть сервис hysteria-realm в sing-box. Xray-core ≥ v26.3.27. В 3x-ui v2.8.9+/v3.x есть UI и share-ссылки.",
+    "works_in_ru": "По ntc.party (январь 2026) иногда работает там, где режут TCP+TLS по «16 КБ», и в зонах ограничений по QUIC. Против белых списков не помогает. В статье FOCI 2026 показано, что TSPU фильтрует QUIC по SNI не позднее июля 2023, так что без Salamander QUIC уязвим.",
+    "installer_fit": "У вас уже стоит отдельный Hysteria2. Есть вариант перенести его в Xray/3x-ui: одна панель, общий учёт пользователей, маски Finalmask. Минус: параметр fm ломает подписки mihomo и sing-box (3x-ui #5982). Realms полезны только для серверов за NAT.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+     "https://github.com/apernet/hysteria/releases",
+     "https://v2.hysteria.network/docs/advanced/Realms/",
+     "https://habr.com/ru/articles/1047442/",
+     "https://github.com/net4people/bbs/issues/654",
+     "https://github.com/MHSanaei/3x-ui/issues/5982"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "TUIC v5 (нативно в 3x-ui)",
+    "kind": "revived",
+    "what": "Прокси-протокол поверх QUIC с аутентификацией по UUID и паролю, 0-RTT, UDP relay, BBR. Нагрузку QUIC сравнима с Hysteria2, но без Brutal.",
+    "why_now": "3x-ui v3.9.0 (03.10.2026): «Native TUIC v5 server — TUIC now runs inside the panel in Go, with no external binary», с BBR и учётом трафика. В mihomo и sing-box поддерживается давно. Протокол вернулся в основной стек панели, которую использует ваш установщик.",
+    "status": "3x-ui v3.9.0 (03.10.2026), встроенный сервер на Go. Клиенты: sing-box, mihomo, NekoBox, Throne, Hiddify. Официальная реализация EAimTY/tuic развивается слабо, поэтому основной вариант — реализации sing-box и 3x-ui.",
+    "works_in_ru": "Отдельных свежих замеров по РФ не нашёл. Ведёт себя как прочий QUIC, а QUIC в РФ фильтруется по SNI (FOCI 2026) и под белыми списками не работает. Уверенность низкая.",
+    "installer_fit": "Технически просто: inbound в уже установленной 3x-ui ≥ v3.9.0, без новых бинарей. Но преимущество перед уже имеющимся Hysteria2 неочевидно. Добавлять имеет смысл только как ещё один UDP-вариант в один клик.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://github.com/net4people/bbs/issues/654"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "SSH-туннель (SSH -D / sing-box ssh outbound)",
+    "kind": "revived",
+    "what": "Обычный SSH-туннель (dynamic port forwarding / SOCKS) с отпечатком, отличным от TLS-прокси, на нестандартном порту.",
+    "why_now": "Habr 1047442 (июнь 2026): после перехода TSPU к поведенческой «заморозке» TLS-соединений SSH упомянут среди более устойчивых вариантов («другой отпечаток, другой порт»). На ntc.party (02.02.2026) SSH предлагали как альтернативу.",
+    "status": "OpenSSH уже есть на любом VPS. Клиенты: sing-box (ssh outbound), NekoBox, Termius и т.п.",
+    "works_in_ru": "Данные противоречивые. ntc.party, 02.02.2026: SSH «режут во многих местах при превышении объёма трафика». Habr, июнь 2026: устойчивее TLS-прокси. Против белых списков не помогает.",
+    "installer_fit": "Тривиально: отдельный пользователь без shell, разрешён только port-forward, второй порт sshd. Но это скорее резервный канал для опытных, а не основной протокол.",
+    "sources": [
+     "https://habr.com/ru/articles/1047442/",
+     "https://ntc.party/t/%D0%BA%D0%B0%D0%BA%D0%B8%D0%B5-%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D0%BA%D0%BE%D0%BB%D1%8B-%D0%BF%D0%BE-%D0%BC%D0%B8%D0%BC%D0%BE-vless-%D1%83%D1%81%D1%82%D0%BE%D0%B9%D1%87%D0%B8%D0%B2%D1%8B-%D0%BA-%D1%8D%D1%82%D0%BE%D0%B9-%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BE%D1%87%D0%BD%D0%BE%D0%B9-%D1%81%D0%BE%D0%B4%D0%BE%D0%BC%D0%B8%D0%B8-2025-2026-%D0%B3%D0%BE%D0%B4%D0%BE%D0%B2/21989"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "paqet (пакетный прокси на raw-сокетах, нестандартный TCP)",
+    "kind": "new",
+    "what": "Прокси, который шлёт пакеты через raw-сокеты в TCP-подобном виде без нормального рукопожатия (без SYN). DPI, проверяющий только начало TCP-сессии, такой трафик не классифицирует. Клиенту нужен root (на Android есть paqetNG).",
+    "why_now": "net4people #570 (26.01.2026): стабильно работает из Ирана до Hetzner во время шатдауна. Для РФ интересен на фоне сентябрьских банов, когда по IP VPS режут только TCP, а UDP и ICMP проходят (net4people #671, 02.10.2026).",
+    "status": "hanselime/paqet v1.0.0-alpha.21 (22.08.2026), около 1.2k звёзд, альфа. Клиенты: десктоп (root) и AliRezaBeigy/paqetNG для Android (root). С CGNAT мобильных операторов работает плохо.",
+    "works_in_ru": "Отчётов из РФ не нашёл. Пользу против TSPU предполагаю по аналогии с Ираном. Уверенность низкая.",
+    "installer_fit": "Плохо подходит для массовых пользователей: клиенту нужен root, CGNAT мешает. Серверная часть — простой бинарь. Пока стоит только наблюдать.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/570",
+     "https://github.com/hanselime/paqet",
+     "https://github.com/net4people/bbs/issues/671"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "Tor WebTunnel (мост, маскирующийся под HTTPS/WebSocket сайт)",
+    "kind": "evolved",
+    "what": "Подключаемый транспорт Tor: мост прячется за настоящим сайтом на nginx и HTTPS, туннель идёт по пути WebSocket. В новых версиях есть SNI-spoofing. Snowflake (WebRTC/DTLS) в РФ блокируют по отпечатку.",
+    "why_now": "С 30.03.2026 TSPU блокирует DTLS Snowflake по JA3/JA4 (net4people #603), на форуме Tor пишут «Vanilla snowflake is dead» (январь–февраль 2026). Tor Project снова призывает поднимать WebTunnel-мосты для России. WebTunnel на «больших» хостерах (Hetzner, OVH, Cloudflare и т.д.) блокируется, на малоизвестных хостингах выживает.",
+    "status": "Официальный docker-образ и инструкция Tor Project для WebTunnel-моста (nginx + webtunnel server + tor). Клиенты: Tor Browser, Orbot.",
+    "works_in_ru": "Частично: работает на малоизвестных хостингах, а на крупных датацентрах блокируется (форум Tor, начало 2026). При белых списках не работает.",
+    "installer_fit": "Средне и не по профилю: это мост для Tor-пользователей, а не VPN для своих клиентов. Технически ставится просто (nginx уже нужен для CDN-схемы). Можно сделать опцией «помочь Tor».",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/603",
+     "https://forum.torproject.org/t/russia-rolled-out-whitelists-and-snowflake-some-webtunnels-and-more-than-half-of-internet-is-complete-dead-and-no-one-seems-to-notice/21105",
+     "https://blog.torproject.org/call-for-webtunnel-bridges/"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "mieru",
+    "kind": "evolved",
+    "what": "Прокси (socks5/HTTP/HTTPS) со своим шифрованным протоколом без TLS-мимикрии, поверх TCP или UDP, со случайным паддингом и без постоянных сигнатур (обфускация «под шум»). Сервер — mita.",
+    "why_now": "Активно обновляется: v3.38.0 от 24.09.2026. Поддерживается в mihomo, входит в мультипротокольные панели вместе с Sudoku, TrustTunnel и ShadowQuic. Вписывается в дискуссию 2026 года о «разнообразии протоколов» как стратегии (net4people #660).",
+    "status": "enfein/mieru v3.38.0 (24.09.2026), около 2.6k звёзд. Есть deb/rpm-пакеты сервера mita. Клиенты: mihomo (Clash Meta, FlClash, Clash Verge), NekoBox (плагин).",
+    "works_in_ru": "Конкретных отчётов из РФ за 2026 год не нашёл. Протокол «без отпечатка», а такие TSPU обычно режет эвристиками по энтропии и на неизвестных портах. Уверенность низкая.",
+    "installer_fit": "Технически просто (deb-пакет и JSON-конфиг), но клиентская база узкая и подтверждений эффективности в РФ нет. Пока только наблюдать.",
+    "sources": [
+     "https://github.com/enfein/mieru",
+     "https://wiki.metacubex.one/en/config/proxies/mieru/",
+     "https://github.com/net4people/bbs/issues/660"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "MTProto-прокси (Fake-TLS) для Telegram — теперь inbound в 3x-ui",
+    "kind": "revived",
+    "what": "Прокси-протокол Telegram (MTProxy) с режимом Fake-TLS (ee-секреты), маскирующимся под TLS к выбранному домену. Работает только для Telegram.",
+    "why_now": "После блокировок Telegram в РФ в 2026 году MTProxy снова стал массовым. В 3x-ui v3.8.x/v3.9.0 (03.10.2026) появился MTProto-inbound, разворачиваемый и на нодах. Одновременно te-st.org (02.06.2026) пишет, что механизм обхода блокировок Telegram «работает всё хуже», а Habr 1047442 относит MTProto-прокси к числу ломающихся при поведенческой детекции.",
+    "status": "Встроен в 3x-ui ≥ v3.9.0. Отдельно доступны mtg (9seconds/mtg) и telemt.",
+    "works_in_ru": "Ухудшается: в июне 2026 MTProto-прокси «падают» (Habr 1047442, te-st.org от 02.06.2026). Полезен как простая функция для пользователей, которым нужен только Telegram.",
+    "installer_fit": "Тривиально, если 3x-ui обновлён до v3.9.0: один inbound. Ценность ограничена одним Telegram, а эффективность снижается.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://te-st.org/2026/06/02/mtproxyout/",
+     "https://habr.com/ru/articles/1047442/"
+    ],
+    "confidence": "low"
+   }
+  ]
+ },
+ {
+  "candidates": []
+ },
+ {
+  "candidates": [
+   {
+    "name": "VK TURN proxy (vk-turn-proxy / free-turn-proxy / Turnable / WDTT)",
+    "kind": "new",
+    "what": "Туннель WireGuard/Hysteria2 (с v1.8.0 — и VLESS через KCP+smux) идёт через TURN-релеи звонков VK (и Яндекс Телемоста). Клиент берёт TURN-креды по ссылке на звонок, оборачивает UDP в DTLS 1.2 и параллельными потоками шлёт STUN ChannelData на TURN VK; тот релеит трафик на ваш VPS, где лёгкий Go-сервер (UDP 56000) снимает DTLS и отдаёт локальному WG/Hysteria. Для DPI это обычный звонок VK к IP VK, которые в белом списке.",
+    "why_now": "cacggghp/vk-turn-proxy создан 2025-11-25, к весне 2026 ~4000 звёзд. Релизы v1.2.3–v1.8.3 с 2026-03-30 по 2026-04-16 (решатель капчи, Docker ghcr.io, VLESS-режим). Оригинал заглох (push 2026-04-16); issue #182 от 2026-06-25 — VK ввёл капчу на новом этапе. Развитие ушло в форки: samosvalishe/free-turn-proxy (с мая 2026), TheAirBlow/Turnable (0.6.4, 2026-09-26), Android-клиенты (qWDTT, WireTurn). 3x-ui feature request #6487 от 2026-09-12.",
+    "status": "Сервер на Go: бинарники linux amd64/arm64 + Docker. Последний релиз оригинала v1.8.3 (2026-04-16); активные форки новее. Клиенты: Android (Termux/APK), iOS, Windows, macOS, Linux. Ограничения: при -n 1 VK режет ~5 Мбит/с; у Яндекса лимита нет, но много потоков грозит баном IP; нужен MTU 1280. VK периодически добавляет капчу.",
+    "works_in_ru": "ntc.party (9–11 и 30 марта 2026): работает при белых списках мобильного интернета в связке Hysteria2+sing-box и с WireGuard — самый часто подтверждаемый способ обхода WL. Риски: капча VK (с июня 2026), низкая скорость, зависимость от политики VK.",
+    "installer_fit": "Хорошо ложится как опциональный transport-врапер ПЕРЕД существующими Hysteria2/WG: ставится Go-бинарник + systemd на UDP-порт, конфиг минимальный. Главная проблема — клиентская сторона (нужны их приложения/Termux), сервер сам по себе бесполезен без клиента. Стоит добавить как экспериментальный модуль именно для сценария белых списков.",
+    "sources": [
+     "https://github.com/cacggghp/vk-turn-proxy",
+     "https://github.com/cacggghp/vk-turn-proxy/releases",
+     "https://github.com/samosvalishe/free-turn-proxy",
+     "https://github.com/TheAirBlow/Turnable",
+     "https://github.com/net4people/bbs/issues/650",
+     "https://ntc.party/t/рабочий-обход-белых-списков/21884?page=7"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "olcRTC (OpenLibreCommunity RTC, bb22)",
+    "kind": "new",
+    "what": "Зашифрованный TCP-over-WebRTC туннель: трафик маскируется под видеозвонок на разрешённых сервисах (Jitsi, Яндекс Телемост, WB Stream). Внутри XChaCha20-Poly1305 + smux поверх WebRTC data/video каналов. Транспорты: datachannel, vp8channel (данные в синтетических VP8-кадрах), seichannel, videochannel. Трафик идёт через SFU платформы, который в белом списке, поэтому для DPI это нормальный звонок.",
+    "why_now": "openlibrecommunity/olcrtc создан 2026-04-04, быстро набрал ~2000 звёзд — одна из главных тем обхода WL летом 2026. Реализация концепции bb22 (туннель через доверенные meet-сервисы). Репозиторий архивирован 2026-09-30 как EoL: 'проект будет переработан' в рамках другой инициативы.",
+    "status": "Go (Pion). Install-скрипт (Podman + сборка через mage). Клиенты: owenclave и veil (Android), olcbox (мультиплатформенный UI: Android/iOS/macOS/Windows/Linux). Статус: beta, архивирован 2026-09-30 (read-only, EoL). Релизов с тегами нет.",
+    "works_in_ru": "Создан именно под российский режим DPI-whitelist на мобильном (LTE/5G). Обсуждается в 3x-ui #6487 (2026-09-12) и на ntc.party как рабочий под WL. Точных измерений эффективности/скорости в репозитории нет; проект свёрнут в EoL, что снижает надёжность на будущее.",
+    "installer_fit": "Серверная установка через их install.sh (Podman), не вписывается в чистый bash-инсталлер без контейнеров. Так как проект EoL и без релиз-тегов, добавлять рискованно — лучше следить за наследником. Как и все WebRTC-схемы, требует их клиентов.",
+    "sources": [
+     "https://github.com/openlibrecommunity/olcrtc",
+     "https://github.com/kulikov0/whitelist-bypass",
+     "https://github.com/MHSanaei/3x-ui/issues/6487"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "whitelist-bypass (kulikov0)",
+    "kind": "new",
+    "what": "Туннель интернет-трафика через видеозвонки (VK Call, Яндекс Телемост, WB Stream, DION, Bitrix) для обхода белых списков. Два режима: DC (SCTP DataChannel) и Video (данные в VP8-треке). Рекомендуемый headless-путь: чистый Go (Pion) напрямую к SFU, без браузера; ChaCha20-обфускация, мультиплексор, tun2socks → SOCKS5. Для DPI — обычный видеозвонок к SFU из белого списка.",
+    "why_now": "Создан 2026-03-19, ~1700 звёзд, активен (push 2026-09-22, релиз v0.4.4). Код Куликова используется как движок звонковых каналов в других проектах (напр. WhiteTransport подключает его адаптером). В net4people #618 описан как основной эталон WebRTC-туннелирования под WL.",
+    "status": "Go (Pion). Релиз v0.4.4 (2026-09-22). Готовые бинарники + Android APK (VpnService), iOS .ipa (sideload), Linux/desktop joiner, Electron creator. Пропускная способность ~6.5 Мбит/с на одном VP8-треке (из net4people #618).",
+    "works_in_ru": "Прямо нацелен на российские (и иранские) белые списки, где Shadowsocks/obfs4/VLESS-REALITY/Snowflake уже не проходят IP/SNI/CIDR-фильтр. Активно обсуждается на ntc.party/net4people как рабочий. Детектируемость под ML-анализом авторами не измерена.",
+    "installer_fit": "Требует двух концов (creator на свободном интернете + joiner в РФ) и клиентских приложений — не классический server-only VPS-инсталлер. Можно добавить как документированный сценарий/опциональный exit-node, но автоматизировать в bash сложно из-за WebRTC-стека.",
+    "sources": [
+     "https://github.com/kulikov0/whitelist-bypass",
+     "https://github.com/net4people/bbs/issues/618"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "OpenFlux",
+    "kind": "new",
+    "what": "IPv4 TCP/UDP туннель с подключаемыми транспортами через легитимные российские сервисы: Яндекс.Документы (WS), Yandex Volga/Board (WS/HTTP-relay), MAX/OneMe (WebRTC DataChannel), Cups.online (Centrifugo), Mail.ru Docs (WS), Direct. batched+zstd кодек, два backend выходной ноды: L3 (raw SNAT/DNAT, Linux+root) и L4 (gVisor proxy, любая ОС). Канал умер — маршрут уходит на следующий сервис.",
+    "why_now": "p1neappleXpress/OpenFlux создан 2026-06-21, ~1940 звёзд, очень активен (релиз v0.3.0, 2026-09-30). Новый класс: прячет трафик не в звонках, а в редактировании документов и мессенджере MAX. Множество форков и клиентов (Android, iOS TestFlight, Desktop). Упомянут в 3x-ui #6487 и vk-turn-proxy #186.",
+    "status": "Go. Релиз v0.3.0 (2026-09-30). Клиенты: Desktop (OpenFluxDesktop), Android (OpenFluxAndroid + форк damnurmum), iOS (TestFlight), CLI. Выходная нода L3 (Linux+root) или L4 (gVisor, без root). Транспорт MAX помечен как экспериментальный (риск бана аккаунта).",
+    "works_in_ru": "Спроектирован под обход белых списков через сервисы, которые гарантированно в WL (Яндекс, Mail.ru, MAX, WB). Транспорты на Яндекс.Документах и почте выглядят безопаснее звонковых. Риски блокировки/детекта по поведению пока не изучены (сам автор помечает MAX как experimental).",
+    "installer_fit": "Exit-node ставится на Linux VPS (L3 с root, либо L4 gVisor) — это ложится в bash-инсталлер лучше, чем WebRTC-схемы. Но нужны их клиенты, и у каждого транспорта свои аккаунты/креды. Хороший кандидат в опциональный модуль 'exit node для OpenFlux' под сценарий WL.",
+    "sources": [
+     "https://github.com/p1neappleXpress/OpenFlux",
+     "https://github.com/MHSanaei/3x-ui/issues/6487",
+     "https://github.com/cacggghp/vk-turn-proxy/issues/186"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Xray XDNS / XICMP / finalmask (Xray-core)",
+    "kind": "evolved",
+    "what": "Finalmask — новый слой масок транспорта в Xray-core. XDNS заворачивает трафик в DNS-подобные пакеты поверх mKCP (как DNSTT), заставляя все DNS-запросы идти через указанный резолвер внутри туннеля. XICMP — туннель поверх ICMP (mKCP/QUIC или WireGuard). Плюс header-custom, fragment, noise, Sudoku, Salamander, Realm (UDP hole punching), udpHop, XMC (маскировка под Minecraft), mkcp-legacy. Всё через параметр fm в конфиге.",
+    "why_now": "Волна finalmask-мерджей 2026: XDNS #5560 (2026-01-31), XICMP #5633 (2026-02-02), Sudoku/header-custom #5657/#5685 (март), XMC #6210 (2026-07-11). XDNS-резолверы/домены (#5872, 2026-04-11), AAAA&A (#6123), рефактор и новый wire-формат (#6718, 2026-09-29, несовместим со старым). XHTTP maxConnections снижен 6→3 'anti-TSPU' (2026-07-28). Это прямой ответ XTLS на российские WL и иранские шатдауны.",
+    "status": "В Xray-core (последний стабильный тег v26.3.27 от 2026-03-27; pre-release цепочка до v26.9.30 от 2026-09-30, Go 1.27). Поддержка в 3x-ui (XDNS-маски; v3.9.0 от 2026-10-03 мигрирует старые XDNS на новый формат, требует клиентов ≥ core 26.9.30). v2rayN/Remnawave частично. Клиенты, не знающие finalmask, не подключатся.",
+    "works_in_ru": "XDNS тестово подтверждён для Telegram во время иранского шатдауна (март 2026). В РФ при белых списках DNS-туннель работает выборочно: на ntc.party (30 марта–2 апреля 2026) сообщали, что dnstt/XDNS выживают через DNS из WL (напр. MTS), но Beeline сломал dnstt изменением своего DNS. Скорость DNS-туннеля низкая. finalmask-маски (noise/salamander/sudoku) помогают против сигнатурного ТСПУ.",
+    "installer_fit": "Отлично — мы уже деплоим Xray (VLESS+Reality). Достаточно обновить core до 26.9.x и добавить опциональный XDNS-inbound (порт 53) как резервный профиль для WL. Внимание: сменился wire-формат XDNS (26.9.30), нужны свежие клиенты; и Xray перестал стартовать с 'none' шифрованием для публичных VLESS/Trojan (2026-07-07).",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+     "https://github.com/XTLS/Xray-core/pull/6718",
+     "https://github.com/XTLS/Xray-core/issues/6692",
+     "https://github.com/MHSanaei/3x-ui/releases",
+     "https://ntc.party/t/рабочий-обход-белых-списков/21884?page=7"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Xray XDRIVE transport",
+    "kind": "new",
+    "what": "Первый прокси-транспорт, использующий настоящие облачные хранилища как канал: Google Drive, OneDrive, Яндекс.Диск, S3, FTP и т.п. Клиент и сервер обмениваются сегментами трафика через файлы в облачной папке (WAL + mux.cool). Главное свойство — ОБХОД IP-белых списков: не нужен свой публичный IP, обе стороны могут быть за NAT, трафик идёт к IP облачного провайдера (часто в WL).",
+    "why_now": "PR #5645 от RPRX открыт 2026-02-03, смержен 2026-09-19; backend Google Drive + template добавлен #6748 (2026-09-19). Автор прямо пишет: идея IP-whitelist 2021 года, 'теперь пора дать её России и Ирану'. Это свежайшая (сентябрь 2026) фича топового движка, прицельно под WL.",
+    "status": "В Xray-core pre-release (v26.9.x, сентябрь 2026). Пока только Google Drive и 'template' backend; HTTP-клиент ещё не ходит через собственный dialer Xray (sockopt/dialerProxy к Drive не применяются). Измерения автора: VLESS over XDRIVE over Google Drive — 50 МБ за 21.6с (~18.5 Мбит/с), первый байт ~2с. Нужен mux.cool.",
+    "works_in_ru": "Прямо задуман против IP-белых списков РФ/Ирана. Яндекс.Диск — в белом списке, что делает его идеальным backend. На октябрь 2026 полевых отчётов о массовом использовании под WL ещё мало (фича только что смержена), но архитектурно это один из немногих способов, иммунных к CIDR-фильтрации.",
+    "installer_fit": "Ложится в наш Xray-стек, но требует pre-release core и облачных кредов (ClientID/Secret/RefreshToken для Drive или токен Я.Диска) на КЛИЕНТЕ — only self-hosted. Можно добавить как продвинутый опциональный профиль для WL, но автоматизация OAuth-кредов в bash-инсталлере нетривиальна. Перспективно, но сыро.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/pull/5645",
+     "https://github.com/XTLS/Xray-core/pull/6748"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "AnyTLS",
+    "kind": "new",
+    "what": "TLS-образный туннель, который борется с проблемой отпечатка вложенного TLS (TLS-in-TLS) с помощью трюков с паддингом (произвольный паддинг переменной длины) и новой схемы мультиплексирования с пулом сессий. Маскирует форму TLS-прокси-трафика.",
+    "why_now": "anytls/anytls-go создан 2025-02-09, к 2026 ~1500 звёзд; последний релиз v0.0.13 (2026-06-27). За 2025–2026 получил нативную поддержку в sing-box (первая стабильная реализация, inbound+outbound) и в mihomo (обе стороны, uTLS/ECH, restls/jls/shadowtls обёртки, v1.19.28–29). client_metadata теперь пустой по умолчанию (sing-box 1.13.16, mihomo v1.19.30).",
+    "status": "Зрелый. Референс anytls-go v0.0.13. Поддержка: sing-box (1.12+), mihomo (полная, с restls/jls/shadowtls), Husi, v2rayN. AnyTLS+Reality работает только на Xray- и sing-box-ядрах (mihomo не поддерживает эту связку).",
+    "works_in_ru": "Решает TLS-in-TLS — один из сигналов, по которым ТСПУ ловит VLESS/Trojan. Но против БЕЛЫХ СПИСКОВ (IP/CIDR-фильтр) не помогает: это обычный прямой TLS к вашему VPS, чей IP не в WL. Полезен против поведенческого/fingerprint-ТСПУ (лето 2026) при наличии доступа к датацентру, но не в режиме мобильного WL.",
+    "installer_fit": "Легко добавить: один inbound в sing-box или 3x-ui рядом с существующими. Хороший кандидат как дополнительный протокол для сценария 'обычный ТСПУ без WL' (домашний интернет). Клиенты распространены. Низкая стоимость интеграции.",
+    "sources": [
+     "https://github.com/anytls/anytls-go",
+     "https://sing-box.sagernet.org/configuration/outbound/anytls/",
+     "https://github.com/MetaCubeX/mihomo/releases"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "TrustTunnel (AdGuard)",
+    "kind": "new",
+    "what": "Открытый VPN-протокол от AdGuard: трафик маскируется под обычный HTTPS поверх HTTP/1.1, HTTP/2 и HTTP/3 (QUIC), туннелирует TCP/UDP/ICMP. Reference-реализация на Rust, Apache 2.0.",
+    "why_now": "Репозиторий TrustTunnel/TrustTunnel создан 2025-11-07, ~3500 звёзд. AdGuard открыл спецификацию, сервер и кроссплатформенные клиенты в 2026. Релизы: v1.1.0 (2026-09-01), серверная ветка v1.3.0-beta.1 (2026-10-01) с subscription-URL. Активная разработка, много сторонних клиентов (Surge, Shadowrocket, FreeTunnel).",
+    "status": "Сервер на Rust: install.sh (prebuilt-бинарники Linux/macOS) или Docker. Релиз v1.1.0 (2026-09-01), beta v1.3.0 (2026-10-01). Клиенты: CLI (Linux/Win/macOS), Flutter GUI (iOS/Android/macOS), сторонние. Нет поддержки в sing-box/mihomo. Deep-link и subscription URL.",
+    "works_in_ru": "На ntc.party/Хабре отзывы сдержанные: против БЕЛЫХ СПИСКОВ не работает (IP не в WL — как и Naive/AWG). Критика: нет TCP-мультиплексирования (уязвим к лимиту соединений), нет защиты от active probing, уязвим к TLS-fingerprint. Работает у ряда провайдеров при обычном ТСПУ, но полевых подтверждений устойчивости мало.",
+    "installer_fit": "Ставится просто (install.sh или Docker, Rust-бинарник), deep-link/subscription упрощают раздачу. Можно добавить как ещё один HTTPS-mimicry протокол для домашнего интернета. Но при нашей цели (пользователи в РФ, мобильные WL) выгода ограничена, и защита от probing/мультиплекса слабее REALITY.",
+    "sources": [
+     "https://github.com/TrustTunnel/TrustTunnel",
+     "https://github.com/TrustTunnel/TrustTunnel/releases",
+     "https://ntc.party/t/trusttunnel-stealth-vpn-протокол-от-авторов-adguard-vpn/21835"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "MASQUE (CONNECT-IP, RFC 9484) в Xray и sing-box",
+    "kind": "new",
+    "what": "IETF-стандарт MASQUE: IP-туннель поверх HTTP/3 (и HTTP/2 Extended CONNECT) через QUIC DATAGRAM. Клиент шлёт расширенный CONNECT с :protocol=connect-ip, сервер выдаёт адрес, IP-пакеты летят в HTTP Datagram. По сути WireGuard-подобный L3-туннель, неотличимый от легитимного MASQUE-прокси (используется Apple Private Relay, Google).",
+    "why_now": "Xray: MASQUE outbound+transport #6807 (2026-09-24), HTTP/2 #6810 (2026-09-26), inbound #6844 (2026-09-27) — только IETF-стандарт, без вендорских расширений. sing-box: MASQUE client/server endpoints в ветке 1.15.0-alpha (сентябрь 2026). mihomo: masque outbound с h3-l4proxy, ip-stack (v1.19.28–30). Совместная кроссреализация Xray↔sing-box протестирована (sing-box 1.15.0-alpha.9).",
+    "status": "Очень свежо: Xray pre-release v26.9.30 (2026-09-30); sing-box 1.15.0-alpha (не стабильный; последняя alpha.10 от 2026-10-03); mihomo стабильный (v1.19.28+). Проходит finalmask-маски на сервере Xray. Клиенты пока в основном alpha/ядра, GUI мало.",
+    "works_in_ru": "MASQUE/QUIC к датацентру не обходит белые списки (IP не в WL). Ценность — маскировка под легитимный стандартный прокси-трафик против сигнатурного/fingerprint ТСПУ при обычной фильтрации. Полевых отчётов из РФ пока нет (всё вышло в сентябре–октябре 2026). QUIC/UDP в РФ часто страдает от троттлинга.",
+    "installer_fit": "Ложится в Xray-стек (inbound masque, h3/h2 на 443 + TLS), но требует pre-release core и очень свежих клиентов. Пока рано для продакшн-инсталлера; стоит пометить как 'на горизонте' и вернуться, когда sing-box 1.15 выйдет стабильным.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/pull/6807",
+     "https://github.com/XTLS/Xray-core/pull/6844",
+     "https://sing-box.sagernet.org/changelog/"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "ShadowQUIC",
+    "kind": "new",
+    "what": "0-RTT QUIC-прокси с SNI-камуфляжем: ведёт себя как настоящий QUIC-хендшейк к легитимному сайту. Использует JLS (TLS 1.3-подобный хендшейк/обфускация на общих ключах вместо сертификатов) — фактически 'REALITY, но поверх UDP/HTTP3'. Full Cone, минимальный заголовок, user management.",
+    "why_now": "spongebob888/shadowquic создан 2025-04-13, ~265 звёзд, очень активен (релиз v0.4.0, 2026-09-30, Rust). В 2026 добавлена поддержка в mihomo (outbound+listener, brutal, v1.19.29, 2026-07-18) и sing-flavor (sing-shadowquic, exclavenetwork). Feature request в 3x-ui #6645 от 2026-09-24. Отвечает на проблему: REALITY палится, т.к. реальный таргет поддерживает H3, а прокси — только H2.",
+    "status": "Rust (референс), Go-порты. Релиз v0.4.0 (2026-09-30). Клиенты: mihomo/Clash.Meta, v2rayN, Husi, Exclave. Нет в sing-box mainline и 3x-ui (пока только запрос). interop-тесты существуют.",
+    "works_in_ru": "QUIC/UDP + SNI-камуфляж против сигнатурного и active-probing ТСПУ. Но против БЕЛЫХ СПИСКОВ не помогает (прямой UDP к вашему IP вне WL). Плюс в РФ QUIC к иностранным IP часто троттлится/режется. Полевых RU-отчётов мало.",
+    "installer_fit": "Нет поддержки в 3x-ui и sing-box mainline — пришлось бы ставить отдельный Rust-бинарник и свой клиентский стек (mihomo). Для нашего инсталлера это лишний протокол с узкой клиентской базой; низкий приоритет, следить за 3x-ui #6645.",
+    "sources": [
+     "https://github.com/spongebob888/shadowquic",
+     "https://github.com/MHSanaei/3x-ui/issues/6645",
+     "https://github.com/MetaCubeX/mihomo/releases"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "AmneziaWG 3.0 / 3.1",
+    "kind": "evolved",
+    "what": "Новое поколение обфусцированного WireGuard: поверх 2.0 (маскировка под DNS/QUIC/SIP) добавляет шифрование заголовков, дополнительный паддинг и тайминговые регуляторы (header encryption, extra padding, timing knobs).",
+    "why_now": "AmneziaWG 3.0 выпущен в конце июля 2026, PPA переключён на него; 3.1 — 2026-08-12. Поддержка в mihomo (v3.0 и v3.1, v1.19.30, 2026-08-16) и в amneziawg-go. Прямой ответ на поумневшее DPI, продолжение линии 2.0.",
+    "status": "Ядро: kernel-модуль (x86, kernel ≥6.7 получают 3.x автоматически) и userspace amneziawg-go. Но на 2026-09-27 фичи 3.0 (header encryption/padding) ещё НЕ попадают в генерируемые конфиги — нужны клиентские приложения, которых нет на всех платформах. Клиент AmneziaVPN ≥4.8.12.7 (AWG 2.0 гарантированно). Инсталлеры: bivlked/amneziawg-installer, astronaut808/AWG-Forge.",
+    "works_in_ru": "AWG 2.0 уже в РФ работает у многих при обычном ТСПУ. 3.x теоретически устойчивее, но реально параметры 3.0 пока не в конфигах и клиентская поддержка неполная (сентябрь 2026). Против белых списков AWG (любой версии) не помогает — IP вне WL.",
+    "installer_fit": "Мы уже деплоим AmneziaWG 2.0 — апгрейд до 3.x это в основном обновление kernel-модуля/amneziawg-go + PPA. Но пока генерируемые конфиги остаются на 2.0 (клиентов для 3.0 мало), так что немедленной выгоды нет. Держать на 2.0, отслеживать появление клиентов 3.x.",
+    "sources": [
+     "https://github.com/bivlked/amneziawg-installer",
+     "https://amnezia.org/blog/amneziavpn-5-0-0-5-update",
+     "https://github.com/MetaCubeX/mihomo/releases"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Slipstream / MasterDnsVPN / dnstt (DNS-туннели)",
+    "kind": "revived",
+    "what": "DNS-туннели, ожившие как последний рубеж под белыми списками. Slipstream — ковертный канал поверх DNS на QUIC multipath (объединяет несколько резолверов, −60% накладных заголовка vs DNSTT, адаптивный congestion control). MasterDnsVPN — Go, low-overhead ARQ, балансировка резолверов, устойчивость к потерям. dnstt — классика на KCP. Трафик неотличим от обычных DNS-запросов, проходит даже через принудительный резолвер провайдера.",
+    "why_now": "Белые списки РФ (весна–осень 2026) блокируют всё по IP/CIDR, кроме DNS — и DNS-туннели вернулись в оборот. EndPositive/slipstream (релиз v0.1.1, 2026-04-12, ~320 звёзд) + Rust-порт Mygod (архивирован). masterking32/MasterDnsVPN создан 2026-01-18, ~7000 звёзд, релизы до 2026-06-13. Менеджеры slipgate (DNSTT/NoizDNS/Slipstream+Naive) и клиент SlipNet (Android). Статья Хабр 2026-05-17 тестирует их под WL.",
+    "status": "Slipstream: C-ядро (v0.1.1) + Rust-порт. MasterDnsVPN: Go, сервер+клиент+Android. dnstt: зрелый. Менеджер anonvector/slipgate (v1.6.4) ставит их через systemd; Android-клиент SlipNet (v2.5.5).",
+    "works_in_ru": "На ntc.party (30 марта–2 апреля 2026): dnstt/slipstream выживают при WL через DNS из белого списка (напр. резолверы MTS), slipstream быстрее dnstt. НО: Beeline сломал dnstt изменением своего DNS; эффективность сильно зависит от провайдера и постоянно меняется. Скорость низкая (DNS — это килобиты–единицы Мбит). Это резерв, не основной канал.",
+    "installer_fit": "slipgate показывает, что всё это автоматизируется через systemd в bash — реалистично добавить DNS-туннель (dnstt или slipstream) как аварийный профиль 'когда WL убил всё остальное'. Нужен делегированный поддомен (NS-запись) на наш VPS, порт 53. Клиент — SlipNet/slipgate. Хороший кандидат в опциональный fallback-модуль.",
+    "sources": [
+     "https://github.com/EndPositive/slipstream",
+     "https://github.com/masterking32/MasterDnsVPN",
+     "https://github.com/anonvector/slipgate",
+     "https://habr.com/ru/articles/1036100/",
+     "https://ntc.party/t/белые-списки-че-делать/23468"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Bridge To Freedom (yac-ws-bridge)",
+    "kind": "new",
+    "what": "TCP-over-WebSocket туннель через инфраструктуру Yandex Cloud: два Go/C#-бинарника (adapter на целевом сервере, helper у клиента) держат WS-соединение с YC API Gateway. В режиме 'no relay' данные идут прямо через управляющий WS API YC (gRPC wsSend), минуя Serverless-функцию на пути данных; функция нужна только чтобы стороны нашли друг друга. Трафик идёт к IP Яндекса (в белом списке).",
+    "why_now": "noiseonwires/yac-ws-bridge создан 2026-03-21, ~200 звёзд, релиз v20260714 (2026-07-14). Обсуждается на ntc.party (тред про wss+Yandex Cloud) и в статье Хабр 2026-05-17 как рабочий способ под WL с реальной скоростью.",
+    "status": "C#/Go, два бинарника. Релиз v20260714 (2026-07-14). Документация RU/EN. Скорость: до ~20 Мбит/с при adapter рядом с Яндексом (автор проекта); в статье Хабр — 40 Мбит приём / 5 отдача.",
+    "works_in_ru": "Нацелен на белые списки: YC API Gateway в WL, поэтому WS к нему проходит на мобильном при WL. Автор статьи Хабр рекомендует обфусцировать код функции перед деплоем. Зависит от доступности YC и его политик; потенциально уязвим, если Яндекс/РКН начнут фильтровать такое использование.",
+    "installer_fit": "Требует аккаунта Yandex Cloud и деплоя Serverless-функции + API Gateway — это вне чистого VPS bash-инсталлера (нужны YC CLI/токены). Можно оформить как отдельный скрипт-рецепт для WL, но автоматизация облачных кредов усложняет. Нишевый, но реально работающий под WL кандидат.",
+    "sources": [
+     "https://github.com/noiseonwires/yac-ws-bridge",
+     "https://habr.com/ru/articles/1036100/",
+     "https://ntc.party/t/как-обойти-белые-списки-используя-wss-и-yandex-cloud/24735"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Hysteria2 Gecko obfs + Chrome parrot + Realms",
+    "kind": "evolved",
+    "what": "Эволюция Hysteria2 (который мы уже деплоим): Gecko — новая QUIC-обфускация, фрагментирует long-header QUIC-пакеты на 2–8 кусков случайного размера с паддингом и оборачивает в Salamander. Chrome QUIC fingerprint parroting (по умолчанию) — хендшейк косит под Chrome. Mimic — маскировка соединения под TCP на UDP-враждебных сетях. Realms — NAT-traversal (UPnP/NAT-PMP, hole punching) для P2P-хостинга без своего публичного IP.",
+    "why_now": "apernet/hysteria: Realms в v2.9.0 (2026-05-10), Gecko в v2.9.2 (2026-05-23), Chrome parrot по умолчанию v2.11.0 (2026-08-01), Mimic (маскировка под TCP) v2.12.0 (2026-08-06), ECH v2.10.0. sing-box добавил gecko/chrome-parrot в 1.14.0 (2026-08-31). Xray тянет Salamander packetSize (Gecko) и Realm в finalmask (май 2026).",
+    "status": "Зрелое, стабильное. Hysteria app/v2.12.3 (2026-09-16). Поддержка клиентов: sing-box 1.14 (2026-08-31), Xray (Hysteria inbound+finalmask), NekoBox, Husi, 3x-ui. Mimic пока Linux-only на сервере.",
+    "works_in_ru": "Hysteria2 на ntc.party (февраль–март 2026) подтверждён рабочим при белых списках в связке с vk-turn-proxy (сам по себе QUIC к вашему IP WL не обходит, но внутри TURN-обёртки — да). Против обычного ТСПУ Gecko+Chrome parrot усиливают маскировку QUIC. Чистый Hysteria2 к иностранному IP вне WL на мобильном не пройдёт.",
+    "installer_fit": "Прямое обновление — мы уже ставим Hysteria2. Достаточно обновить бинарник до 2.12.x и включить gecko-обфускацию + Chrome parrot в конфиге (несколько строк). Нулевая стоимость интеграции, реальный прирост скрытности. Rekомендуется обновить в инсталлере.",
+    "sources": [
+     "https://github.com/apernet/hysteria/releases",
+     "https://v2.hysteria.network/docs/Changelog/",
+     "https://ntc.party/t/рабочий-обход-белых-списков/21884?page=7"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Sudoku protocol (saba-futai/SUDOKU-ASCII)",
+    "kind": "new",
+    "what": "Обфусцирующий прокси-протокол: AEAD-поток байтов отображается на таблицы типа судоку, поэтому вид трафика на проводе можно сдвигать к печатаемому ASCII или к высокоэнтропийному шуму. Фильтрует 'нелегальные' байты по уникальной решаемости судоку — позволяет произвольный паддинг в произвольных местах без согласования длины. Есть HTTP(S)-маскировка, мультиплекс, UDP-over-TCP.",
+    "why_now": "saba-futai/sudoku (Go API) создан 2026-03-17; клиент SUDOKU-ASCII/sudoku(-android) ~400 звёзд, релиз v0.5.1 (2026-09-25). Нативная поддержка в mihomo (PR #3187/#3251, v0.5.x, лето–осень 2026). Также портирован как finalmask-маска 'sudoku' в Xray (#5685, 2026-03-07).",
+    "status": "Go. Официальная поддержка пока только в mihomo. Клиент Android (SUDOKU-ASCII). Релиз движка v0.5.1 (2026-09-25). В Xray/sing-box присутствует как finalmask-маска, а не самостоятельный inbound.",
+    "works_in_ru": "Идея (plaintext/low-entropy маскировка, паритет вверх/вниз) целит в энтропийный и сигнатурный анализ ТСПУ. Прямых RU-полевых отчётов об эффективности мало. Против белых списков (IP-фильтр) не помогает самостоятельно.",
+    "installer_fit": "Нет поддержки в 3x-ui/sing-box как отдельный inbound — только mihomo-клиент. Для нашего инсталлера полезнее форма finalmask 'sudoku' внутри Xray (уже доступна), чем отдельный движок. Низкий приоритет как самостоятельный протокол.",
+    "sources": [
+     "https://github.com/saba-futai/sudoku",
+     "https://github.com/SUDOKU-ASCII/sudoku",
+     "https://github.com/MetaCubeX/mihomo/pull/3187"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "VLESS Encryption (ML-KEM-768, пост-квантовое)",
+    "kind": "new",
+    "what": "Нативный опциональный слой шифрования в самом VLESS (mlkem768x25519plus): постквантовый PFS 1-RTT / anti-replay 0-RTT AEAD поверх VLESS, независимо от TLS/REALITY. Варианты native/xorpub/random, паддинг переменной длины. Снимает зависимость от внешнего TLS и добавляет PQ-стойкость.",
+    "why_now": "PR #5067 смержен 2025-08-28, в 2026 допиливался и помечен в релизах v26.9.x (2026-09) как 'VLESS Post-Quantum Encryption'. С 2026-07-07 Xray вовсе ЗАПРЕТИЛ незашифрованные VLESS/Trojan outbound на публичный интернет (#6303) и убрал 'none' у VMess/SS — то есть шифрование VLESS стало мейнстримом.",
+    "status": "В Xray-core (pre-release 26.9.x). Требует свежих клиентов, знающих новый decryption/encryption. Постепенно подхватывается 3x-ui и GUI.",
+    "works_in_ru": "Усиливает стойкость VLESS к будущему 'harvest-now-decrypt-later' и к анализу, но против белых списков не помогает (прямое соединение к IP вне WL). Полезно как базовая гигиена для домашнего/обычного ТСПУ-сценария.",
+    "installer_fit": "Мы уже ставим VLESS+Reality — это апгрейд конфига при обновлении core до 26.9.x. Низкая стоимость, но нужно синхронно обновить клиентов (иначе не подключатся). Рекомендуется при плановом апдейте Xray.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/pull/5067",
+     "https://github.com/XTLS/Xray-core/pull/6303",
+     "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "TUIC v5 (нативный в 3x-ui)",
+    "kind": "revived",
+    "what": "QUIC-based прокси TUIC v5 (0-RTT, UDP-friendly, BBR) — не новый сам по себе, но ожил за счёт нативной интеграции: 3x-ui встроил TUIC-сервер прямо в панель (Go, без внешнего бинарника) с BBR и crash-safe учётом трафика.",
+    "why_now": "3x-ui v3.8.0 (2026-09-14) добавил TUIC v5 inbound через sidecar tuic-server; v3.9.0 (2026-10-03) — полностью нативный Go TUIC-сервер + деплой на ноды. То есть в 2026 TUIC стал доступен 'из коробки' в самой популярной панели.",
+    "status": "Нативно в 3x-ui v3.9.0 (2026-10-03): tuic:// share-links, Clash-вывод, QR. Клиенты: sing-box, mihomo, NekoBox, v2rayN. Зрелый протокол, свежая интеграция.",
+    "works_in_ru": "QUIC/UDP к вашему IP — против белых списков не проходит, и в РФ QUIC к иностранным датацентрам часто троттлится. Может работать при обычном ТСПУ, но менее скрытен, чем Hysteria2 с Gecko. Полезен как альтернатива, не как WL-решение.",
+    "installer_fit": "Если инсталлер использует 3x-ui — TUIC теперь доступен без доп. усилий (v3.9.0). Можно включить как ещё один опциональный inbound одной галочкой. Низкая стоимость, но ограниченная польза под нашу RU/WL-цель.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases",
+     "https://sing-box.sagernet.org/changelog/"
+    ],
+    "confidence": "medium"
+   }
+  ]
+ },
+ {
+  "name": "ShadowQUIC",
+  "verdict": "confirmed",
+  "corrected": "Все ключевые факты подтвердились через GitHub API. Репозиторий spongebob888/shadowquic создан 2025-04-13, 265 звёзд, Rust, лицензия MIT, последний push 2026-10-03. Релиз v0.4.0 вышел 2026-09-30, это рефакторинг роутера и тегированных inbound/outbound, а не изменение протокола. Предыдущие релизы: v0.3.13 (2026-08-29) и v0.3.12 (2026-07-18). В mihomo v1.19.29 (2026-07-18) поддержка есть: «support shadowquic outbound and listener» и «support brutal for shadowquic (mihomo private extension)», brutal — частное расширение mihomo. 3x-ui #6645 «ShadowQUIC Protocol Support (REALITY but UDP(HTTP/3))» открыт 2026-09-24, статус open. Уточнения: в README среди клиентов указаны Husi, v2rayN, Mihomo, NekoBox и QuicProxy. v2rayN подключает ShadowQUIC как отдельное ядро: в ECoreType/CoreInfoManager есть shadowquic. ExclaveNetwork/sing-shadowquic существует, но у него 1 звезда. В sing-box mainline запрос #3140 «Would you consider supporting shadowquic?» (2025-07) закрыт без поддержки. Отдельного Go-порта как самостоятельного проекта нет. Go-реализация есть только внутри mihomo, плюс плагин sing-shadowquic. Есть сторонние панели и скрипты (RomanovCaesar/m-ui, 13 звёзд) и официальный Linux-скрипт установки с systemd или Docker. Подтверждённых полевых отчётов из РФ (ntc.party, habr, net4people) не нашлось.",
+  "worth_adding": "no",
+  "reasoning": "Опровергнуть кандидата не удалось: даты, версии, звёзды, коммиты mihomo и issue 3x-ui совпадают с первоисточниками. Протокол живой и активно развивается, это QUIC с JLS-камуфляжем и без сертификатов. Но для инсталлера под РФ есть серьёзные минусы.\n1) Независимых полевых данных из РФ нет. Тезис «REALITY палится из-за H3 у таргета» — это аргумент автора feature request, а не задокументированный метод ТСПУ.\n2) Весь транспорт идёт по UDP/QUIC. На net4people #108 и ntc.party давно описана блокировка или троттлинг QUIC (UDP/443) к зарубежным IP у ряда российских провайдеров. При белых списках на мобильных сетях ShadowQUIC бесполезен, как и Hysteria2.\n3) Нишу UDP/QUIC в инсталлере уже занимает Hysteria2: у неё зрелая экосистема, она есть в sing-box mainline и в большинстве клиентов. ShadowQUIC добавил бы второй протокол на QUIC с более узкой клиентской базой. На iOS нормального клиента нет: в sing-box mainline поддержки нет, у mihomo-клиентов для iOS она не подтверждена.\n4) Серверу нужен отдельный Rust-бинарник вне 3x-ui. Ставится он просто, официальным скриптом или из Docker, но это лишний сервис без управления из панели.\nИтог: следить за 3x-ui #6645 и sing-box. К идее можно вернуться, если появятся RU-отчёты, что ShadowQUIC проходит там, где Hysteria2 режется.",
+  "sources": [
+   "https://github.com/spongebob888/shadowquic",
+   "https://github.com/spongebob888/shadowquic/releases/tag/v0.4.0",
+   "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29",
+   "https://github.com/MHSanaei/3x-ui/issues/6645",
+   "https://github.com/SagerNet/sing-box/issues/3140",
+   "https://github.com/ExclaveNetwork/sing-shadowquic",
+   "https://github.com/2dust/v2rayN/blob/master/v2rayN/ServiceLib/Enums/ECoreType.cs",
+   "https://github.com/RomanovCaesar/m-ui",
+   "https://github.com/net4people/bbs/issues/108"
+  ]
+ },
+ {
+  "name": "olcRTC (OpenLibreCommunity RTC, bb22)",
+  "verdict": "corrected",
+  "corrected": "В целом утверждение верно, есть мелкие уточнения. Репозиторий openlibrecommunity/olcrtc создан 2026-04-04T21:18:39Z, последний push 2026-09-30T09:38:34Z, archived=true. На момент проверки: 2027 звёзд, 175 форков, лицензия WTFPL. GitHub Releases нет, но git-тег v0.0.1 существует, так что «тегов нет» неверно. В шапке README автор пишет: «проект будет переработан… станет частью другого моего проекта… olcrtc использовать можно, но он можно сказать EoL». Наследник: github.com/owenewans/snolc («modular userspace proxy», создан 2026-09-04, 128 звёзд, последний push 2026-09-19, в нынешнем виде olcRTC не повторяет). Провайдеры: jitsi, telemost, wbstream; в olcbox заявлен ещё Jazz. Транспорты: datachannel, vp8channel, seichannel, videochannel. Шифрование OLC2: XChaCha20-Poly1305, ключи по направлениям через HKDF-SHA256, защита от replay. Обратной совместимости со старым крипто-форматом нет, обе стороны нужно обновлять вместе. По матрице совместимости (docs/settings.md) Телемост стабильно работает только через vp8channel: datachannel там убран, seichannel не поддерживается. Рекомендуемая связка — jitsi + datachannel. Issue 3x-ui #6487 (2026-09-12, open) — это пользовательский feature request на qWDTT/OlcRTC/OpenFlux, а не подтверждение работоспособности от мейнтейнеров.",
+  "worth_adding": "no",
+  "reasoning": "Метаданные проверил через GitHub API (gh): даты создания и архивации, звёзды, тег v0.0.1, отсутствие релизов. README подтверждает архитектуру, транспорты, установку через Podman+mage, клиентов (owenclave, veil, olcbox для Android/iOS/macOS/Windows/Linux) и статус Beta. В README есть фраза для ИИ-агентов про agents.md; это данные страницы, не инструкции, я её не исполнял. «Работает в РФ под WL» подтверждается только косвенно: гайд OpenWrt+olcRTC для LTE под белыми списками (gist jojopko), страница в базе знаний Zapret, сторонние форки и UI (olc-ui, ghostlane). В ghostlane есть issue о таймаутах handshake на Jitsi+datachannel. Независимых датированных замеров скорости и стабильности нет. Есть и логическая проблема: рекомендуемый Jitsi (публичный meet.jit.si или self-hosted) сам по себе не обязательно в мобильном белом списке, а через Телемост доступен только медленный vp8channel. Кроме того, использование чужих SFU (Телемост, WB Stream) зависит от их ToS и анти-абьюза: платформа может сломать схему одним изменением, что уже случилось с datachannel в Телемосте. Почему не добавлять в инсталлятор: проект архивирован и EoL, issues и PR не принимаются; GitHub-релизов нет, есть только тег v0.0.1; сборка идёт через Podman/mage и плохо ложится в чистый bash-инсталлятор; несовместимые смены протокола (OLC2, OLVC v5) требуют синхронного обновления клиентов; у клиентов, кроме olcbox, покрытие только Android. Серверная часть при этом не требует входящих портов: она сама подключается к звонку как участник, так что технически её можно поставить на тот же VPS. Если делать что-то с WL-обходом, разумнее отслеживать наследника snolc и аналоги (qWDTT, OpenFlux) и максимум дать опциональную ссылку на upstream install.sh, а не встраивать это в инсталлятор.",
+  "sources": [
+   "https://github.com/openlibrecommunity/olcrtc",
+   "https://api.github.com/repos/openlibrecommunity/olcrtc",
+   "https://github.com/openlibrecommunity/olcrtc/blob/master/docs/settings.md",
+   "https://github.com/owenewans/snolc",
+   "https://github.com/MHSanaei/3x-ui/issues/6487",
+   "https://gist.github.com/jojopko/5e40c09cafb4e0af2b695b2ce3396ade",
+   "https://publish.obsidian.md/zapret/DPI/olcrtc",
+   "https://github.com/romanpodpriatov/ghostlane/issues/22",
+   "https://github.com/alananisimov/olcbox"
+  ]
+ },
+ {
+  "name": "Bridge To Freedom (yac-ws-bridge)",
+  "verdict": "corrected",
+  "corrected": "Основное подтвердилось по GitHub API: репозиторий noiseonwires/yac-ws-bridge создан 2026-03-21T18:50Z, 198 звёзд, 18 форков, лицензия WTFPL, последний push 2026-08-21. Последний релиз v20260714 (2026-07-14T20:22Z), до него были v20260623, v20260616 и v20260516. Уточнения. (1) Состав: adapter и helper написаны на Go, облачная функция на JS (Node.js), GUI-клиент «BridgeToFreedom» на .NET MAUI (C#). GitHub показывает C# основным языком из-за MAUI-клиента. (2) Готовые сборки есть только такие: adapter/helper для linux-amd64, linux-arm64 и windows-amd64, приложение BridgeToFreedom для Android (APK), Windows x64 и Linux x64. Сборок под iOS и macOS нет, хотя в README они заявлены: их нужно собирать самим. (3) Режим без relay требует, чтобы helper достучался до gRPC-эндпоинта Yandex Cloud для вызова wsSend. Если сеть его режет, включается relay через функцию, а он медленнее и менее стабилен. (4) Скорость: в README «до ~20 Мбит/с» при adapter рядом с Яндексом. В статье на Хабре (MiracleUsr, «Немного извращений из мира прокси и VPN», 2026-05-17) — 40 Мбит/с на приём и 5 Мбит/с на отдачу. (5) Тред на ntc.party (24735, открыт 2026-05-13, последний пост около 2026-06-02) показывает смешанную картину. В Рязани (T2, МТС) работает. В Санкт-Петербурге (МТС, МегаФон, Yota, T2) не работает совсем. Многие жалуются на скорость «как у dial-up» и обрывы TLS-хендшейков. Свежих датированных подтверждений, что при белых списках это стабильно работает, после июня 2026 нет. (6) Риск со стороны Яндекса прописан прямо в README: «How long until Yandex bans you for this — no idea». Автор рекомендует обфусцировать JS функции и сменить стандартные пути (/_adapter, /_helper, /conn-ids). Сам проект назван proof-of-concept/хобби-кодом. Wire-протокол часто меняется, и функцию, adapter и helper/MAUI нужно обновлять вместе.",
+  "worth_adding": "maybe",
+  "reasoning": "Факты кандидата по репозиторию и релизу верны, но описание приукрашено. «Реально работающий под WL кандидат с реальной скоростью» — это преувеличение. Данные из ntc.party противоречивы и зависят от региона и оператора: в Петербурге не работает, на многих сетях скорость как у dial-up. Свежих (после июня 2026) датированных подтверждений, что способ работает при белых списках, я не нашёл. Для инсталлятора: на Ubuntu VPS ставится только серверная часть, adapter (есть готовые бинарники linux-amd64 и linux-arm64), и её легко автоматизировать. Основная часть — Serverless-функция и API Gateway в Yandex Cloud. Для неё нужен аккаунт YC с биллингом, yc CLI или токены, обфускация JS и смена путей. Это выходит за рамки bash-инсталлятора для VPS. Клиенты: Android APK, Windows, Linux. Под iOS и macOS готовых сборок нет. Это отдельное приложение или helper с TCP-портом, а не стандартный клиент вроде v2rayN или Hiddify, так что пользователям будет сложно. Сам проект — PoC, протокол нестабилен, а Яндекс может банить аккаунты (автор прямо пишет, что не знает, когда забанят). Поэтому «maybe», и только как опциональный экспериментальный рецепт на крайний случай при WL. Например, отдельный скрипт, который ставит adapter как systemd-юнит и выводит инструкцию по ручному деплою в YC. В основной набор протоколов включать не стоит.",
+  "sources": [
+   "https://github.com/noiseonwires/yac-ws-bridge",
+   "https://api.github.com/repos/noiseonwires/yac-ws-bridge",
+   "https://api.github.com/repos/noiseonwires/yac-ws-bridge/releases",
+   "https://github.com/noiseonwires/yac-ws-bridge/releases/tag/v20260714",
+   "https://habr.com/ru/articles/1036100/",
+   "https://ntc.party/t/как-обойти-белые-списки-используя-wss-и-yandex-cloud/24735"
+  ]
+ },
+ {
+  "name": "MASQUE (CONNECT-IP, RFC 9484) в Xray и sing-box",
+  "verdict": "corrected",
+  "corrected": "Основное подтверждено, уточнения такие. (1) Xray: PR #6807 (outbound и transport, автор echoowall) влит 2026-09-24. PR #6810 (HTTP/2 Extended CONNECT по RFC 8441, CluvexStudio) влит 2026-09-26, причём он только про клиентский транспорт. PR #6844 (inbound, то есть сервер CONNECT-IP: Basic-auth по email и паролю, пул IPv4/IPv6, по умолчанию HTTP/3, HTTP/2 включается через ALPN, CluvexStudio) влит 2026-09-27. v26.9.30 вышла 2026-09-30 с пометкой pre-release, но с этой пометкой выходят все свежие релизы Xray (v26.5.x–v26.9.x), так что отдельного признака незрелости она не несёт. Текст release notes не загрузился, поэтому то, что MASQUE вошёл именно в v26.9.30, выведено только из дат. (2) sing-box: эндпоинты MASQUE client/server (CONNECT-IP по HTTP/1.1, HTTP/2 и HTTP/3, выдача адресов, анонс маршрутов) появились в 1.15.0-alpha.7 от 2026-09-22. alpha.10 вышла 2026-10-03. Последний стабильный релиз 1.14.2 (2026-09-24), MASQUE в нём нет. Совместимость проверяли так: outbound Xray против sing-box 1.15.0-alpha.7, inbound Xray против alpha.9. (3) mihomo: MASQUE outbound появился раньше v1.19.28. В v1.19.26 (2026-05-31) уже есть фикс «masque retry condition», в v1.19.28 (2026-07-08) добавили network: h3-l4proxy, в v1.19.30 (2026-08-16) добавили ip-stack и handshake-timeout. Применяется он в основном для Cloudflare WARP MASQUE. Совместимость с inbound Xray или sing-box нигде не задокументирована. (4) Россия: полевых отчётов о MASQUE нет. При этом на ntc.party и в net4people #108 давно описано, что QUIC (UDP/443) к зарубежным IP режется у многих операторов (Yota, МегаФон, МТС, Билайн и др.): на Initial-пакет нет ответа. Поэтому реальный вариант для РФ — MASQUE поверх HTTP/2 по TCP, а не HTTP/3.",
+  "worth_adding": "maybe",
+  "reasoning": "Даты и номера PR в Xray подтверждены по самим PR, версии sing-box и mihomo — по их страницам релизов. Неточности две. MASQUE в sing-box появился в alpha.7 (22.09), а не просто «в ветке 1.15.0-alpha». В mihomo MASQUE outbound был ещё до v1.19.28 и ориентирован на WARP. Чем это реально ценно: стандартный L3-туннель по IETF-спецификации, который внешне похож на легитимный MASQUE-прокси. Против белых списков он ничего не даёт: IP датацентра в них не входит. У HTTP/3-варианта в РФ серьёзная проблема: зарубежный QUIC многие операторы блокируют, а со стороны Xray HTTP/2 поддержан как транспорт клиента. Публикаций об успешной работе из РФ нет ни на ntc.party, ни на Хабре: функции всего неделя-две. Ставить сервер на Ubuntu было бы просто, потому что это inbound того же Xray, который уже стоит. Но со стороны клиентов всё сыро: sing-box даёт только alpha, Xray-клиенты обновятся позже, mihomo пока не проверен на совместимость, GUI для iOS и Android почти нет. Рано: стоит записать как «на горизонте» и вернуться, когда выйдет стабильный sing-box 1.15, клиенты (v2rayNG, Hiddify, Streisand) получат поддержку и появятся отчёты из РФ, особенно про вариант с HTTP/2 по TCP.",
+  "sources": [
+   "https://github.com/XTLS/Xray-core/pull/6807",
+   "https://github.com/XTLS/Xray-core/pull/6810",
+   "https://github.com/XTLS/Xray-core/pull/6844",
+   "https://github.com/XTLS/Xray-core/releases/tag/v26.9.30",
+   "https://github.com/XTLS/Xray-core/releases",
+   "https://sing-box.sagernet.org/changelog/",
+   "https://github.com/SagerNet/sing-box/releases",
+   "https://github.com/MetaCubeX/mihomo/releases",
+   "https://github.com/byJoey/warp-masque-actions",
+   "https://ntc.party/t/%D0%BE%D0%B3%D1%80%D0%B0%D0%BD%D0%B8%D1%87%D0%B5%D0%BD%D0%B8%D0%B5-http3-quic/1823",
+   "https://github.com/net4people/bbs/issues/108"
+  ]
+ },
+ {
+  "name": "Sudoku protocol (SUDOKU-ASCII/sudoku)",
+  "verdict": "corrected",
+  "corrected": "Основное подтверждается, но несколько фактов в кандидате неверны. (1) Основной репозиторий — SUDOKU-ASCII/sudoku: Go, GPL-3.0, около 409 звёзд и 17 форков. saba-futai/sudoku — это личный форк автора без звёзд, а не отдельный «Go API». Дата его создания (2026-03-17) значения не имеет. (2) Последние релизы: v0.5.1 — 25.09.2026 (в заметках к релизу есть поздравление с Праздником середины осени, который в 2026 году выпал на 25.09), v0.5.0 — 05.09.2026, v0.4.8 — 10.07.2026. (3) mihomo поддерживал протокол раньше, чем «летом–осенью 2026». README требует mihomo > v1.19.21, и уже в v1.19.21 есть фича «sudoku support ws transport» (#2589, автор saba-futai). PR #3187, смёрженный 07.09.2026 в ветку Alpha, только обновляет sudoku до v0.5.0 и делит код на файлы. В mihomo протокол есть и как outbound, и как inbound (listener). (4) Клиенты есть не только на Android. Android: ClashMetaForAndroid и официальный Sudodroid. iOS: Anywhere Proxy (нативная реализация на Swift). Windows/macOS/Linux: официальный Sudoku Desktop и mihomo-клиенты. Роутеры: OpenClash на OpenWrt. (5) Маска «sudoku» в Xray finalmask (PR XTLS/Xray-core #5685, смёржен 07.03.2026) по прямому заявлению авторов НЕ совместима с протоколом Sudoku. Она меняет только вид байтов на проводе (ASCII или энтропия, таблицы, паддинг) и не даёт рукопожатия, защиты от повторов, fallback и PFS. Так что «Sudoku в Xray» — это другая вещь. В README упомянута ветка sing-box в официальном репозитории, но в основном sing-box её нет. (6) Сервер ставится на Ubuntu, Debian, CentOS, RHEL, AlmaLinux и Alpine (amd64 и arm64) через SUDOKU-ASCII/easy-install (41 звезда), через Docker или сборкой из исходников.",
+  "worth_adding": "no",
+  "reasoning": "Протокол существует, активно развивается (v0.5.x в сентябре 2026) и реально встроен в mihomo, так что заявление кандидата не хайп. Неверны детали: saba-futai/sudoku — пустой форк, поддержка в mihomo появилась раньше (≤ v1.19.21), а не через PR #3187. Клиенты есть на всех платформах, не только на Android. Связь с Xray finalmask подана неверно: маска «sudoku» в Xray официально несовместима с протоколом Sudoku. Я не нашёл ни одного датированного полевого отчёта из России о работе против ТСПУ: ни на ntc.party, ни в net4people, ни на habr. Поиск по RU-источникам ничего не дал. Идея с низкой энтропией и печатаемым ASCII направлена против энтропийной эвристики, но в РФ основная угроза сейчас — белые списки IP и SNI на мобильных сетях, а против них Sudoku сам по себе бесполезен. Протокол фактически держится на одном авторе, независимого аудита нет. Для инсталлера ставить на сервер нетрудно (easy-install, Docker, бинарник с systemd), но 3x-ui его не поддерживает. Клиентам понадобится отдельный mihomo-клиент, а массовые RU-приложения на Xray (v2rayNG, Happ, v2RayTun, Streisand) его не поддерживают. Маску Xray finalmask sudoku можно рассмотреть отдельно как экспериментальную опцию поверх существующего inbound, но клиенту тоже нужен Xray с finalmask. Итог: в инсталлятор сейчас не добавлять, следить за полевыми отчётами.",
+  "sources": [
+   "https://github.com/SUDOKU-ASCII/sudoku",
+   "https://github.com/SUDOKU-ASCII/sudoku/releases/tag/v0.5.1",
+   "https://github.com/SUDOKU-ASCII/sudoku/releases",
+   "https://github.com/saba-futai/sudoku",
+   "https://github.com/SUDOKU-ASCII/easy-install",
+   "https://github.com/MetaCubeX/mihomo/pull/3187",
+   "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.21",
+   "https://github.com/XTLS/Xray-core/pull/5685",
+   "https://core-tutorial.argsment.com/mihomo/sudoku",
+   "https://pkg.go.dev/github.com/metacubex/mihomo/transport/sudoku"
+  ]
+ },
+ {
+  "name": "Xray XDRIVE transport",
+  "verdict": "corrected",
+  "corrected": "Суть подтверждается, но ряд деталей нужно поправить.\n1) PR #5645: автор RPRX, открыт 2026-02-03, смержен 2026-09-19, это подтверждено. Название PR: «XDRIVE transport: The universal remote-storage/any-service-based proxy, ignoring IP whitelists». В PR есть цитата «2021 年初的想法（IP 白名单）… 现在该给俄罗斯、伊朗上了». Режим mux обязателен, свой публичный IP серверу не нужен.\n2) PR #6748 (Google Drive + template backend) написал не RPRX, а Risaro. RPRX его смержил 2026-09-19. Локальный backend добавлен отдельным PR #6745 (тоже Risaro). Позже открыт PR #6789 (kolya13245): настраиваемые имена объектов.\n3) OneDrive, S3 и FTP в #5645 — только заявленная цель. Реально в коде есть backend'ы local и Google Drive, плюс универсальный template для HTTP/WebDAV/S3-подобных хранилищ. Яндекс.Диск подключается через template по WebDAV, отдельного backend'а для него нет.\n4) Замер «50 MB за 21.6 с, 2258 KiB/s, ~18.5 Mbit/s» верен. Он сделан для Google Drive с сервера в Нидерландах при аплинке 300 Мбит/с. Первый байт приходил за ~1.86 с, после оптимизации за ~1.57 с.\n5) Важная поправка про Яндекс.Диск, данные из #6748 по тестам с серверов в NL и РФ. Для записи через WebDAV нужен ПЛАТНЫЙ тариф: бесплатный аккаунт отвечает 402. Аплоад режется до ~15 KiB/s на соединение. При 32 параллельных соединениях выходит ~440 KiB/s, скачивание ~2 MiB/s. Поэтому называть Яндекс.Диск «идеальным backend'ом» — преувеличение.\n6) Ограничение «HTTP-клиент не идёт через dialer Xray» в #6748 описано. В самом PR сказано, что его исправили более поздними коммитами, но это не проверено.\n7) Статус: Xray-core v26.9.30 — pre-release от 2026-09-30, сторонний аудит just1kbot#319 обновился на эту версию. В заметках релиза упоминание XDRIVE найти не удалось: страница с заметками не загрузилась.\n8) Полевых подтверждений работы в РФ при мобильных белых списках нет. Аудит just1kbot#319 от 2026-09-30 оценивает так: XDRIVE неэффективен против L3 default-drop на мобильных сетях РФ; с 2–4 пользователей на аккаунт ловится rate limit (429); креды лежат в клиентском конфиге; мобильных клиентов нет. Google Drive (googleapis.com) в РФ-белых списках не состоит.",
+  "worth_adding": "maybe",
+  "reasoning": "Первоисточники проверены напрямую на GitHub: PR #5645, #6748, страница релизов, Telegram-канал Project X. Факты о дате, авторстве идеи, назначении (обход IP-whitelist, работа без публичного IP), обязательном mux и цифре 18.5 Мбит/с для Google Drive подтвердились.\n\nИсправлено следующее. Автор #6748 — Risaro. OneDrive/S3/FTP — заявка, а не реализация. Есть только local, Google Drive и template (WebDAV). Яндекс.Диск требует платного тарифа и даёт аплоад ~440 KiB/s даже на 32 потоках. Это исправляет оптимистичное «Яндекс.Диск идеален». Утверждение «иммунен к CIDR-фильтрации» верно только при условии, что API-хост облака сам в белом списке. Для Google такого условия в РФ нет, для webdav.yandex.ru это не подтверждено. Внешний аудит прямо называет XDRIVE неэффективным на мобильном default-drop. Датированных полевых отчётов из РФ нет.\n\nДля инсталлятора. Серверная часть ставится тем же Xray, но нужен pre-release v26.9.30+. Облачные креды (OAuth refresh token Google или логин/пароль платного Я.Диска) нужны с обеих сторон. Сервисы режут скорость по аккаунту. Массовые мобильные клиенты (v2rayNG/Happ/Hiddify и т.п.) поддержку XDRIVE не подтвердили, остаётся только JSON-конфиг на desktop-ядре. Итог: держать на радаре. Добавлять имеет смысл позже, как экспериментальный опциональный профиль, когда выйдет стабильный релиз, появится поддержка в клиентах и будут реальные отчёты из РФ под белыми списками.",
+  "sources": [
+   "https://github.com/XTLS/Xray-core/pull/5645",
+   "https://github.com/XTLS/Xray-core/pull/6748",
+   "https://github.com/XTLS/Xray-core/pull/6745",
+   "https://github.com/XTLS/Xray-core/pull/6789",
+   "https://github.com/XTLS/Xray-core/releases/tag/v26.9.30",
+   "https://github.com/justik13/just1kbot/pull/319",
+   "https://t.me/s/projectXtls?before=1464",
+   "https://github.com/OutlineFoundation/outline-sdk/discussions/586"
+  ]
+ },
+ {
+  "name": "OpenFlux",
+  "verdict": "corrected",
+  "corrected": "В основном подтверждено, но есть уточнения. Репозиторий p1neappleXpress/OpenFlux создан 2026-06-21T22:13Z. На 2026-10-04 у него 1941 звезда и 171 форк, последний push был 2026-10-01. Лицензия GPL-3.0+. Релизы идут часто: 0.0.2 (12.09), 0.0.3 (16.09), 0.0.4 (24.09), 0.0.5 (25.09), v0.1.0 (27.09), v0.2.0 (28.09), v0.3.0 (30.09.2026). Отдельно выходят ядра выходной ноды: node-v1.0.0, node-v1.0.1 и node-v1.1.0 от 28.09. В релизах есть готовые бинарники openflux-<os>-<arch> с SHA256SUMS, так что собирать из исходников не обязательно.\n\nОфициальный deploy/node-install.sh работает на любом Linux с systemd 219+ (amd64, arm64, arm). Скрипт создаёт сервис openflux-node@<channel>, настраивает ufw/firewalld и фиксирует версию node-v1.1.0. Режим в конфиге жёстко задан как l4 (gVisor). L3 через него не ставится, хотя в README L3 описан как более быстрый. На каждый канал нужны 64-символьный hex-ключ и URL транспорта: Яндекс.Документ с правом редактирования по ссылке, публичный документ cloud.mail.ru или комнаты cups.online.\n\nУточнения к формулировкам кандидата:\n1) Предупреждение «MAX — experimental, ограничения аккаунта могут сохраниться после остановки OpenFlux» есть в README форка damnurmum/OpenFlux-Android. В основном README OpenFlux его нет. Там сказано только, что токен MAX привязан к одному аккаунту и поэтому не попадает в ссылку или QR.\n2) В основном README проект назван «Network stack research tool», и там есть дисклеймер: автор не поощряет обход ограничений. Прямых утверждений про белые списки РФ в README нет. Их делают 3x-ui #6487 (AlexGame2012, 12.09.2026, открыт, ответа мейнтейнера нет) и сторонние видео.\n3) В трекере уже видна хрупкость. Яндекс выдаёт капчу из-за захардкоженного User-Agent (#89, 23.09), есть капча второго уровня и захардкоженный docs.yandex.ru (#90, 26.09), а после merge фикс регрессировал (#106). README прямо описывает SmartCaptcha и «login walls», в том числе на стороне выходной ноды. Их приходится проходить через приложение.\n4) Независимых датированных замеров скорости и стабильности на МТС, Мегафоне, Билайне и T2 в режиме белых списков я не нашёл. Есть ещё сторонние обвязки: веб-менеджер BizhQwe/open-flux-manager и инсталлер Rublev13.",
+  "worth_adding": "maybe",
+  "reasoning": "Факты о проекте проверены по живым данным GitHub: даты, звёзды, транспорты, бэкенды L3/L4, клиенты (Desktop, Android, форк damnurmum, iOS TestFlight) и релиз v0.3.0 от 30.09.2026. Атрибуция предупреждения про MAX неточная: оно из форка, а не от автора основного репозитория. Слова про «гарантированное» наличие в белом списке — допущение кандидата. Яндекс.Документы и cloud.mail.ru официально в публичных перечнях белых списков не значатся, работоспособность держится на общих доменах Яндекса и Mail.ru. Датированных независимых подтверждений работы под WL я не нашёл.\n\nПочему это стоит модуля в инсталлере. Серверная часть ставится хорошо: есть официальный node-install.sh под systemd, готовые бинарники с SHA256 и ARM. Модуль может быть тонкой обёрткой над ним, отдельной опцией «выходная нода OpenFlux для сценария белых списков». Это единственный класс решений, который в теории проходит мобильные белые списки, а клиенты есть на всех платформах.\n\nПочему только maybe:\n- проекту около трёх месяцев, это «research tool»; протокол и ядро меняются каждые несколько дней;\n- Яндекс уже начал отвечать капчами, и в трекере видны регрессии;\n- каждому каналу нужен вручную созданный документ или аккаунт третьей стороны, а капчи на выходной ноде требуют интерактивного прохождения;\n- это злоупотребление сервисами Яндекса, Mail.ru и MAX с риском бана аккаунтов; MAX — государственный мессенджер;\n- iOS доступен только через TestFlight;\n- поддерживается только IPv4.\n\nРекомендация: опциональный экспериментальный модуль, который вызывает официальный node-install.sh с зафиксированной версией. В основной набор не включать, вернуться к вопросу через 2–3 месяца, когда появятся данные об устойчивости.",
+  "sources": [
+   "https://github.com/p1neappleXpress/OpenFlux",
+   "https://github.com/p1neappleXpress/OpenFlux/releases",
+   "https://github.com/p1neappleXpress/OpenFlux/blob/main/README.ru.md",
+   "https://raw.githubusercontent.com/p1neappleXpress/OpenFlux/main/deploy/node-install.sh",
+   "https://github.com/p1neappleXpress/OpenFlux/issues/89",
+   "https://github.com/p1neappleXpress/OpenFlux/issues/90",
+   "https://github.com/p1neappleXpress/OpenFlux/issues/106",
+   "https://github.com/MHSanaei/3x-ui/issues/6487",
+   "https://github.com/damnurmum/OpenFlux-Android",
+   "https://github.com/p1neappleXpress/OpenFluxAndroid",
+   "https://github.com/p1neappleXpress/OpenFluxDesktop",
+   "https://github.com/BizhQwe/open-flux-manager",
+   "https://github.com/Rublev13/OpenFlux_Instant_Installer_by_Ilya_Rublev"
+  ]
+ },
+ {
+  "name": "Hysteria2 Gecko obfs + Chrome parrot + Mimic + Realms (apernet/hysteria 2.9–2.12)",
+  "verdict": "corrected",
+  "corrected": "Версии и даты по релизам apernet/hysteria в основном верны, но есть уточнения. Realms появился в app/v2.9.0 (2026-05-10). UPnP/NAT-PMP и ipMode добавлены позже, в v2.9.3 (2026-06-27), а не в 2.9.0. Gecko вышел в v2.9.2 (2026-05-23) и в документации до сих пор помечен как «(experimental)», поэтому называть его «зрелым и стабильным» неверно. ECH добавлен в v2.10.0 (2026-07-13). Chrome QUIC parrot включён по умолчанию с v2.11.0 (2026-08-01). Mimic (fake TCP) появился в v2.12.0 (2026-08-06), последняя версия app/v2.12.3 вышла 2026-09-16. Mimic работает только на Linux, требует root и должен быть включён на ОБЕИХ сторонах. Это не «Linux-only на сервере»: клиенту тоже нужен Linux, так что Android, iOS и Windows его не используют. Chrome parrot настраивается на клиенте (disableChromeParrot=false по умолчанию), серверу ничего включать не надо. Есть ограничение: если у сервера сертификат Ed25519, хендшейк падает. У нас ECDSA P-256, поэтому всё в порядке. Gecko построен поверх Salamander, то есть трафик перестаёт быть QUIC/HTTP3 и выглядит как случайный UDP. Поэтому «Gecko + Chrome parrot» — это не два усиления маскировки, а взаимоисключающие режимы: при включённом obfs отпечаток Chrome снаружи не виден, и masquerade под HTTP/3 тоже теряет смысл. sing-box 1.14.0 (31.08) действительно добавил gecko, chrome parrot и realm. Xray поддерживает Gecko через finalmask salamander.packetSize, 3x-ui — с v3.4.0. В mihomo gecko есть. В NekoBox/Throne поддержки пока нет: открыт feature request #1563. Встречаются клиенты, которые при импорте ссылки молча заменяют gecko на salamander. Свежих датированных доказательств, что Gecko помогает именно против ТСПУ РФ, не нашлось. На ntc.party (5 февраля и 11 марта 2026) отмечено только, что Hysteria2 через sing-box работает в связке с vk-turn-proxy при белых списках. Это было до выхода Gecko и к Gecko не относится. Есть и отчёты о полном блоке QUIC на Tele2.",
+  "worth_adding": "maybe",
+  "reasoning": "Сами фичи реальны и подтверждаются changelog и страницей релизов, но в кандидате три ошибки.\n(1) Gecko экспериментальный, а не «зрелый».\n(2) Mimic требует Linux и root на обеих сторонах, поэтому для клиентов из РФ на телефонах и Windows бесполезен.\n(3) Realms (NAT traversal для хостинга из дома) не имеет смысла для VPS с публичным IP.\nУтверждение, что Gecko и Chrome parrot «вместе» усиливают маскировку, концептуально неверно. Parrot помогает только без obfs, когда трафик должен выглядеть как QUIC от Chrome. Gecko, наоборот, превращает его в непохожий на QUIC шум (Salamander плюс фрагментация и паддинг хендшейка), что полезно, когда QUIC режут целиком.\n\nНезависимых датированных замеров против ТСПУ для Gecko нет: на русских сайтах только маркетинговые статьи без данных. Вывод «работает при WL» основан на постах ntc.party о связке с vk-turn-proxy, а это другой механизм.\n\nЧто это значит для инсталлятора:\n- 05-hysteria2.sh ставит последнюю версию через get.hy2.sh, но пропускает установку, если бинарник уже есть. Обновления до 2.12.x нет, это стоит добавить через `hysteria update` или повторный запуск get.hy2.sh.\n- Chrome parrot включается сам на клиентах sing-box ≥1.14 и hysteria ≥2.11. Наш сертификат ECDSA prime256v1, так что совместим.\n- Gecko разумно дать как ОПЦИОНАЛЬНЫЙ второй профиль, а не дефолт: obfs несовместим со стандартными QUIC-клиентами, отключает masquerade HTTP/3, а клиенты поддерживают его неравномерно (sing-box 1.14, mihomo, Xray-based через finalmask; NekoBox/Throne пока нет; бывает молчаливая подмена на salamander при импорте URI).\nОтсюда оценка maybe: обновить бинарник — да, Gecko — опцией, Mimic и Realms — нет.",
+  "sources": [
+   "https://github.com/apernet/hysteria/releases",
+   "https://v2.hysteria.network/docs/Changelog/",
+   "https://v2.hysteria.network/docs/advanced/Full-Server-Config/",
+   "https://v2.hysteria.network/docs/advanced/Full-Client-Config/",
+   "https://github.com/SagerNet/sing-box/releases/tag/v1.14.0",
+   "https://github.com/SagerNet/sing-box/issues/4417",
+   "https://github.com/MHSanaei/3x-ui/releases/tag/v3.4.0",
+   "https://wiki.metacubex.one/en/config/proxies/hysteria2/",
+   "https://github.com/throneproj/Throne/issues/1563",
+   "https://ntc.party/t/рабочий-обход-белых-списков/21884?page=7",
+   "https://ntc.party/t/hysteria2-не-работает-на-теле2-походу-полный-блок-quic/20340"
+  ]
+ },
+ {
+  "name": "AmneziaWG 3.0 / 3.1",
+  "verdict": "corrected",
+  "corrected": "Даты. amneziawg-go v3.0.0 вышел 2026-07-24. Kernel-модуль и amneziawg-tools v3.0.20260730 вышли 2026-07-30, v3.0.20260805 — 2026-08-05. Линия 3.1 (тег v3.1.20260812) вышла 2026-08-12 синхронно в go, kernel и tools. Kernel-модуль продолжает получать фиксы: v3.1.20260827/0828 (среди прочего поддержка ядра 7.2) и v3.1.20260906. Клиент AmneziaVPN 5.0.0.5 (2026-07-26) добавил AWG 3, 5.0.1.5 (2026-08-21) добавил AWG 3.1, последняя версия 5.0.3.0 (2026-09-18). Официальная документация для self-hosted требует AmneziaVPN ≥5.0.2.1. Отсюда ошибка в кандидате: «≥4.8.12.7» — это порог только для 2.0.\n\nСостав фич. В 3.0 появились HeaderProtectionKey (шифрование заголовков на ChaCha20), ContentPaddingAddition, новые тайминговые параметры и диапазон PersistentKeepalive, а S1–S4 теперь не меньше 12 байт. В 3.1 добавились RandomTrailers (случайный хвост пакета, должен совпадать на обеих сторонах) и DisableCookies. Кандидат 3.1 не описал. По Хабру, старые режимы 1.0/1.5/2.0 удалены, то есть конфиг 3.x несовместим с клиентами 2.0.\n\nКлиенты 3.x:\n- AmneziaVPN 5.0.x: Windows, macOS 13+, Linux, Android 9+, iOS.\n- Отдельный AmneziaWG для Android: v3.1.20260814 есть на GitHub, в Google Play на 2026-08-30 его ещё не было.\n- AmneziaWG для Windows: 3.1.0 от 2026-08-21.\n- Отдельный AmneziaWG для iOS с 3.x — не подтверждено.\n- Keenetic/Netcraze и OpenWrt: v3 пока не поддерживают.\n- mihomo v1.19.30 поддерживает 3.0 и 3.1 (подтверждено, точную дату 08-16 не проверял).\n\nГлавная поправка. Официальная документация Amnezia (docs.amnezia.org, new-amneziawg-selfhosted) прямо пишет: «AmneziaWG 2.0, like AmneziaWG 1.5, has become vulnerable to blocking». Там же рекомендуют переходить на 3.1 «regardless of how reliably your AmneziaWG 2.0 connection currently works». Вывод кандидата «держать на 2.0» поэтому устарел. Оговорка: это заявление вендора, независимых датированных замеров блокировки 2.0 я не нашёл.\n\nОстальное подтверждено: bivlked/amneziawg-installer ставит модуль 3.x на x86 с ядром ≥6.7, но фичи 3.0 в генерируемые конфиги пока не пишет. Против белых списков не помогает ни одна версия.",
+  "worth_adding": "yes",
+  "reasoning": "Что подтвердилось. Релизы есть в официальных репозиториях amnezia-vpn: в тегах amneziawg-go, kernel-module и tools, плюс релизы amnezia-client 5.0.0.5 и 5.0.1.5. Проект зрелый и активно патчится, последний фикс модуля — 2026-09-06.\n\nЧто в кандидате неверно или неполно:\n- Порог клиента указан для 2.0, а не для 3.x.\n- Не описаны новые параметры 3.1 (RandomTrailers, DisableCookies).\n- Не упомянута несовместимость 3.x с 2.0.\n- Главное: вендор официально объявил 2.0 уязвимым к блокировкам и рекомендует 3.1. Кандидат же советует оставаться на 2.0.\n\nНезависимых доказательств массовой блокировки AWG 2.0 в РФ (дата, оператор) я не нашёл. Статья на Хабре от 2026-09-09 и пост на securitylab разбирают протокол, но замеров не приводят. allvpn.org пересказывает слова Amnezia про «летнюю атаку» и масштабную волну блокировок 4 августа. Поэтому оценку устойчивости 3.x в РФ следует считать вендорской.\n\nПочему стоит добавить. У нас AWG уже в инсталлере. Серверная часть ставится из того же PPA/DKMS (на ядре ≥6.7 модуль 3.x приходит автоматически), есть amneziawg-go. Ubuntu 24.04 с HWE-ядром нам подходит. Клиенты 3.x есть на всех основных платформах через AmneziaVPN ≥5.0.2.1, отдельные приложения под Android и Windows тоже есть. Исключения — роутеры (Keenetic, OpenWrt), Android 7–8 и Google Play.\n\nРекомендация: добавить опциональный профиль AWG 3.1 рядом с 2.0. Два интерфейса на разных портах дают и ключ HeaderProtectionKey, и RandomTrailers, а 2.0 остаётся как запасной вариант для старых клиентов и роутеров. Против белых списков мобильных операторов это не помогает.",
+  "sources": [
+   "https://github.com/amnezia-vpn/amneziawg-tools/releases",
+   "https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/tags",
+   "https://github.com/amnezia-vpn/amneziawg-go/tags",
+   "https://github.com/amnezia-vpn/amnezia-client/releases",
+   "https://docs.amnezia.org/documentation/instructions/new-amneziawg-selfhosted/",
+   "https://amnezia.org/blog/amneziawg-3-1-is-here",
+   "https://amnezia.org/blog/amneziavpn-5-0-0-5-update",
+   "https://habr.com/ru/articles/1080342/",
+   "https://github.com/bivlked/amneziawg-installer",
+   "https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/issues/207",
+   "https://github.com/amnezia-vpn/amneziawg-android/releases/tag/v3.1.20260814",
+   "https://github.com/amnezia-vpn/amneziawg-android/issues/94",
+   "https://github.com/amnezia-vpn/amneziawg-windows-client/releases",
+   "https://newreleases.io/project/github/MetaCubeX/mihomo/release/v1.19.30",
+   "https://allvpn.org/en/news/amnezia-vpn-updates-amneziawg-protocol",
+   "https://forum.gl-inet.com/t/amneziawg-3-0-protocol-support/70770"
+  ]
+ },
+ {
+  "name": "Slipstream / MasterDnsVPN / dnstt (DNS-туннели)",
+  "verdict": "corrected",
+  "corrected": "Основа подтверждается: DNS-туннели действительно снова в ходу в РФ под белыми списками. Неточные детали:\n1) EndPositive/slipstream: v0.1.1 вышел 12 апреля, 320 звёзд, репозиторий не архивирован, лицензия Apache-2.0. В README заявлено «60% lower header overhead than DNSTT», адаптивный congestion control и параллельная работа через несколько резолверов. Тут кандидат прав.\n2) Rust-порт Mygod/slipstream-rust (~448 звёзд) архивирован 28.08.2026, причина в discussion #111.\n3) MasterDnsVPN: ~7.1k звёзд, лицензия MIT. Последний релиз v2026.06.13.234407-7de2476 от 13.06.2026, предыдущие от 10.05 и 04.05.2026; есть Docker. Сервер под Linux, macOS и Windows, клиент плюс Android/Termux. Проект заявляет накладные расходы на 88% ниже DNSTT и на 71% ниже Slipstream (это слова авторов, независимой проверки нет).\n4) anonvector/slipgate: v1.6.4 (бэкпорт фикса sendto, в комплекте vaydns-server), v1.6.3 и v1.6.2 вышли в апреле. Ставит DNSTT, NoizDNS, Slipstream, VayDNS, NaiveProxy+Caddy и StunTLS. Требования: Ubuntu 20.04+ или Debian 10+, домен, 53/udp и 443/tcp. Около 422 звёзд.\n5) SlipNet: v2.5.5 от 26 мая, только Android, плюс отдельная CLI-сборка. Для dnstt есть мультиплатформенный клиент dnstt-xyz/dnstt_xyz_app.\n6) Статья на Хабре 1036100 («Немного извращений из мира прокси и VPN», MiracleUsr, 17.05.2026) — обзор с советами, как подобрать резолверы (провайдерский, MSK-IX 62.76.76.62, НСДИ 195.208.4.1). Это НЕ тест под WL с замерами. MasterDnsVPN там назван самым быстрым и стабильным.\n7) ntc.party, тема 23468: 30.03.2026 bolvan пишет, что dnstt работает через НСДИ 195.208.4.1, а не через «резолверы MTS». 02.04 ValdikSS: в WL Tele2 СПб есть DNS оператора, Яндекс и НСДИ. В тот же день bolvan: на Мегафоне НСДИ не работает. Утверждение «Beeline сломал dnstt» подтверждения не нашло. Наоборот, в теме 23730 SeamniZ (конец апреля) пишет, что серверы Билайна на 8888 доступны, а у Мегафона упёрлись в rate limit.\n8) Скорости из темы 23730: ValdikSS на Tele2 СПб ~11 Мбит/с вниз и 1.3 вверх; s.v.d на MTS LTE Москва 0.5–1.5 Мбит/с. По MasterDnsVPN (тема 24640): 11–12.05 хорошие результаты. 8–12.06 жалобы на ~30 КБ/с через DNS оператора и Яндекса, предположительно из-за троттлинга порта 53.\n9) Сопутствующее событие: 03.07.2026 у крупных операторов РФ перестал работать 8.8.8.8 по TCP (DoH, DoT, TCP/53), UDP при этом работает. Для DNS-туннелей поверх UDP это напрямую не критично, но давление на DNS растёт.",
+  "worth_adding": "maybe",
+  "reasoning": "Проекты существуют и живы, ключевые цифры по Slipstream и MasterDnsVPN подтверждены на GitHub. Возврат DNS-туннелей в оборот под WL подтверждён датированными постами на ntc.party (30.03–12.06.2026): ValdikSS, bolvan, отчёты на Tele2, MTS, Мегафоне. Но есть оговорки:\n- Работоспособность зависит от оператора и от того, есть ли в WL резолвер без rate limit.\n- Скорость на мобильных обычно 0.5–2 Мбит/с, лучший замер ~11 Мбит/с.\n- С июня 2026 есть сообщения о троттлинге 53 порта.\n- Два фактических утверждения кандидата не подтвердились: «Habr тестирует под WL» и «Beeline сломал dnstt». Третье неточно: работающий резолвер в отчётах — НСДИ, а не MTS.\n- Rust-порт Slipstream архивирован 28.08.2026, C-ядро на версии 0.1.x.\n- Клиенты на iOS и десктопе слабые: SlipNet только для Android, у dnstt есть мультиплатформенный dnstt_xyz_app, MasterDnsVPN на десктопе работает как CLI.\n\nСерверная часть на Ubuntu ставится легко (slipgate, systemd, Docker у MasterDnsVPN), но нужен делегированный NS-поддомен и свободный порт 53. Для роли основного протокола не годится. Опциональный аварийный модуль оправдан: лучше dnstt или MasterDnsVPN, а не устаревающий Slipstream. Поэтому оценка «maybe», а не «yes».",
+  "sources": [
+   "https://github.com/EndPositive/slipstream",
+   "https://github.com/EndPositive/slipstream/releases",
+   "https://github.com/Mygod/slipstream-rust",
+   "https://github.com/masterking32/MasterDnsVPN",
+   "https://github.com/masterking32/MasterDnsVPN/releases",
+   "https://github.com/anonvector/slipgate",
+   "https://github.com/anonvector/slipgate/releases",
+   "https://github.com/anonvector/SlipNet/releases",
+   "https://github.com/dnstt-xyz/dnstt_xyz_app",
+   "https://habr.com/ru/articles/1036100/",
+   "https://ntc.party/t/белые-списки-че-делать/23468",
+   "https://ntc.party/t/актуальность-slipstreamdnstt-для-обхода-бс/23730",
+   "https://ntc.party/t/кто-то-использовал-masterdnsvpn/24640",
+   "https://publish.obsidian.md/zapret/DPI/google-dns-8888-block-july-2026"
+  ]
+ },
+ {
+  "name": "VK TURN proxy (vk-turn-proxy / Turnable / WDTT и клиенты)",
+  "verdict": "corrected",
+  "corrected": "Основное подтверждено через GitHub API на 2026-10-04. У cacggghp/vk-turn-proxy: репозиторий создан 2025-11-25, 4010 звёзд, 265 форков. Релизы v1.6.0–v1.8.3 вышли с 2026-04-08 по 2026-04-16; последний push был 2026-04-16, после этого в main ничего не вливали. Issue #182 открыт 2026-06-25, PR #183 с фиксом капчи не влит. В README есть: порт 56000/udp, MTU 1280, «-n 1 … ограничение 5 МБит/с для ВК», режим -vless через KCP+smux, у Яндекса нет лимита скорости, но при нескольких потоках есть риск бана по IP.\n\nИсправления:\n1) Репозиторий samosvalishe/free-turn-proxy и сам пользователь samosvalishe отдают 404: удалены или переименованы. Использовать как источник нельзя. Под именем free-turn-proxy сейчас живут другие мелкие репозитории: free-turn-proxy-ios, free-turn-proxy-windows-ui.\n2) TheAirBlow/Turnable — отдельная реализация, а не форк. Создан 2026-04-15, 315 звёзд, релиз 0.6.4 от 2026-09-26. Режимы: TURN-relay и SFU. Сервер ставится одним бинарником под linux amd64/arm64/arm/386/riscv64 и другие.\n3) Самые активные клиенты: amurcanov/proxy-turn-vk-android (1160★, push 2026-09-11), anton48/vk-turn-proxy-ios (288★, push 2026-10-01), WINGS-N/WINGSV (242★), ildarmaga/wdtt (76★, push 2026-09-26). Отдельного репозитория qWDTT я не нашёл.\n4) Issue net4people/bbs #650 от 2026-08-19 — о белых списках МТС и VLESS+Reality вообще, а не о VK TURN.\n5) Тема ntc.party 21884 существует (233 поста, последний 2026-06-25). Даты постов о VK TURN за 9–11 и 30 марта я не перепроверял. Отдельная тема о Turnable — 24402 (2026-04-24 … 2026-08-19).\n6) Гонка с капчей VK идёт постоянно. В Turnable: #16 от 2026-08-14 (PoW), #17 от 2026-08-20 (BFF-рендеринг), #19 от 2026-09-25 (новая капча и переход домена vk.com на vk.ru). Каждый раз фикс выходил в течение часов или дней.\n7) Есть непроверенные сообщения о том, что Яндекс ограничил TURN телемоста (на ntc.party 2026-04-25: «только организатор с активным акком»), и о том, что VK к концу апреля 2026 срезал скорость до ~250 кбит/с. Первоисточник со скоростью проверить не удалось: habr 1027276 отдаёт HTTP 451.\n8) Issue 3x-ui #6487 от 2026-09-12 есть, но там просят поддержку qWDTT/OlcRTC/OpenFlux, а не именно vk-turn-proxy.",
+  "worth_adding": "maybe",
+  "reasoning": "Метод действительно новый и массово используется: несколько тысяч звёзд суммарно, десятки клиентов, Turnable обновлялся в сентябре 2026, iOS-клиент — в октябре 2026. Это один из немногих живых способов обойти мобильные белые списки, и сообщество это подтверждает. Но формулировка кандидата устарела и частично неверна. Оригинал не развивается с апреля, фикс капчи #183 не влит. Источник free-turn-proxy удалён. net4people #650 не о VK TURN. Работоспособность держится на постоянной гонке с VK: капча, смена домена на vk.ru, PoW, возможный троттлинг. Яндекс, по сообщениям, закрутил гайки.\n\nДля установщика серверная часть простая: один Go-бинарник с systemd на UDP 56000 перед WG или Hysteria2, или Turnable. Сложности такие:\n- клиент полностью зависит от сторонних приложений, а форков с разными протоколами много: vk-turn-proxy, Turnable, WDTT и другие между собой несовместимы;\n- нужна ссылка на звонок VK, иногда аккаунт, есть риск бана;\n- скорость низкая;\n- злоупотребление инфраструктурой VK.\n\nДобавлять разумно только как экспериментальный опциональный модуль. Версию нужно закрепить, и выбрать одну реализацию, у которой есть активный сервер и клиенты под все платформы. Сейчас лучше всего выглядит Turnable.",
+  "sources": [
+   "https://github.com/cacggghp/vk-turn-proxy",
+   "https://github.com/cacggghp/vk-turn-proxy/releases",
+   "https://github.com/cacggghp/vk-turn-proxy/issues/182",
+   "https://github.com/cacggghp/vk-turn-proxy/pull/183",
+   "https://github.com/TheAirBlow/Turnable",
+   "https://github.com/TheAirBlow/Turnable/issues/19",
+   "https://github.com/TheAirBlow/Turnable/issues/17",
+   "https://github.com/amurcanov/proxy-turn-vk-android",
+   "https://github.com/anton48/vk-turn-proxy-ios",
+   "https://github.com/WINGS-N/WINGSV",
+   "https://github.com/ildarmaga/wdtt",
+   "https://github.com/MHSanaei/3x-ui/issues/6487",
+   "https://github.com/net4people/bbs/issues/650",
+   "https://ntc.party/t/рабочий-обход-белых-списков/21884",
+   "https://ntc.party/t/24402"
+  ]
+ },
+ {
+  "name": "whitelist-bypass (kulikov0)",
+  "verdict": "corrected",
+  "corrected": "Основные факты подтвердились. Репозиторий создан 2026-03-19T15:58Z, лицензия MIT, 1698 звёзд и 106 форков, последний push 2026-09-22. Последний релиз v0.4.4 вышел 2026-09-22 (hotfix «repair exported wbstream cookies on VPS»). Перед ним выходили v0.4.3 (2026-09-21), v0.4.2 (2026-09-16), v0.4.0 (2026-09-13) и v0.3.8 (2026-07-26). Платформы: VK Call, Telemost, WB Stream (LiveKit), DION, Bitrix24. Режимы DC и VP8, headless на Pion, ChaCha20/XChaCha20-AEAD.\n\nЧто нужно поправить:\n(1) net4people #618 «Tunneling IP traffic through whitelisted WebRTC carriers» (2026-05-20) написал сам kulikov0, комментариев 0. Это самоописание автора, а не независимое признание проекта «эталоном».\n(2) 6.5 Мбит/с на одном VP8-треке при fps=24 и batch=30 — заявление автора, независимых замеров нет.\n(3) Клиенты шире, чем указано. В релизе v0.4.4 есть Android APK, два iOS .ipa (proxy и vpn, sideload), Electron Joiner и Creator для Windows (x64/ia32), macOS (arm64/x64) и Linux AppImage, а также CLI-архивы для linux x64/ia32/arm/mips и freebsd. Приложение iOS-proxy поднимает только SOCKS5, без системного VPN.\n(4) Серверная часть ставится на VPS: headless-creator — это обычный Linux-бинарник. Но ему нужны куки аккаунта платформы, экспортированные из десктопного Creator (кнопка Export Cookies). В docs/SETUP.md автор прямо советует запускать Creator с домашнего ПК: звонок с IP дата-центра могут заметить и заблокировать аккаунт. Официальных systemd-юнитов и watchdog нет, это открытый issue #173 от 2026-08-03.\n(5) Что WhiteTransport использует код Куликова как адаптер, подтверждает только issue #180 (2026-09-10) и описание WhiteTransport.",
+  "worth_adding": "maybe",
+  "reasoning": "Сам проект реален, развивается быстро и действительно нацелен на белые списки РФ: туннель идёт через SFU разрешённых сервисов видеозвонков. Это принципиально другой класс обхода, чем VLESS, Hysteria2 и AWG, и единственный, который логически проходит CIDR+SNI-вайтлист.\n\nСлабые места в доказательствах:\n- Работоспособность под активным белым списком подтверждается в основном словами автора.\n- На ntc.party в марте 2026 пользователи писали, что не могут завести инструмент.\n- В трекере много проблем со стабильностью: #169 «WebSocket error / закрывается через 10 секунд» на VK (июль), #184 «Telemost joiner: connections reset mid-transfer, 0/8 загрузок по 10MB» (2026-09-22), #155 «ping отваливается со временем» на VPS, #150.\n- В net4people #650 (август 2026) сообщество в целом не может подтвердить ни одной стабильно рабочей схемы под WL. Там же видно, что поведение белых списков различается между операторами и даже внутри одного оператора.\n- Устойчивость к ML-детекту автор сам называет неизмеренной. Ключ AEAD выводится из ссылки на звонок.\n\nКак это ложится на инсталлятор:\n- Технически реально добавить опциональный модуль: скачать headless-creator из релиза, сделать systemd-юнит и принимать cookies-*.json от пользователя.\n- Но куки придётся экспортировать вручную из GUI-приложения.\n- Есть риск бана аккаунта VK или Яндекса с IP VPS.\n- Ссылки на звонки и токены протухают, а релизы с ломающими изменениями выходят раз в несколько дней.\n- Клиентам нужен отдельный joiner: APK, sideload .ipa или Electron-приложение.\n\nИтог: стоит добавить как экспериментальный опциональный сценарий с документацией и явными предупреждениями, но не как основной протокол.",
+  "sources": [
+   "https://github.com/kulikov0/whitelist-bypass",
+   "https://github.com/kulikov0/whitelist-bypass/releases/tag/v0.4.4",
+   "https://github.com/kulikov0/whitelist-bypass/blob/main/docs/SETUP.md",
+   "https://github.com/net4people/bbs/issues/618",
+   "https://github.com/net4people/bbs/issues/650",
+   "https://github.com/kulikov0/whitelist-bypass/issues/184",
+   "https://github.com/kulikov0/whitelist-bypass/issues/169",
+   "https://github.com/kulikov0/whitelist-bypass/issues/173",
+   "https://github.com/kulikov0/whitelist-bypass/issues/180",
+   "https://ntc.party/t/%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%BE%D0%B2/21884?page=9"
+  ]
+ },
+ {
+  "name": "TUIC v5 (нативный в 3x-ui)",
+  "verdict": "confirmed",
+  "corrected": "Факты по 3x-ui подтверждаются. Уточнения: (1) v3.8.0 (2026-09-14) добавил TUIC v5 через внешний Rust-сайдкар tuic-server 1.0.0. Он обходил маршрутизацию Xray: issue #6560 «Routing rules do not apply to TUIC inbounds». (2) v3.9.0 (2026-10-03, PR #6577 слит в тот же день) перенёс TUIC в процесс панели на Go (apernet/quic-go, тот же стек, что в xray-core). Трафик идёт через loopback SOCKS5 в Xray, на каждый inbound резервируется loopback-порт 64001–65000. Сервер поддерживает BBR и New Reno, CUBIC на сервере подменяется на New Reno. Перезапуск TUIC перезапускает весь Xray. TUIC/MTProto можно разворачивать на ноды версии ≥3.8.0. (3) Слово «ожил» здесь только про доступность из коробки, не про обход блокировок. Цензура в РФ на это не влияла: протокол тот же, класс UDP/QUIC тот же, что у Hysteria2. (4) Реализации один день. Открытые баги после миграции: #6704 «routing does not working with tuic», #6714 «TUIC traffic accounting missing on shared inbounds», PR #6723 с правкой отображения скорости.",
+  "worth_adding": "maybe",
+  "reasoning": "Проверил по первоисточникам. Страница релизов 3x-ui: v3.8.0 от 14.09.2026 вводит TUIC v5 inbound через сайдкар tuic-server, есть tuic:// и Clash-вывод. Релиз v3.9.0 от 03.10.2026: «Native TUIC v5 server — TUIC now runs inside the panel in Go, with no external binary», с BBR и «crash-safe traffic accounting», TUIC/MTProto деплоятся на ноды. Слитый PR #6577 подтверждает основу apernet/quic-go и маршрутизацию через Xray. Значит, фактическая часть кандидата верна. Слабое место — рамка «revived». Протокол стал удобнее разворачивать, но работать в РФ лучше не стал. Датированных данных о том, что TUIC стал лучше проходить ТСПУ, я не нашёл. Свежие разборы (Хабр, июнь 2026) описывают общий для Hysteria2 и TUIC риск: часть операторов, особенно мобильных, режет или троттлит UDP, а против белых списков UDP к иностранному IP бесполезен. Оценка кандидата в works_in_ru корректна. Для инсталлятора: в нём уже есть Hysteria2 того же класса (QUIC/UDP), и он лучше подходит для РФ за счёт port hopping и obfs (salamander). TUIC почти не добавляет устойчивости к блокировкам. Плюс в том, что при 3x-ui ≥3.9.0 inbound создаётся без лишнего бинарника, а клиенты есть на всех платформах (sing-box/Hiddify, mihomo/Clash Verge, NekoBox, v2rayN, Streisand, Karing). Минусы: нативной реализации один день, есть открытые баги маршрутизации и учёта трафика, перезапуск TUIC перезапускает весь Xray. Итог «maybe»: не включать по умолчанию. Можно добавить опциональным inbound позже, когда выйдет стабильный патч-релиз 3.9.x и закроются #6704/#6714. Версию 3x-ui в инсталляторе тогда нужно будет закрепить на ≥3.9.x.",
+  "sources": [
+   "https://github.com/MHSanaei/3x-ui/releases",
+   "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+   "https://github.com/MHSanaei/3x-ui/pull/6577",
+   "https://github.com/MHSanaei/3x-ui/issues/6560",
+   "https://github.com/MHSanaei/3x-ui/issues/6704",
+   "https://github.com/MHSanaei/3x-ui/issues/6714",
+   "https://github.com/MHSanaei/3x-ui/pull/6723",
+   "https://habr.com/ru/articles/1047442/",
+   "https://publish.obsidian.md/zapret/protocols/tuic"
+  ]
+ },
+ {
+  "name": "TrustTunnel (AdGuard)",
+  "verdict": "corrected",
+  "corrected": "Сведения о репозитории подтверждаются через GitHub API. TrustTunnel/TrustTunnel создан 2025-11-07T13:01Z, у него 3501 звезда, лицензия Apache-2.0. Релизы: v1.3.0-beta.1 вышел 2026-10-01 (prerelease; subscription URL, поддержка macOS в install.sh, Dockerfile на Debian 12), стабильный v1.1.0 вышел 2026-09-01. Раньше были v1.0.29 (2026-03-30: deep-link, лимиты соединений на клиента, PQ-обмен ключами X25519MLKEM768) и v1.0.33 (2026-04-07). Открытие кода AdGuard объявил 2026-01-21 в своём блоге. Тред на ntc.party начат 2026-01-22.\n\nЧто исправлено:\n1) Утверждение «нет поддержки в sing-box/mihomo» неверно. В mihomo (Clash.Meta) TrustTunnel есть как inbound и outbound начиная с v1.19.21 (около марта 2026). Есть type: trusttunnel, client-fingerprint (uTLS), QUIC, max-connections/min-streams/max-streams; реализация основана на sing-trusttunnel v0.1.1. В sing-box поддержки пока нет: issue #3723 от 2026-01-24 открыт, отнесён к milestone 1.14.\n2) Критика про «нет TCP-мультиплексирования» в самом треде ntc.party снята. HTTP/2 и HTTP/3 мультиплексируют потоки внутри одного TLS/QUIC-соединения. Нерешёнными там остались вопросы об active probing и отпечатке TLS.\n3) Уязвимость к active probing подтверждается. Issue #100 от 2026-03-19 всё ещё открыт: на неизвестный SNI сервер рвёт соединение (EOF), а не отдаёт сайт-заглушку. Опции catch_all_sni_host нет.\n4) Серверу нужен настоящий TLS-сертификат и домен (Let's Encrypt, self-signed или свой). Схемы «чужого» SNI, как в REALITY, нет. Готовые бинарники собраны только под linux-x86_64 и linux-aarch64 (плюс macOS), есть setup_wizard и systemd-шаблон. Сторонний клиент называется FireTunnel, а не FreeTunnel.\n5) Датированных полевых отчётов о том, как протокол работает в РФ под ТСПУ или при мобильных белых списках, нет ни в треде ntc.party, ни в комментариях на Хабре. Там только теоретический спор и разрозненные «у кого-то работает».",
+  "worth_adding": "maybe",
+  "reasoning": "Проект настоящий и живой: AdGuard выпускает регулярные релизы, на сервере запущен в проде AdGuard VPN, лицензия Apache-2.0. Поставить на Ubuntu просто: install.sh, setup_wizard, systemd или Docker. С клиентами лучше, чем сказано в кандидате, потому что есть поддержка в mihomo. Значит, подойдут уже знакомые пользователям из РФ GUI-клиенты на ядре mihomo (Clash Verge Rev, FlClash, Mihomo Party и др.), а также официальные CLI и Flutter-клиенты и Shadowrocket/Surge на iOS. Против этого говорит следующее. (а) Защиты от active probing нет: issue #100 открыт, сервер выдаёт себя обрывом на чужой SNI. Это слабее REALITY, который уже стоит в инсталлере. (б) Нужен свой домен и сертификат, а это ломает сценарий инсталлера «голый VPS без домена». (в) От белых списков на мобильном интернете он, как и любой протокол на IP не из белого списка, не спасает. (г) Нет независимых датированных подтверждений, что протокол устойчив к ТСПУ. Как «ещё один HTTPS/H3-протокол для домашних провайдеров» в опциональной фазе он допустим, особенно когда в инсталлере уже есть сценарий с доменом. Но приоритет низкий, лучше вернуться к нему после того, как закроют issue #100 и/или появится поддержка в sing-box. Насколько протокол «работает в РФ», проверить нельзя: доказательств нет.",
+  "sources": [
+   "https://github.com/TrustTunnel/TrustTunnel",
+   "https://github.com/TrustTunnel/TrustTunnel/releases",
+   "https://github.com/TrustTunnel/TrustTunnel/blob/master/README.md",
+   "https://github.com/TrustTunnel/TrustTunnel/issues/100",
+   "https://adguard-vpn.com/en/blog/adguard-vpn-protocol-goes-open-source-meet-trusttunnel.html",
+   "https://ntc.party/t/trusttunnel-stealth-vpn-протокол-от-авторов-adguard-vpn/21835",
+   "https://habr.com/ru/companies/femida_search/articles/988466/comments/",
+   "https://wiki.metacubex.one/en/config/proxies/trusttunnel/",
+   "https://pkg.go.dev/github.com/metacubex/mihomo/transport/trusttunnel",
+   "https://newreleases.io/project/github/MetaCubeX/mihomo/release/v1.19.21",
+   "https://github.com/SagerNet/sing-box/issues/3723"
+  ]
+ },
+ {
+  "name": "AnyTLS",
+  "verdict": "corrected",
+  "corrected": "Подтверждено: репозиторий anytls/anytls-go, ~1.5k звёзд. Релизы: v0.0.5 (2025-03-11), v0.0.7, v0.0.8 (2025-04-09), v0.0.10/v0.0.11 (2025-09-21/22), v0.0.12 (2026-01-12), v0.0.13 (2026-06-27, флаг отключения переиспользования сессий). В sing-box inbound и outbound есть с 1.12.0. С sing-box 1.13.16 и 1.14.0-beta.5 client_metadata по умолчанию пустой. В mihomo v1.19.29 (2026-07-18) синхронизирован anytls v0.0.13 и добавлены обёртки restls, jls и shadowtls. В mihomo v1.19.30 (2026-08-16) client-metadata по умолчанию не отправляется.\n\nИСПРАВЛЕНИЯ:\n1) Xray-core НЕ поддерживает AnyTLS. Issue #4428 закрыт как not planned. PR #5907 «Proxy: Add AnyTLS protocol» от wyx2685 (2026-04-10) RPRX закрыл без merge с прямым отказом поддерживать AnyTLS. Значит, в 3x-ui такой inbound не добавить. Связку AnyTLS+Reality поддерживает только sing-box, а не Xray. Есть только сторонние форки Xray (например ArasTey/xray-core).\n2) Mihomo официально пишет: «does not support AnyTLS+Reality, and will not support this combination in the future». Это совпадает с кандидатом.\n3) Слово «Зрелый» преувеличено. Версия 0.0.x, сам README называет anytls-go референсной реализацией для демонстрации протокола, а не для продакшена.\n4) С клиентами всё неровно. Поддерживают: sing-box (SFA/SFI), mihomo-клиенты (Clash Verge Rev и др.), Husi/NekoBox, v2rayN (только через ядро sing-box, через ядро Xray нет), Shadowrocket 2.2.65+, Stash, Loon. НЕ поддерживают: v2rayNG (issue #5684 закрыт как not planned 2026-05-25), Hiddify (нет разбора anytls:// и GUI, issues #2077/#2222), клиенты на ядре Xray.\n5) Протокол сам по себе можно распознать. В net4people/bbs #528 (2025-09-22) разобраны признаки: фиксированный 7-байтовый заголовок, предсказуемый обмен settings в начале, узкие диапазоны паддинга по умолчанию, характерные cmdSYN/cmdFIN.\n6) Свежих датированных свидетельств о работе или блокировке AnyTLS в РФ не найдено. В разборе ТСПУ на Хабре от 2026-06-15 AnyTLS не упоминается. Устойчивыми там названы Hysteria2, gRPC+Reality и xHTTP.",
+  "worth_adding": "maybe",
+  "reasoning": "Факты о проекте подтверждаются: даты релизов anytls-go проверены по HTML GitHub, sing-box 1.12.0+, client_metadata (sing-box 1.13.16, mihomo v1.19.30), обёртки restls/jls/shadowtls в mihomo v1.19.29 (2026-07-18). Но в главном для инсталлятора кандидат ошибается. Фраза «легко добавить одним inbound в 3x-ui» неверна: Xray-core официально отказался от AnyTLS, RPRX закрыл PR #5907 2026-04-10. Значит, понадобится отдельный сервис sing-box на сервере. AnyTLS+Reality возможен только на sing-box: mihomo это явно не поддерживает, Xray вообще не поддерживает AnyTLS. Без Reality нужен домен с сертификатом, что усложняет сценарий без домена. Самые массовые клиенты в РФ (v2rayNG, Hiddify, клиенты на ядре Xray) AnyTLS не умеют. Версия 0.0.x, автор называет её демонстрационной. В net4people описаны статические признаки протокола. Нет ни одного датированного подтверждения, что AnyTLS работает в РФ лучше, чем VLESS+Reality+Vision, у которого уже есть паддинг рукопожатия против TLS-in-TLS. Против белых списков протокол бесполезен, тут кандидат прав. Итог: maybe, низкий приоритет. Имеет смысл только как опциональный протокол на sing-box (AnyTLS+Reality) для пользователей mihomo, sing-box и iOS-клиентов, если в инсталлятор и так будет добавлен sing-box.",
+  "sources": [
+   "https://github.com/anytls/anytls-go",
+   "https://github.com/anytls/anytls-go/releases",
+   "https://sing-box.sagernet.org/configuration/inbound/anytls/",
+   "https://sing-box.sagernet.org/manual/misc/anytls-client-metadata/",
+   "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.29",
+   "https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.30",
+   "https://wiki.metacubex.one/en/config/proxies/anytls/",
+   "https://github.com/XTLS/Xray-core/pull/5907",
+   "https://github.com/XTLS/Xray-core/issues/4428",
+   "https://github.com/2dust/v2rayNG/issues/5684",
+   "https://github.com/2dust/v2rayN/issues/8686",
+   "https://github.com/hiddify/hiddify-app/issues/2222",
+   "https://github.com/net4people/bbs/issues/528",
+   "https://habr.com/ru/articles/1047442/"
+  ]
+ },
+ {
+  "name": "VLESS Encryption (mlkem768x25519plus, постквантовое шифрование внутри VLESS)",
+  "verdict": "corrected",
+  "corrected": "Сама функция описана верно, но в карточке ошибочны даты, статус и следствия.\n1) PR #5067 смержен 2025-08-28. Функция впервые вышла в pre-release v25.8.29/v25.8.31, а первым СТАБИЛЬНЫМ релизом с ней стал v25.9.5 (2025-09-05). Значит, это не «новинка 26.9.x»: она больше года есть во всех stable, включая v25.9.11, v25.10.15, v25.12.8, v26.1.23, v26.2.6 и v26.3.27.\n2) В v26.9.30 нет никакой пометки «VLESS Post-Quantum Encryption». Это шаблонная строка «Related links» в шапке каждого релиза начиная с v25.12.8. Кроме того, v26.9.8, v26.9.9 и v26.9.30 — pre-release без собственного changelog. Последний stable — v26.3.27 (2026-03-27), всё с v26.4.13 по v26.9.30 помечено как pre-release.\n3) PR #6303 (смержен 2026-07-07, есть только в pre-release начиная с v26.7.11) запрещает VLESS/Trojan outbound на публичный адрес лишь тогда, когда НЕТ ни streamSettings.security (tls/reality), ни VLESS encryption. Для VLESS+REALITY ничего не меняется, так что «шифрование VLESS стало мейнстримом» — неверный вывод. Strict-проверка затрагивает только голый VLESS без TLS.\n4) Шифрование поддерживает и 3x-ui: панель генерирует ключи X25519/ML-KEM-768 в режимах native/xorpub/random, это видно по коммитам 2026-05..06 (#4271, #5517). Пункт «постепенно подхватывается» устарел, при этом баги в подписках ещё закрывают (#6572, сентябрь 2026).\n5) Клиенты. Работает в клиентах на ядре Xray (v2rayN/v2rayNG, Happ, v2RayTun и т.п.) и на mihomo >= 1.19.13 (Clash Verge Rev, FlClash). Upstream sing-box НЕ поддерживает: issue #3599 закрыт с ответом «Not supported», а sing-box 1.13.x отвечает «unknown field encryption». Поэтому Hiddify, SFA/SFI и Karing не подключатся, работает только форк sing-box-lx.\n6) Подтверждённых данных о дополнительной стойкости к ТСПУ в РФ не нашлось.",
+  "worth_adding": "maybe",
+  "reasoning": "Что подтвердилось. PR #5067 действительно смержен 2025-08-28. Описание (ML-KEM-768 + X25519, 1-RTT PFS и 0-RTT по ticket, режимы native/xorpub/random, паддинг) совпадает с PR и с релизом v25.9.5. Заголовок и дата PR #6303 (2026-07-07) тоже верны.\n\nЧто опровергнуто и исправлено.\n(а) По GitHub API релизов функция в стабильных версиях с v25.9.5, а вовсе не «pre-release 26.9.x». Ссылка в v26.9.30 — шаблонный футер, она есть во всех релизах с декабря 2025.\n(б) По diff PR #6303 проверка срабатывает, только если security пустой И encryption равно none. Цитата из кода: «vless without TLS or other encryption is prohibited unless the server address is a private IP or domain». Связка REALITY + encryption=none остаётся законной, значит #6303 не вынуждает нас включать VLESS Encryption. К тому же #6303 пока есть только в pre-release.\n(в) Клиентская поддержка неполная: upstream sing-box её не реализует, поэтому отпадает заметная часть клиентов для РФ (Hiddify и официальные SFA/SFI).\n\nОценка для установщика. Для нашего VLESS+REALITY+Vision выигрыш небольшой. REALITY уже даёт TLS 1.3, а с v25.5.16 ещё и X25519MLKEM768 в рукопожатии, то есть защиту от «harvest-now-decrypt-later» мы уже имеем. Шифрование поверх REALITY означает двойное шифрование. От белых списков и блокировки по IP оно не спасает, а свежих датированных свидетельств, что с ним в РФ работает лучше, нет.\n\nГде это действительно полезно. Это транспорты без TLS до нашего сервера или с TLS, который терминирует CDN: XHTTP через CDN даёт сквозное шифрование, которое CDN не видит. Ещё один вариант — «полностью случайный» трафик (режим random) как отдельный экспериментальный inbound.\n\nВывод: не делать это заменой и не включать по умолчанию. Разумно добавить как опцию: inbound с decryption=mlkem768x25519plus.* (например, к будущему XHTTP-через-CDN) с генерацией ключей командой `xray vlessenc`. При этом нужно явно предупредить, что клиенты на sing-box (Hiddify, SFA/SFI, Karing) его не поддерживают.\n\nПопутно нашлась важная находка не по теме. Начиная с Xray v26.9.8 REALITY требует от клиента key share X25519MLKEM768: из-за этого клиенты на mihomo без support-x25519mlkem768 отваливались по таймауту (3x-ui PR #6451, 2026-09-11). Это нужно учесть при обновлении core в установщике.",
+  "sources": [
+   "https://github.com/XTLS/Xray-core/pull/5067",
+   "https://github.com/XTLS/Xray-core/releases/tag/v25.9.5",
+   "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+   "https://github.com/XTLS/Xray-core/releases/tag/v26.9.30",
+   "https://github.com/XTLS/Xray-core/pull/6303",
+   "https://github.com/XTLS/Xray-core/releases/tag/v25.5.16",
+   "https://github.com/MHSanaei/3x-ui/pull/5517",
+   "https://github.com/MHSanaei/3x-ui/issues/6572",
+   "https://github.com/MHSanaei/3x-ui/pull/6451",
+   "https://github.com/SagerNet/sing-box/issues/3599",
+   "https://github.com/Leadaxe/singbox-launcher/issues/121",
+   "https://github.com/MetaCubeX/Meta-Docs/blob/main/docs/config/proxies/vless.ru.md",
+   "https://xtls.github.io/en/config/inbounds/vless.html"
+  ]
+ },
+ {
+  "name": "Turnable (TheAirBlow/Turnable)",
+  "verdict": "corrected",
+  "corrected": "Тему на ntc.party создал TheAirBlow 24.04.2026, а не 22.04. Релизы: 0.6.0 и 0.6.1 вышли 15.09.2026, 0.6.2 и 0.6.3 — 25.09.2026, 0.6.4 — 26.09.2026 («fix: reconnect behaviour and failed to open channel flood»). Ветка 0.5.x выходила с 22.06 по 23.08.2026. Звёзд около 315, лицензия GPL-2.0 — это подтверждается. Фраза «Android-клиента нет» неточна. В README официального Android-приложения действительно нет в списке «missing features». Но в релизах есть CLI-бинарники turnable-android-arm и turnable-android-arm64. Кроме того, есть сторонний Android-клиент WireTurn (spkprsnts/WireTurn, GPL-3.0, около 164 звёзд, релиз v9.1 от 29.09.2026). Он прямо поддерживает Turnable и умеет пускать через туннель WireGuard, VLESS и SOCKS5 (внутри Xray и tun2socks). Клиента под iOS нет. Для Windows есть CLI-бинарники (386, amd64, arm64), для Linux, macOS и FreeBSD тоже. Для сервера важно: в config.json нужен platform_id «vk.com» и call_id, то есть ссылка на звонок ВК. Значит, оператору нужен аккаунт ВК, а в ветке ntc советуют регистрировать его на одноразовый номер из-за риска бана. Сам Turnable — только туннель, поверх него нужен WireGuard, VLESS или Hysteria2. Режим Direct Relay автор помечает как опасный, а P2P через SFU ещё в разработке.",
+  "worth_adding": "maybe",
+  "reasoning": "Проект настоящий и активно развивается. Репозиторий на GitHub есть, в сентябре 2026 вышло 5 релизов, у каждого 18 сборок, включая linux amd64/arm64/arm/riscv64. Ветку на ntc.party открыл сам автор. Главные ошибки кандидата две: дата открытия ветки и «нет Android-клиента». Мобильный клиент на деле есть: сторонний WireTurn, который обновлялся 29.09.2026. Работоспособность в РФ подтверждают только отдельные пользователи в ветке ntc, например «5-7 Мбит на Android, работает отлично». Систематических измерений нет. Скорость упирается в лимиты TURN ВК (у vk-turn-proxy обсуждают около 5 Мбит/с, Turnable обходит это через multi-peer). Остаются и общие риски с vk-turn-proxy: в issue #182 от 25.06.2026 ВК добавил новую капчу, бывает anonym_token.outdated, а аккаунт могут забанить. Автор Turnable постоянно чинит PoW и капчу ВК (0.5.2–0.6.2). Это показывает, что метод держится на гонке с ВК и хрупок. Для установщика серверная часть несложная: Go-бинарник, systemd, keygen, config.json, проброс на локальный WG/Hysteria2. Но оператору надо вручную создать звонок ВК и вписать call_id, а формат конфига, по словам автора, может меняться между версиями. iOS не поддерживается. Вывод — «maybe»: стоит сделать опциональным экспериментальным модулем «запасной канал при белых списках» поверх уже установленного AmneziaWG или Hysteria2, с явным предупреждением про ToS ВК и аккаунт. По умолчанию не включать.",
+  "sources": [
+   "https://github.com/TheAirBlow/Turnable",
+   "https://github.com/TheAirBlow/Turnable/releases",
+   "https://github.com/TheAirBlow/Turnable/releases/tag/0.6.4",
+   "https://raw.githubusercontent.com/TheAirBlow/Turnable/main/docs/server/SETUP.md",
+   "https://ntc.party/t/turnable-vpn%D0%BF%D1%80%D0%BE%D0%BA%D1%81%D0%B8-%D1%87%D0%B5%D1%80%D0%B5%D0%B7-turn-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D1%81/24402",
+   "https://github.com/spkprsnts/WireTurn",
+   "https://github.com/spkprsnts/WireTurn/releases/tag/v9.1",
+   "https://github.com/cacggghp/vk-turn-proxy/issues/182",
+   "https://hub.docker.com/r/ulfrasark/turnable-hy2"
+  ]
+ },
+ {
+  "name": "olcRTC (Ghostlane)",
+  "verdict": "corrected",
+  "corrected": "Основное в карточке верно, но три вещи нужно поправить или уточнить.\n\n1) Скорость DataChannel до ~10 МБ/с под белыми списками устарела. Документация upstream (docs/settings.md) говорит: на Telemost стабильно работает только vp8channel, «DataChannel was removed from Telemost», seichannel не поддерживается, videochannel медленный. На WB Stream в гостевом режиме работают все транспорты, кроме datachannel: для него нужен токен модератора с canPublishData=true. datachannel стабилен только на Jitsi, а Jitsi в белые списки РФ не входит. Значит, под белыми списками реально доступны vp8channel и seichannel/videochannel, которые медленнее datachannel.\n\n2) Статья на Хабре от 09.04.2026 (habr.com/ru/articles/1021160) — не свидетельство работы. Автор пишет, что код для OlcRTC написан (Claude Code), но «подключать не понадобилось». Ссылается он на zarazaexe/olcRTC, а не на openlibrecommunity. Цифры в статье: до 44 Мбит/с, только десктоп, Telemost.\n\n3) В статье от 25.04.2026 WB Stream назван самым стабильным, а проект — pre-alpha. Формулировки «средняя стабильность» в статье нет.\n\nПодтверждено:\n- openlibrecommunity/olcrtc заархивирован 30.09.2026, около 2.0k звёзд, WTFPL, релизов нет, «PR не принимаются», перенос в owenewans/snolc. snolc — Rust, Unlicense, 128 звёзд; olcRTC/WebRTC в его README пока не упоминаются.\n- Форк ghostlane-project/olcrtc: ветка proofkit, Apache-2.0, 2 звезды, однострочник install.sh ставит Podman и собирает бинарник в контейнере. Провайдеры: Jitsi, Telemost, WB Stream, SaluteJazz, VK Calls.\n\nДополнения:\n- Клиент Ghostlane (ghostlane-project/ghostlane, 20 звёзд) активно выпускается: v1.0.443 от 25.09.2026, v1.0.444 от 29.09.2026 (поддержка комнат VK Calls), v1.0.446 от 01.10.2026 (Linux CLI/headless, deb/rpm, Docker). Есть Android APK, iOS только через TestFlight, macOS, Windows и Linux.\n- В 3x-ui issue #6487 от 12.09.2026 просят добавить поддержку olcRTC/qWDTT. Это запрос пользователей, а не реализация.\n- Свежих (сентябрь–октябрь 2026) независимых замеров работы под белыми списками не нашлось. Есть гайд OpenWrt+olcRTC через Telemost от 16.08.2026, но это опыт одного автора без замеров.",
+  "worth_adding": "maybe",
+  "reasoning": "Структура проекта подтвердилась по репозиториям напрямую: upstream в архиве с 30.09.2026, релизов нет, перенос в snolc. В snolc WebRTC пока нет, это новый движок, а не преемник с теми же функциями. Работа продолжается в форке Ghostlane с 2 звёздами, а клиент Ghostlane выходит почти каждый день.\n\nГлавная поправка — по транспортам. По официальной матрице совместимости у российских провайдеров из белого списка быстрый datachannel не работает: на Telemost его убрали, на WB Stream нужны права модератора. Под белыми списками остаются более медленные vp8/sei/video-каналы, поэтому «до 10 МБ/с» относится к Jitsi, а Jitsi в белые списки не входит.\n\nДоказательства работы в РФ — это статьи и личные гайды апреля–августа 2026, без систематических замеров за сентябрь–октябрь.\n\nДля установщика проект подходит слабо:\n- серверу нужна сборка через Podman из ветки форка;\n- комнаты создаются вручную на сайте сервиса, ID комнаты прописывается в конфиг;\n- использование нарушает ToS сервисов, возможны баны;\n- iOS-клиент есть только в TestFlight.\n\nЗато это один из немногих транспортов, который в принципе живёт под мобильными белыми списками, а сервер на Ubuntu поднимается без root-специфики ядра. Поэтому оценка maybe: экспериментальный опциональный модуль, когда стабилизируется Ghostlane и появятся бинарные релизы сервера. Сейчас — отслеживать.",
+  "sources": [
+   "https://github.com/openlibrecommunity/olcrtc",
+   "https://github.com/openlibrecommunity/olcrtc/releases",
+   "https://github.com/openlibrecommunity/olcrtc/blob/master/docs/settings.md",
+   "https://github.com/ghostlane-project/olcrtc",
+   "https://github.com/ghostlane-project/ghostlane/releases",
+   "https://github.com/owenewans/snolc",
+   "https://www.pvsm.ru/vpn/450362",
+   "https://www.pvsm.ru/vpn/449328",
+   "https://habr.com/ru/articles/1021160/",
+   "https://github.com/MHSanaei/3x-ui/issues/6487",
+   "https://gist.github.com/jojopko/5e40c09cafb4e0af2b695b2ce3396ade",
+   "https://publish.obsidian.md/zapret/DPI/olcrtc"
+  ]
+ },
+ {
+  "name": "Мост или каскад через российский VPS с «белым» IP (VLESS+Reality со SNI из белого списка → зарубежный VPS)",
+  "verdict": "corrected",
+  "corrected": "Почти все факты подтвердились. Исправить нужно три вещи.\n(1) habr.com/ru/articles/979128 (автор adlayers, 21.12.2025) — не гайд по мосту. Это обзорная статья. «Проверка соответствия SNI и IP» в ней — утверждение со ссылкой на обсуждения в чатах, без технических доказательств. Та же статья вышла зеркалом на dev.to. Кроме того, автор советует НЕ маскироваться под чужие домены, а использовать «только свой домен, только свою заглушку». Значит, «проверку SNI↔IP, описанную в декабре 2025», нельзя подавать как установленный факт: это неподтверждённая гипотеза из сообщества.\n(2) Хабр от 25.04.2026 — это статья habr.com/ru/articles/1027276, «6 способов обхода» (зеркало pvsm.ru/vpn/450362). В её таблице у способа «VLESS + Reality на российском VPS» действительно стоит «Высокая/Высокая». Там же рекомендуются SNI storage.yandex.net, yastatic.net, userapi.com, vkuser.net, vkuservideo.ru, cdnvideo.ru, okcdn.ru, hosting.reg.ru. ya.ru взят из другой статьи: habr.com/ru/articles/1021160, 09.04.2026 (зеркало pvsm.ru/vpn/449328), где relay стоит на Yandex Cloud.\n(3) Массовая потеря серверов зафиксирована 24.01.2026 (hi-tech.mail.ru, xakep.ru от 26.01.2026). РКН это официально не комментировал, поэтому формулировка «по данным СМИ» верна.\nПодтверждено:\n- kort0881/russia-whitelist discussion #21 — 31.12.2025, VK Cloud, около 1500 ₽/мес. В ответах пишут, что IP VK Cloud начали блокировать в начале 2026.\n- Sergei-thinker/vpn-setup: «YC как гарантированный обход не работает, удалён из дефолтной архитектуры 2026-04-17». AS Yandex.Cloud LLC и AS YANDEX LLC названы разными автономными системами.\n- net4people #650 от 19.08.2026: у одного пользователя МТС стабильно работает, у другого не работает ничего, включая gosuslugi.ru.\n- ntc.party 24230: цитата «почти нереально получить IP из белого списка где-то кроме Яндекса», VK Cloud принимает только бизнес-аккаунты, Yandex Cloud банит за прокси.\n- CNews от 31.08.2026: Минцифры требует от хостеров, служб защиты и CDN вынести адреса белого списка в отдельные подсети.\n- openlibrecommunity/twl заархивирован 30.09.2026, проект переехал в openlibrecommunity/rewl («research whitelist», Go).\n- hxehex/russia-mobile-internet-whitelist активен, в нём whitelist.txt, ipwhitelist.txt и cidrwhitelist.txt.",
+  "worth_adding": "maybe",
+  "reasoning": "Метод реальный и хорошо задокументирован. Хронология проверяется по независимым датированным источникам: гайд VK Cloud от 31.12.2025, потеря серверов 24.01.2026, удаление YC из гарантированных 17.04.2026, net4people #650 от 19.08.2026, требование Минцифры от 31.08.2026, архивация twl 30.09.2026.\n\nГлавное слабое место кандидата — довод про «проверку соответствия SNI и IP». Источник этого довода (Хабр 979128 и его копия на dev.to, 21.12.2025) не приводит доказательств, а сам рекомендует свой домен вместо чужих белых SNI. Рекомендованные SNI (storage.yandex.net, userapi.com, cdnvideo.ru) взяты из другой статьи, Хабр 1027276 от 25.04.2026.\n\nОтзывы о работе в РФ противоречивы. Статьи пишут «высокая стабильность», а реальные отчёты в net4people #650 расходятся: у одного всё работает, у другого полный блэкаут. Ресурс метода целенаправленно закрывают: регулятор требует разделить подсети, VK Cloud закрыт для физлиц, Yandex Cloud банит аккаунты. Использование нарушает ToS облаков, а белый IP пользователю надо добыть самому, и сейчас это почти невозможно.\n\nПочему maybe, а не yes или no. Технически режим bridge стоит дёшево: тот же Xray, на российском VPS inbound VLESS+Reality или XHTTP, outbound на зарубежную ноду. Клиенты те же, что и для текущего VLESS (v2rayN, v2rayNG, Hiddify, Streisand, Happ и т.п.), так что со стороны клиента проблем нет. Каскад через RU-VPS полезен и без белого IP: он помогает, когда зарубежный IP заблокирован по L3, и снимает подозрительный прямой трафик на зарубежный DC. Поэтому разумно добавить общий опциональный режим relay/bridge, необязательно привязанный к белым спискам. В нём должны быть:\n- выбор SNI вручную;\n- офлайн-проверка IP по cidrwhitelist hxehex и данным rewl как подсказка, а не гарантия;\n- явные предупреждения о ToS, банах и том, что белизна IP временная.\n\nОбещать «обход белых списков» инсталлятор не должен: это поддерживать нельзя. Вдобавок данные сканов twl уже переехали в rewl, и их формат может меняться.",
+  "sources": [
+   "https://github.com/kort0881/russia-whitelist/discussions/21",
+   "https://habr.com/ru/articles/979128/",
+   "https://dev.to/ad_layer_4acdca7d59ff763f/era-pochiemu-vash-vless-bolshie-nie-vyvozit-i-kak-rabotaiet-korrieliatsiia-sni-5bh7",
+   "https://habr.com/ru/articles/1027276/",
+   "https://www.pvsm.ru/vpn/450362",
+   "https://habr.com/ru/articles/1021160/",
+   "https://www.pvsm.ru/vpn/449328",
+   "https://github.com/Sergei-thinker/vpn-setup",
+   "https://ntc.party/t/vpsvds-%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B0%D1%8E%D1%89%D0%B8%D0%B5-%D0%BF%D1%80%D0%B8-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B0%D1%85/24230",
+   "https://github.com/net4people/bbs/issues/650",
+   "https://xakep.ru/2026/01/26/rkn-whitelist/",
+   "https://hi-tech.mail.ru/news/141443-v-rossii-ogranichili-vozmozhnost-obhoda-belyh-spiskov/",
+   "https://www.cnews.ru/news/top/2026-08-31_mintsifry_potrebovalo_ot",
+   "https://github.com/openlibrecommunity/twl",
+   "https://github.com/openlibrecommunity/rewl",
+   "https://github.com/hxehex/russia-mobile-internet-whitelist"
+  ]
+ },
+ {
+  "name": "vk-turn-proxy (TURN-туннель через звонки VK / семейство WDTT, CSQTT, qWDTT, turnguard)",
+  "verdict": "corrected",
+  "corrected": "1) Upstream cacggghp/vk-turn-proxy фактически заморожен. Последний коммит и релиз v1.8.3 вышли 16.04.2026, после этого коммитов нет. Issue #182 от 25.06.2026 («Появилось требование ещё капчи в другом месте», ошибка VK API 14, «missing captcha_sid») до сих пор открыт и без ответа. Число звёзд подтверждено (~4.0k, 265 форков). Даты релизов v1.7.0 и v1.8.0 (оба 08.04.2026) и v1.8.3 (16.04.2026) подтверждены.\n2) WDTT (amurcanov/proxy-turn-vk-android, ~1.2k звёзд) заархивирован 11.09.2026, а не 24.08. Автор назвал официальным продолжением не qWDTT, а CSQTT (amurcanov/csqtt): Rust-ядро и Android-клиент, ~419 звёзд, лицензия PolyForm Noncommercial 1.0.0, релизов на GitHub нет. Его порты: Windows/Linux luminescq/focsq и iOS anton48.\n3) qWDTT — это отдельный форк от SpaceNeuroX/proxy-turn-vk-android, а не продолжение WDTT. Он активен: v1.4 вышел 03.08.2026 (Raw-режим без WireGuard, TCP-транспорт, по заявлению автора до 200 Мбит/с), последний релиз v1.4.4 от 13.09.2026.\n4) iOS-клиент anton48/vk-turn-proxy-ios развивается сейчас активнее всех: 6 транспортов, csqtt добавлен в build364 от 06.09.2026. VK несколько раз ломал авторешатель капчи (08.09.2026 изменилась инициализация виджета, 30.09.2026 на PoW-странице появился «четвёртый аргумент»), и build443 от 30.09.2026 это чинит. Issue #97 «Перестал работать» от 01.10.2026 уже закрыт, причина не раскрыта.\n5) turnguard (NikKuz99) — проект с 1 звездой, его нельзя считать значимой частью экосистемы.\n6) Цифру «~25 Мбит/с с несколькими потоками» по ntc.party проверить не удалось. На стр. 11 треда обсуждают авто-капчу, VLESS и альтернативу Turnable (TheAirBlow), а конкретных замеров нет.\n7) Habr/pvsm от 25.04.2026 подтверждён дословно: «Работает - но быстро банят… VK натыкал капч», стабильность низкая, «время жизни: непредсказуемо». Там же уточнено, что Яндекс ограничил свои TURN relay только IP-адресами Яндекса. README тоже пишет, что Telemost «закрыт».\n8) Запрос в 3x-ui #6487 (12.09.2026) подтверждён: он открыт, ответов нет.\n9) Серверные wire-протоколы в семействе несовместимы между собой: оригинальный vk-turn-proxy, WDTT/qWDTT (wdtt-server, RTP-обёртка) и CSQTT. Установщику пришлось бы выбирать, какой сервер ставить.",
+  "worth_adding": "maybe",
+  "reasoning": "Суть кандидата подтверждается. Это реально существующее и массово используемое семейство инструментов: WG или raw-трафик через TURN-релеи звонков VK, которые есть в белом списке. Свежие датированные признаки того, что метод работает в РФ, есть: в сентябре 2026 iOS-клиент anton48 и qWDTT активно выпускают релизы, правят решатель капчи под изменения VK от 08.09 и 30.09.2026, обрабатывают отказы VK по квоте релея. Из того, что мейнтейнеры постоянно отвечают на противодействие VK, следует, что канал жив, но хрупок.\n\nКлючевые поправки. Выбранный в кандидате «эталон» cacggghp/vk-turn-proxy с апреля заброшен: новой капче от VK с июня никто не занимается. WDTT архивирован 11.09.2026, наследник — CSQTT, а qWDTT — отдельный форк. Экосистема раздроблена на несовместимые серверные протоколы.\n\nДля установщика этот вариант подходит только как опциональная экспериментальная фаза «на чёрный день».\nПлюсы:\n- сервер — один бинарник с systemd и одним UDP-портом;\n- это единственный класс методов, который проходит мобильные белые списки.\nМинусы:\n- нужно выбрать серверную реализацию. Бинарник cacggghp прост и есть под amd64/arm64, но заморожен. CSQTT — основная ветка, но её лицензия некоммерческая и бинарных релизов нет. wdtt-server совместим с qWDTT и WDTT;\n- клиентская поддержка разная по платформам: iOS-клиент anton48 говорит на нескольких транспортах, Android-клиенты привязаны к своему протоколу;\n- капча и квоты VK, лимит около 5 Мбит/с на поток;\n- нарушение ToS VK и риск бана ссылки или аккаунта;\n- метод может умереть в любой момент, если VK начнёт фильтровать relay-адреса так же, как это сделал Яндекс.\n\nРекомендация: не включать по умолчанию. Если добавлять, то отдельной экспериментальной фазой с отдельным WG-интерфейсом. Сервер выбрать по совместимости с самым живым клиентом (iOS anton48 плюс qWDTT или CSQTT) и закрепить версию.",
+  "sources": [
+   "https://github.com/cacggghp/vk-turn-proxy",
+   "https://github.com/cacggghp/vk-turn-proxy/releases",
+   "https://github.com/cacggghp/vk-turn-proxy/commits/main",
+   "https://github.com/cacggghp/vk-turn-proxy/issues/182",
+   "https://github.com/amurcanov/proxy-turn-vk-android",
+   "https://github.com/amurcanov/csqtt",
+   "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases",
+   "https://github.com/kostfuciy/qWDTT",
+   "https://github.com/anton48/vk-turn-proxy-ios/releases",
+   "https://github.com/anton48/vk-turn-proxy-ios/releases/tag/v1.0-build364",
+   "https://github.com/anton48/vk-turn-proxy-ios/issues/97",
+   "https://github.com/NikKuz99/turnguard",
+   "https://github.com/MHSanaei/3x-ui/issues/6487",
+   "https://www.pvsm.ru/vpn/450362",
+   "https://ntc.party/t/%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9-%D0%BE%D0%B1%D1%85%D0%BE%D0%B4-%D0%B1%D0%B5%D0%BB%D1%8B%D1%85-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%BE%D0%B2/21884?page=11",
+   "https://github.com/ildarmaga/wdtt"
+  ]
+ },
+ {
+  "name": "Туннели через Yandex Cloud Serverless и API Gateway (yac-ws-bridge, Cloud Functions)",
+  "verdict": "confirmed",
+  "corrected": "В целом утверждение верно, ниже уточнения и дополнения. 1) Проект старше, чем сказано: первый коммит «Bridge to Freedom v4 — TCP tunnel through Yandex Cloud» датирован 29.03.2026. Крупная переработка вышла 14–16.05.2026 (коммит «huge optimizations - works cool now» от 15.05). 2) Релизы нумеруются по дате, их четыре: v20260516 (16.05.2026), v20260616 (16.06), v20260623 (22.06, «proper Linux version of GUI client»), v20260714 (14.07.2026, «stability improvements»). Более поздних коммитов на 04.10.2026 не нашёл, то есть с середины июля проект стоит. 3) Звёзд около 198, форков 18, лицензия WTFPL. MAUI-клиент собирается под Windows, macOS, Android и iOS, плюс Linux x64. Go-бинарники adapter и helper. 4) Тред на ntc.party (24735) идёт с 13.05.2026 по 02.06.2026. Пост Uporoty от 15.05.2026 подтверждает переупорядочивание по SeqID и асинхронные очереди записи. Фраза о том, что классический WSS там не работает, принадлежит Bronner: «Гейтвей это тебе не прокси. Он терминирует соединение и имеет лютые лимиты». Есть жалобы на потери и неверный порядок пакетов, сайты не открываются или грузятся по 5 секунд, «как dial-up». Telegram работает терпимо. 5) Статья на Хабре (habr.com/ru/articles/1027276) вышла 25.04.2026. В ней метод №2 — Cloud Functions как SOCKS5 (free tier: 1 млн вызовов и 100 000 ГБ·с в месяц), метод №3 — API Gateway как reverse proxy со своим доменом и сертификатом Let's Encrypt. yac-ws-bridge в статье не упоминается. 6) Тезис о «прямом нарушении ToS Yandex Cloud» и угрозе бана аккаунта я по тексту условий не проверял. Подтверждена только оговорка автора: «Сколько пройдёт до бана от Яндекса — непонятно».",
+  "worth_adding": "maybe",
+  "reasoning": "Все ключевые факты подтверждаются первоисточниками. Репозиторий существует, архитектура в README описана так же: adapter на VPS и helper на клиенте подключаются к API Gateway, данные идут через gRPC wsSend, функция нужна только для discovery. Обновление 15.05.2026 и сам тред на ntc тоже на месте. Это действительно новый для 2026 класс обхода белых списков: домены Yandex Cloud в whitelist, а на Yandex.Cloud, по данным Хабра, приходится около 20% разрешённых IP. Что работает в РФ под белыми списками, подтверждают отзывы за май–июнь 2026. Но качество низкое: до 20 Мбит/с в лучшем случае, потери и переупорядочивание пакетов, ограничения API Gateway на длинные соединения, страницы грузятся по 5 секунд. С 14.07.2026 обновлений нет. Для инсталлятора это слабый кандидат. На сервер ставится только Go-adapter. Функцию и шлюз в YC пользователь разворачивает сам: нужен аккаунт с российской картой, yc CLI или консоль, обфускация JS и переименование эндпоинтов. Клиент — отдельное MAUI-приложение или helper, в стандартные v2rayN, Hiddify и Streisand это не встроено. Есть риск бана аккаунта со стороны Яндекса. Итог: «maybe», только как документированная ручная опция «на крайний случай при белых списках» (можно с опциональной установкой adapter). Штатным протоколом инсталлятора делать не стоит.",
+  "sources": [
+   "https://github.com/noiseonwires/yac-ws-bridge",
+   "https://github.com/noiseonwires/yac-ws-bridge/commits/main",
+   "https://github.com/noiseonwires/yac-ws-bridge/releases",
+   "https://github.com/noiseonwires/yac-ws-bridge/blob/main/README_RU.md",
+   "https://ntc.party/t/%D0%BA%D0%B0%D0%BA-%D0%BE%D0%B1%D0%BE%D0%B9%D1%82%D0%B8-%D0%B1%D0%B5%D0%BB%D1%8B%D0%B5-%D1%81%D0%BF%D0%B8%D1%81%D0%BA%D0%B8-%D0%B8%D1%81%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D1%83%D1%8F-wss-%D0%B8-yandex-cloud/24735",
+   "https://habr.com/ru/articles/1027276/",
+   "https://www.pvsm.ru/vpn/450362"
+  ]
+ },
+ {
+  "name": "XHTTP через российские CDN (CDN-фронтинг под белые списки)",
+  "verdict": "corrected",
+  "corrected": "Подтверждено: метод VLESS+XHTTP+TLS через российские CDN описан в frank-underwood64/whitelists_bypass, обсуждение #1 открыто 27.07.2026. Репозиторий маленький: 28 звёзд, 4 коммита. Ограничения POST у Yandex CDN подтверждены записью в обсуждении от 30.07.2026 («yandex блочит post»), к сентябрю 2026 публичный конфиг под Yandex перестал работать. У VK Cloud в сентябре 2026 работает только packet-up на GET. Пишут о рабочих связках через Beeline (CDNvideo) и Timeweb. Автор продаёт настройку за 30–50 $, а 30.08.2026 появилась жалоба, что инструкция за 50 $ не работает. Требование Минцифры подтверждено: 31.08.2026 министерство попросило хостеров, CDN и сервисы веб-защиты вынести IP из белого списка в отдельные подсети. Об этом писали РБК, CNews, «Коммерсант», «Ведомости» и Xakep 01.09.2026.\n\nИсправления:\n(1) habr.com/ru/articles/979128 вышла 21.12.2025, а не 25.04.2026. Это статья adlayers «Эпоха белых списков». Она советует XHTTP packet-up и каскад через Yandex Cloud и VK Cloud, но не CDN-фронтинг.\n(2) Статья от 25.04.2026 — habr.com/ru/articles/1027276 (зеркало pvsm.ru/vpn/450362), «6 способов обхода». Метода с названием «domain fronting» в ней нет, XHTTP тоже не упоминается. Самый близкий метод — №3 «Yandex API Gateway (Reverse Proxy)». Цитату «работает, пока оператор не потребует разделения IP» найти не удалось, о разделении IP там говорится лишь как о теоретической мере.\n(3) Технически это не классический domain fronting, где SNI и Host различаются. Это проксирование через собственный CDN-ресурс пользователя на edge-адресах из белого списка.\n(4) Последний релиз Xray-core — v26.7.28 от 28.07.2026. В v26.2.6 добавлены опции XHTTP против детекта на стороне CDN. Не проверено: в источнике не названы «Selectel» и «MWS» как рабочие CDN для этого метода.",
+  "worth_adding": "maybe",
+  "reasoning": "Суть кандидата подтверждается датированными источниками: обсуждение в GitHub-репозитории (июль–октябрь 2026), обсуждение kort0881/russia-whitelist #21 и новости от 31.08–01.09.2026 о требовании Минцифры выделить белые IP в отдельные подсети. Но ссылки на Хабр перепутаны. Статья 979128 вышла в декабре 2025, а в апрельской статье 1027276 нет ни «domain fronting», ни XHTTP, ни цитаты про разделение IP. Поэтому вердикт — corrected.\n\nНасколько метод живой: он хрупкий и быстро деградирует. Публичные конфиги ломаются за недели. Yandex с июля по сентябрь 2026 ограничил POST и service worker. VK Cloud работает только в GET-режиме. Основной источник — малоизвестный автор, который продаёт платные гайды, и на них есть жалобы. Требование Минцифры прямо закрывает механизм: когда белые IP вынесут в отдельные подсети, клиентские CDN-ресурсы окажутся вне белого списка. Сроки исполнения неизвестны, в сентябре 2026 мера только поддержана хостерами и ФСБ.\n\nПодходит ли для инсталлятора. Серверная часть ставится на Ubuntu без проблем: Xray-core XHTTP inbound за nginx и TLS, нужны только домен и сертификат. Клиенты есть на всех платформах: v2rayN, v2rayNG, Hiddify, Happ, Streisand и другие ядра Xray с поддержкой XHTTP. Самое ценное — сделать универсальную фазу «XHTTP за nginx/CDN» с переключателем режима packet-up и GET-upstream. Она пригодится и для Cloudflare на домашнем интернете. Настройку российских CDN имеет смысл давать только инструкцией без гарантий, с оговоркой о ToS провайдера и о скором закрытии лазейки. Встраивать поддержку конкретных CDN и обещать работу при белых списках не стоит.",
+  "sources": [
+   "https://github.com/frank-underwood64/whitelists_bypass",
+   "https://github.com/frank-underwood64/whitelists_bypass/discussions/1",
+   "https://github.com/kort0881/russia-whitelist/discussions/21",
+   "https://habr.com/ru/articles/979128/",
+   "https://habr.com/ru/articles/1027276/",
+   "https://www.pvsm.ru/vpn/450362",
+   "https://habr.com/ru/articles/1021160/",
+   "https://www.cnews.ru/news/top/2026-08-31_mintsifry_potrebovalo_ot",
+   "https://xakep.ru/2026/09/01/whitelists-ips/",
+   "https://www.kommersant.ru/doc/8922142",
+   "https://www.vedomosti.ru/technology/news/2026/08/31/1224824-mintsifri-poprosilo",
+   "https://habr.com/ru/news/1076502/",
+   "https://github.com/XTLS/Xray-core/discussions/4113",
+   "https://newreleases.io/project/github/XTLS/Xray-core/release/v26.2.6",
+   "https://releasealert.dev/github/XTLS/Xray-core"
+  ]
+ },
+ {
+  "name": "Xray VLESS Reverse Proxy (новый упрощённый reverse, PR #5101)",
+  "verdict": "corrected",
+  "corrected": "Основное подтверждается. PR XTLS/Xray-core #5101 («VLESS protocol: Add Reverse Proxy (4) Command and extremely simple config», автор RPRX) влит 09.09.2025. Впервые вышел в релизе v25.9.11 от 10.09.2025. Дальше функцию дорабатывали: в v25.10.15 добавили передачу source/local IP:port во внутреннюю сеть, в v25.12.8 UUID с reverse по умолчанию запрещён для прямого проксирования, в v26.3.27 у reverse появился полноценный sniffing. Legacy reverse удалён весной 2026 года. Ошибка «legacy reverse has been removed» в 3x-ui фиксируется с 27–28.04.2026 (3x-ui v2.9.3 + Xray v26.4.25, issues #4115 и #4122). Точную версию Xray, где его удалили, по changelog установить не удалось.\n\nПоправки:\n1) Называть функцию «стабильной частью Xray 25.9+» неверно. В самом PR она помечена как нестабильная, без гарантий совместимости между версиями. Issue #6242 (01.06.2026): на Xray v26.5+ маршрутизация reverse перестала работать вместе с Observatory/балансировкой, в v26.4.25 работает. Issue закрыт как «not planned», исправления нет. В discussion #6536 (июль 2026) жалуются, что новый дизайн поддерживает только VLESS и плохо ложится на панели (Remnawave и др.).\n2) В 3x-ui поддержка уже не «частичная с ошибками legacy». Формат перенесён на новый начиная с v3.0.2. В v3.5.0 (12.07.2026) reverse-туннели сохраняются при правке и продлении клиентов. Reverse-тег на клиента задаётся в UI. При этом автогенерации клиентского конфига (outbound + routing) нет: feature request #5213 от 11.06.2026 открыт. Актуальная версия 3x-ui на сегодня: v3.9.0 от 03.10.2026.\n3) Датированных свидетельств, что reverse помогает именно против белых списков или ТСПУ в РФ, не найдено. Русскоязычные гайды по белым спискам (например, kort0881/russia-whitelist #21) используют обычный прямой каскад RU-VPS → зарубежный VPS, а не reverse.",
+  "worth_adding": "maybe",
+  "reasoning": "Факты о PR #5101 и об удалении legacy reverse проверил по репозиторию и issues, они верны. Сама функция существует и развивается. Как механизм обхода блокировок она не новая и не «ожившая». Это способ поменять направление установки соединения для каскада «РФ-мост ↔ зарубежная нода». Пригодится в узком сценарии: исходящие из российского облака на зарубежный IP режутся, а входящие на российский IP с зарубежного проходят. Сценарий правдоподобный, но реальными датированными отчётами из РФ не подтверждён: найденные гайды под белые списки используют прямой каскад. Против добавления:\n- Upstream помечает функцию как нестабильную, без совместимости между версиями.\n- В v26.5+ есть регрессия с Observatory, которую не исправляют.\n- Нужны два сервера, а наш установщик ставит один VPS.\n- 3x-ui не генерирует клиентский конфиг.\nЗа добавление: на сервере это только JSON Xray, новых зависимостей нет, клиентская часть для конечных пользователей не меняется (они подключаются к мосту обычным VLESS). Вывод: имеет смысл как опциональный режим «мост РФ ↔ выход» в будущей двухсерверной фазе с закреплённой проверенной версией Xray. В базовый набор протоколов добавлять не стоит.",
+  "sources": [
+   "https://github.com/XTLS/Xray-core/pull/5101",
+   "https://github.com/XTLS/Xray-core/releases?q=reverse&expanded=true",
+   "https://github.com/XTLS/Xray-core/issues/6242",
+   "https://github.com/XTLS/Xray-core/discussions/6536",
+   "https://github.com/MHSanaei/3x-ui/issues/4115",
+   "https://github.com/MHSanaei/3x-ui/issues/4122",
+   "https://github.com/MHSanaei/3x-ui/issues/5213",
+   "https://github.com/MHSanaei/3x-ui/releases",
+   "https://xtls.github.io/en/config/outbounds/vless.html",
+   "https://github.com/kort0881/russia-whitelist/discussions/21"
+  ]
+ },
+ {
+  "name": "Xray XDNS / XICMP / finalmask (Xray-core)",
+  "verdict": "corrected",
+  "corrected": "Хронология по репозиторию в основном верна. Даты слияния PR: #5560 XDNS — 2026-01-31; #5633 XICMP — 2026-02-02; #5657 header-custom/fragment/noise и #5685 Sudoku — 2026-03-07; #5872 resolvers/domains — 2026-04-11; #6123 AAAA&A — 2026-05-23; #6210 XMC — 2026-07-11; #6327 udpHop как UDP-маска — 2026-09-08; #6718 рефактор XDNS — 2026-09-29.\n\nПоследний стабильный релиз (latest) — v26.3.27 от 2026-03-27. Все теги после него, с v26.4.13 по v26.9.30 (2026-09-30), помечены как pre-release. Строка \"go.mod: Specify Go 1.27.x\" появилась 2026-09-08.\n\nКоммит от 2026-07-28 называется \"XHTTP client: Reduce default maxConnections from 6 to 3 for anti-TSPU\", то есть сделан против ТСПУ. 3x-ui v3.9.0 от 2026-10-03 действительно перешёл на core v26.9.30 и сам переводит сохранённые XDNS-маски на новый формат. В его заметках прямо сказано, что клиентам с XDNS нужен core ≥ v26.9.30.\n\nИсправления:\n1) PR #6303 от 2026-07-07 запрещает незашифрованные исходящие (outbounds) VLESS/Trojan в публичный интернет и убирает none/zero/plain у VMess и Shadowsocks. Это касается клиентских конфигов. Утверждение, что сервер с публичным inbound не стартует, неточное.\n2) В #6718 однострочный синтаксис XDNS заменён на структурированный JSON, добавлены lenLimit, labelLimit, edns0 и несколько типов запросов. Мейнтейнеры приняли поломку совместимости, потому что XDNS «сейчас не критично нужен» (現在不是刚需).\n3) Цитата с ntc.party приписана неверно. В теме 21884 нет постов про dnstt или XDNS за 30.03–02.04. На деле в РФ данные по XDNS в основном отрицательные:\n- ntc.party/t/23018 #50, 2026-04-02: XDNS при белых списках не работает, через DNS Яндекса тоже.\n- ntc.party/t/24845 #39, 2026-05-23: на мобильном Билайне в СПб «xray xdns туннель перестал работать».\n- ntc.party/t/24640 #8, 2026-05-12: MasterDnsVPN через DNS оператора и Яндекса показал 1.8–3 Мбит/с, это «лучше, чем у XDNS».\n- Там же, #9–14 (июнь 2026): жёсткие рейтлимиты у DNS операторов и Яндекса, шейпинг 53-го порта.\n- «DNSTT на Билайне всё» — пост от 2025-12-24 (ntc.party/t/19408 #134), а не от марта-апреля 2026.\n4) Работа XDNS для Telegram в Иране (март 2026) подтверждена только заявлением стороннего проекта MoaV (релиз v1.7.0), а не XTLS.\n5) Утверждение, что noise/salamander/sudoku помогают против ТСПУ, датированными данными из РФ не подтверждено.\n6) Клиенты: в v2rayN 7.19.5 был баг #9023, из-за которого finalmask не попадал в конфиг. Поддержка в Remnawave запрошена в issue #334. Поддержку в iOS-клиентах для нового формата (core ≥ 26.9.30) проверить не удалось.",
+  "worth_adding": "maybe",
+  "reasoning": "Проверил через gh api: релизы Xray-core, PR #5560/#5633/#5657/#5685/#5872/#6123/#6210/#6303/#6718, коммиты про maxConnections и Go 1.27, заметки релиза 3x-ui v3.9.0. Техническая часть кандидата подтверждается почти полностью, с одним исключением: #6303 касается исходящих соединений (outbounds), то есть клиентов.\n\nС тезисом «работает в РФ» хуже. Указанная страница ntc.party про DNS-туннели ничего не пишет. Поиск по форуму нашёл свежие посты (апрель-май 2026), где XDNS при белых списках не работает или перестал работать (Билайн СПб). Другие DNS-туннели (MasterDnsVPN) оказались быстрее. DNS-резолверы операторов и Яндекса режут по рейтлимиту, порт 53 шейпят. Поэтому «оживление» DNS-туннелей в РФ реально, но ненадёжно, и XDNS среди них не лидер.\n\nПочему maybe, а не yes:\n- Свежий формат есть только в pre-release core (26.9.30). Latest stable 26.3.27 со старым форматом несовместим.\n- Нужен собственный домен с делегированием NS на VPS.\n- Порт 53 конфликтует с stub-резолвером systemd-resolved на Ubuntu: надо биндить на публичный IP или отключать DNSStubListener.\n- Поддержка в клиентах неровная (баг v2rayN #9023, Remnawave #334, по iOS данных нет).\n- Скорость — десятки Кбит/с, в лучшем случае единицы Мбит/с.\n\nЕсли 3x-ui v3.9.0 уже стоит, опциональный экспериментальный XDNS-профиль как крайний резерв обойдётся дёшево. Но рекламировать его как обход белых списков нельзя. XICMP добавлять не стоит, свидетельств его работы в РФ нет.\n\nПолезный побочный вывод для текущего инсталлятора: в клиентских конфигах XHTTP задавать maxConnections (коммит anti-TSPU от 2026-07-28). Также стоит учесть #6303 для клиентских ссылок без шифрования.",
+  "sources": [
+   "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+   "https://github.com/XTLS/Xray-core/releases/tag/v26.9.30",
+   "https://github.com/XTLS/Xray-core/pull/5560",
+   "https://github.com/XTLS/Xray-core/pull/5633",
+   "https://github.com/XTLS/Xray-core/pull/5657",
+   "https://github.com/XTLS/Xray-core/pull/5685",
+   "https://github.com/XTLS/Xray-core/pull/5872",
+   "https://github.com/XTLS/Xray-core/pull/6123",
+   "https://github.com/XTLS/Xray-core/pull/6210",
+   "https://github.com/XTLS/Xray-core/pull/6303",
+   "https://github.com/XTLS/Xray-core/pull/6718",
+   "https://github.com/XTLS/Xray-core/issues/6692",
+   "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+   "https://ntc.party/t/23018/50",
+   "https://ntc.party/t/24845/39",
+   "https://ntc.party/t/24640/8",
+   "https://ntc.party/t/19408/134",
+   "https://github.com/2dust/v2rayN/issues/9023",
+   "https://github.com/remnawave/panel/issues/334",
+   "https://newreleases.io/project/github/MotherofallVPNs/MoaV/release/v1.7.0"
+  ]
+ }
+]

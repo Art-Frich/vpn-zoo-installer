@@ -1,0 +1,1343 @@
+[
+ {
+  "angle": "custom-stack: своя лёгкая единая админка (Go / Rust / Python / Node-Bun), библиотеки, эталонные панели, оценка трудозатрат на MVP",
+  "summary": "Главный вывод на 2026-10-04: писать полноценную панель с нуля почти наверняка не нужно. 3x-ui v3.9.0 (вышла 2026-10-03) уже умеет VLESS/Reality/XHTTP, Hysteria2 (через Xray, протокол hysteria v2), AmneziaWG 3.1 (amneziawg-go внутри процесса панели, начиная с v3.7.0) и TUIC v5 (нативный Go-сервер в v3.9.0). Ещё в ней есть клиент на несколько inbound, подписки, TOTP, scoped API-токены, OpenAPI и история метрик сервера. Если всё же делать своё, то лучше всего Go-«агрегатор»: один статический бинарник, около 10–20 МБ RSS, SQLite, templ+htmx. Он ходит в API 3x-ui, в HTTP-auth и Traffic Stats API Hysteria2 и в awgctrl. MVP такого агрегатора — примерно 2–4 недели. Самостоятельная панель со своим управлением Xray — 6–10 недель и выше. Rust экономнее по RAM, но медленнее в разработке. Python и Bun на 1–2 ГБ VPS заметно тяжелее и не дают одного бинарника.",
+  "items": [
+   {
+    "name": "3x-ui v3.9.0 (MHSanaei) — точка отсчёта «строить или переиспользовать»",
+    "what": "Панель, которая уже стоит в нашем инсталляторе. С v3.7–v3.9 покрывает почти весь GOAL: клиент привязывается к нескольким inbound, есть подписки, QR, лимиты, сроки, онлайн и IP, история CPU и метрик, OpenAPI, Bearer-токены со scope.",
+    "version_activity": "v3.9.0 от 2026-10-03, Xray-core v26.9.30. ~47.4k звёзд, GPL-3.0, Go. Релизы выходят каждые 1–3 недели: v3.7.0 08-24, v3.8.0 09-14, v3.8.5 09-16.",
+    "protocols": "VLESS/VMess/Trojan/SS с Reality/XHTTP; Hysteria2 (протокол hysteria, ссылки hysteria2://); AmneziaWG 3.1 (amneziawg-go в userspace/gVisor, без модуля ядра); TUIC v5 (нативно); WireGuard; MTProto (mtg). Внешний apernet hysteria-server и awg-quick панель НЕ видит.",
+    "users_traffic_metrics": "API /panel/api/clients/*: add, attach/detach, bulk, traffic/{email}, onlines, lastOnline, links/{email}, subLinks. /panel/api/server/*: status, cpuHistory, history/{metric}/{bucket}, xrayMetricsHistory. Есть уведомления в Telegram и Discord.",
+    "resources_security": "Один Go-бинарник + Xray, SQLite (с v3.5.0 можно PostgreSQL). Есть TOTP, LDAP, scoped и истекающие API-токены. В v3.9.0 закрыто несколько проблем безопасности, например воскрешение удалённого клиента и эскалация CLI-токена. Panel по HTTP :2053 в нашей схеме по-прежнему риск, нужен TLS или SSH-туннель.",
+    "fit": "Плюс: ноль своего кода, если перенести Hy2/AWG/TUIC внутрь 3x-ui. Минусы: AWG здесь userspace (медленнее модуля ядра), Hy2 работает на реализации Xray, а не apernet. Мы вставляем inbound прямо в x-ui.db, а v3.9 меняет схему миграциями — надо перейти на API. Иначе панель станет фасадом над тремя разными data plane.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.7.0",
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/config/amneziawg.mdx",
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/config/inbounds.mdx",
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/reference/api/clients.mdx"
+    ]
+   },
+   {
+    "name": "Go + SQLite (modernc/ncruces) + templ + htmx (или Datastar) — рекомендуемый свой стек",
+    "what": "Один статический бинарник (CGO_ENABLED=0) с встроенными через embed шаблонами и статикой. Сервер на net/http (в Go 1.22+ есть роутинг по методам), SSR через templ, интерактив через htmx, графики на uPlot.",
+    "version_activity": "templ v0.3.1020 (2026-05-10, MIT, 10.6k★). htmx v4.0.0 (2026-08-28, мажорная версия, 49.5k★). Datastar v1.0.4 (2026-09-21). modernc.org/sqlite v1.60.1 (2026-09-29, pure Go). ncruces/go-sqlite3 v0.35.6 (2026-09-23).",
+    "protocols": "Xray: родной gRPC-клиент (github.com/xtls/xray-core/app/{proxyman,stats}/command) или REST 3x-ui. Hy2: HTTP auth + Traffic Stats API. AWG: awgctrl-go или `awg show dump`. TUIC: через 3x-ui.",
+    "users_traffic_metrics": "gopsutil v4.26.9 даёт CPU, RAM, диск, сеть и uptime. Статус сервисов проверяется через systemctl или D-Bus (coreos/go-systemd). История — периодические снимки в SQLite (rollup по 1 мин, 1 ч, 1 день).",
+    "resources_security": "Idle RSS Go (net/http) 9.6 МБ, пик 19.7 МБ (arXiv 2609.11932). Docker не нужен. go-webauthn v0.18.2 (passkeys), pquerna/otp v1.5.0 (TOTP), bcrypt/argon2 из x/crypto. Нужно самим закрыть CSRF, rate-limit и TLS (autocert или Caddy).",
+    "fit": "Лучший баланс. Установка из bash: curl бинарника, юнит systemd, config в /etc/vpn-setup. Xray, Hysteria и 3x-ui написаны на Go, так что можно брать их типы и proto напрямую. Скорость разработки высокая. Минус: в templ+htmx нужно вручную продумать UX живых графиков (SSE).",
+    "sources": [
+     "https://github.com/a-h/templ/releases",
+     "https://github.com/bigskysoftware/htmx/releases/tag/v4.0.0",
+     "https://pkg.go.dev/modernc.org/sqlite?tab=versions",
+     "https://github.com/shirou/gopsutil/releases",
+     "https://github.com/go-webauthn/webauthn/releases",
+     "https://arxiv.org/html/2609.11932"
+    ]
+   },
+   {
+    "name": "Rust: axum + sqlx + askama/maud + htmx",
+    "what": "Один musl-бинарник, самый экономный по памяти. gRPC к Xray через tonic: proto из Xray-core нужно компилировать самим.",
+    "version_activity": "axum 0.8.9 (2026-04-14, MIT, 27.3k★). tonic ≈0.14 (12.5k★). sqlx активен (17.5k★). webauthn-rs v0.5.2 (2025-07-30). totp-rs v6.0.0 (2026-08-06). qrcode-rust v0.14.1 (2024-07, обновляется редко).",
+    "protocols": "Те же интеграции, но готовых клиентов Xray/Hysteria на Rust нет: нужно генерировать из proto, а для HTTP API Hy2 и 3x-ui писать свои типы.",
+    "users_traffic_metrics": "Метрики через крейт sysinfo/procfs, графики на фронте (uPlot). Функционально равноценен Go.",
+    "resources_security": "Idle RSS 5 МБ, пик 7.4 МБ (axum 0.8.9, arXiv 2609.11932). Docker не нужен. Безопасность памяти. Компиляция долгая, кросс-сборка через cross/zigbuild.",
+    "fit": "Выигрыш около 5–10 МБ RAM против Go на сервере, где Xray сам ест 50–200+ МБ, то есть разница несущественна. Разработка в 1.5–2 раза медленнее, нет родной экосистемы Xray. Брать, только если команда уже пишет на Rust.",
+    "sources": [
+     "https://github.com/tokio-rs/axum/releases",
+     "https://github.com/hyperium/tonic",
+     "https://github.com/kanidm/webauthn-rs",
+     "https://github.com/constantoine/totp-rs",
+     "https://arxiv.org/html/2609.11932"
+    ]
+   },
+   {
+    "name": "Python: FastAPI + HTMX/Jinja (стек Marzban/PasarGuard)",
+    "what": "Быстрое прототипирование, богатые библиотеки. Так устроены Marzban (бэкенд) и PasarGuard (Python + TypeScript-фронт).",
+    "version_activity": "FastAPI 0.142.2 (2026-09-30, 102.8k★). pyotp v2.10.0 (2026-06). py_webauthn v3.0.1 (2026-09-25). Marzban: последний релиз v0.8.4 от 2025-01-09, фактически стоит; преемник — PasarGuard v5.4.1 (2026-09-12).",
+    "protocols": "Xray gRPC через grpcio со своими стабами. Hy2 и 3x-ui через httpx. AWG через subprocess `awg`.",
+    "users_traffic_metrics": "psutil для метрик, APScheduler для снимков, qrcode/segno для QR.",
+    "resources_security": "Idle RSS 216 МБ (FastAPI+Granian, 4 воркера), с 1 воркером примерно 60–90 МБ. Нужны venv/uv и интерпретатор, один бинарник проблемен (PyInstaller или Nuitka). Обновления зависимостей ложатся на установщик.",
+    "fit": "Для VPS на 1 ГБ слабый вариант: RAM, хрупкий деплой из bash, медленный cold start. Скорость разработки максимальная, но выигрыш перед Go+htmx невелик.",
+    "sources": [
+     "https://github.com/fastapi/fastapi/releases",
+     "https://github.com/Gozargah/Marzban/releases",
+     "https://github.com/PasarGuard/panel",
+     "https://arxiv.org/html/2609.11932"
+    ]
+   },
+   {
+    "name": "Node/Bun: Hono + SvelteKit (или Nuxt, как в wg-easy)",
+    "what": "SPA или SSR на TypeScript. Bun умеет собрать один исполняемый файл командой `bun build --compile`.",
+    "version_activity": "Hono v4.13.12 (2026-09-30, 32.4k★). SvelteKit активен (20.8k★). SimpleWebAuthn v14.0.3 (2026-09-25). otpauth v9.5.2.",
+    "protocols": "Xray gRPC через @grpc/grpc-js со стабами из proto. HTTP API Hy2 и 3x-ui через fetch. AWG через child_process.",
+    "users_traffic_metrics": "systeminformation/os для метрик. Графики: apexcharts (wg-easy) или uPlot/Chart.js. QR через пакет qr.",
+    "resources_security": "Idle RSS Node около 68 МБ, пик около 183 МБ (Fastify, arXiv 2609.11932). Bun по ряду тестов ест больше. Бинарник Bun на linux-x64 около 99 МБ. Цепочка npm-зависимостей — заметная поверхность supply-chain атак.",
+    "fit": "Самый богатый UI-тулинг, но съедает 70–180 МБ RAM на 1–2 ГБ VPS, бинарник большой. Оправдан, только если нужен сложный SPA, но SPA можно и встроить в Go-бинарник.",
+    "sources": [
+     "https://github.com/honojs/hono/releases",
+     "https://github.com/MasterKale/SimpleWebAuthn",
+     "https://github.com/oven-sh/bun/issues/14546",
+     "https://arxiv.org/html/2609.11932",
+     "https://github.com/wg-easy/wg-easy/blob/master/src/package.json"
+    ]
+   },
+   {
+    "name": "Интеграция Xray: gRPC API (HandlerService/StatsService) против REST 3x-ui",
+    "what": "Родной API Xray умеет добавлять и удалять пользователей inbound на лету (AddUserOperation) и отдаёт счётчики user>>>email>>>traffic>>>uplink/downlink через QueryStats.",
+    "version_activity": "Xray-core: стабильный v26.3.27 (2026-03-27), пре-релизы v26.9.x (v26.9.30 от 2026-09-30). MPL-2.0, 41.9k★.",
+    "protocols": "VLESS, VMess, Trojan, SS (HandlerService). Hysteria и TUIC в 3x-ui идут своими путями.",
+    "users_traffic_metrics": "Счётчики только с момента старта Xray, накопление и сброс нужно делать самим. Стабильность proto между версиями не гарантирована.",
+    "resources_security": "Listen только на 127.0.0.1. Добавление через gRPC не сохраняется в config: после рестарта пользователи пропадают.",
+    "fit": "Пока Xray принадлежит 3x-ui, напрямую в gRPC писать НЕЛЬЗЯ: 3x-ui перезапишет конфиг и разойдётся со своей БД. Правильно ходить в /panel/api/clients с Bearer-токеном. gRPC подходит, только если своя панель сама владеет конфигом Xray.",
+    "sources": [
+     "https://xtls.github.io/en/config/api.html",
+     "https://github.com/XTLS/Xray-core/releases",
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/reference/api/api-tokens.mdx"
+    ]
+   },
+   {
+    "name": "Интеграция Hysteria2 (apernet): HTTP auth + Traffic Stats API",
+    "what": "auth.type=http: на каждое подключение сервер делает POST {addr, auth, tx}, ожидает ответ {ok, id}. Это даёт многопользовательский режим без рестарта: учётки живут в БД админки. trafficStats отдаёт GET /traffic (?clear=1), GET /online, POST /kick, GET /dump/streams.",
+    "version_activity": "app/v2.12.3 (2026-09-16), MIT, 22.6k★, активен.",
+    "protocols": "Hysteria2 (Salamander, masquerade и т. д., полный функционал apernet).",
+    "users_traffic_metrics": "tx/rx по id пользователя, число онлайн-устройств, kick. Историю нужно копить самим (опрос с clear=1).",
+    "resources_security": "Поднять trafficStats на 127.0.0.1 с secret. Auth-эндпоинт админки тоже держать на loopback. Если админка упала, новые подключения не пройдут — нужен кэш или fallback.",
+    "fit": "Простая и надёжная интеграция (около 1–2 дней работы). Убирает нашу «одну общую пароль-строку». Альтернатива — перенести Hy2 в 3x-ui, но это реализация Xray, а не apernet.",
+    "sources": [
+     "https://v2.hysteria.network/docs/advanced/Full-Server-Config/",
+     "https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/",
+     "https://github.com/apernet/hysteria/releases"
+    ]
+   },
+   {
+    "name": "Интеграция AmneziaWG: awgctrl-go / wgctrl-форки / `awg show dump`",
+    "what": "Чтение и управление peer-ами модуля ядра AWG: добавление и удаление peer, rx/tx по peer, время последнего handshake.",
+    "version_activity": "Advanced-WG/awgctrl-go: форк wgctrl с поддержкой AWG v2, обновлён 2026-10-02, 3★. Jipok/wgctrl-go: 3★, 2026-09-28. Оба почти без пользователей. amnezia-vpn/amneziawg-go: 1.9k★, 2026-09-20.",
+    "protocols": "AmneziaWG 2.0 (kernel, ppa:amnezia/ppa). Профиль 3.x нужно проверять отдельно.",
+    "users_traffic_metrics": "Счётчики байтов по peer сбрасываются при down интерфейса, накопление нужно делать самим. Онлайн определяется по latest-handshake < 3 мин. Конфиг и QR клиента генерировать самим.",
+    "resources_security": "Нужен root или CAP_NET_ADMIN. Сохранять peer-ы в awg0.conf (awg-quick save или своя запись), иначе потеряются при перезагрузке.",
+    "fit": "Самый надёжный путь — `awg show awg0 dump` и `awg set`. Форки awgctrl-go — чистый Go, но риск «bus factor 1». Альтернатива: встроенный AWG 3.1 в 3x-ui (userspace).",
+    "sources": [
+     "https://github.com/Advanced-WG/awgctrl-go",
+     "https://github.com/Jipok/wgctrl-go",
+     "https://github.com/amnezia-vpn/amneziawg-go"
+    ]
+   },
+   {
+    "name": "Эталон: s-ui (alireza0) — Go-панель для sing-box",
+    "what": "Мультипротокольная панель на sing-box (Go-бэкенд + Vue). Хороший образец архитектуры «один Go-бинарник + встроенное ядро + SQLite».",
+    "version_activity": "v1.6.3 (2026-09-16), ~10k★, GPL-3.0, активна (push 2026-09-30).",
+    "protocols": "VLESS/Reality, VMess, Trojan, Hysteria2, TUIC, ShadowTLS, WireGuard и др. (sing-box). AmneziaWG нет.",
+    "users_traffic_metrics": "Клиенты на нескольких inbound, лимиты и сроки, трафик по клиенту, подписки, базовые метрики.",
+    "resources_security": "Один бинарник плюс SQLite, Docker не обязателен. Лицензия GPL-3.0: копирование кода заражает лицензией.",
+    "fit": "Образец для своего Go-агрегатора (модель «клиент → много inbound», подписки). Как замена нашему зоопарку слабее 3x-ui v3.9: нет AWG, другое ядро.",
+    "sources": [
+     "https://github.com/alireza0/s-ui"
+    ]
+   },
+   {
+    "name": "Эталоны «тяжёлого» класса: Remnawave, PasarGuard, Hiddify",
+    "what": "Мультинодовые панели уровня провайдера: Remnawave (NestJS/TS), PasarGuard (Python+TS, преемник Marzban), Hiddify-Manager (Python).",
+    "version_activity": "Remnawave panel 3.4.4 (2026-09-12, 5.2k★, AGPL-3.0). PasarGuard v5.4.1 (2026-09-12, 2.7k★, AGPL-3.0). Hiddify-Manager v13.0.3 (2026-09-26, 9.3k★, GPL-3.0).",
+    "protocols": "В основном Xray (и sing-box у Hiddify), Hysteria2/TUIC через ядра. Нативного AWG нет или он ограничен.",
+    "users_traffic_metrics": "Развитые пользователи, подписки, трафик, биллинг, ноды, боты.",
+    "resources_security": "Remnawave: Docker Compose + PostgreSQL + Redis/Valkey, панель требует минимум 2 ГБ RAM и 2 ядра (рекомендовано 4/4). Для VPS на 1–2 ГБ с VPN на нём же избыточно.",
+    "fit": "Брать как источник UX и модели данных (пользователь, хосты, шаблоны подписок), но не как стек: слишком тяжело для одиночного VPS.",
+    "sources": [
+     "https://github.com/remnawave/panel",
+     "https://docs.rw/docs/install/requirements",
+     "https://github.com/PasarGuard/panel",
+     "https://github.com/hiddify/Hiddify-Manager"
+    ]
+   },
+   {
+    "name": "Эталоны «узкие»: wg-easy v15, Blitz (Hy2), форки lucx-ui / 3ax-ui",
+    "what": "wg-easy — админка WireGuard на Nuxt 4 + SQLite (libsql/drizzle), otpauth, qr, apexcharts, argon2. Blitz — панель Hysteria2 на Python. lucx-ui и 3ax-ui — форки 3x-ui с AWG и сайдкарами.",
+    "version_activity": "wg-easy v15.4.0 (2026-08-14, 27k★, AGPL-3.0). Blitz 2.5.3: репо АРХИВИРОВАН (2026-07). lucx-ui: 226★, создан 2026-05, push 2026-10-03, GPL-3.0. 3ax-ui: 101★, GPL-3.0.",
+    "protocols": "wg-easy: WireGuard (не AWG). Blitz: Hy2. lucx-ui: Xray + AWG до 3.1 + NaiveProxy, mieru и др.",
+    "users_traffic_metrics": "wg-easy: peer-ы, QR, графики трафика, 2FA, OIDC. Форки: всё от 3x-ui.",
+    "resources_security": "wg-easy работает в Docker на Node, это ощутимо по RAM. Форки — малые команды, риск заброса и безопасности.",
+    "fit": "wg-easy полезен как готовый список UX-фич для WG/AWG-части. Архивация Blitz показывает риск узких Hy2-панелей. Форки 3x-ui после v3.7–v3.9 почти потеряли смысл: AWG есть в апстриме.",
+    "sources": [
+     "https://github.com/wg-easy/wg-easy",
+     "https://github.com/ReturnFI/Blitz",
+     "https://github.com/AlexeyLCP/lucx-ui",
+     "https://github.com/coinman-dev/3ax-ui"
+    ]
+   },
+   {
+    "name": "Оценка трудозатрат MVP (собственная оценка, 1 разработчик, Go)",
+    "what": "Вариант A — агрегатор поверх 3x-ui API + Hy2 HTTP auth/stats + awg dump + gopsutil, UI на templ+htmx. Вариант B — самостоятельная панель, которая сама владеет конфигами Xray, Hy2 и AWG.",
+    "version_activity": "Оценка экспертная, не по источнику: A ≈ 3–5k LOC, 2–4 недели; B ≈ 10–15k LOC, 6–10 недель плюс постоянная поддержка изменений Xray (схемы finalmask/XDNS меняются ежемесячно).",
+    "protocols": "A: всё, что в 3x-ui, плюс внешние Hy2 и AWG-kernel. B: только то, что реализуем сами (VLESS/Reality/XHTTP, Hy2, AWG; TUIC и др. позже).",
+    "users_traffic_metrics": "Разбивка A: auth+TOTP/passkey 2–3 дня; модель пользователя и фан-аут на 3 backend-а 4–6; подписка, ссылки и QR 2–3; сбор трафика и история 3–4; метрики и здоровье сервисов 2; UI 4–6; установщик и systemd 1–2.",
+    "resources_security": "A: один бинарник около 15–25 МБ RAM, SQLite, без Docker. Главный риск — синхронизация состояния между 3 источниками правды (идемпотентный reconcile-цикл).",
+    "fit": "A оправдан, только если оставляем apernet hysteria-server и AWG на модуле ядра. Если согласиться на Hy2 и AWG внутри 3x-ui v3.9, то MVP = 0 дней: достаточно настроить 3x-ui через API и закрыть панель TLS.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/reference/api/server.mdx",
+     "https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/",
+     "https://github.com/Advanced-WG/awgctrl-go"
+    ]
+   }
+  ],
+  "key_takeaways": [
+   "Сначала решить «строить или переиспользовать». 3x-ui v3.9.0 (2026-10-03) уже покрывает весь GOAL в одном Go-процессе: VLESS/Reality/XHTTP, Hysteria2, AmneziaWG 3.1 (userspace), TUIC v5, клиент на несколько inbound, подписки и QR, TOTP, scoped API-токены, история метрик сервера.",
+   "Своя админка оправдана, только если мы сознательно держим apernet hysteria-server и AWG на модуле ядра. Тогда это тонкий Go-агрегатор, а не новая панель: Xray через REST 3x-ui, Hy2 через HTTP auth и Traffic Stats API, AWG через `awg show dump`/awgctrl-go, метрики через gopsutil.",
+   "Стек — Go: один статический бинарник + systemd, idle RSS около 10 МБ (пик около 20 МБ). modernc.org/sqlite v1.60.1 без CGO, templ v0.3.1020 + htmx 4.0 (мажорный релиз 2026-08-28, учесть миграцию) или Datastar, uPlot для графиков, go-webauthn v0.18.2 + pquerna/otp для passkey/TOTP.",
+   "Rust (axum 0.8.9) экономит ещё около 5 МБ, но на сервере, где Xray ест 50–200+ МБ, это несущественно. Разработка медленнее, нет родных Xray-типов. Python (около 60–216 МБ) и Node/Bun (около 70–180 МБ, бинарник Bun около 99 МБ) плохо подходят для VPS на 1–2 ГБ.",
+   "Нельзя добавлять пользователей в Xray напрямую через gRPC, пока конфигом владеет 3x-ui: изменения не сохраняются и расходятся с её БД. Источник правды для Xray-пользователей — /panel/api/clients с Bearer-токеном.",
+   "Наш инсталлятор пишет inbound прямо в /etc/x-ui/x-ui.db, а 3x-ui v3.7–v3.9 делает автоматические миграции схемы. Нужно переходить на API: x-ui setting -getApiToken → /panel/api/inbounds/add и clients/add.",
+   "Hysteria2 с auth.type=http сразу даёт многопользовательский режим без рестартов (POST {addr,auth,tx} → {ok,id}) и учёт трафика по id. Сейчас у нас одна общая пароль-строка, это главный пробел в управлении пользователями.",
+   "Оценка (экспертная): MVP агрегатора — 2–4 недели, около 3–5k LOC на Go. Самостоятельная панель со своими конфигами Xray, Hy2 и AWG — 6–10 недель и постоянная гонка за изменениями Xray. Главный технический риск — reconcile состояния между тремя источниками правды.",
+   "Тяжёлые эталоны (Remnawave: Docker + Postgres + Redis, минимум 2 ГБ RAM; PasarGuard; Hiddify) брать только как образец UX и модели данных. Узкие панели рискованны: Blitz (Hy2) архивирован в 2026-07, у форков AWG-wgctrl около 3★."
+  ]
+ },
+ {
+  "angle": "awg-management: как управлять пирами AmneziaWG 2.0/3.x через UI/API и как снимать статистику с ядра и применять изменения на лету",
+  "summary": "Главная новость с 24.08.2026: в MHSanaei 3x-ui v3.7.0 появилась нативная поддержка AmneziaWG 3.1 как inbound. Внутри работает встроенный userspace amneziawg-go на gVisor, и трафик идёт через Xray-статистику. Самая актуальная версия — v3.9.0 от 03.10.2026. Значит, AWG-клиентов можно вести в той же панели и с теми же лимитами и сроками, что у VLESS, только это другой dataplane, не kernel awg0. Есть оговорки: на старте была низкая скорость, H1-H4 генерируются одиночными значениями (issue #6557), и в 3x-ui регулярно находят уязвимости. Среди отдельных панелей поддержка такая. wg-easy v15.x поддерживает AWG за флагом EXPERIMENTAL_AWG: 2.0 есть в релизе, 3.1 слита в master 09.09.2026 и в релиз ещё не вошла. WGDashboard поддерживает только 2.0, по 3.x есть открытый issue. wg-portal, Firezone и Netbird AWG не поддерживают. Для своей админки в инсталлере достаточно `awg show all dump` плюс `awg set` / `awg syncconf <(awg-quick strip)`.",
+  "items": [
+   {
+    "name": "MHSanaei/3x-ui — нативный AmneziaWG inbound",
+    "what": "В уже используемой панели появился тип inbound AmneziaWG. Внутри процесса панели работает amneziawg-go на userspace-стеке gVisor. Пакеты расшифровываются и через per-peer SOCKS5 отдаются в Xray, поэтому статистика, лимиты и маршрутизация Xray действуют и для AWG.",
+    "version_activity": "v3.7.0 (24.08.2026) — нативный AWG 3.1. v3.8.0 (14.09.2026) — AWG outbound, AWG в Clash-подписках и пачка исправлений скорости и MTU. Последний релиз v3.9.0 (03.10.2026). Около 47.4k звёзд, GPL-3.0, развивается очень активно.",
+    "protocols": "VLESS/Reality/XHTTP, VMess, Trojan, SS, WireGuard, Hysteria, TUIC v5 (с v3.8.0), MTProto, AmneziaWG: Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5 и все параметры 3.1 (HeaderProtectionKey, ContentPaddingAddition, тайминги, RandomTrailers, DisableCookies).",
+    "users_traffic_metrics": "AWG-клиенты — это обычные клиенты 3x-ui: трафик, лимиты, срок действия, подписки (в том числе Clash с AWG-прокси), CPU/RAM/сеть на дашборде, scoped API tokens (с v3.7.0). Есть кнопка regenerate, которая заново рандомизирует набор параметров обфускации.",
+    "resources_security": "Не нужны ни kernel module, ни DKMS, ни Docker. Минусы: userspace медленнее ядра. В v3.7.0 был баг со скоростью около 20 Мбит/с (#6423), его исправили позже. Opt-in kernel datapath отклонён (#6419 закрыт, #6378 открыт). H1-H4 генерируются одиночными значениями, без диапазонов, что ломает часть клиентов AWG 2.0 (#6557, открыт). Advisories: CVE-2026-55477 (high, 06.2026); 03.10.2026 опубликованы GHSA-h4x8 (high, запись файла от root), 2FA bypass и SSRF.",
+    "fit": "Лучший кандидат, чтобы свести всё в одну админку без своего кода. AWG-пользователь получает тот же email-ID и тот же учёт, что VLESS. Минусы: это второй AWG-стек рядом с ядерным awg0 из инсталлера (нужен выбор или миграция), userspace-скорость на 1 vCPU и большая атакуемая поверхность. Панель обязательно закрывать (TLS, SSH-туннель или WG-only доступ) и держать на последней версии. Hysteria2 (apernet, standalone) этим не покрывается.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/pull/6105",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.7.0",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://github.com/MHSanaei/3x-ui/issues/6557",
+     "https://github.com/MHSanaei/3x-ui/issues/6378",
+     "https://github.com/MHSanaei/3x-ui/issues/6423",
+     "https://github.com/MHSanaei/3x-ui/security/advisories"
+    ]
+   },
+   {
+    "name": "wg-easy v15 (EXPERIMENTAL_AWG)",
+    "what": "Популярный WireGuard и Web UI в Docker (Nuxt/Node.js). Начиная с v15 умеет работать на ядерном модуле AmneziaWG: при EXPERIMENTAL_AWG=true сам находит модуль, а OVERRIDE_AUTO_AWG=awg|wg задаёт режим принудительно. В v16 AWG планируют включить по умолчанию.",
+    "version_activity": "v15.4.0 (14.08.2026): OAuth/OIDC, исправлен подъём интерфейса на AWG 3.0 (#2723). Поддержка AWG 3.1 (PR #2804) слита в master 09.09.2026 и в релиз пока не вошла. Также в master: имя интерфейса настраивается (#2826, 24.09.2026). Около 27k звёзд, AGPL-3.0, коммиты еженедельно.",
+    "protocols": "Только WireGuard/AWG. Поддерживаются AWG 2.0 (I1-I5, S3/S4, диапазоны H1-H4 с v15.3.0) и 3.1 (только master). В UI I1-I5 вручную не задаются, их ставят по документации Amnezia. QR-код для приложения AmneziaVPN сделать нельзя (#2417 закрыт).",
+    "users_traffic_metrics": "Клиенты: создание, включение и выключение, срок действия, one-time links, QR и .conf, per-client firewall. Tx/Rx-графики подключённых клиентов (только live, без долгой истории), Prometheus /metrics с endpoint пиров. 2FA и OIDC. Метрик сервера (CPU/RAM) нет.",
+    "resources_security": "Контейнер Node.js с NET_ADMIN и SYS_MODULE, нужен модуль amneziawg на хосте. Healthcheck для awg не работает (#2376 открыт). Публичных GHSA нет. 25.09.2026 приватные ключи убраны из API деталей клиента (#2822). Интерфейс и его конфиг панель держит сама.",
+    "fit": "Хорош как готовый AWG-модуль под ядро, но он забирает интерфейс себе (свой wg0 и своя БД) и плохо уживается с awg0 из инсталлера. Это ещё одна отдельная панель и ещё один логин, единой учётки пользователя нет. Для зоопарка подходит как временный вариант или источник идей: API, Prometheus-метрики, срок действия.",
+    "sources": [
+     "https://github.com/wg-easy/wg-easy/releases/tag/v15.4.0",
+     "https://github.com/wg-easy/wg-easy/pull/2804",
+     "https://github.com/wg-easy/wg-easy/blob/master/docs/content/advanced/config/amnezia.md",
+     "https://github.com/wg-easy/wg-easy/issues/2376",
+     "https://github.com/wg-easy/wg-easy/issues/2723"
+    ]
+   },
+   {
+    "name": "WGDashboard",
+    "what": "Python-панель (Flask/gunicorn и Vue) для WireGuard и AmneziaWG. Работает с конфигами в /etc/wireguard и /etc/amnezia, в том числе с уже существующими интерфейсами. Ставится на голую систему или в Docker.",
+    "version_activity": "v4.3.3 (10.04.2026). После неё релизов нет, ветка development активна (push 07.09.2026). Около 3.7k звёзд, Apache-2.0, около 100 открытых issues. После v4.3.3 нужен Python 3.12 или новее.",
+    "protocols": "WG и AWG 2.0 (I1-I5, S3/S4; поддержку 2.0 закрыли в #1080 в 02.2026). AWG 3.x не поддерживается: issue #1345 открыт с 10.08.2026. H1-H4 в модели хранятся как числа, поддержка диапазонов не подтверждена.",
+    "users_traffic_metrics": "Пиры: создание, ограничение (restrict) и удаление, QR и .conf, ссылки для расшаривания. Запланированные задачи: срок действия и лимит трафика. История трафика и endpoint пиров в SQLite/Postgres (с v4.3.0.2 её можно отключать и чистить). Есть клиентский портал. Метрики сервера: CPU, RAM, диск, сеть.",
+    "resources_security": "Python и venv, SQLite или Postgres. CVE-2026-44343 (critical): неаутентифицированный доступ к файловой системе хоста в версиях 4.2.x–4.3.1, исправлено в 4.3.2/4.3.3. Пароли длиннее 72 байт роняли панель (#1344).",
+    "fit": "По функциям ближе всего к задаче для AWG: умеет историю трафика, лимиты и подхватывает существующий awg0. Но нет 3.x, мейнтейнеры медлят и недавно была критическая уязвимость. Годится как AWG-вкладка только при работе в AWG 2.0 и с панелью, закрытой от интернета.",
+    "sources": [
+     "https://github.com/WGDashboard/WGDashboard/releases/tag/v4.3.3",
+     "https://github.com/WGDashboard/WGDashboard/issues/1345",
+     "https://github.com/WGDashboard/WGDashboard/issues/1080",
+     "https://github.com/WGDashboard/WGDashboard/security/advisories/GHSA-rrf5-q4fp-qvgm"
+    ]
+   },
+   {
+    "name": "wg-portal (h44z)",
+    "what": "Go-портал для WireGuard: управление интерфейсами и пирами, LDAP/OIDC, REST API. Умеет импортировать существующие интерфейсы.",
+    "version_activity": "v2.3.1 (12.06.2026), push 28.09.2026. Около 1.8k звёзд, MIT.",
+    "protocols": "Только ванильный WireGuard. Поддержки AmneziaWG нет: issue #649 «Support Amnezia» открыт, последняя активность 03.2026.",
+    "users_traffic_metrics": "Пользователи и пиры, self-service, Prometheus-метрики пиров с меткой пользователя (v2.2.2), PKCE и группы OIDC.",
+    "resources_security": "Один Go-бинарник с SQLite. Публичных CVE по последним версиям не нашли.",
+    "fit": "Для AWG не подходит. Полезен только как архитектурный образец: Go, импорт интерфейса, метки пользователя в метриках.",
+    "sources": [
+     "https://github.com/h44z/wg-portal/issues/649",
+     "https://github.com/h44z/wg-portal/releases/tag/v2.3.1"
+    ]
+   },
+   {
+    "name": "amnezia-wg-easy и форки awg-easy",
+    "what": "Старые форки wg-easy с AmneziaWG (на amneziawg-go или ядре) и множество мелких клонов awg-easy.",
+    "version_activity": "spcfox/amnezia-wg-easy: около 239 звёзд, в архиве (последний push 24.11.2025). w0rng/amnezia-wg-easy: около 617 звёзд, последний push 22.09.2024, заброшен. Клоны awg-easy (ne0x, bluesky816, zin-awg-easy3 и другие) — 0–13 звёзд, проекты одного автора.",
+    "protocols": "В основном AWG 1.x/1.5. Отдельные клоны заявляют 2.0 или 3.1 без проверки.",
+    "users_traffic_metrics": "Как в wg-easy v14: CRUD клиентов, QR, live Tx/Rx.",
+    "resources_security": "Docker и Node. Не поддерживаются, безопасность не отслеживается.",
+    "fit": "Не брать. Их функции перешли в upstream wg-easy v15 (EXPERIMENTAL_AWG), а spcfox уже ушёл в архив.",
+    "sources": [
+     "https://github.com/spcfox/amnezia-wg-easy",
+     "https://github.com/w0rng/amnezia-wg-easy",
+     "https://github.com/wg-easy/wg-easy/pull/2226"
+    ]
+   },
+   {
+    "name": "AlexisHW/amneziawg-web-ui",
+    "what": "Web UI и REST API для AmneziaWG в Docker: Flask, Vue, nginx и supervisor. Внутри контейнера собраны amneziawg-go (userspace) и amneziawg-tools.",
+    "version_activity": "Создан 03.11.2025, push 03.10.2026. Около 264 звёзд, релизов нет, лицензия не указана.",
+    "protocols": "По README: AWG 1.5, 2.0 и 3.1, I1-I5 и S3-S4 настраиваются. Поддерживает несколько AWG-серверов.",
+    "users_traffic_metrics": "Клиенты: создание и удаление, конфиг текстом, файлом или QR. Трафик, последний handshake и IP с автообновлением, live-статус. REST API: /api/servers, /api/servers/{id}/clients и другие. Сроков действия, лимитов и истории нет.",
+    "resources_security": "Alpine с Python, nginx и supervisor. Userspace amneziawg-go медленнее ядра. Лицензии нет, автор один, аудита нет.",
+    "fit": "Пригодится как пример API для AWG-бэкенда. В зоопарк брать не стоит: дублирует awg0 в userspace, нет учёта трафика и неясная лицензия.",
+    "sources": [
+     "https://github.com/AlexisHW/amneziawg-web-ui"
+    ]
+   },
+   {
+    "name": "Серверная часть самого Amnezia (AmneziaVPN client + Docker)",
+    "what": "У Amnezia нет серверной веб-панели и API. Десктоп или мобильный клиент AmneziaVPN заходит по SSH, поднимает контейнер amnezia-awg (на образе amneziavpn/amneziawg-go) и правит /opt/amnezia/awg/awg0.conf и clientsTable.",
+    "version_activity": "amnezia-client 5.0.3.0 (18.09.2026), около 15.3k звёзд, GPL-3.0. Шаблон server_scripts/awg уже содержит параметры 3.1.",
+    "protocols": "AWG (legacy и 2.0/3.x), а также OpenVPN+Cloak, XRay и другие контейнеры Amnezia.",
+    "users_traffic_metrics": "В приложении есть список пользователей (clientManagementModel) и отзыв доступа. Изменения применяются командой `awg syncconf awg0 <(awg-quick strip …)` внутри контейнера. Трафика по пользователям и метрик нет. Отдельно есть amnezia-vpn/amneziawg-exporter (Python, Redis, Prometheus; около 41 звезды, последний push кода 05.2025).",
+    "resources_security": "Docker, userspace-модуль, управление по SSH с правами root, интерфейса панели нет.",
+    "fit": "Как основа админки не подходит. Ценен как эталон: формат vpn://, поля шаблона 3.1 и подтверждение, что syncconf из strip — штатный способ менять пиры без разрыва сессий.",
+    "sources": [
+     "https://github.com/amnezia-vpn/amnezia-client/tree/dev/client/server_scripts/awg",
+     "https://github.com/amnezia-vpn/amnezia-client/blob/dev/client/core/controllers/selfhosted/usersController.cpp",
+     "https://github.com/amnezia-vpn/amneziawg-exporter"
+    ]
+   },
+   {
+    "name": "Своё решение на ядре: awg show dump + awg set/syncconf",
+    "what": "Собственный бэкенд админки поверх ядерного awg0, который уже ставит инсталлер, без сторонней панели.",
+    "version_activity": "amneziawg-tools v3.1.20260812 (12.08.2026). Kernel module v3.1.20260906, PPA amnezia раздаёт 3.1.",
+    "protocols": "Любые AWG 2.0/3.x, которые поддерживает установленный модуль.",
+    "users_traffic_metrics": "`awg show awg0 dump` в версии 3.x: строка интерфейса около 30 полей (Jc…H1-H4 как диапазоны, I1-I5, HPK, 5 таймингов, RT, DC, fwmark). Строка пира — 8 полей (с `all` — 9): pubkey, psk, endpoint, allowed-ips, latest-handshake (unix), rx, tx, keepalive. Пиры парсить по числу полей. rx/tx сбрасываются при рестарте интерфейса или удалении пира, поэтому писать дельты в SQLite с детекцией сброса.",
+    "resources_security": "Нужны только awg и sqlite, почти ноль RAM. Изменения: `awg set awg0 peer PUB allowed-ips 10.x/32 preshared-key FILE` (добавить), `awg set awg0 peer PUB remove` (выключить), `awg syncconf awg0 <(awg-quick strip awg0)` (меняет только разницу, остальные пиры не рвёт). Смена S/H/HPK — это рестарт и перевыдача всем.",
+    "fit": "Самый лёгкий и предсказуемый путь для единой админки зоопарка. Конфиг-файл остаётся источником истины, а «выключить» означает убрать пира из ядра, оставив его в БД. Признак «онлайн»: handshake не старше ~180 с, но в 3.x тайминги можно рандомизировать (RekeyAfterTime), поэтому порог брать с запасом.",
+    "sources": [
+     "https://github.com/amnezia-vpn/amneziawg-tools/blob/master/src/show.c",
+     "https://github.com/amnezia-vpn/amneziawg-tools/releases/tag/v3.1.20260812",
+     "https://github.com/amnezia-vpn/amneziawg-linux-kernel-module/tags"
+    ]
+   },
+   {
+    "name": "bivlked/amneziawg-installer",
+    "what": "Bash-инсталлер AWG 2.0/3.x на ядре (DKMS) без Docker и без панели. Есть скрипт manage_amneziawg.sh с командами add, remove, list и stats, hot-reload и `--expires=7d` (cron /etc/cron.d/awg-expiry).",
+    "version_activity": "v5.37.0 (27.09.2026), около 1.3k звёзд, MIT, активен.",
+    "protocols": "Модуль 3.x из PPA (на ядре 6.7 и новее), но генерируемые конфиги остаются в профиле 2.0. Поля 3.0 пока не выдаются, потому что не все клиенты их поддерживают. На ядрах старше 6.7 ставится 2.0. Предупреждает, что на Ubuntu 26.04 (ядро 7.0.0-38) модуль из PPA с 01.10.2026 не собирается.",
+    "users_traffic_metrics": "CLI: stats по пирам, срок действия, QR и vpn://. Веб-интерфейса нет.",
+    "resources_security": "Ядро, ufw, fail2ban, sysctl-хардениг, около 1 ГБ RAM достаточно.",
+    "fit": "Близкий по духу соседний проект. Стоит взять логику add/remove с hot-reload, expiry через cron и осторожный подход «3.x модуль + 2.0 конфиги» для совместимости клиентов.",
+    "sources": [
+     "https://github.com/bivlked/amneziawg-installer",
+     "https://github.com/bivlked/amneziawg-installer/releases/tag/v5.37.0"
+    ]
+   },
+   {
+    "name": "W-UI (AbolfazlTafakori/w-ui)",
+    "what": "Коммерческая панель для WireGuard, AmneziaWG и OpenVPN. Квоты трафика задаются в ядре через nftables quota (нужен nft_quota), есть срок действия, лимит устройств, подписки, Telegram-бот, API-токены и 2FA TOTP.",
+    "version_activity": "Создан 02.09.2026, v2.6.4 (02.10.2026), около 32 звёзд, AGPL-3.0. Очень молодой проект с частыми релизами.",
+    "protocols": "WG, AWG (поддерживаемая версия AWG в README не уточнена), OpenVPN.",
+    "users_traffic_metrics": "Квоты на уровне ядра с перерасходом не больше одного пакета, срок действия, ограничение скорости, подписки, QR. Узлы через API. /api/system показывает режим работы.",
+    "resources_security": "SQLite или Postgres, nftables. Случайный порт, путь и логин администратора, Let's Encrypt, CSP/HSTS.",
+    "fit": "Слишком молодой, чтобы на него полагаться, но идея ценная: лимит трафика по AWG ставить через nft quota на IP пира, а не опросом. Это хорошо ложится в собственную админку.",
+    "sources": [
+     "https://github.com/AbolfazlTafakori/w-ui"
+    ]
+   },
+   {
+    "name": "Firezone и NetBird",
+    "what": "Zero-trust и mesh-платформы на WireGuard с управляющим сервером.",
+    "version_activity": "Firezone: около 9.1k звёзд, Apache-2.0, активен. NetBird v0.80.0 (01.10.2026), около 29.7k звёзд.",
+    "protocols": "Только ванильный WireGuard. Firezone: AWG не упоминается, issue про обфускацию нет. NetBird: PR #4655 «AmneziaWG support» открыт с 16.10.2025, команда на него не отвечает. Issue #1096 про обфускацию открыт.",
+    "users_traffic_metrics": "SSO, ACL, устройства. Это не VPN-выход в интернет для нескольких пользователей в стиле VPS.",
+    "resources_security": "Тяжёлые: нужны несколько сервисов и Postgres (Firezone) или management, signal и relay (NetBird). На 1–2 ГБ RAM неуместны.",
+    "fit": "Не подходят: нет AWG, другая модель (mesh или ZTNA) и слишком большой расход ресурсов.",
+    "sources": [
+     "https://github.com/netbirdio/netbird/pull/4655",
+     "https://github.com/netbirdio/netbird/issues/1096",
+     "https://github.com/firezone/firezone"
+    ]
+   }
+  ],
+  "key_takeaways": [
+   "Поменялся расклад: в 3x-ui с v3.7.0 (24.08.2026) есть нативный AWG 3.1 в userspace. AWG-пользователей можно вести в той же панели, что VLESS, с общими лимитами, сроками и подписками. Но это отдельный dataplane: без ядра и пока с открытыми issues про скорость и H-диапазоны.",
+   "В итоге выбор между двумя путями. (A) Мигрировать AWG в 3x-ui: меньше своего кода, но медленнее и больше атакуемая поверхность. (B) Оставить ядерный awg0 и написать тонкий AWG-адаптер в собственной админке. Для 1–2 vCPU и максимальной скорости разумнее (B).",
+   "Готовые отдельные AWG-панели: только wg-easy поддерживает 3.1 (в master, не в релизе 15.4.0). WGDashboard держится на 2.0 и недавно имел CVE-2026-44343 (critical). wg-portal, Firezone и NetBird AWG не поддерживают. Старые amnezia-wg-easy в архиве.",
+   "Сбор статистики с ядра: `awg show awg0 dump`. Строка пира имеет 8 полей (с `all` — 9: pubkey, psk, endpoint, allowed-ips, handshake, rx, tx, keepalive), строка интерфейса в 3.x — около 30 полей. Счётчики сбрасываются при рестарте или удалении пира, поэтому хранить дельты в SQLite с детекцией сброса.",
+   "Применять на лету без разрыва сессий: `awg set awg0 peer PUB allowed-ips …` или `… remove` для одного пира, `awg syncconf awg0 <(awg-quick strip awg0)` для диффа (так делает и сам Amnezia). Смена S1-S4, H1-H4 или HeaderProtectionKey требует рестарта и перевыдачи конфигов всем.",
+   "Совместимость клиентов: параметры 3.x (HPK, ContentPaddingAddition, тайминги, RandomTrailers, DisableCookies) старые клиенты отвергают. Профиль 2.0 стоит оставить по умолчанию, а 3.x включать отдельным профилем. H1-H4 генерировать диапазонами, иначе ломаются Keenetic и клиенты 2.0.",
+   "«Выключить» пользователя AWG: убрать пира из ядра и оставить запись в БД. Лимит трафика лучше ставить через nftables quota на /32 пира (как в W-UI), а не опросом. Срок действия — по таймеру.",
+   "Статус «онлайн» определять по возрасту latest-handshake с запасом: в 3.x RekeyAfterTime может быть диапазоном. Для Prometheus есть официальный amneziawg-exporter (Python и Redis, давно не обновлялся), но проще писать метрики самим из того же dump."
+  ]
+ },
+ {
+  "angle": "multi-protocol-panels: какие готовые панели на октябрь 2026 покрывают Xray, Hysteria2 и AmneziaWG (и, возможно, TUIC/XHTTP) с пользователями, трафиком и метриками сервера",
+  "summary": "Главное открытие: 3x-ui (MHSanaei) за 2026 год превратился в «зоопарк в одной панели». v3.9.0 вышел 2026-10-03, в нём есть VLESS/Reality/XHTTP, Hysteria2 (inbound в Xray с v2.9.0), WireGuard с несколькими клиентами, встроенный AmneziaWG 3.1 без модуля ядра (v3.7.0), TUIC v5 (v3.8.0, нативный в v3.9.0) и MTProto. Клиент с одним email подключается сразу к нескольким inbound'ам. Есть подписки, квоты, лимиты HWID и IP, бот Telegram/Discord, обзор CPU/RAM/сети с историей за 7 дней и несколько нод. Значит, отдельную админку можно не писать: надо перенести Hy2 и AWG из standalone внутрь 3x-ui. Остальные панели (Remnawave, PasarGuard, s-ui, Hiddify, h-ui) не умеют AmneziaWG либо слишком тяжёлые для VPS на 1–2 ГБ.",
+  "items": [
+   {
+    "name": "3x-ui (MHSanaei)",
+    "what": "Веб-панель на Go вокруг Xray-core. Стоит у нас сейчас. С v3.x в ней появились встроенные AmneziaWG и TUIC, а также несколько нод.",
+    "version_activity": "v3.9.0 от 2026-10-03, релизы выходят раз в 1–3 недели. 47.4k звёзд, 169 открытых issues, GPL-3.0. Документация: docs.sanaei.dev.",
+    "protocols": "VLESS (в т.ч. Reality/Vision/XHTTP), VMess, Trojan, Shadowsocks, WireGuard (мультиклиент с v3.4.2), AmneziaWG 3.1 (amneziawg-go в процессе панели на gVisor-стеке, v3.7.0; если оставить поля 3.1 пустыми, конфиг совместим со старыми клиентами), Hysteria2 (протокол hysteria внутри Xray, с v2.9.0; Salamander/Gecko, port hopping), TUIC v5 (v3.8.0, нативный в v3.9.0), MTProto, SOCKS/HTTP, TUN.",
+    "users_traffic_metrics": "Клиент — отдельная запись (email), подключается к нескольким inbound'ам. Есть квота, срок, автопродление, лимиты IP (через Fail2ban) и HWID, онлайн-статус, ссылки, QR, подписки raw/JSON/Clash. Трафик считается по inbound, по клиенту и по outbound. На странице Overview: CPU, RAM, диск, сеть, TCP/UDP, uptime, история за 7 дней и метрики Xray. Боты Telegram и Discord, REST API со scoped-токенами.",
+    "resources_security": "Один Go-бинарь + Xray, хранилище SQLite (Postgres по желанию), Docker не нужен. Есть 2FA. AWG в userspace проходит через loopback SOCKS Xray, на 1 vCPU это дороже по CPU, чем модуль ядра. Advisory 2026-10-03: high — запись произвольного файла от root через ключи логов; medium — запись SQLite через ATTACH; low — SSRF; medium — подмена 2FA. Всё исправлено в v3.9.0. По умолчанию отвечает по plain HTTP.",
+    "fit": "Лучший кандидат: закрывает все 4 пункта задачи из коробки. Минусы: Hy2 и AWG у нас сейчас стоят отдельно, панель их не увидит без переноса внутрь. Hy2 через Xray — не apernet (паритет Brutal и прочего надо проверить). Наша прямая вставка в x-ui.db ломается из-за смены схемы в v3.x. Поддерживать AWG ≥3.1 должны и клиенты.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.7.0",
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/config/amneziawg.mdx",
+     "https://github.com/MHSanaei/3x-ui/blob/main/docs/content/docs/en/config/clients.mdx",
+     "https://github.com/MHSanaei/3x-ui/security/advisories"
+    ]
+   },
+   {
+    "name": "LucX-UI (AlexeyLCP/lucx-ui)",
+    "what": "Форк 3x-ui под РФ: AmneziaWG на модуле ядра или встроенный (до 3.1), импорт существующего AWG, sidecar-туннели, подписки Amnezia vpn:// и Happ, гео-правила RoscomVPN. Есть зеркало на SourceCraft (Яндекс).",
+    "version_activity": "v3.9.0-lucx.280 от 2026-10-03, идёт следом за апстримом. Создан 2026-05-16, 226 звёзд. GitHub показывает GPL-3.0, но в README сказано: PolyForm Noncommercial 1.0.0 для коммерческого использования.",
+    "protocols": "Всё, что есть в 3x-ui, плюс AWG через модуль ядра и импорт уже работающего AWG. Sidecar'ы: NaiveProxy, mieru, AnyTLS, TrustTunnel, olcRTC и другие.",
+    "users_traffic_metrics": "Как в 3x-ui: единые клиенты, квоты, подписки, Overview с историей, боты.",
+    "resources_security": "Как у 3x-ui (Go, SQLite/PG, Fail2ban). Молодой проект с одним мейнтейнером, двойная лицензия.",
+    "fit": "Интересен тем, что умеет импортировать наш существующий awg0 (модуль ядра) и выдаёт ссылки vpn:// для приложения Amnezia. Риски: bus factor 1 и неясная лицензия. Брать как запасной вариант, если апстримный встроенный AWG окажется слабым.",
+    "sources": [
+     "https://github.com/AlexeyLCP/lucx-ui",
+     "https://github.com/AlexeyLCP/lucx-ui/releases"
+    ]
+   },
+   {
+    "name": "Remnawave",
+    "what": "Панель на TypeScript/NestJS с отдельными нодами (remnawave/node). Делает упор на подписки, HWID и вебхуки, ориентирована на коммерческие VPN-сервисы.",
+    "version_activity": "panel/backend 3.4.4 от 2026-09-12, node 3.4.1 от 2026-08-30. Panel 5.2k звёзд, AGPL-3.0, проект активен.",
+    "protocols": "Только Xray: VLESS (Reality/XHTTP), Trojan, Shadowsocks. Hysteria2 через Xray с 2.7.0 (2026-03), генерация ссылок с 2.8.0. AmneziaWG, WireGuard и TUIC не поддерживаются.",
+    "users_traffic_metrics": "Пользователи с квотами, сроками, сквадами и лимитами HWID, мощный движок подписок, статистика трафика по пользователям и нодам. Метрики Prometheus, включая load average нод.",
+    "resources_security": "Нужны Docker Compose, PostgreSQL и Redis/Valkey. Панели нужно минимум 2 ГБ RAM и 2 ядра (рекомендуется 4/4), ноде — 1 ГБ. Advisory 2026-08-31 critical: обход аутентификации в backend-tools ведёт к RCE (исправлено в 3.4.3). CVE-2026-39880: гонка в HWID.",
+    "fit": "Не подходит: слишком тяжёлая для одного VPS на 1–2 ГБ и не видит AWG.",
+    "sources": [
+     "https://github.com/remnawave/panel",
+     "https://github.com/remnawave/backend/releases",
+     "https://docs.rw/docs/install/requirements",
+     "https://github.com/remnawave/backend/security/advisories"
+    ]
+   },
+   {
+    "name": "PasarGuard",
+    "what": "Наследник Marzban: Python (FastAPI) + React, отдельная нода на Go (PasarGuard/node).",
+    "version_activity": "panel v5.4.1 от 2026-09-12, node v0.5.4. Panel 2.65k звёзд, 108 открытых issues, AGPL-3.0 (node — GPL-3.0). Очень активен.",
+    "protocols": "VMess, VLESS (Reality/XHTTP), Trojan, Shadowsocks, Hysteria2 (через Xray), WireGuard (отдельное ядро на ноде). AmneziaWG пока нет: PR #932 «AmneziaWG v1–v3.1» открыт с 2026-09-24. TUIC нет.",
+    "users_traffic_metrics": "Один пользователь получает несколько протоколов. Есть квоты и сроки, HWID (v4.0.0), подписки, бот Telegram, системная статистика (ресурсы и пользователи), визуальный редактор ядра.",
+    "resources_security": "Установка скриптом в Docker. БД на выбор: SQLite, MySQL или PostgreSQL. Panel и node — два компонента, в v5 добавился NATS. Публичных advisory нет.",
+    "fit": "Хорошая модель пользователей, но AWG пока нет, и нужен Docker. Пересмотреть, если примут PR #932.",
+    "sources": [
+     "https://github.com/PasarGuard/panel",
+     "https://github.com/PasarGuard/panel/releases",
+     "https://github.com/PasarGuard/node",
+     "https://github.com/PasarGuard/panel/pull/932"
+    ]
+   },
+   {
+    "name": "s-ui (alireza0)",
+    "what": "Веб-панель на Go для sing-box. Автор — тот же человек, что добавил hysteria в 3x-ui.",
+    "version_activity": "v1.6.3 от 2026-09-16 (sing-box 1.14.1). 10k звёзд, 6 открытых issues, GPL-3.0. Активен.",
+    "protocols": "VLESS Reality, VMess, Trojan, Shadowsocks, Hysteria, Hysteria2, TUIC, WireGuard, Naive, ShadowTLS, AnyTLS, Snell, OpenVPN и OpenConnect endpoints (v1.6.0). XHTTP нет (в sing-box его нет). AmneziaWG нет: запросы в s-ui #314/#1102 и sing-box #4045 закрыты.",
+    "users_traffic_metrics": "Клиенты сразу на нескольких inbound'ах, квоты и сроки, live-трафик по сессиям с принудительным отключением (v1.6.3), подписки link/JSON/Clash, статус системы, API /apiv2.",
+    "resources_security": "Один бинарь и SQLite, лёгкая. В v1.6.1 добавлен rate-limit логина (10 попыток, бан на 10 минут). Публичных advisory нет.",
+    "fit": "Хорошо закрывает Hy2 и TUIC, но без XHTTP и AWG. Зоопарк целиком не покрывает.",
+    "sources": [
+     "https://github.com/alireza0/s-ui",
+     "https://github.com/alireza0/s-ui/releases",
+     "https://github.com/SagerNet/sing-box/issues/4045"
+    ]
+   },
+   {
+    "name": "Hiddify-Manager",
+    "what": "Комбайн на Python, ставится на весь сервер: Xray + sing-box, nginx/haproxy, пользовательские страницы, бот Telegram.",
+    "version_activity": "v13.0.3 от 2026-09-26, бета v14.0.0b5 от 2026-09-30. 9.3k звёзд, 569 открытых issues, GPL-3.0.",
+    "protocols": "По README заявлено больше 20: VLESS/VMess/Trojan (Reality, gRPC, WS, CDN), Hysteria2, TUIC v5, WireGuard, SSH, ShadowTLS, MTProxy. AmneziaWG не заявлен.",
+    "users_traffic_metrics": "Лимиты по времени и трафику, личные страницы пользователей, управление через бота, несколько админов. Есть базовая статистика сервера.",
+    "resources_security": "Тяжёлый стек: в README «tested on Ubuntu 22.04», занимает 80/443 и перестраивает весь сервер. Много открытых багов (например, #5373 — зависание установки с HAProxy).",
+    "fit": "Не подходит: конфликтует с нашим инсталлятором (берёт сервер целиком), нет AWG, высокий шум багов.",
+    "sources": [
+     "https://github.com/hiddify/Hiddify-Manager",
+     "https://github.com/hiddify/Hiddify-Manager/releases",
+     "https://github.com/hiddify/Hiddify-Manager/issues/5373"
+    ]
+   },
+   {
+    "name": "h-ui (jonssonyan)",
+    "what": "Панель на Go только для Hysteria2 (apernet). Сама управляет бинарём и конфигом hysteria.",
+    "version_activity": "v0.0.25 от 2026-07-20, последний push 2026-08-16. 2.46k звёзд, GPL-3.0. Версия всё ещё 0.0.x.",
+    "protocols": "Только Hysteria2 (ядро apernet), включая port hopping.",
+    "users_traffic_metrics": "Лимиты трафика, онлайн-статус, принудительный logout, лимит устройств, подписки, импорт и экспорт пользователей, статус системы и Hysteria2, уведомления в Telegram.",
+    "resources_security": "Нужно от 256 МБ RAM, один бинарь, systemd или Docker. Advisory нет.",
+    "fit": "Мог бы дать пользователей для нашего standalone hysteria-server без перехода на Xray, но тогда админок станет две (3x-ui + h-ui). Как основа единой панели не годится.",
+    "sources": [
+     "https://github.com/jonssonyan/h-ui",
+     "https://github.com/jonssonyan/h-ui/releases"
+    ]
+   },
+   {
+    "name": "Blitz (ReturnFI)",
+    "what": "Панель для Hysteria2 (ядро apernet) с WARP, ботом Telegram и подписками.",
+    "version_activity": "Репозиторий архивирован (последний push 2026-07-08), последний релиз 2.5.3 от 2026-06-11. 1.1k звёзд, GPL-3.0.",
+    "protocols": "Только Hysteria2.",
+    "users_traffic_metrics": "Пользователи, трафик, подписки, бот — функции заморожены.",
+    "resources_security": "Python. Проект архивирован, патчей больше не будет.",
+    "fit": "Не использовать: проект мёртв.",
+    "sources": [
+     "https://github.com/ReturnFI/Blitz"
+    ]
+   },
+   {
+    "name": "Amnezia-Web-Panel (PRVTPRO)",
+    "what": "Веб-панель на Python. По SSH управляет удалёнными серверами в «раскладке Amnezia»: Docker-контейнеры как у официального клиента AmneziaVPN.",
+    "version_activity": "v1.7.3 от 2026-10-02. Создан 2026-03-05, 476 звёзд, 33 открытых issues, GPL-3.0. Активен.",
+    "protocols": "AmneziaWG (AWG 3.1, 2.0, legacy), WireGuard, Xray VLESS-Reality, MTProxy (Telemt), WARP, SOCKS5, AdGuard/AmneziaDNS, exit-ноды. Hysteria2, TUIC и XHTTP нет.",
+    "users_traffic_metrics": "Пользователи и права, учёт трафика по пирам, совместимость с официальными приложениями Amnezia (подхватывает их серверы).",
+    "resources_security": "Все протоколы работают в Docker-контейнерах на целевом сервере. Панель ходит туда по SSH с логином и паролем, то есть хранит root-доступ. Молодой проект.",
+    "fit": "Сильнее всех по AWG, но идёт по Docker-пути, а наш инсталлятор нативный (модуль ядра). Hy2 нет. Подходит как референс по UX для AWG, но не как основа.",
+    "sources": [
+     "https://github.com/PRVTPRO/Amnezia-Web-Panel"
+    ]
+   },
+   {
+    "name": "wg-easy",
+    "what": "Простая веб-панель для WireGuard. С v15.2 есть экспериментальная поддержка AmneziaWG.",
+    "version_activity": "v15.4.0 от 2026-08-14. 27k звёзд, AGPL-3.0. Активен.",
+    "protocols": "WireGuard, AmneziaWG (экспериментально с v15.2.1; диапазоны H1–H4 из AWG 2.0 с v15.3.0).",
+    "users_traffic_metrics": "Клиенты WG/AWG, QR, срок действия, трафик по пирам, эндпоинт Prometheus.",
+    "resources_security": "Docker. В заметках к v15.2.1 сказано: «Using AmneziaWG will break Healthcheck».",
+    "fit": "Закрывает только WG/AWG. Как вторая админка рядом с 3x-ui возможна, но цель — одна панель.",
+    "sources": [
+     "https://github.com/wg-easy/wg-easy/releases",
+     "https://wg-easy.github.io/wg-easy/v15.2/advanced/config/amnezia/"
+    ]
+   },
+   {
+    "name": "Marzban / Marzneshin / x-panel",
+    "what": "Старые или нерелевантные варианты, проверены для полноты.",
+    "version_activity": "Marzban: последний релиз v0.8.4 от 2025-01-09, 7.4k звёзд, AGPL — фактически заменён PasarGuard. Marzneshin: v0.7.4 от 2025-07-12, последний push 2025-10-04 — заброшен. x-panel (xeefei): китайский форк 3x-ui, v26.9.13, Pro-версия продаётся по платным кодам авторизации.",
+    "protocols": "Marzban и Marzneshin: Xray (+Hysteria2/sing-box в Marzneshin). x-panel: протоколы 3x-ui старой ветки.",
+    "users_traffic_metrics": "Стандартные: пользователи, квоты, подписки.",
+    "resources_security": "Marzban и Marzneshin не обновляются. x-panel — платная, закрытая Pro-часть.",
+    "fit": "Не рассматривать.",
+    "sources": [
+     "https://github.com/Gozargah/Marzban",
+     "https://github.com/marzneshin/marzneshin",
+     "https://github.com/xeefei/x-panel"
+    ]
+   }
+  ],
+  "key_takeaways": [
+   "Писать свою админку не нужно. 3x-ui v3.9.0 (2026-10-03) уже держит в одной панели VLESS/Reality/XHTTP, Hysteria2, AmneziaWG 3.1, WireGuard, TUIC v5 и MTProto, с едиными клиентами, подписками, трафиком и обзором сервера с историей за 7 дней. Реальная задача — перенести наши Hy2 и AWG из standalone (systemd hysteria-server, awg-quick@awg0) в inbound'ы 3x-ui.",
+   "Чем платим за перенос: Hysteria2 в 3x-ui работает на реализации Xray, а не apernet (паритет Brutal/bandwidth и прочего нужно проверить). AWG крутится в userspace (amneziawg-go на gVisor) и идёт через loopback SOCKS Xray: на 1 vCPU это дороже, чем модуль ядра. Поля 3.1 работают только с клиентами Amnezia, которые умеют 3.1; если оставить их пустыми, конфиг совместим со старыми клиентами.",
+   "Срочно для инсталлятора: прямая вставка VLESS в /etc/x-ui/x-ui.db несовместима со схемой v3.x (клиенты стали отдельными таблицами, при старте идут миграции). В v3.9.0 /panel/api/inbounds/update больше не меняет клиентов. Переходить на REST API со scoped-токенами (v3.7.0) и закреплять версию установки (install.sh <tag>).",
+   "Безопасность: в 3x-ui ≤3.8.x есть high advisory (запись произвольного файла от root через ключи логов) и ещё несколько, все исправлены в v3.9.0. Панель нельзя оставлять на plain HTTP :2053: нужен TLS или доступ только через SSH-туннель, плюс 2FA и случайный путь.",
+   "Remnawave и PasarGuard — сильные панели «для сервиса», но тянут Docker и Postgres/Redis (Remnawave хочет от 2 ГБ RAM) и пока не умеют AmneziaWG. У PasarGuard поддержка AWG только в открытом PR #932 — за ним стоит следить.",
+   "s-ui хорош для Hy2 и TUIC (sing-box 1.14), но в нём нет XHTTP и AWG. Hiddify тяжёлый и забирает сервер целиком. h-ui — только Hy2. Blitz архивирован 2026-07, Marzneshin заброшен, Marzban заменён PasarGuard.",
+   "Запасные варианты для AWG: LucX-UI (форк 3x-ui под РФ с импортом существующего AWG на модуле ядра и подписками vpn://, но лицензия PolyForm-NC и bus factor 1) и Amnezia-Web-Panel (AWG 2.0/3.1 + Xray, но на Docker в раскладке Amnezia).",
+   "Метрики «из коробки»: 3x-ui показывает CPU, RAM, диск, сеть, соединения и uptime плюс метрики Xray. Он не видит здоровье внешних systemd-сервисов, поэтому если что-то останется вне панели, понадобится свой health-check или node_exporter."
+  ]
+ },
+ {
+  "angle": "data-plane-apis",
+  "summary": "У каждого data plane есть свой API, но устроены они по-разному. Xray-core отдаёт через gRPC статистику (StatsService) и умеет менять пользователей на лету (HandlerService.AlterInbound). Hysteria2 даёт HTTP trafficStats (/traffic, /online, /kick, /dump/streams), а пользователей проверяет через внешний бэкенд (auth.type http/command). У AmneziaWG сервиса API нет, только `awg show dump` и `awg set`. Главная новость: 3x-ui v3.9.0 (2026-10-03) сам ведёт Hysteria2 (через inbound hysteria в Xray), AmneziaWG 3.1 (в userspace) и TUIC, а REST API клиентов у него с Bearer-токенами. Поэтому один бэкенд возможен двумя путями: перенести Hy2 и AWG внутрь 3x-ui либо написать тонкий контроллер поверх трёх API.",
+  "items": [
+   {
+    "name": "Xray-core StatsService (gRPC)",
+    "what": "Счётчики трафика по пользователям, inbound и outbound, онлайн и IP пользователей, метрики Go-рантайма. Нужен блок \"stats\":{} и политика levels.0: statsUserUplink/statsUserDownlink/statsUserOnline=true, system: statsInboundUplink/Downlink. Имена счётчиков: user>>>EMAIL>>>traffic>>>uplink|downlink, inbound>>>TAG>>>traffic>>>uplink. RPC: GetStats, QueryStats(pattern,reset), GetStatsOnline, GetStatsOnlineIpList, GetAllOnlineUsers, GetUsersStats(include_traffic,reset): email, ips[{ip,last_seen}], traffic{uplink,downlink}, GetSysStats.",
+    "version_activity": "Xray-core v26.9.30 (2026-09-30, pre-release, автор RPRX), релизы выходят несколько раз в месяц. Лицензия MPL-2.0.",
+    "protocols": "Xray-inbound'ы: VLESS/Reality/Vision, XHTTP, VMess, Trojan, SS/SS2022, MASQUE, Hysteria (v2). Пользователь различается по полю email.",
+    "users_traffic_metrics": "Трафик по каждому пользователю (байты, поле reset позволяет обнулять при каждом опросе), онлайн определяется по активности за последние 20 с, плюс список IP пользователя с last_seen. GetUsersStats за один вызов отдаёт и трафик, и IP всех пользователей, это удобно для периодического опроса. Метрик хоста (CPU/RAM/диск) здесь нет, есть только память и горутины самого Xray.",
+    "resources_security": "Работает внутри процесса xray, расход ресурсов почти нулевой. Порт api слушать только на 127.0.0.1 (по умолчанию 127.0.0.1:8080). gRPC без аутентификации. CVE-2026-79316 (x-ui 0.3.2): панель позволяла переназначить gRPC на внешний адрес.",
+    "fit": "Лучший источник трафика по пользователям для VLESS и XHTTP. Есть ловушка (мой вывод, не проверено): 3x-ui сам опрашивает эти счётчики и обнуляет их. Если стороннняя админка тоже вызовет QueryStats с reset=true, данные будут теряться. Пока 3x-ui работает, читать без reset или брать трафик из REST API 3x-ui.",
+    "sources": [
+     "https://xtls.github.io/en/config/api.html",
+     "https://xtls.github.io/en/config/stats.html",
+     "https://xtls.github.io/en/config/policy.html",
+     "https://raw.githubusercontent.com/XTLS/Xray-core/main/app/stats/command/command.proto"
+    ]
+   },
+   {
+    "name": "Xray-core HandlerService + CLI `xray api`",
+    "what": "Управление inbound и пользователями на лету. RPC: AddInbound, RemoveInbound, AlterInbound(tag, AddUserOperation|RemoveUserOperation{email}), ListInbounds, GetInboundUsers, GetInboundUsersCount, Add/Remove/AlterOutbound. Команды CLI: adu/rmu (inbound_user_add/remove), inbounduser, inboundusercount, statsquery, stats, statsonline, statsonlineiplist (-all -include-traffic -reset), statsgetallonlineusers, statssys, rules add/list/remove (RoutingService), sib (source_ip_block), bi/bo (balancer).",
+    "version_activity": "Код в main/commands/all/api ветки main. В adu поддержаны VMess, VLESS, Trojan, SS, SS2022, MASQUE, Hysteria (PR #6847).",
+    "protocols": "Те же Xray-протоколы. WireGuard-inbound Xray через AlterInbound пользователей не меняет: его нет в списке extractInboundUsers.",
+    "users_traffic_metrics": "Добавление и удаление пользователя без перезапуска и без обрыва чужих сессий. Отключить пользователя значит удалить его из inbound (флага disable нет), а лимиты и сроки должен вести внешний контроллер. Пример: `xray api adu --server=127.0.0.1:8080 c1.json`, `xray api statsonlineiplist -all -include-traffic`.",
+    "resources_security": "Без аутентификации, слушать только loopback. Конфиг Xray должен включать api.services [HandlerService, StatsService, RoutingService, LoggerService]. Начиная с v1.8.12 достаточно api.listen, иначе нужны dokodemo-inbound и правило маршрутизации на tag api.",
+    "fit": "Через этот API 3x-ui и применяет изменения клиентов на лету. Если работать с ним напрямую в обход 3x-ui, при следующей пересборке конфига панель из своей базы перезапишет пользователей, добавленных на лету. Значит, «один хозяин» должен быть либо 3x-ui, либо своя админка.",
+    "sources": [
+     "https://github.com/XTLS/Xray-core/tree/main/main/commands/all/api",
+     "https://raw.githubusercontent.com/XTLS/Xray-core/main/main/commands/all/api/inbound_user_add.go",
+     "https://raw.githubusercontent.com/XTLS/Xray-core/main/main/commands/all/api/stats_online_ip_list.go",
+     "https://raw.githubusercontent.com/XTLS/Xray-core/main/app/proxyman/command/command.proto"
+    ]
+   },
+   {
+    "name": "Inbound hysteria в Xray-core (Hy2 внутри Xray)",
+    "what": "Сервер Hysteria2 внутри Xray. Пример: {\"protocol\":\"hysteria\",\"settings\":{\"version\":2,\"users\":[{\"auth\":\"<secret>\",\"level\":0,\"email\":\"user@x\"}]}}, транспорт hysteria (вне hysteria-транспорта поле users не действует). Поддержаны port range и Salamander через finalmask.",
+    "version_activity": "Появился в Xray-core v26.3.27. Управление пользователями через API добавлено в PR #6847. Были баги: #5921 (нет ответных пакетов), #5973 (паника VLESS-over-Hysteria).",
+    "protocols": "Hysteria2 (совместим с клиентами Hy2), Salamander. Поддержки Gecko-обфускации apernet (v2.11+) в Xray я не нашёл, нужно проверить.",
+    "users_traffic_metrics": "Трафик и онлайн по каждому пользователю через StatsService (по email), adu/rmu на лету. Hy2 попадает в ту же модель учёта, что и VLESS.",
+    "resources_security": "Работает в процессе xray, отдельный systemd-юнит hysteria-server не нужен. Экономит RAM на VPS с 1–2 ГБ.",
+    "fit": "Это ключ к единому бэкенду: если перенести Hy2 из apernet hysteria-server в Xray, VLESS и Hy2 управляются одним API. Минусы: нет новинок apernet (Gecko, mimic, Realms), реализация моложе оригинала. В 3x-ui смена клиентов Hy2 без пересоздания inbound появилась только в PR #6606 (слит 2026-09-26), а до него каждая правка подвешивала все QUIC-сессии примерно на 30 с.",
+    "sources": [
+     "https://xtls.github.io/en/config/inbounds/hysteria.html",
+     "https://github.com/XTLS/Xray-core/releases/tag/v26.3.27",
+     "https://github.com/XTLS/Xray-core/pull/6847",
+     "https://github.com/MHSanaei/3x-ui/pull/6606"
+    ]
+   },
+   {
+    "name": "3x-ui REST API: clients / inbounds",
+    "what": "REST API панели. Аутентификация: cookie после POST /login или `Authorization: Bearer <token>` (Settings → Security; scope и срок действия с v3.7.0; неверный токен с v3.8.0 даёт 401). Ответ всегда в обёртке {success,msg,obj}. Клиенты: /panel/api/clients/list, list/paged, get/{email}, add, update/{email}, del/{email}, {email}/attach|detach, bulkCreate/Enable/Disable/Adjust, resetTraffic/{email}, updateTraffic/{email}, delDepleted, onlines, ips/{email}, hwids/{email}, groups/*. Inbound'ы: list, add, update/{id}, setEnable/{id}, allLinks, resetTraffic, pushClientTraffics. OpenAPI доступен по /panel/api/openapi.json (только после входа) и /panel/api-docs.",
+    "version_activity": "v3.9.0 (2026-10-03), до неё v3.8.5 (09-16), v3.8.0 (09-14), v3.7.0 (08-24). Около 47.4k звёзд, GPL-3.0. В v3.9.0 изменение несовместимо: inbounds/update больше не трогает клиентов, для них есть отдельные эндпоинты.",
+    "protocols": "VLESS, VMess, Trojan, SS, WireGuard, AmneziaWG, TUIC v5, Hysteria2, MTProto, HTTP, Mixed, Tunnel, TUN.",
+    "users_traffic_metrics": "Один клиент (email) прикрепляется к нескольким inbound'ам (attach). Есть квоты, срок действия, автопродление, лимиты IP и HWID, группы, онлайн, ссылки и подписки (allLinks, sub). Трафик хранится по клиенту и по inbound.",
+    "resources_security": "Go и SQLite, Docker не нужен. CVE-2026-55477 (CVSS 7.2, запись произвольного файла через импорт БД, исправлено в 3.3.1). У нас панель на :2053 по голому HTTP, Bearer-токен по нему передавать нельзя: нужен TLS или SSH-туннель, токен с минимальным scope.",
+    "fit": "Самый полный готовый API для пользователей поверх Xray. Своя админка может быть просто фронтом к нему: создание пользователя одним вызовом clients/add с привязкой к VLESS, Hy2 и AWG inbound'ам. Минус: API меняется между минорными версиями, версию 3x-ui надо закрепить.",
+    "sources": [
+     "https://docs.sanaei.dev/docs/reference/api/",
+     "https://docs.sanaei.dev/docs/reference/api/inbounds/",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://github.com/MHSanaei/3x-ui/releases",
+     "https://www.strix.ai/cve/CVE-2026-55477"
+    ]
+   },
+   {
+    "name": "3x-ui REST API: server (метрики хоста)",
+    "what": "GET /panel/api/server/status: CPU, RAM/swap, диск, сетевой ввод-вывод, uptime, состояние процесса Xray, число соединений; обновляется в фоне раз в 2 с. GET /panel/api/server/history/{metric}/{bucket}: временной ряд примерно за 6 ч, шаг 2/30/60/120/180/300 с. Ещё есть запуск, остановка и перезапуск Xray, смена версии, генерация ключей X25519/ML-KEM/ECH, бэкап и восстановление, логи, сканирование целей Reality.",
+    "version_activity": "Есть в v3.9.0, описан на docs.sanaei.dev.",
+    "protocols": "Метрики уровня хоста и Xray, от протокола не зависят.",
+    "users_traffic_metrics": "Закрывает пункт 4 цели (CPU, RAM, диск, сеть, uptime, здоровье Xray). Здоровье внешних юнитов (hysteria-server, awg-quick@awg0) не видит, их надо проверять через systemctl/D-Bus.",
+    "resources_security": "Тот же Bearer-токен. История только за 6 ч, для истории за дни и недели нужно своё хранилище (SQLite или RRD).",
+    "fit": "Для MVP админки по метрикам этого хватает без node_exporter и Prometheus. Это экономит 100–300 МБ RAM на маленьком VPS.",
+    "sources": [
+     "https://docs.sanaei.dev/docs/reference/api/server/"
+    ]
+   },
+   {
+    "name": "3x-ui: встроенные AmneziaWG 3.1 и TUIC v5",
+    "what": "С v3.7.0 AmneziaWG 3.1 работает внутри процесса панели (amneziawg-go и gVisor netstack, модуль ядра не нужен), пиры приводятся к нужному состоянию отдельным reconcile-менеджером. В v3.9.0 появился встроенный TUIC v5 на Go (BBR, учёт трафика переживает падения). Клиенты AWG и TUIC управляются через тот же /panel/api/clients.",
+    "version_activity": "v3.7.0 (2026-08-24) добавил AWG, v3.9.0 добавил TUIC и деплой AWG/TUIC/MTProto на узлы. Запрос на AWG 2.0 (#5113, 2026-06-09) закрыт как not planned.",
+    "protocols": "AmneziaWG 3.1 (userspace), TUIC v5. Совместимость с нашими клиентами AWG 2.0 не подтверждена.",
+    "users_traffic_metrics": "Пир AWG становится обычным клиентом панели: квота, срок, трафик, конфиг или QR из подписки.",
+    "resources_security": "Userspace-реализация на gVisor заметно дороже по CPU, чем модуль ядра (оценка, не замер). На 1 vCPU это может ограничить скорость. Модуль ядра и DKMS не нужны.",
+    "fit": "Если согласиться на AWG 3.1 в userspace вместо kernel AWG 2.0, вся «зоопарковая» пара AWG + Hy2 переезжает под один API 3x-ui. Риски: другой профиль AWG (клиентам придётся переходить на 3.x), производительность, привязка к одной панели. Есть форк 3ax-ui (coinman-dev) с AWG 1.x/2.0/3.x.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.7.0",
+     "https://github.com/MHSanaei/3x-ui",
+     "https://github.com/MHSanaei/3x-ui/issues/5113",
+     "https://github.com/coinman-dev/3ax-ui"
+    ]
+   },
+   {
+    "name": "Hysteria2 (apernet) Traffic Stats API",
+    "what": "Конфиг: trafficStats: {listen: 127.0.0.1:9999, secret: XXX}. Заголовок `Authorization: XXX` (без Bearer), при несовпадении 401. GET /traffic отдаёт {\"user\":{\"tx\":N,\"rx\":N}}, параметр ?clear=1 обнуляет счётчики после чтения. GET /online отдаёт {\"user\":2} (число клиентских экземпляров, а не потоков). POST /kick с телом [\"u1\",\"u2\"] возвращает 200. GET /dump/streams отдаёт {streams:[{state,auth,connection,stream,req_addr,hooked_req_addr,tx,rx,initial_at,last_active_at}]}, с `Accept: text/plain` вывод в стиле ss.",
+    "version_activity": "app/v2.12.3 (2026-09-16), до неё v2.12.2 (08-23), v2.12.0 (08-06, mimic), v2.11.0 (08-01, Chrome QUIC fingerprint). 22.6k звёзд, MIT.",
+    "protocols": "Hysteria2 (Salamander, Gecko, port hopping), только в собственном сервере apernet.",
+    "users_traffic_metrics": "Трафик и онлайн по каждому ID пользователя, принудительное отключение. При type=password ID у всех один, поэтому статистика по пользователям требует перейти на userpass/http/command. Счётчики накапливаются в памяти и теряются при рестарте, так что опрашивать нужно с ?clear=1 и складывать у себя.",
+    "resources_security": "Работает внутри процесса. Без secret статистику видит любой, кто достучится до порта, поэтому только loopback.",
+    "fit": "Хватает для учёта трафика по пользователям Hy2 без перехода на Xray. Kick сам по себе не отключает пользователя (клиент переподключится), блокировать нужно в бэкенде аутентификации.",
+    "sources": [
+     "https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/",
+     "https://raw.githubusercontent.com/apernet/hysteria/master/extras/trafficlogger/http.go",
+     "https://github.com/apernet/hysteria/releases"
+    ]
+   },
+   {
+    "name": "Hysteria2 auth: userpass / http / command (внешний бэкенд пользователей)",
+    "what": "http: auth:{type: http, http:{url: http://127.0.0.1:PORT/auth, insecure: false}}. На каждое новое подключение сервер шлёт POST {\"addr\":\"1.2.3.4:5\",\"auth\":\"<строка клиента>\",\"tx\":<скорость клиента>}, ждёт ответ {\"ok\":true,\"id\":\"john\"}. Этот id становится ключом в trafficStats. command: `/path addr auth tx`, нужно напечатать id в stdout и выйти с кодом 0. userpass: статический словарь user:pass, менять только через рестарт.",
+    "version_activity": "Есть в актуальной документации v2 (app/v2.12.x).",
+    "protocols": "Hysteria2 (apernet).",
+    "users_traffic_metrics": "Позволяет управлять пользователями на лету без рестарта: бэкенд админки решает ok или нет по своей БД (включён, не истёк, квота не исчерпана). Отключение пользователя: пометить в БД и вызвать /kick. Строка ссылки: hysteria2://<auth>@host:port.",
+    "resources_security": "Бэкенд обязан отвечать быстро, иначе растёт время подключения. Если бэкенд упал, новые подключения отклоняются (fail-closed). Слушать только 127.0.0.1.",
+    "fit": "Лучший способ оставить нативный hysteria-server (Gecko, свежие фичи) и всё равно управлять им из одной админки. Связка: http-auth к нашей БД, trafficStats для трафика, /kick для отключения.",
+    "sources": [
+     "https://v2.hysteria.network/docs/advanced/Full-Server-Config/",
+     "https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/"
+    ]
+   },
+   {
+    "name": "AmneziaWG: awg show dump / awg set",
+    "what": "У AWG нет API-демона, есть только CLI и netlink. `awg show awg0 dump` выводит строки через табуляцию. Первая строка интерфейса: private-key, public-key, listen-port, параметры AWG (Jc/Jmin/Jmax/S*/H*...), fwmark. Строки пиров: public-key, preshared-key, endpoint, allowed-ips, latest-handshake (unix), transfer-rx, transfer-tx, persistent-keepalive. На лету: `awg set awg0 peer <PUB> allowed-ips 10.8.0.X/32 [preshared-key f]`, удалить: `awg set awg0 peer <PUB> remove`. Сохранить: правка awg0.conf или `awg-quick save`.",
+    "version_activity": "amneziawg-tools v3.1.20260812 (2026-08-12, параметры AWG 3.1), v3.0.20260730 (AWG 3.0). AWG 2.0 (H1–H4 диапазоны) с v1.0.20250901.",
+    "protocols": "AmneziaWG 1.x/2.0/3.x (модуль ядра или amneziawg-go).",
+    "users_traffic_metrics": "Трафик по каждому пиру (rx/tx), «онлайн» вычисляется эвристикой latest-handshake < ~180 с, видны endpoint и IP. Квот и сроков нет, отключение равно удалению пира. Счётчики обнуляются при перезапуске интерфейса или пересоздании пира, поэтому нужен опрос с расчётом приращений.",
+    "resources_security": "Нужен root (CAP_NET_ADMIN). Самый дешёвый плоскость, так как модуль ядра. Админке нужен привилегированный агент или sudo на конкретные команды awg.",
+    "fit": "Подключается к общей админке тонким агентом: опрос dump плюс awg set. Генерация ключей и конфига или QR на стороне админки (awg genkey/pubkey). Сейчас в инсталляторе один пир, придётся перейти на модель «пир на пользователя» с выдачей IP из пула.",
+    "sources": [
+     "https://github.com/amnezia-vpn/amneziawg-tools/releases",
+     "https://github.com/bivlked/amneziawg-installer/blob/main/ADVANCED.en.md"
+    ]
+   },
+   {
+    "name": "sing-box: v2ray_api, clash_api, api, ssm-api",
+    "what": "v2ray_api (только при сборке с тегом with_v2ray_api): {listen: 127.0.0.1:8080, stats:{enabled:true, inbounds:[], outbounds:[], users:[\"name\"]}}. Даёт только StatsService, пользователей не меняет. clash_api: {external_controller: 127.0.0.1:9090, secret}, REST с Bearer, показывает соединения и трафик, учёта по пользователям нет. service api (с 1.14.0): gRPC/gRPC-Web с Bearer и dashboard, управление пользователями не описано. ssm-api (с 1.12.0): Shadowsocks Server Management API v1, live-пользователи только для SS (managed inbound).",
+    "version_activity": "Стабильная v1.14.2 (2026-09-24), v1.15.0-alpha.10 (2026-10-03, MASQUE). Около 38.5k звёзд, GPL-3.0-or-later.",
+    "protocols": "VLESS/Reality, Hy2, TUIC, SS, Trojan, AnyTLS, WireGuard и др. Встроенного AWG-сервера в документации не нашёл.",
+    "users_traffic_metrics": "Трафик по пользователям есть только через v2ray_api, и то если пользователь указан в stats.users. Добавлять или удалять пользователей на лету можно только для Shadowsocks (ssm-api), для остальных протоколов нужна перезагрузка конфига (reload).",
+    "resources_security": "Один бинарник, лёгкий. Готовые бинарники собраны без with_v2ray_api, нужна своя сборка.",
+    "fit": "Как единый бэкенд для нашего зоопарка хуже Xray и 3x-ui: нет live-управления пользователями VLESS/Hy2/TUIC. Имеет смысл только при переходе на sing-box (в духе s-ui), тогда работает схема «правка конфига плюс reload».",
+    "sources": [
+     "https://sing-box.sagernet.org/configuration/experimental/v2ray-api/",
+     "https://sing-box.sagernet.org/configuration/experimental/clash-api/",
+     "https://sing-box.sagernet.org/configuration/service/api/",
+     "https://sing-box.sagernet.org/configuration/service/ssm-api/",
+     "https://github.com/SagerNet/sing-box/releases"
+    ]
+   }
+  ],
+  "key_takeaways": [
+   "Вывод: при текущем развёртывании (Xray в 3x-ui, отдельный hysteria-server, kernel AWG 2.0) готового единого бэкенда нет. Есть два реалистичных пути: (A) 3x-ui v3.9.0 как единый бэкенд с переносом Hy2 в inbound hysteria Xray и AWG во встроенный AWG 3.1; (B) своя тонкая админка-контроллер поверх трёх API.",
+   "Путь A (меньше кода): /panel/api/clients/add + attach создаёт пользователя сразу на VLESS, Hy2, AWG и TUIC, а квоты, сроки, онлайн, подписки, /server/status и /history уже готовы. Минусы: AWG 2.0 → 3.1 в userspace (выше нагрузка на CPU, клиентам нужен переход), у Hy2 из Xray нет Gecko и mimic, API меняется в каждой минорной версии.",
+   "Путь B (сохраняет нативные плоскости): Xray через gRPC HandlerService.AlterInbound и StatsService.GetUsersStats, Hy2 через auth.type http к БД админки плюс /traffic?clear=1 и /kick, AWG через агента с awg set peer и awg show dump. Всё работает на лету, без рестартов.",
+   "Нельзя одновременно оставлять 3x-ui хозяином Xray и править пользователей Xray напрямую по gRPC: 3x-ui перезапишет их из своей БД, а опрос с reset даст гонку счётчиков (вывод по устройству панели). Хозяин у Xray должен быть один.",
+   "Hysteria2 в нынешнем режиме password с одним общим паролем не даёт статистики по пользователям. Для пункта 3 цели нужно минимум перейти на userpass, а лучше на http-auth.",
+   "Во всех трёх плоскостях счётчики живут в памяти и обнуляются при рестарте. Админке нужен свой сборщик: опрос раз в 10–60 с, сохранение приращений в SQLite, история за дни и месяцы. Встроенная история 3x-ui хранит только около 6 ч.",
+   "Все API служебные: Xray gRPC без аутентификации, у Hy2 простой заголовок с secret, 3x-ui сейчас на голом HTTP :2053. Всё слушать на 127.0.0.1, Bearer передавать только через TLS или SSH-туннель, токены 3x-ui выпускать с минимальным scope и сроком действия, держать 3x-ui не ниже 3.3.1 (CVE-2026-55477).",
+   "sing-box как унифицирующий бэкенд не подходит: v2ray_api даёт только статистику и требует своей сборки, live-управление пользователями есть только у Shadowsocks через ssm-api."
+  ]
+ },
+ {
+  "angle": "server-monitoring: лёгкий мониторинг сервера (CPU/RAM/диск/сеть/uptime/здоровье сервисов) и хранение истории трафика по пользователям для VPS на 1–2 ГБ рядом со своей админкой",
+  "summary": "Главная находка: 3x-ui v3.x (v3.9.0 от 03.10.2026) сам собирает системные метрики и хранит историю 7 дней примерно в 1,5 МБ (уровни 2с/1ч, 1м/48ч, 10м/7д). Есть JSON API /panel/api/server/status и /history/:metric/:bucket. Кроме того, панель теперь умеет Hysteria, TUIC и AmneziaWG как свои inbound. Внешние стеки: Beszel (агент около 10–15 МБ, хаб около 50 МБ, есть статусы systemd) самый лёгкий из полноценных. Netdata тяжелее (100–350 МБ), и её панель v3 подталкивает к входу в облако. Prometheus+Grafana для 1–2 ГБ избыточны (500 МБ–1 ГБ). Историю трафика по пользователям ни один монитор не ведёт. Её надо собирать самим из счётчиков Xray/3x-ui, Hysteria2 /traffic и `awg show transfer` и сворачивать в SQLite. Рекомендация: метрики 3x-ui + vnStat + своя проверка сервисов через systemctl; Beszel по желанию.",
+  "items": [
+   {
+    "name": "Встроенные метрики 3x-ui (страница Overview и API server/status)",
+    "what": "Панель MHSanaei сама опрашивает хост каждые 2 с: cpu, mem, swap, netUp/Down, pkt, diskIO, diskUsage, tcp/udpCount, online, load1/5/15. С v3.4.1 история хранится в system_metrics.gob, 7 дней примерно в 1,5 МБ. Отдельно есть Xray metrics/observatory и счётчики трафика по клиентам.",
+    "version_activity": "v3.9.0 вышла 03.10.2026. Около 47,4k звёзд, GPL-3.0, релизы почти каждую неделю. Уровни истории введены в v3.4.1 (25.06.2026, коммит 293c1e44). Overview переделан в v3.6.0 (30.07.2026).",
+    "protocols": "Xray: VLESS/Reality/XHTTP и др. Hysteria inbound появился около v2.8.8 (01.2026). AmneziaWG встроен с v3.7.0. TUIC v5 с v3.8.0, нативный Go-сервер с v3.9.0. MTProto с v3.5.0.",
+    "users_traffic_metrics": "API: GET /panel/api/server/status, /history/:metric/:bucket, /cpuHistory/:bucket, /xrayMetricsHistory. По клиентам: /clients/traffic/:email, onlines, lastOnline. Хранятся только накопленные up/down по клиенту, временного ряда на пользователя нет. Периоды графиков: 2m..7d.",
+    "resources_security": "Один Go-бинарник с SQLite, лишних процессов не добавляет. С v3.4.1 снижен GOGC, освобождается память. API-токены со scopes и сроком (v3.7.0), openapi.json закрыт сессией (v3.6.0), 2FA. Риск: панель на plain HTTP :2053 в установщике, нужен TLS или SSH-туннель.",
+    "fit": "Лучший источник серверных метрик для своей админки: ничего ставить не нужно, данные получаем по API с токеном. Минус: нет статусов hysteria-server и awg-quick как отдельных systemd-сервисов, нет истории трафика по пользователям, а формат API меняется между минорными версиями. Если перенести Hy2/AWG в 3x-ui, покрытие почти полное.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+     "https://github.com/MHSanaei/3x-ui/commit/293c1e44",
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.4.1",
+     "https://github.com/MHSanaei/3x-ui/blob/main/internal/web/controller/server.go"
+    ]
+   },
+   {
+    "name": "Beszel (hub + agent)",
+    "what": "Лёгкий мониторинг: хаб на PocketBase (SQLite) и Go-агент. Показывает CPU, RAM, диск, сеть, температуру, контейнеры Docker/Podman и GPU. Есть systemd-сервисы (статус, CPU/RAM, число рестартов, последние 200 строк журнала), алерты в разные мессенджеры, бэкапы в S3, OAuth/OIDC.",
+    "version_activity": "v0.21.0 вышла 02.10.2026, последний push 03.10.2026. Около 25,9k звёзд, MIT, 323 открытых issue. Проект активный.",
+    "protocols": "Протоколы VPN не видит. Сервисы xray/x-ui, hysteria-server, awg-quick@awg0 отслеживаются как systemd-юниты (SERVICE_PATTERNS).",
+    "users_traffic_metrics": "Только метрики хоста и интерфейсов, есть своя история и графики. API PocketBase: коллекции systems, system_stats, containers, systemd_services. Документация предупреждает, что схема может меняться в минорных версиях. Трафика по пользователям нет.",
+    "resources_security": "По тестам агент занимает около 10–15 МБ (systemd) или около 3 МБ (контейнер), хаб около 50 МБ. Ставится бинарником без Docker. CVE: CVE-2026-27734 (path traversal к Docker API, исправлено в 0.18.4), CVE-2026-40077 (IDOR, 0.18.7), CVE-2026-94382 (IDOR в алертах, 0.19.0). Нужна версия ≥0.19.",
+    "fit": "Лучший готовый вариант «рядом с панелью», если хочется красивые графики и алерты без своего кода. Минус: отдельный UI и вход, повторно не используется в своей админке (разве что через PocketBase API или iframe). Хаб ставится на этот же VPS или выносится на другой.",
+    "sources": [
+     "https://github.com/henrygd/beszel",
+     "https://beszel.dev/guide/systemd",
+     "https://beszel.dev/guide/rest-api",
+     "https://instapods.com/blog/best-server-monitoring-tools/",
+     "https://www.strix.ai/cve/CVE-2026-94382",
+     "https://cyberstrike.io/cve/CVE-2026-27734"
+    ]
+   },
+   {
+    "name": "Netdata Agent",
+    "what": "Мониторинг в реальном времени с секундным разрешением и сотнями автоколлекторов (systemd, сеть, диски, WireGuard). Хранит данные в dbengine, с v2.12 принимает OTel-трейсы и логи.",
+    "version_activity": "v2.12.0 вышла 30.09.2026 (по GitHub). Около 80,8k звёзд. Агент под GPL-3.0+, а панель под отдельной лицензией NCUL1, не OSS. Очень активный проект.",
+    "protocols": "Протоколы не видит. Есть коллектор WireGuard (по пирам), его применимость к awg0 не проверена. Сервисы видит через systemd units.",
+    "users_traffic_metrics": "Подробные метрики хоста. По пользователям ничего. Есть API /api/v1/data, можно использовать как бэкенд для своей админки.",
+    "resources_security": "По документации 100–200 МБ на пустой системе и 250–350 МБ в типичной работе. При урезанном dbengine (page cache 32 МБ) около 50 МБ. Панель v3 по умолчанию просит войти в Netdata Cloud, без входа доступна ограниченная локальная версия. Действует лимит Community: 5 активных нод. Была CVE-2024-32019 (ndsudo LPE).",
+    "fit": "Для 1–2 ГБ рядом с Xray тяжеловата: сотни МБ и облачная модель, которая для РФ ещё и рискованна из-за блокировок и привязки к аккаунту. Подходит только при жёсткой урезке конфигурации. Для этого проекта не рекомендуется.",
+    "sources": [
+     "https://github.com/netdata/netdata/releases/tag/v2.12.0",
+     "https://learn.netdata.cloud/docs/netdata-agent/resource-utilization/ram",
+     "https://learn.netdata.cloud/docs/security-and-privacy-design/access-control-and-feature-availability",
+     "https://www.netdata.cloud/blog/important-changes-to-the-netdata-agent-dashboard/"
+    ]
+   },
+   {
+    "name": "Prometheus node_exporter + Prometheus + Grafana",
+    "what": "Классический стек: node_exporter отдаёт метрики хоста (/metrics :9100), Prometheus хранит, Grafana рисует. У node_exporter есть textfile collector: свои метрики из файлов *.prom, например трафик по пользователям.",
+    "version_activity": "node_exporter v1.12.1 (14.07.2026, Apache-2.0, около 13,8k звёзд). Prometheus v3.15.0 (25.09.2026, около 66,4k). Grafana v13.2.3 (29.09.2026, AGPL-3.0, около 77k). Все активны.",
+    "protocols": "Протоколов нет. Есть systemd collector (статусы юнитов) и textfile collector для любых своих счётчиков.",
+    "users_traffic_metrics": "Метрики хоста полные. Трафик по пользователям только через свой экспортёр или textfile. Есть готовые дашборды, включая Remnawave 25576.",
+    "resources_security": "node_exporter занимает около 15–30 МБ. Systemd collector исторически раздувал память (issue #1301), включать его стоит с unit-include. Prometheus+Grafana по тестам берут 500 МБ–1 ГБ+. Наружу ничего не открывать, слушать только 127.0.0.1.",
+    "fit": "Полный стек на 1–2 ГБ VPS с прокси не нужен. Но node_exporter сам по себе полезен: стандартный /metrics на localhost, который своя админка может парсить, или вынести хранение на внешний сервер.",
+    "sources": [
+     "https://github.com/prometheus/node_exporter",
+     "https://github.com/prometheus/node_exporter/issues/1301",
+     "https://github.com/prometheus/prometheus/releases",
+     "https://github.com/grafana/grafana/releases",
+     "https://instapods.com/blog/best-server-monitoring-tools/"
+    ]
+   },
+   {
+    "name": "VictoriaMetrics single-node (+ vmagent)",
+    "what": "Совместимая с Prometheus TSDB одним бинарником: принимает remote_write и Influx line protocol, сама скрейпит (-promscrape.config). Запросы на MetricsQL. Удобна, если нужна долгая история и PromQL без Prometheus.",
+    "version_activity": "v1.153.0 вышла 28.09.2026. Около 17,8k звёзд, Apache-2.0. Активный проект.",
+    "protocols": "Протоколов нет, это хранилище. В неё можно писать per-user счётчики из своего сборщика (Xray stats, Hy2 /traffic, awg transfer).",
+    "users_traffic_metrics": "Подходит для истории трафика по пользователям и протоколам с ретеншеном (-retentionPeriod, минимум 1d, по умолчанию 31d). increase()/rate() дают дневные и месячные суммы.",
+    "resources_security": "По бенчмаркам в разы экономнее Prometheus по RAM и диску. Для сотен рядов на одном хосте, по моей оценке, десятки МБ (точных замеров для такого масштаба нет). Аутентификации из коробки нет: слушать 127.0.0.1 или ставить -httpAuth.*.",
+    "fit": "Оправдана, если админка вырастет до PromQL-графиков или нескольких нод. Для одного VPS и десятков пользователей своя SQLite-свёртка проще и не добавляет ещё один сервис.",
+    "sources": [
+     "https://github.com/VictoriaMetrics/VictoriaMetrics/releases",
+     "https://docs.victoriametrics.com/victoriametrics/single-server-victoriametrics/",
+     "https://valyala.medium.com/prometheus-vs-victoriametrics-benchmark-on-node-exporter-metrics-4ca29c75590f"
+    ]
+   },
+   {
+    "name": "Glances (web/API mode)",
+    "what": "Аналог htop на Python с веб-интерфейсом и REST API v4 (:61208/api/4/cpu, /mem, /fs, /network, /sensors, /processlist). Может экспортировать метрики в InfluxDB, Prometheus и др.",
+    "version_activity": "v4.5.7 вышла 26.09.2026. Около 33,7k звёзд, LGPL-3.0 (на GitHub значится NOASSERTION). Активный проект.",
+    "protocols": "Протоколов нет. Плагины ports/process позволяют проверять процессы и порты.",
+    "users_traffic_metrics": "Только текущие метрики хоста. Своей долгой истории нет, нужен экспорт наружу.",
+    "resources_security": "Python, около 50 МБ RAM в режиме -w. Аутентификация по паролю (--password), иначе API открыт, поэтому слушать только localhost.",
+    "fit": "Удобный готовый JSON API хоста для своей админки, но тянет Python ради того, что 3x-ui уже отдаёт. Нужен, только если админка не опирается на 3x-ui.",
+    "sources": [
+     "https://github.com/nicolargo/glances",
+     "https://glances.readthedocs.io/en/latest/api/restful.html"
+    ]
+   },
+   {
+    "name": "vnStat",
+    "what": "Демон, который считает трафик по интерфейсам из счётчиков ядра, без сниффинга. В 2.x база SQLite (/var/lib/vnstat/vnstat.db), вывод в JSON (vnstat --json), алерты по превышению (--alert), картинки через vnstati.",
+    "version_activity": "v2.13 вышла 08.02.2025, последний коммит 03.10.2026. Около 1,8k звёзд, GPL-2.0. Пакет есть в Ubuntu 22.04/24.04.",
+    "protocols": "Видит интерфейсы: eth0 (весь VPS), awg0 (весь AmneziaWG). Xray и Hysteria по отдельности не различает, у них нет своего интерфейса.",
+    "users_traffic_metrics": "История по интерфейсу: 5 минут за 48 ч, часы за 4 дня, дни за 2 месяца, месяцы, годы и топ дней, сроки настраиваются. По пользователям нет. Удобно для лимитов трафика VPS у хостера.",
+    "resources_security": "Единицы МБ RAM, почти нулевой CPU. Сетевого сервиса нет, только CLI и SQLite-файл.",
+    "fit": "Обязательный минимум: за 1 пакет даёт историю трафика сервера по дням и месяцам, свою админку читать JSON через vnstat --json d/m. Из всего списка лучшее соотношение цены и пользы.",
+    "sources": [
+     "https://github.com/vergoh/vnstat",
+     "https://humdi.net/vnstat/"
+    ]
+   },
+   {
+    "name": "Uptime Kuma",
+    "what": "Проверка доступности: HTTP, TCP-порт, ping, DNS, push-heartbeat. Статус-страницы, около 90 каналов уведомлений (Telegram и др.), метрики Prometheus на /metrics.",
+    "version_activity": "2.5.5 вышла 16.09.2026. Около 92,1k звёзд, MIT. Ветка 2.x добавила MariaDB и rootless Docker.",
+    "protocols": "Можно проверять TCP-порты 443 (Reality), :2053 (панель). UDP/QUIC Hysteria2 и AWG напрямую не проверить, только через push от скрипта.",
+    "users_traffic_metrics": "Только аптайм и задержки, без метрик хоста и трафика.",
+    "resources_security": "Node.js, около 80–120 МБ RAM, SQLite. Есть 2FA. Если ставить на тот же VPS, он проверяет сам себя и падение хоста не увидит.",
+    "fit": "Полезен только как внешний сторож на другом хосте или бесплатном инстансе, сообщает в Telegram, что VPS недоступен. Внутри админки не нужен, проверку живости сервисов проще сделать самим.",
+    "sources": [
+     "https://github.com/louislam/uptime-kuma",
+     "https://www.heise.de/en/news/Uptime-Kuma-2-0-Monitoring-tool-now-with-MariaDB-support-10793657.html",
+     "https://instapods.com/apps/beszel/vs/uptime-kuma/"
+    ]
+   },
+   {
+    "name": "Cockpit",
+    "what": "Веб-консоль администрирования Linux от Red Hat: графики CPU/RAM/диска/сети, управление systemd-юнитами (start/stop/логи), журнал, терминал, обновления, сеть. Запускается через socket activation на :9090.",
+    "version_activity": "310.10 вышла 24.09.2026 (по GitHub releases). Около 15,2k звёзд, LGPL-2.1. Есть в репозиториях Ubuntu, но версия там старее.",
+    "protocols": "Протоколов нет. Умеет управлять hysteria-server, awg-quick@awg0, x-ui как systemd-сервисами.",
+    "users_traffic_metrics": "Только метрики хоста, долгая история через pcp (cockpit-pcp). Трафика по пользователям нет.",
+    "resources_security": "Простаивает почти без затрат за счёт socket activation, в сеансе десятки МБ. Вход через PAM системного пользователя, поэтому открытый :9090 даёт ещё одну поверхность атаки на root. CVE-2024-6126 (DoS через pam_env user_readenv на Debian/Ubuntu, исправлено в 320).",
+    "fit": "Мощный, но это админ-консоль сервера, а не панель VPN. Для админки рядом лишний: шире по правам, чем нужно. Допустим только через SSH-туннель, как запасной инструмент.",
+    "sources": [
+     "https://github.com/cockpit-project/cockpit",
+     "https://ubuntu.com/security/CVE-2024-6126",
+     "https://nvd.nist.gov/vuln/detail/cve-2024-6126"
+    ]
+   },
+   {
+    "name": "Встроенные метрики Remnawave",
+    "what": "Панель (NestJS + PostgreSQL + Valkey) показывает обзор пользователей (активные, истёкшие, онлайн за 24ч/7д), состояние нод (uptime, CPU, RAM, RX/TX). Отдаёт /metrics для Prometheus на :3001 с basic auth (METRICS_USER/PASS). Есть готовый дашборд Grafana 25576.",
+    "version_activity": "panel 3.4.4 (12.09.2026), node 3.4.1 (30.08.2026). panel около 5,2k звёзд, AGPL-3.0.",
+    "protocols": "Только Xray-core (VLESS/Trojan/SS и пр.) на нодах. Hysteria2 и AmneziaWG в ядре нет.",
+    "users_traffic_metrics": "Лучшая из готовых модель «пользователь → трафик»: история использования по нодам, топы, трафик за 24ч/30д в Prometheus.",
+    "resources_security": "По требованиям панели минимум 2 ГБ RAM и 2 CPU, рекомендуется 4/4, обязательно Docker Compose. Нода требует минимум 1 ГБ.",
+    "fit": "Хороший образец того, какие метрики показывать и как устроить /metrics, но как зависимость для одного 1–2 ГБ VPS слишком тяжёл и не покрывает Hy2/AWG.",
+    "sources": [
+     "https://docs.rw/install/requirements/",
+     "https://grafana.com/grafana/dashboards/25576-remnawave-panel/",
+     "https://github.com/remnawave/panel",
+     "https://github.com/enkinvsh/dropweb-monitoring"
+    ]
+   },
+   {
+    "name": "Komari / Nezha (лёгкие панели сервер + агент из VPS-сообщества)",
+    "what": "Самостоятельные панели со своим агентом: CPU/RAM/диск/сеть в реальном времени, история, учёт трафика, алерты, веб-терминал. Популярны у владельцев VPS в CN/RU-сегменте.",
+    "version_activity": "Komari 1.5.1 (24.09.2026, MIT, около 6,3k звёзд). Nezha v2.3.17 (01.10.2026, Apache-2.0, около 10,3k звёзд). Оба активны.",
+    "protocols": "Протоколы VPN не видят. У Nezha есть мониторы TCP, ICMP и HTTP.",
+    "users_traffic_metrics": "Только трафик и метрики хоста, без пользователей VPN.",
+    "resources_security": "Go-агенты, лёгкие (точных замеров не нашёл). Есть веб-терминал и удалённое выполнение команд с агента: при компрометации панели это сразу root на всех нодах. Нужна аккуратная настройка.",
+    "fit": "Альтернатива Beszel, но удалённое выполнение команд по умолчанию сильно увеличивает риск. Для нашего установщика Beszel или встроенные метрики 3x-ui безопаснее.",
+    "sources": [
+     "https://github.com/komari-monitor/komari",
+     "https://github.com/nezhahq/nezha"
+    ]
+   },
+   {
+    "name": "Подход: история трафика по пользователям в SQLite (своя свёртка)",
+    "what": "Свой сборщик (cron или systemd timer раз в 1–5 мин) снимает дельты счётчиков и пишет в SQLite, затем сворачивает: 5 мин → час → день → месяц, сырые данные чистятся. Схема по образцу 3x-ui: traffic(user, proto, ts_bucket, up, down).",
+    "version_activity": "Это шаблон, а не продукт. Источники данных проверены 04.10.2026: Hysteria2 Traffic Stats API, Xray StatsService, 3x-ui client API, `awg show <if> transfer`.",
+    "protocols": "Xray: user>>>email>>>traffic>>>uplink через `xray api statsquery -reset` или /panel/api/clients. Hysteria2: GET /traffic?clear=1, /online, POST /kick (нужен trafficStats.listen и secret, пользователь задаётся через auth userpass/http, а не общий пароль). AWG: `awg show awg0 transfer` (по пирам, peer↔user задаёт админка).",
+    "users_traffic_metrics": "Даёт живые значения (последняя дельта или скорость) и историю по пользователю и протоколу, месячные лимиты и истечение. С 3x-ui можно брать её накопленные up/down, а не дублировать учёт.",
+    "resources_security": "Почти ноль: одна SQLite-таблица, при 50 пользователях × 3 протокола × 288 точек в сутки это около 43k строк в день до свёртки. Следить за сбросом счётчиков (рестарт Xray или awg): считать дельты с проверкой «новое < старого».",
+    "fit": "Рекомендуемый путь для своей админки на 1–2 ГБ: без новых сервисов, полностью под нашим контролем, ложится на state и config установщика. Главное требование: у Hy2 должен быть пароль на каждого пользователя (сейчас общий), иначе разбивки по пользователям нет.",
+    "sources": [
+     "https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/",
+     "https://github.com/MHSanaei/3x-ui/blob/main/internal/web/controller/client.go",
+     "https://xtls.github.io/en/config/stats.html",
+     "https://github.com/amnezia-vpn/amneziawg-tools"
+    ]
+   },
+   {
+    "name": "Рекомендуемый минимальный стек для админки",
+    "what": "Хост: GET /panel/api/server/status и /history/:metric/7d из 3x-ui (CPU/RAM/swap/диск/сеть/load/uptime, 7 дней). Сервисы: свой эндпоинт с `systemctl is-active x-ui hysteria-server awg-quick@awg0`, проверкой портов (ss -lntu) и handshake AWG. Месячный трафик VPS: vnStat --json. Пользователи: SQLite-свёртка. По желанию Beszel-агент и внешний Uptime Kuma.",
+    "version_activity": "Компоненты актуальны на 04.10.2026: 3x-ui v3.9.0, vnStat 2.13, Beszel v0.21.0, Uptime Kuma 2.5.5.",
+    "protocols": "Покрывает все текущие: Reality через 3x-ui, Hy2 через /traffic, AWG через awg show. Расширяется на XHTTP, TUIC и AWG 3.x: при переходе на inbound внутри 3x-ui данные автоматически попадают в её API.",
+    "users_traffic_metrics": "Живые значения: опрос раз в 2–5 с из админки. История хоста: 7 дней от 3x-ui плюс месяцы и годы от vnStat. История по пользователям: свой SQLite (час, день, месяц).",
+    "resources_security": "Прирост к RAM около 5 МБ (vnStat) плюс сама админка. Beszel добавит около 15 МБ на агента и около 50 МБ на хаб. Все внутренние API слушают только 127.0.0.1. Админку закрыть TLS, 2FA и fail2ban, 3x-ui увести с plain HTTP.",
+    "fit": "Минимальная стоимость и максимум переиспользования. Главный риск: формат API 3x-ui меняется в минорах (пример: перенос /panel/setting в v3.3.0), поэтому нужен тонкий слой-адаптер и закреплённая версия панели в установщике.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases/tag/v3.3.0",
+     "https://github.com/vergoh/vnstat",
+     "https://beszel.dev/guide/systemd"
+    ]
+   }
+  ],
+  "key_takeaways": [
+   "3x-ui v3.4.1+ уже ведёт историю системных метрик на 7 дней (уровни 2с/1ч, 1м/48ч, 10м/7д, около 1,5 МБ в system_metrics.gob) и отдаёт её по API: /panel/api/server/status, /history/:metric/:bucket. Для CPU/RAM/диска/сети/load/uptime отдельный мониторинг не нужен.",
+   "3x-ui v3.9.0 (03.10.2026) сама обслуживает Hysteria, AmneziaWG (с v3.7.0) и TUIC v5 (нативно). Если перенести Hy2 и AWG из отдельных systemd-сервисов в inbound панели, получим единый учёт пользователей и трафика без своих сборщиков. Это стоит обсудить отдельно.",
+   "Ни один монитор сервера (Beszel, Netdata, Glances, node_exporter) не знает про пользователей VPN. Историю трафика по пользователям собирать самим: Xray stats или клиентский API 3x-ui, Hysteria2 GET /traffic?clear=1, `awg show awg0 transfer` → дельты → свёртка в SQLite (час, день, месяц).",
+   "Для разбивки Hy2 по пользователям надо уйти от одного общего пароля к auth userpass или http-auth с пользователем на каждого и включить trafficStats.listen на 127.0.0.1 с secret.",
+   "vnStat (около 5 МБ, SQLite, --json) лучший дешёвый источник истории трафика VPS и awg0 по дням и месяцам. Для лимитов хостера стоит ставить его по умолчанию.",
+   "Beszel v0.21.0 (агент около 10–15 МБ, хаб около 50 МБ, MIT) лучший готовый мониторинг рядом с панелью, умеет статусы systemd. Брать версию ≥0.19.0 из-за трёх CVE 2026 года (path traversal и IDOR).",
+   "Netdata (100–350 МБ, вход в облако для панели v3, лимит 5 нод) и Prometheus+Grafana (500 МБ–1 ГБ+) избыточны для VPS на 1–2 ГБ с прокси. Remnawave требует от 2 ГБ, Docker и Postgres.",
+   "Здоровье сервисов проще проверять самим: systemctl is-active для x-ui, hysteria-server, awg-quick@awg0, проверка слушающих портов, свежесть handshake AWG. Uptime Kuma полезен только на внешнем хосте как сторож с уведомлением в Telegram.",
+   "Все внутренние API (3x-ui, Hy2 stats, Glances, VictoriaMetrics, node_exporter) слушают только 127.0.0.1. Наружу смотрит одна админка с TLS и 2FA. В установщике закрепить версию 3x-ui: её API ломается между минорными версиями."
+  ]
+ },
+ {
+  "angle": "panel-security: уязвимости self-hosted VPN-панелей 2025-2026, сканирование/фингерпринт серверов в РФ, модели экспозиции админки, хранение секретов, аудит",
+  "summary": "Ключевые выводы. Всё, что панель пишет на диск от root (импорт БД, пути логов Xray, имена клиентов в конфиге WG), в 2026 г. стабильно оказывалось root-RCE. Так было в 3x-ui (CVE-2026-55477, GHSA-h4x8, GHSA-fqw4, последний патч v3.9.0 от 03.10.2026) и в wg-easy 15.3.0 (CVE-2026-72603, CVSS 9.9). Отдельно у wg-easy был токен однократной ссылки, который подбирается перебором (CVE-2026-63089). Plain HTTP на :2053 в нашем инсталляторе — прямой антипаттерн: RPRX ещё в 2024 г. предупреждал, что так в открытом виде передаётся приватный ключ Reality. ТСПУ сканирует все 65535 портов, поэтому случайный порт не прячет панель. Tailscale отдаёт 451 в РФ, Cloudflare режется до 16 КБ. Для РФ остаётся одна разумная модель: bind 127.0.0.1 + SSH-туннель или доступ только изнутри VPN, а также блок geoip:private, 2FA, секреты с правами 0600 и аудит-лог.",
+  "items": [
+   {
+    "name": "3x-ui (MHSanaei): CVE и GHSA 2025-2026",
+    "what": "Наша текущая панель. Опубликовано 8 GHSA и 2 CVE. Главный класс: аутентифицированный админ получает root-запись файлов через импорт БД и пути логов Xray.",
+    "version_activity": "Последний релиз v3.9.0 от 03.10.2026, очень активный проект. CVE-2025-29331 (CVSS 9.8, wget без проверки TLS в скрипте x-ui, исправлено в 2.5.3). CVE-2026-55477/GHSA-jm48 (7.2, исправлено в 3.3.1). Его обход GHSA-h4x8 (High, 3.3.1–3.7.0, исправлено в 3.8.0). GHSA-fqw4: ATTACH DATABASE, до 3.8.5 включительно, исправлено в 3.9.0. GHSA-xqqw: замена 2FA-секрета, исправлено в 3.7.0. GHSA-rr44: node-sync, патча нет. В issue #4135 (04.2026) исследователь месяц не мог достучаться до мейнтейнеров.",
+    "protocols": "VLESS/Reality/XHTTP, Trojan, SS, Hy2. С v3.7–3.9 нативно AmneziaWG 3.1, TUIC v5 и MTProto.",
+    "users_traffic_metrics": "Полный набор: пользователи, лимиты, срок действия, трафик, подписки. Не по теме безопасности, но важно: с 3.7–3.9 панель покрывает почти весь наш «зоопарк».",
+    "resources_security": "Go + SQLite, сервис идёт от root, поэтому любая file-write уязвимость даёт root. Есть TOTP 2FA. С 3.7.0 у API-токенов есть scopes и expiry. В 3.8.0 права на SQLite сужены до 0600, релизы идут с SHA-256, на новых установках путь подписки случайный. С 3.6.0 openapi.json закрыт сессией.",
+    "fit": "Если оставлять 3x-ui: пиновать версию не ниже 3.9.0, обновлять оперативно, ставить только из релизов с проверкой SHA-256. Никогда не держать панель открытой наружу. Вывод для своей админки: не давать функций «импорт сырого SQL» или «произвольный JSON-конфиг Xray» без allowlist ключей и путей.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/security",
+     "https://app.opencve.io/cve/?product=3x-ui&vendor=mhsanaei",
+     "https://github.com/MHSanaei/3x-ui/security/advisories/GHSA-h4x8-qc42-f6wv",
+     "https://github.com/MHSanaei/3x-ui/security/advisories/GHSA-fqw4-8j9p-5r3v",
+     "https://github.com/MHSanaei/3x-ui/security/advisories/GHSA-xqqw-jqqv-99h6",
+     "https://github.com/MHSanaei/3x-ui/security/advisories/GHSA-rr44-v4rv-x654",
+     "https://github.com/MHSanaei/3x-ui/releases",
+     "https://github.com/MHSanaei/3x-ui/issues/4135"
+    ]
+   },
+   {
+    "name": "Предупреждение RPRX: plain-HTTP панели (3x-ui) передают приватный ключ Reality",
+    "what": "24.10.2024 разработчики Xray-core предупредили пользователей 3x-ui. Панель по открытому HTTP передаёт приватный ключ сервера, и его может перехватить кто угодно на пути, в том числе DPI. Рекомендация: только HTTPS или SSH port-forward.",
+    "version_activity": "Тред на ntc.party от 24.10.2024. Позиция RPRX: поддерживать только HTTPS или SSH-форвардинг. Сейчас инсталлятор 3x-ui предлагает HTTP-only режим лишь вместе с listenIP 127.0.0.1.",
+    "protocols": "Касается VLESS+Reality: компрометация privateKey раскрывает сервер и позволяет выдать себя за него.",
+    "users_traffic_metrics": "—",
+    "resources_security": "Наш инсталлятор сейчас держит 3x-ui на plain HTTP :2053 на 0.0.0.0. Это ровно описанный антипаттерн плюс дефолтный порт: на нём 3x-ui сам показывает предупреждение «Panel default port is vulnerable».",
+    "fit": "Критичный фикс для vpn-zoo-installer: `x-ui setting -listenIP 127.0.0.1` и доступ через `ssh -L`. Либо TLS-реверс-прокси со случайным путём. В новой админке plain HTTP наружу запретить на уровне кода.",
+    "sources": [
+     "https://ntc.party/t/%D0%B2%D0%BD%D0%B8%D0%BC%D0%B0%D0%BD%D0%B8%D1%8E-%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D0%B5%D0%B9-3x-ui/12243",
+     "https://github.com/SBKubric/sane-3x-ui/issues/239",
+     "https://raw.githubusercontent.com/MHSanaei/3x-ui/main/install.sh"
+    ]
+   },
+   {
+    "name": "Инсталлятор 3x-ui: текущие защитные дефолты",
+    "what": "Официальный install.sh генерирует случайные логин и пароль (10 символов), webBasePath (18 символов) и порт (1024–62000). Предлагает SSL на выбор: домен через acme.sh, IP-сертификат LE shortlived на 6 дней, свой сертификат или без SSL. В режиме без SSL позволяет привязать панель к 127.0.0.1.",
+    "version_activity": "Ветка main на 10.2026.",
+    "protocols": "—",
+    "users_traffic_metrics": "—",
+    "resources_security": "По умолчанию слушает 0.0.0.0. Опции: переменные окружения XUI_USERNAME, XUI_PASSWORD, XUI_WEB_BASE_PATH и команда `x-ui setting -listenIP`.",
+    "fit": "Наш фазовый инсталлятор вставляет inbound прямо в x-ui.db. Ему стоит повторить эти дефолты: случайный путь и креды в /etc/vpn-setup/config.env с правами 0600, listenIP 127.0.0.1. Случайный порт сам по себе маскировкой не является: ТСПУ сканирует весь диапазон.",
+    "sources": [
+     "https://raw.githubusercontent.com/MHSanaei/3x-ui/main/install.sh"
+    ]
+   },
+   {
+    "name": "wg-easy: 2 критических CVE 2026",
+    "what": "Популярная веб-панель для WireGuard. Пример того, как поле «имя клиента» превращается в root-RCE через wg-quick.",
+    "version_activity": "v15 (полный rewrite, Argon2 + TOTP). CVE-2026-72603 (CVSS 9.9, опубликован 11.08.2026): перевод строки в имени клиента внедряет PostUp, выполняется от root, затронута 15.3.0. CVE-2026-63089 (9.3, опубликован 05.08.2026): токен одноразовой ссылки = CRC32 от числа 0–999, у /cnf/:oneTimeLink нет rate-limit, исправлено коммитом 66b292b. GHSA в репозитории не публикуются.",
+    "protocols": "WireGuard (не AWG).",
+    "users_traffic_metrics": "Клиенты, трафик, QR-коды.",
+    "resources_security": "Docker. С v15 plain HTTP работает только с INSECURE=true, по умолчанию требуется реверс-прокси с TLS.",
+    "fit": "Прямой урок для нашей AWG-части. Генерировать awg0.conf шаблоном со строгой валидацией имени (только [a-z0-9_-]). Токены ссылок и подписок брать из CSPRNG, не короче 128 бит, с TTL и rate-limit. Не обязательно запускать wg-quick из процесса админки.",
+    "sources": [
+     "https://app.opencve.io/cve/?vendor=wg-easy",
+     "https://hol.org/guard/security/cves/CVE-2026-72603-wg-easy-wg-easy-os-command-injection",
+     "https://wg-easy.github.io/wg-easy/v15.3/examples/tutorials/reverse-proxyless/",
+     "https://linuxiac.com/wireguard-easy-v15-launches-with-full-rewrite/"
+    ]
+   },
+   {
+    "name": "Remnawave: CVE и модель «скрытой панели» (cookie-gate)",
+    "what": "Популярная в РФ панель. Её экосистема продвигает «скрытую» панель: реверс-прокси пропускает запрос только при наличии секретной cookie, которая выставляется через URL /auth/login?KEY=KEY. Без неё сканер видит заглушку.",
+    "version_activity": "CVE-2026-39880 (CVSS 5.0, гонка в HWID-лимите, исправлено в backend 2.7.5, 04.2026). Объявлена критическая уязвимость в Subscription Page: нужно срочно обновиться до 7.2.5, детали обещали раскрыть через 3 месяца. В panel/security опубликованных advisory нет.",
+    "protocols": "Xray (VLESS/Reality/XHTTP и др.).",
+    "users_traffic_metrics": "Развитые пользователи и трафик, нативный /metrics для Prometheus.",
+    "resources_security": "Docker + PostgreSQL + Redis: для VPS на 1–2 ГБ тяжело. Защита через nginx/Caddy с cookie-ключом (скрипт eGames) или Caddy с формой входа и MFA (remnawave/caddy-with-auth).",
+    "fit": "Паттерн cookie-gate дешёвый и полезный, если админку всё же выставлять наружу. Сканер без cookie видит обычный сайт или 404 вместо формы логина. Сам Remnawave для одного VPS тяжеловат.",
+    "sources": [
+     "https://app.opencve.io/cve/?product=remnawave_backend&vendor=remnawave",
+     "https://nvd.nist.gov/vuln/detail/CVE-2026-39880",
+     "https://t.me/s/remnawave?before=22",
+     "https://github.com/eGamesAPI/remnawave-reverse-proxy",
+     "https://docs.rw/docs/install/reverse-proxies/caddy/",
+     "https://github.com/remnawave/caddy-with-auth"
+    ]
+   },
+   {
+    "name": "Marzban: заморожен, брутфорс без защиты",
+    "what": "Python/React-панель для Xray. Новых релизов нет почти два года. Пользователи сообщают о массовом брутфорсе логина.",
+    "version_activity": "Последний релиз v0.8.4 от 09.01.2025. Опубликованных GHSA и SECURITY.md нет. Issue #2012 (25.02.2026): более 10 000 неудачных логинов в день, rate-limit и капчи нет, ответа мейнтейнеров нет. Сообщество мигрирует на форк PasarGuard.",
+    "protocols": "Xray (VLESS/VMess/Trojan/SS).",
+    "users_traffic_metrics": "Пользователи, лимиты, срок, трафик, подписки.",
+    "resources_security": "Python + SQLite/MySQL. Нет rate-limit на /api/admin/token. Узлы marzban-node общаются с панелью по mTLS-сертификату.",
+    "fit": "Брать не стоит: проект не поддерживается. Урок для нашей админки: брутфорс по открытой форме логина реален, нужны rate-limit с экспоненциальной задержкой, fail2ban-jail и отказ от спама уведомлениями о каждой неудачной попытке.",
+    "sources": [
+     "https://github.com/Gozargah/Marzban/releases",
+     "https://github.com/Gozargah/Marzban/security",
+     "https://github.com/gozargah/marzban/issues/2012"
+    ]
+   },
+   {
+    "name": "PasarGuard: утечка JWT на сторонний домен (12.2025)",
+    "what": "Форк-наследник Marzban. 05.12.2025 объявлена критическая уязвимость фронтенда: middleware прикреплял JWT админа к запросам на donate.pasarguard.org.",
+    "version_activity": "Discussion #158 от 05.12.2025. Рекомендации: обновиться и сменить пароли админов. Номера версий не указаны.",
+    "protocols": "Xray.",
+    "users_traffic_metrics": "Как у Marzban, плюс развитие.",
+    "resources_security": "Пример supply-chain и фронтенд-риска: токен админа с долгим TTL ушёл на внешний хост.",
+    "fit": "Урок: в админке не обращаться к внешним доменам (CSP connect-src 'self', никаких CDN). Сессии держать в HttpOnly/SameSite=Strict cookie, а не в Bearer-токене из JS. Короткий TTL.",
+    "sources": [
+     "https://github.com/PasarGuard/panel/discussions/158",
+     "https://github.com/PasarGuard/panel"
+    ]
+   },
+   {
+    "name": "Hiddify Manager",
+    "what": "Мультипротокольная панель, более 20 протоколов, Telegram-прокси.",
+    "version_activity": "В репозитории Hiddify-Manager нет опубликованных advisory и SECURITY.md. В hiddifypanel закрыта зависимостная CVE-2025-43859 (h11 обновлён до 0.16.0).",
+    "protocols": "Xray, sing-box (Hy2, TUIC и др.), WireGuard.",
+    "users_traffic_metrics": "Пользователи, трафик, подписки.",
+    "resources_security": "Тяжёлый стек: Python, MariaDB, Redis, nginx/HAProxy. Большая поверхность атаки, процесс раскрытия уязвимостей не формализован.",
+    "fit": "Скорее анти-пример для VPS на 1–2 ГБ: много компонентов, нет политики раскрытия. Урок: следить за CVE в зависимостях (Dependabot или govulncheck в CI).",
+    "sources": [
+     "https://github.com/hiddify/Hiddify-Manager/security",
+     "https://github.com/hiddify/hiddifypanel/pull/35"
+    ]
+   },
+   {
+    "name": "Активное сканирование ТСПУ и массовые баны IP в РФ (2025-2026)",
+    "what": "Российский сканер обходит все порты 1–65535 и набирает «VPN-score» по аномалиям ответов: HTTP/0.0, отсутствие заголовка Server, одинаковые ответы на разные пробы, короткоживущие сертификаты. Выше порога IP попадает в репутационный список.",
+    "version_activity": "Статья avsisp от 11.09.2026. net4people #671: массовые баны 04.08.2026 и 21.09.2026 у популярных хостеров (Veesp ~5000 IP, FirstByte ~3000, Play2Go ~2000). Блокировали даже IP только с AmneziaWG. Habr (21.09.2025): РКН зондирует IPv4 и блокирует за признаки обходных инструментов и чужие сертификаты.",
+    "protocols": "Reality (включая self-steal), AWG, все остальные.",
+    "users_traffic_metrics": "—",
+    "resources_security": "Публичных данных о сигнатуре именно форм логина 3x-ui/x-ui в российском сканере не нашёл. Но любой отвечающий сервис добавляет очки, а в Иране GFW прямо сканирует порты панелей.",
+    "fit": "Любой лишний открытый порт, включая порт панели (даже случайный), увеличивает риск бана IP. Админка не должна слушать публичный интерфейс. Наружу открыты только порты протоколов, SSH лучше перенести с 22.",
+    "sources": [
+     "https://www.avsisp.com/blog/our-takes/three-ways-russia-breaks-xray/",
+     "https://github.com/net4people/bbs/issues/671",
+     "https://habr.com/ru/articles/1084862/",
+     "https://github.com/RezaXAfrasyabi/stealth-proxy-vps-setup"
+    ]
+   },
+   {
+    "name": "Модели экспозиции админки: что работает из РФ",
+    "what": "Сравнение вариантов доступа к админке: SSH-туннель, доступ через свой VPN, Tailscale, Cloudflare Access, TLS-реверс-прокси, mTLS.",
+    "version_activity": "Tailscale отдаёт 451 из РФ: отказ выполнять закон Яровой (HN, 2024). DERP-домены блокируются, Headscale — обходной вариант. Cloudflare режется ТСПУ до 16 КБ на соединение с 09.06.2025, IP cloudflared тоже блокируются.",
+    "protocols": "—",
+    "users_traffic_metrics": "—",
+    "resources_security": "Лучший вариант — bind 127.0.0.1 + `ssh -L`: ноль новых портов, ключевая SSH-аутентификация. Второй — слушать только на IP интерфейса awg0 (10.x) плюс правило iptables INPUT. Третий — Caddy/nginx с TLS, случайным путём, cookie-gate, TOTP/passkey, опционально mTLS: клиентский сертификат в браузере, ноль ответа без него.",
+    "fit": "Дефолт инсталлятора: 127.0.0.1 + SSH-туннель, в итоговом сообщении печатать готовую команду ssh -L. Опционально: доступ через AWG mgmt-peer. Cloudflare Access и Tailscale для РФ не рекомендовать. Режим «наружу» делать только явным флагом и только с TLS, cookie-gate и 2FA.",
+    "sources": [
+     "https://news.ycombinator.com/item?id=41717465",
+     "https://ntc.party/t/tailscale-in-russia/6268",
+     "https://en.zona.media/article/2025/06/19/cloudflare",
+     "https://olegkhomenko.medium.com/cloudflared-ips-are-being-blocked-in-russia-c97dc70e82f6",
+     "https://ufo.hosting/blog/kak-poluchit-dostup-k-x-ui-cherez-ssh-tunnel"
+    ]
+   },
+   {
+    "name": "Доступ к панели изнутри прокси: блок geoip:private",
+    "what": "Если в Xray нет правила, блокирующего geoip:private, любой клиент VLESS/Hy2 может через прокси дойти до 127.0.0.1:порт_панели. Так «спрятанная» на localhost админка и Hysteria Stats API оказываются доступны каждому пользователю.",
+    "version_activity": "Устойчивая рекомендация в гайдах 2026 г. по 3x-ui: правило Destination IP geoip:private → outbound blocked, первым в списке.",
+    "protocols": "Xray (routing), Hysteria2 (ACL: reject(geoip:private) / reject(127.0.0.0/8)), AWG (iptables FORWARD/INPUT с awg0 на порты админки).",
+    "users_traffic_metrics": "—",
+    "resources_security": "Без этого правила модель «bind 127.0.0.1» ломается: пользователи VPN становятся «локальными».",
+    "fit": "Инсталлятор должен добавлять блок private-диапазонов во все data-plane: в routing Xray, в acl Hysteria2 и в iptables для awg0. Исключение — только для выделенного mgmt-пира, если используется доступ к админке через VPN.",
+    "sources": [
+     "https://www.samnet.dev/learn/networking/xray-routing/",
+     "https://lobehub.com/skills/openclaw-skills-3x-ui-vpn-setup"
+    ]
+   },
+   {
+    "name": "Секреты и data-plane API: Hysteria2 Traffic Stats, Xray API, awg",
+    "what": "Админка для статистики ходит в API ядер: Hysteria2 trafficStats (/traffic, /online, /kick, /dump/streams), Xray StatsService gRPC и `awg show`. Все они — привилегированные секреты.",
+    "version_activity": "Документация Hysteria2 v2 актуальна: секрет передаётся в заголовке Authorization. Kick без блокировки в auth-бэкенде бесполезен: клиент переподключится.",
+    "protocols": "Hy2, VLESS/Xray, AWG.",
+    "users_traffic_metrics": "Hy2: tx/rx по каждому пользователю, онлайн, kick. Xray: счётчики user>>>email>>>traffic. AWG: transfer по каждому peer.",
+    "resources_security": "Hy2 stats слушать только на 127.0.0.1 со случайным secret. Xray API — только на 127.0.0.1 через dokodemo-door. `awg show` требует CAP_NET_ADMIN: вынести в маленький helper через sudoers на одну команду, а не запускать всю админку от root. Секреты хранить в config.env с правами 0600 root:root или в systemd LoadCredential.",
+    "fit": "Для нашей архитектуры: одна служба-коллектор с минимальными правами и отдельный непривилегированный UI. Для Hy2 перейти от общего пароля к auth type: http (бэкенд админки) или userpass: тогда появятся пользователи и рабочий kick.",
+    "sources": [
+     "https://v2.hysteria.network/docs/advanced/Traffic-Stats-API/",
+     "https://github.com/MHSanaei/3x-ui/releases"
+    ]
+   },
+   {
+    "name": "Аудит-лог, 2FA, токены: минимальный набор по урокам CVE",
+    "what": "Сводка практик из разобранных инцидентов: 3x-ui (2FA/токены), PasarGuard (JWT), Marzban (брутфорс), wg-easy (токены ссылок).",
+    "version_activity": "3x-ui 3.7.0: scoped API-токены с expiry, исправлена смена 2FA без кода. 3.8.0: права на БД 0600, SHA-256 у релизов. 3.9.0: ротация токенов и ужесточение restore.",
+    "protocols": "—",
+    "users_traffic_metrics": "Аудит-лог (кто, что, когда, IP) нужен и для действий над учётками: создание, отключение, смена лимитов.",
+    "resources_security": "Пароль хешировать Argon2id. TOTP с обязательной проверкой кода при смене секрета, passkey/WebAuthn по возможности. Сессия в cookie HttpOnly+Secure+SameSite=Strict, CSRF-токен. Rate-limit плюс fail2ban. Append-only аудит в SQLite/journald без секретов в логах. Ссылки подписки — 128+ бит из CSPRNG, отзываемые.",
+    "fit": "Закладывать в нашу админку с первого дня, на 1–2 ГБ это ничего не стоит. Без импорта сырого SQL и правки произвольного JSON ядра: только типизированные формы с allowlist.",
+    "sources": [
+     "https://github.com/MHSanaei/3x-ui/releases",
+     "https://github.com/MHSanaei/3x-ui/security/advisories/GHSA-xqqw-jqqv-99h6",
+     "https://github.com/PasarGuard/panel/discussions/158",
+     "https://github.com/gozargah/marzban/issues/2012"
+    ]
+   }
+  ],
+  "key_takeaways": [
+   "Нынешний дефолт инсталлятора (3x-ui на plain HTTP :2053 на 0.0.0.0) — главный риск. По предупреждению RPRX (24.10.2024) так в открытом виде передаётся приватный ключ Reality. Плюс это лишний порт под сканером ТСПУ. Исправление: `x-ui setting -listenIP 127.0.0.1` и доступ через `ssh -L`.",
+   "Повторяющийся класс багов 2026 г.: аутентифицированный админ получает root-RCE через запись файлов. Это импорт БД и пути логов Xray в 3x-ui (CVE-2026-55477, GHSA-h4x8, GHSA-fqw4) и имя клиента в конфиге WG в wg-easy (CVE-2026-72603, 9.9). Значит, в своей админке: без импорта сырого SQL и JSON, строгая валидация полей, а UI не должен работать от root.",
+   "Если оставлять 3x-ui, пиновать версию не ниже v3.9.0 (03.10.2026) и обновляться быстро: в одной партии от 03.10.2026 вышли пять advisory. Сам проект за 3.7–3.9 получил AmneziaWG 3.1 и TUIC v5. Это стоит учесть при выборе «своя админка или 3x-ui как бэкенд».",
+   "ТСПУ сканирует все 65535 портов и копит VPN-score. Массовые баны 04.08 и 21.09.2026 задели даже IP только с AWG. Случайный порт и путь — не маскировка: админка не должна отвечать на публичном интерфейсе вообще.",
+   "Для пользователей из РФ Tailscale (451) и Cloudflare Access/Tunnel (режется до 16 КБ с 09.06.2025) непригодны. Реальные варианты: SSH-туннель (дефолт), mgmt-пир в AWG, либо явный режим «наружу» через Caddy с TLS, cookie-gate (паттерн Remnawave/eGames), 2FA и опционально mTLS.",
+   "Bind на 127.0.0.1 бесполезен без блока geoip:private во всех data-plane: в routing Xray, ACL Hysteria2 и iptables для awg0. Иначе любой пользователь VPN доходит до админки и stats-API ядер.",
+   "Секреты (креды панели, Hy2 stats secret, ключи Reality и AWG) хранить в /etc/vpn-setup/config.env с правами 0600 root или в systemd LoadCredential. Привилегированные операции (`awg show`, reload) вынести в узкий helper через sudoers.",
+   "Минимум для своей админки: Argon2id, TOTP или passkey с перепроверкой при смене секрета, cookie HttpOnly/Secure/SameSite=Strict плюс CSRF, rate-limit и fail2ban (в Marzban видели 10k+ попыток входа в сутки), CSP без внешних доменов (урок PasarGuard: JWT утёк на donate-домен), append-only аудит-лог, токены подписок от 128 бит с возможностью отзыва."
+  ]
+ },
+ {
+  "name": "zoo-admin: Go-сайдкар поверх 3x-ui v3.9.0, apernet Hysteria2 и ядерного AmneziaWG",
+  "approach": "Xray остаётся за 3x-ui v3.9.0: версия закреплена, панель слушает только 127.0.0.1. Hysteria2 (apernet) и AWG на модуле ядра остаются нативными. Рядом ставится zoo-admin: один Go-бинарник, единственный источник правды о пользователях. Он раздаёт изменения в три адаптера:\n- xui — REST /panel/api/clients с Bearer-токеном;\n- hy2 — auth.type http и trafficStats;\n- awg — root-хелпер с командами awg set и dump.\n\nМетрики сервера берутся из /server/status 3x-ui, gopsutil служит запасным источником. Будущие TUIC, XHTTP и AWG 3.x внутри 3x-ui подключатся через тот же адаптер xui.",
+  "architecture": "Браузер → ssh -L 8088 → zoo-admin, 127.0.0.1:8088 (UI, templ+htmx, SSE) и :8089 (хук авторизации hy2).\nАдаптеры:\n- xui: REST к 127.0.0.1:2053, только clients/*, inbounds/list, server/*. gRPC Xray не трогаем.\n- hy2: hysteria-server делает POST /hy2/auth и получает {ok,id}. Трафик через 127.0.0.1:9999 /traffic?clear=1, /online, /kick.\n- awg: sudo awg-helper dump|add|del|save на awg0.\nКоллектор раз в 30 с считает дельты и пишет их в SQLite (/var/lib/zoo-admin/zoo.db). Энфорсер раз в 60 с проверяет срок и квоту и отключает пользователя во всех трёх бэкендах. Цикл reconcile раз в 5 мин сверяет желаемое состояние с фактическим.",
+  "user_model": "В zoo.db у пользователя есть name ([a-z0-9_-]{1,32}), status, expire_at, quota_bytes, sub_token (128 бит) и набор протоколов. Как он отображается в каждом протоколе:\n- VLESS/XHTTP/TUIC: клиент 3x-ui с email=name, uuid, flow xtls-rprx-vision. Создаётся через clients/add, затем attach к нужным inbound.\n- Hy2: секрет 24 байта, ссылка hysteria2://name:secret@host:443/?sni=…&obfs=salamander. Хук возвращает id=name.\n- AWG: ключи и PSK генерирует сервер, IP берётся из пула 10.8.0.0/24. Выдаётся .conf, QR и vpn://.\n\nДля MVP ссылки, QR и файлы отдаются из админки вручную. Публичная подписка /sub/&lt;token&gt; появится во второй фазе и только при наличии домена и TLS.",
+  "metrics": "Трафик:\n- Xray: накопленные up/down из clients/list (по клиенту) и inbounds/list (по протоколу). Дельту считаем с учётом сброса счётчика (новое значение меньше старого).\n- Hy2: /traffic?clear=1, читает только коллектор.\n- AWG: rx/tx из dump.\n\nХранение: точки по 5 мин держим 48 ч, почасовые 60 дней, дневные 2 года. Живые данные идут по SSE раз в 3 с: онлайн из clients/onlines, Hy2 /online, свежесть handshake AWG (до 300 с). Сервер: CPU, RAM, диск, сеть, load и uptime из 3x-ui /server/status и /history (7 дней). Дополнительно проверяем:\n- systemctl is-active для x-ui, hysteria-server и awg-quick@awg0;\n- слушающие порты через ss;\n- срок действия сертификатов;\n- месячный трафик VPS через vnstat --json m.",
+  "security": "Доступ:\n- Всё слушает только 127.0.0.1. Вход через ssh -L, запасной вариант — отдельный mgmt-пир AWG.\n- У 3x-ui listenIP 127.0.0.1. Токен со scope clients, inbounds и server:read хранится в /etc/zoo-admin/zoo.env (0600).\n\nАутентификация в админке:\n- Пароль хешируется Argon2id, вход с TOTP.\n- Cookie HttpOnly, Secure, SameSite=Strict, плюс CSRF-токен и rate-limit.\n- CSP 'self', статика встроена в бинарник, CDN не используется.\n- Аудит-лог ведётся только на дозапись.\n\nПривилегии:\n- Сам zoo-admin работает от пользователя zooadmin.\n- awg-helper запускается от root через sudoers и умеет только фиксированные команды. Ключ проверяется как base64 длиной 44, IP — на принадлежность пулу.\n\nИзоляция data plane:\n- В routing Xray правило geoip:private → blocked.\n- В ACL Hy2 reject для 127.0.0.0/8 и 10.0.0.0/8.\n- iptables: INPUT -i awg0 → DROP, кроме DNS.",
+  "installer_integration": "Фазы:\n- 40-xui: 3x-ui v3.9.0 ставится через install.sh &lt;tag&gt;. Прямой INSERT в x-ui.db заменяется API-вызовами: x-ui setting -listenIP 127.0.0.1, -getApiToken, inbounds/add.\n- 50-hy2: конфиг переводится на auth: {type: http, http: {url: http://127.0.0.1:8089/hy2/auth}}, добавляются trafficStats {listen: 127.0.0.1:9999, secret} и ACL.\n- 55-awg: схема «один пир на пользователя», пул адресов, раздел PostUp с iptables.\n- 70-zoo-admin (новая): бинарник с проверкой sha256, systemd-юнит, sudoers.\n- 72-migrate (новая): текущие креды переносятся в пользователя owner.\n- 75-vnstat (новая).\n- 99: печатает команду ssh -L и пароль, все секреты пишутся в config.env (0600).",
+  "mvp_scope": [
+   "Go-бинарник zoo-admin (modernc sqlite, templ+htmx, uPlot) со своим systemd-юнитом, слушает 127.0.0.1:8088 и :8089",
+   "Вход: Argon2id + TOTP, CSRF, аудит-лог",
+   "CRUD пользователей с раздачей в xui/hy2/awg: создать, отключить, включить, удалить, срок, квота",
+   "Ссылки vless:// и hysteria2://, AWG .conf, QR-коды",
+   "Хук авторизации Hy2 и опрос /traffic, /online, /kick",
+   "awg-helper (dump/add/del/save) и пул IP",
+   "Коллектор дельт, свёртка истории, графики по пользователю и протоколу",
+   "Страница статуса: протоколы и inbound'ы, systemd, порты, метрики 3x-ui, vnStat",
+   "Энфорсер срока и квоты, reconcile",
+   "Переделка фаз инсталлятора на API 3x-ui, закрепление версии, перевод на loopback, правила для private-сетей"
+  ],
+  "effort": "Экспертная оценка: один Go-разработчик, 3–5k строк, 3–4 недели.\n- Авторизация и аудит: 2–3 дня.\n- Модель пользователя и три адаптера: 5–6 дней.\n- Ссылки и QR: 2 дня.\n- Коллектор и история: 3–4 дня.\n- Метрики и здоровье сервисов: 2 дня.\n- UI: 4–5 дней.\n- Фазы инсталлятора и миграция: 2–3 дня.\n\nВторая фаза (публичная подписка, бот в Telegram, AWG 3.x-профиль): ещё 1–2 недели. Ожидаемый расход памяти: около 15–25 МБ.",
+  "risks": [
+   "API 3x-ui меняется между минорными версиями (в v3.9.0 inbounds/update перестал трогать клиентов): версию закрепляем, адаптер покрываем контрактными тестами",
+   "Если клиента поправят вручную в UI 3x-ui, его состояние разойдётся с zoo.db, а reconcile его перезапишет. Порядок: клиентами управляет только zoo-admin",
+   "Хук авторизации Hy2 работает в режиме fail-closed: если zoo-admin упал, новые подключения Hy2 отклоняются. Нужны Restart=always и кэш в памяти",
+   "Счётчики трафика сбрасываются при рестартах, дельты могут теряться или удваиваться",
+   "awg-helper работает от root: нужна строгая проверка аргументов",
+   "3x-ui регулярно выпускает advisory: обновляться нужно быстро",
+   "Публичная подписка — это лишний открытый порт под сканером ТСПУ",
+   "Hy2 auth вида name:secret нужно проверить на совместимость с клиентами (Happ, Hiddify, v2rayN)"
+  ]
+ },
+ {
+  "name": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+  "approach": "Свою админку не пишем. Единственным «мозгом» становится 3x-ui v3.9.0 (вышла 2026-10-03, в ней закрыты все advisory). Hy2 переносим внутрь панели как hysteria-inbound Xray, AWG — как встроенный AmneziaWG 3.1, TUIC и XHTTP добавляются по флагу. Один клиент (email) подключается ко всем inbound'ам. Подписки, квоты, сроки, Overview с историей за 7 дней берём из коробки. Добавляем vnStat (история трафика сервера за месяцы) и, по желанию, Beszel для алертов и systemd-health. Ядерный awg0 и apernet-hy2 остаются fallback-движками за флагами, но панель их не видит.",
+  "architecture": "Интернет -> [443/tcp VLESS+Reality+Vision] [XHTTP/tcp*] [Hy2 udp 443+hop 20000-40000] [AWG udp] [TUIC udp*] -> x-ui (Go, systemd x-ui): Xray-core v26.9.x + amneziawg-go/gVisor + TUIC-go. AWG/Hy2/TUIC проходят через routing Xray, поэтому статистика и block geoip:private общие. Управление: UI/REST на 127.0.0.1:PANEL_PORT/<webBasePath>, БД /etc/x-ui/x-ui.db. Метрики: Overview (system_metrics.gob, 2с/1ч, 1м/48ч, 10м/7д) + vnstat.db + Beszel agent (127.0.0.1:45876) -> hub (127.0.0.1:8090). Админ подключается через ssh -L. (* — по флагу)",
+  "user_model": "1 пользователь = 1 клиент 3x-ui (email=имя, subId из CSPRNG). Через clients/add + {email}/attach он получает: VLESS — uuid+flow vision; Hy2 — auth-строку; AWG — свою пару ключей и /32 из пула панели; TUIC — uuid+пароль. Квота, срок, лимиты IP и HWID задаются один раз на клиента, отключение действует на всех протоколах сразу. Выдача: ссылки vless://, hysteria2://, tuic:// и AWG .conf с QR в UI. Подписка raw/JSON/Clash (включая AWG) — по ссылке sub. Sub-сервер по умолчанию слушает 127.0.0.1, а ссылки админ пересылает сам. Флаг SUB_PUBLIC=1 включает его на домене с TLS (acme) и случайным путём. Миграция: старый общий пароль Hy2 сохраняется как клиент legacy-hy2. Старый AWG-пир требует перевыпуска .conf.",
+  "metrics": "Сервер (из коробки 3x-ui): CPU, RAM, swap, диск, diskIO, сеть up/down, pkt, TCP/UDP, load1/5/15, uptime, статус Xray. История 7 дней: /panel/api/server/status и /history/{metric}/{bucket}. Трафик: по клиенту (накопительно up/down) и по inbound (= по протоколу), онлайн и lastOnline, IP клиента. Временного ряда по пользователю нет. Чтобы он был, достаточно 20 строк glue: timer раз в сутки делает GET clients/list и пишет снимок в /var/lib/vpn-zoo/daily.sqlite. Месяцы и годы по eth0 даёт vnStat 2.13 (vnstat --json m). Алерты: Telegram-бот 3x-ui (квоты, сроки, логины). Beszel v0.21.0 (по флагу) следит за systemd-юнитами x-ui, ssh, fail2ban и шлёт алерты по CPU и диску.",
+  "security": "Версия закреплена: install.sh v3.9.0 с проверкой SHA-256 (скрипт сверяет .sha256). XUI_SSL_MODE=none и `x-ui setting -listenIP 127.0.0.1`: панель на публичном IP не отвечает, :2053 закрыт. Доступ только через `ssh -L 8443:127.0.0.1:$PANEL_PORT`. Обязательна 2FA TOTP. Логин, пароль, webBasePath и API-токен с узким scope и сроком хранятся в /etc/vpn-setup/config.env (0600 root). В Xray первым правилом идёт geoip:private -> blocked. Он закрывает и Hy2, и AWG, потому что оба проходят через Xray. Мультинода не используется (GHSA-rr44 не исправлена). Импорт БД и правку xray-шаблона из UI не трогаем. Ежедневный бэкап через sqlite3 .backup (0600). `zoo upgrade` обновляет панель только на конкретный тег.",
+  "installer_integration": "00-preflight: новые ключи HY2_ENGINE=xray|apernet, AWG_ENGINE=panel|kernel, ENABLE_TUIC, ENABLE_XHTTP, SUB_PUBLIC, ENABLE_BESZEL. 30-xui: ставит с XUI_NONINTERACTIVE=1, XUI_SSL_MODE=none, XUI_USERNAME, XUI_PASSWORD, XUI_PANEL_PORT, XUI_WEB_BASE_PATH и аргументом v3.9.0, затем listenIP 127.0.0.1 и getApiToken. 31-xui-inbounds заменяет прямой INSERT в x-ui.db: inbounds/add, clients/add и attach через Bearer. 32-xui-routing: блок geoip:private. 40-hysteria и 50-awg запускаются только при engine=apernet/kernel. 05-migrate: останавливает старые юниты, legacy-клиент Hy2. 60-monitoring: vnstat, Beszel. 70-firewall: убирает 2053. 90-summary: команда ssh -L.",
+  "mvp_scope": [
+   "Закрепить 3x-ui v3.9.0: install.sh <tag> с проверкой SHA-256, неинтерактивная установка, панель на 127.0.0.1, 2FA, токен в config.env",
+   "Фаза 31: создавать inbound'ы и клиентов через REST API вместо INSERT в x-ui.db",
+   "Inbound'ы: VLESS+Reality+Vision, Hysteria2 (Xray, Salamander, port hopping), AmneziaWG 3.1 с пустыми полями 3.1 (совместимость с 2.0); TUIC и XHTTP — флагами",
+   "Клиент admin создаётся с attach ко всем inbound'ам; ссылки, QR и подписка доступны в UI",
+   "Routing: geoip:private -> blocked; firewall открывает только порты протоколов",
+   "Миграция: legacy-клиент Hy2 со старым паролем, перевыпуск AWG .conf, отключение hysteria-server и awg-quick@awg0",
+   "vnStat и ежедневный снимок трафика клиентов в SQLite (timer)",
+   "90-summary: печатать ssh -L, URL панели и путь к подписке"
+  ],
+  "effort": "5–8 человеко-дней. Переписать фазы 30–32 на API: 2 дня. Миграция и флаги движков: 1–2 дня. Мониторинг, firewall, summary: 1 день. Прогон на Ubuntu 22.04 и 24.04 (1 и 2 vCPU), замер скорости AWG userspace и Hy2-Xray против текущих: 2 дня. Своего кода около 300–500 строк bash, без новых демонов кроме vnStat и (опционально) Beszel. При обновлениях 3x-ui надо регрессом проверять фазу 31, потому что API меняется между минорными версиями.",
+  "risks": [
+   "AWG в userspace (gVisor) на 1 vCPU медленнее модуля ядра. Был баг ~20 Мбит/с (#6423, исправлен), нужен замер. Fallback: AWG_ENGINE=kernel, но тогда AWG вне панели",
+   "H1–H4 генерируются одиночными значениями (#6557, открыт): часть клиентов AWG 2.0 и Keenetic ломается. Перед массовой выдачей нужна проверка на целевых клиентах",
+   "Hy2 через Xray: нет Gecko и mimic от apernet, паритет Brutal/bandwidth не подтверждён. Правка клиентов без обрыва QUIC появилась только в PR #6606 (2026-09-26)",
+   "Все яйца в одной корзине: 3x-ui работает от root, 03.10.2026 вышли пять advisory сразу, раскрытие уязвимостей медленное (#4135). Нужны быстрые обновления только по тегу",
+   "API ломается между минорными версиями (в v3.9.0 inbounds/update больше не трогает клиентов): фаза 31 привязана к версии",
+   "Перевыпуск конфигов AWG для всех текущих пользователей и смена профиля на AWG 3.x-движок",
+   "Публичная подписка (SUB_PUBLIC) добавляет открытый порт под сканер ТСПУ; по умолчанию выключена",
+   "Нет временного ряда трафика по пользователю из коробки, есть только суточный снимок через glue"
+  ]
+ },
+ {
+  "name": "zoopanel: своя единая лёгкая админка (Go, один бинарник) поверх нативных Xray, apernet Hysteria2 и kernel AmneziaWG",
+  "approach": "Свой Go-бинарник `zoopanel`. Он единственный источник правды о пользователях (SQLite). Он рендерит конфиги и сам управляет плоскостями данных: Xray-core standalone через gRPC Handler/Stats на 127.0.0.1, apernet hysteria-server через auth.type=http к панели и trafficStats, kernel AWG через awg set/syncconf/dump (вызывает root-helper). 3x-ui удаляется после импорта клиентов. Режим «3x-ui как бэкенд Xray» — необязательный адаптер. Плюс подхода: остаются нативные плоскости (у Hy2 Gecko и mimic, у AWG скорость модуля ядра). Панель занимает около 15–25 МБ RAM и работает без Docker.",
+  "architecture": "browser -ssh -L-> 127.0.0.1:7443 `zoopanel serve` (user zoopanel)\n ├ UI templ+htmx 4 + SSE, uPlot (embed)\n ├ SQLite /var/lib/zoopanel/zoo.db (modernc, WAL)\n ├ Reconciler (по событию + каждые 60с): сравнивает БД с фактом и применяет разницу\n ├ xray: gRPC 127.0.0.1:10085 AlterInbound add/rm, QueryStats user>>> reset=true\n ├ hy2: auth POST 127.0.0.1:7444/internal/hy2/auth; :9999 /traffic?clear=1, /online, /kick\n ├ awg: unix /run/zoopanel/helper.sock → `zoopanel helper` (root): dump/set/syncconf\n └ metrics: gopsutil раз в 5 с, D-Bus для состояния юнитов, vnstat --json\nАдаптеры за интерфейсом Backend{Apply,Collect,Health}, позже добавятся TUIC и AWG3.",
+  "user_model": "User{id, name ^[a-z0-9_-]{1,32}$, status, expire_at, quota_bytes, reset_day, note}. Учётки для каждого протокола создаются вместе с пользователем:\n- Xray: email=`u<id>` (без персональных данных), VLESS uuidv4, flow xtls-rprx-vision. Тот же uuid используется на XHTTP-inbound.\n- Hy2: секрет 24 символа base62. Панель находит пользователя по секрету и отвечает {ok,id:\"u<id>\"}.\n- AWG: ключи и PSK, IP /32 из пула 10.66.66.2–254.\n- sub_token: 128 бит.\nКарточка пользователя: vless://…, hysteria2://secret@host:443?sni=&obfs=salamander#name, AWG .conf/QR/vpn://, одноразовая share-ссылка с TTL 24 ч. Подписка /s/<token> (base64, Clash, sing-box) есть только при включённом публичном TLS-listener.",
+  "metrics": "Хост: gopsutil раз в 5 с собирает CPU%, load, RAM/swap, диск (% и IO), rx/tx bps по eth0 и awg0, uptime, TCP/UDP из /proc/net/sockstat. Последний час хранится в памяти, свёртки в SQLite: 1 мин за 48 ч, 10 мин за 30 дней.\nЗдоровье: ActiveState и NRestarts юнитов xray, hysteria-server, awg-quick@awg0 и helper; проверка портов; пинг API (Xray GetSysStats, Hy2 /online); возраст handshake AWG.\nТрафик: коллектор раз в 10 с пишет дельты (сброс счётчика ловится по new<old) в traffic(user,proto,minute), дальше свёртка в час, день и месяц. Live-скорость и онлайн идут через SSE. vnStat даёт трафик VPS за месяц.",
+  "security": "Панель слушает только 127.0.0.1:7443 (заходить через ssh -L). Опционально 10.66.66.1 для mgmt-пира.\nБлок private и loopback во всех плоскостях: в Xray geoip:private → block, в Hy2 acl reject(127.0.0.0/8, 10.0.0.0/8…), в nft для awg0 drop к локальным портам.\nПароль Argon2id, TOTP с перепроверкой при смене, cookie HttpOnly/Secure/SameSite=Strict, CSRF, rate-limit и fail2ban, CSP 'self', ресурсы встроены через embed.\nТолько типизированные формы, без сырого JSON и SQL. UI работает не от root; helper с allowlist команд и проверкой SO_PEERCRED.\nСекреты с правами 0600, append-only аудит-лог, релизы с SHA-256.",
+  "installer_integration": "Фаза 20-3xui заменяется на 20-xray: XTLS/Xray-install `install --version v26.3.27` (версия закреплена), ключи из `xray x25519` кладутся в config.env.\n30-hysteria: `auth:{type:http,http:{url:http://127.0.0.1:7444/internal/hy2/auth}}`, `trafficStats:{listen:127.0.0.1:9999,secret:$HY2_STATS_SECRET}`, acl.\n40-awg: модуль ядра остаётся, клиентские пиры теперь рендерит панель.\nНовые фазы:\n- 50-zoopanel: бинарь и sha256, пользователь zoopanel, два юнита, `zoopanel init` (админ и TOTP), импорт legacy-пира и общего пароля Hy2.\n- 55-migrate-3xui: перенос UUID из x-ui.db, затем disable x-ui.\n- 60-hardening: nft.\n99 печатает команду ssh -L.",
+  "mvp_scope": [
+   "Go-бинарь zoopanel (serve + helper), SQLite-схема, systemd-юниты, `zoopanel init`/`render`",
+   "Вход: Argon2id + TOTP, CSRF, rate-limit, аудит-лог, bind 127.0.0.1",
+   "Пользователи: CRUD, вкл/выкл, срок, квота в ГБ с месячным сбросом; автоотключение таймером",
+   "Адаптер Xray: рендер config.json (VLESS+Reality+Vision, опционально XHTTP), AlterInbound на лету, QueryStats",
+   "Адаптер Hy2: эндпоинт http-auth, опрос /traffic?clear=1 и /online, /kick при отключении",
+   "Адаптер AWG: пир на каждого пользователя, пул IP, awg set/remove + syncconf, разбор dump с детекцией сброса счётчиков",
+   "Страница пользователя: ссылки, QR, AWG .conf, одноразовая share-ссылка",
+   "Дашборд: статус всех inbound и юнитов, CPU/RAM/диск/сеть/uptime, графики uPlot (1 ч live, 48 ч, 30 дней)",
+   "Трафик по пользователю и протоколу: live через SSE + история по часам, дням и месяцам",
+   "Инсталлер: фазы 20-xray, 30 (http-auth), 50-zoopanel, 55-migrate-3xui, nft-блок private"
+  ],
+  "effort": "Экспертная оценка: один Go-разработчик, около 6–9k LOC, MVP за 5–7 недель:\n- каркас, вход и аудит: 4 дня;\n- модель пользователя и reconciler: 5 дней;\n- Xray (рендер и gRPC): 5 дней;\n- Hy2: 2 дня;\n- AWG и helper: 4 дня;\n- ссылки, QR и share: 3 дня;\n- коллектор и свёртки: 4 дня;\n- метрики и health: 2 дня;\n- UI: 6 дней;\n- инсталлер и миграция: 4 дня.\nПозже:\n- подписка с публичным TLS: +3 дня;\n- nft quota для AWG: +2 дня;\n- TUIC через sing-box: +1–2 недели.\nПоддержка: обновление Xray proto примерно раз в месяц.",
+  "risks": [
+   "Gecko/finalmask и proto Xray меняются ежемесячно: закреплять версию и брать proto из go-модуля того же тега",
+   "Hy2 http-auth работает fail-closed: если панель упала, новые подключения Hy2 не проходят. Нужны Restart=always и ответ из кэша в памяти",
+   "Счётчики трафика всех плоскостей сбрасываются при рестартах: коллектор с детекцией сброса, при сбое возможна потеря до 10 с",
+   "Теряются готовые функции 3x-ui (HWID, боты, ноды, нативный TUIC): их придётся писать самим",
+   "Своя веб-поверхность и свои баги безопасности, bus factor 1",
+   "Миграция: клиентам AWG и Hy2 придётся выдать новые конфиги (до этого был один общий пир и пароль)",
+   "Публичная подписка — лишний открытый порт под сканером ТСПУ, поэтому по умолчанию выключена",
+   "Расхождение рендера awg0.conf и ядра лечится reconcile; смена S/H/HPK требует перевыдачи конфигов всем"
+  ]
+ },
+ {
+  "scores": [
+   {
+    "name": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+    "goal_coverage": 8,
+    "security": 6,
+    "footprint": 9,
+    "maintainability": 7,
+    "effort": 9,
+    "extensibility": 9,
+    "total": 48,
+    "critique": "Проверено по релизу v3.9.0 от 2026-10-03: нативный TUIC v5, AmneziaWG с attach к нескольким inbound'ам, подписка с WG/AWG/TUIC, live-правка клиентов Hysteria, смена API inbounds/update. Все 4 цели закрыты из коробки, но есть пробелы. Нет временного ряда трафика по пользователю: суточный снимок для графиков слабоват. Fallback-движки (kernel AWG, apernet Hy2) панель не видит, и цель «видеть все протоколы» при них нарушается. AWG в userspace на 1 vCPU и баг H1–H4 (#6557) — реальный риск. Hy2 без Gecko. Всё в одной корзине: root плюс поток advisory."
+   },
+   {
+    "name": "zoo-admin: Go-сайдкар поверх 3x-ui v3.9.0, apernet Hysteria2 и ядерного AmneziaWG",
+    "goal_coverage": 9,
+    "security": 7,
+    "footprint": 7,
+    "maintainability": 5,
+    "effort": 5,
+    "extensibility": 7,
+    "total": 40,
+    "critique": "Лучше всех покрывает цели. Видны все плоскости, включая нативные Hy2 и kernel AWG. История трафика по пользователю и протоколу (5 мин/час/день), SSE live, health юнитов и портов. Но два источника правды: дрейф с UI 3x-ui, а reconcile перезаписывает ручные правки. Поверхность атаки удваивается: 3x-ui от root плюс своя веб-админка. 3–4 недели своего кода с bus factor 1. Hy2 http-auth работает fail-closed. Подписка отложена на фазу 2. Для AWG 3.x нужен свой адаптер, хотя 3x-ui уже даёт его даром."
+   },
+   {
+    "name": "zoopanel: своя единая лёгкая админка (Go, один бинарник) поверх нативных Xray, apernet Hysteria2 и ядерного AmneziaWG",
+    "goal_coverage": 9,
+    "security": 7,
+    "footprint": 8,
+    "maintainability": 4,
+    "effort": 3,
+    "extensibility": 6,
+    "total": 37,
+    "critique": "Самая цельная модель: одна БД, нативные плоскости, своя хорошая телеметрия (gopsutil, свёртки на 30 дней, NRestarts, возраст handshake). Минус в цене: 6–9k LOC и 5–7 недель на MVP. Ежемесячная гонка за proto Xray. Теряются HWID, бот, ноды и нативный TUIC: TUIC через sing-box стоит ещё 1–2 недели. Подписка только при публичном TLS. Для одного VPS с горсткой пользователей это переинжиниринг: команда изобретает 3x-ui заново и несёт все риски своей веб-поверхности."
+   }
+  ],
+  "winner": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+  "grafts": [
+   "Из B/C: вместо суточного снимка коллектор каждые 5–15 мин (GET clients/list + inbounds/list), пишет дельты с детекцией сброса (new<old) в SQLite и сворачивает в час/день/месяц. Это даёт графики трафика по пользователю и протоколу.",
+   "Из B/C: health-страница или CLI `zoo status`: systemctl is-active и NRestarts для x-ui, ssh, fail2ban (и hysteria-server/awg-quick@awg0 при engine=apernet/kernel), проверка слушающих портов через ss, срок сертификатов. Даёт видимость fallback-движков, которых панель не видит.",
+   "Из B: контрактные тесты фазы 31 под закреплённый тег 3x-ui (inbounds/add, clients/add, attach, list). Прогонять перед каждым `zoo upgrade`.",
+   "Из B/C: при AWG_ENGINE=kernel/HY2_ENGINE=apernet ставить изоляцию data plane вне Xray: ACL Hy2 reject 127.0.0.0/8 и 10.0.0.0/8, nft/iptables drop с awg0 к локальным портам. Иначе geoip:private закрывает только трафик через Xray.",
+   "Из B/C: запасной доступ к панели через отдельный mgmt-пир AWG вместо одного ssh -L.",
+   "Из C: одноразовая share-ссылка с TTL 24 ч для выдачи конфигов без публичного sub-сервера.",
+   "Гейт перед переключением движков: бенчмарк AWG userspace и Hy2-Xray против kernel/apernet на 1 vCPU и проверка H1–H4 (#6557) на целевых клиентах (Keenetic, AmneziaVPN 2.0). При провале по умолчанию остаются kernel/apernet."
+  ]
+ },
+ {
+  "scores": [
+   {
+    "name": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+    "goal_coverage": 7,
+    "security": 6,
+    "footprint": 9,
+    "maintainability": 7,
+    "effort": 9,
+    "extensibility": 7,
+    "total": 45,
+    "critique": "Проверил: v3.9.0 вышла 03.10.2026, нативный TUIC v5 есть, AWG есть с v3.7.0, scoped-токены и SHA-256 sidecar (v3.8.0) тоже есть. За 2026 год у проекта 8 advisory, GHSA-rr44 (node-sync) статуса patched не имеет. Минусы: data plane (AWG через gVisor, Hy2, TUIC) крутится в том же root-процессе, что и веб-панель с такой историей. Sidecar .sha256 лежит в том же релизе, так что от подмены релиза он не защищает. Fallback-движки kernel/apernet панель не видит, и цель (1) ломается. История по пользователю — только суточный снимок. Hy2 теряет Gecko. Зато loopback, ssh -L и 2FA сделаны правильно, а своего кода минимум."
+   },
+   {
+    "name": "zoo-admin: Go-сайдкар поверх 3x-ui v3.9.0, apernet Hysteria2 и ядерного AmneziaWG",
+    "goal_coverage": 9,
+    "security": 7,
+    "footprint": 7,
+    "maintainability": 6,
+    "effort": 6,
+    "extensibility": 8,
+    "total": 43,
+    "critique": "Покрывает все четыре цели лучше всех: видны все плоскости, история 5м/1ч/1д по пользователю и протоколу, есть health юнитов. Остаются нативные Hy2 (Gecko, Brutal) и ядерный AWG. Hy2 http-auth, trafficStats /traffic?clear=1, /online и /kick реальны. С точки зрения безопасности растёт поверхность атаки: 3x-ui (root) + свой веб + sudoers-хелпер. Hy2 auth fail-closed означает DoS при падении сайдкара. Два источника правды (zoo.db и x-ui.db) расходятся, если править клиента в UI 3x-ui. Сама проработка AuthN (Argon2id, TOTP, CSRF, CSP, аудит, non-root) хорошая. Срок 3–4 недели для bash-проекта велик."
+   },
+   {
+    "name": "zoopanel: своя единая лёгкая админка (Go, один бинарник) поверх нативных Xray, apernet Hysteria2 и kernel AmneziaWG",
+    "goal_coverage": 9,
+    "security": 8,
+    "footprint": 8,
+    "maintainability": 4,
+    "effort": 3,
+    "extensibility": 7,
+    "total": 39,
+    "critique": "Для безопасности это лучший вариант: убирает 3x-ui, у которого 8 advisory в 2026 году и запуск от root. Хелпер работает через SO_PEERCRED, есть allowlist, только типизированные формы, nft drop на awg0 и 127.0.0.1. Но весь веб-код свой, а bus factor равен 1. Ежемесячно придётся догонять proto Xray, TUIC пойдёт только через отдельный sing-box, HWID и боты теряются. gRPC Xray на 127.0.0.1:10085 без аутентификации, поэтому блок loopback во всех плоскостях обязателен. Закреплённая Xray v26.3.27 уже устарела относительно v26.9.x. Срок 5–7 недель плюс постоянная поддержка противоречат принципу «не усложнять»."
+   }
+  ],
+  "winner": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+  "grafts": [
+   "Захардкодить SHA-256 архива v3.9.0 в config/инсталлер, проверять до запуска install.sh и не доверять .sha256 из того же релиза (supply-chain)",
+   "Взять из D2/D3: Hy2 ACL reject 127.0.0.0/8 и 10.0.0.0/8, а также nft/iptables INPUT -i awg0 DROP к локальным портам. Не полагаться только на geoip:private в Xray, особенно когда включён fallback kernel/apernet",
+   "Если AWG_ENGINE=kernel или HY2_ENGINE=apernet, добавить read-only статус-скрипт или страницу (systemctl is-active, awg show dump, Hy2 trafficStats), чтобы fallback-плоскости не выпадали из картины",
+   "Снимок трафика клиентов в SQLite писать каждые 5–15 минут, а не раз в сутки: свёртка 5м/1ч/1д по схеме D2, чтобы получить ряд по пользователю",
+   "Health-проверки из D2: ss -ltnup против ожидаемого списка портов (ловит случайно открытые 2053, 2096 и Beszel), срок сертификатов, NRestarts юнитов",
+   "Контрактный smoke-тест фазы 31 против API закреплённого тега: прогонять перед каждым `zoo upgrade`",
+   "Резервный mgmt-доступ через отдельный AWG-пир на 127.0.0.1 или wg-адрес панели (из D2/D3) вместо открытия порта панели",
+   "Аудит-лог действий админа (из D2/D3), хотя бы через журнал nginx/ssh или выгрузку логов 3x-ui в append-only файл",
+   "Systemd-hardening для x-ui, насколько позволяет (ProtectHome, PrivateTmp, ReadWritePaths=/etc/x-ui /usr/local/x-ui), раз панель работает от root"
+  ]
+ },
+ {
+  "scores": [
+   {
+    "name": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+    "goal_coverage": 8,
+    "security": 7,
+    "footprint": 9,
+    "maintainability": 7,
+    "effort": 9,
+    "extensibility": 8,
+    "total": 48,
+    "critique": "Проверено: v3.9.0 вышла 2026-10-03. Нативный AmneziaWG 3.1 в userspace есть с v3.7.0, нативный TUIC v5 на Go — в v3.9.0, scoped-токены с ротацией есть, правки Hy2-клиентов применяются вживую, inbounds/update больше не трогает клиентов. Все 4 цели закрыты из коробки, кроме истории трафика по пользователю: суточный снимок слабоват. Фоллбэк-движки kernel/apernet панели не видны. Слабые места: «install.sh проверяет .sha256» в релиз-нотах не подтверждено, хэш надо пинить самим. Панель от root — единая точка отказа. Не замерена скорость AWG-userspace на 1 vCPU. Тем не менее это реальные недели работы при минимуме своего кода."
+   },
+   {
+    "name": "zoo-admin: Go-сайдкар поверх 3x-ui v3.9.0, apernet Hysteria2 и ядерного AmneziaWG",
+    "goal_coverage": 9,
+    "security": 7,
+    "footprint": 7,
+    "maintainability": 5,
+    "effort": 4,
+    "extensibility": 7,
+    "total": 39,
+    "critique": "Цели покрыты лучше всех: история по пользователю и протоколу, health всех движков, нативные Hy2 (Gecko) и AWG в ядре. Но 3x-ui (root) и все его advisory остаются, а сверху добавляются своя веб-поверхность и root-хелпер. Два источника правды (zoo.db и x-ui.db) плюс reconcile, который перезаписывает ручные правки. Fail-closed хук Hy2 делает zoo-admin критичным для data plane. Оценка 3–4 недели на 3–5k LOC оптимистична. Сайдкар ломается при каждом изменении API 3x-ui, а 3x-ui уже сам умеет то, что тут пишется заново (AWG, TUIC, Hy2 внутри)."
+   },
+   {
+    "name": "zoopanel: своя единая лёгкая админка (Go, один бинарник) поверх нативных Xray, apernet Hysteria2 и kernel AmneziaWG",
+    "goal_coverage": 9,
+    "security": 7,
+    "footprint": 8,
+    "maintainability": 4,
+    "effort": 2,
+    "extensibility": 7,
+    "total": 37,
+    "critique": "Архитектурно самая чистая: нет root-панели 3x-ui, нативные плоскости данных, свои свёртки метрик, Backend-интерфейс. Для одиночного мейнтейнера неподъёмна: 6–9k LOC, 5–7 недель на MVP. Ежемесячный дрейф proto Xray, свои баги безопасности, bus factor 1. TUIC через sing-box обойдётся ещё в 1–2 недели. Теряются HWID, боты, подписки Clash/AWG, которые 3x-ui уже даёт бесплатно. Безопасность только «потенциально» лучше: свой непроаудированный код против проекта с публичными advisory. Требование «работает за недели и мало поддержки» не выполнено."
+   }
+  ],
+  "winner": "ZOO-on-3x-ui: одна панель 3x-ui v3.9.0 (закреплена) + vnStat + опционально Beszel",
+  "grafts": [
+   "Из zoo-admin: вместо суточного снимка делать timer раз в 5–10 мин. Он берёт clients/list и inbounds/list, считает дельты с детекцией сброса (new<old) и сворачивает их в таблицы 5 мин/48 ч, час/60 дн, день/2 года в /var/lib/vpn-zoo/traffic.sqlite. Это даёт историю по пользователю и протоколу примерно в 100 строк.",
+   "Из zoo-admin/zoopanel: скрипт `zoo status` (или Beszel). Он проверяет systemctl is-active для x-ui и фоллбэк-юнитов hysteria-server и awg-quick@awg0, слушающие порты через ss, срок сертификатов и vnstat --json m. Так панель покрывает и движки, которых не видит.",
+   "Из zoo-admin: контрактный smoke-тест фазы 31 против API 3x-ui (inbounds/add, clients/add, attach, list), обязательный перед `zoo upgrade` на новый тег.",
+   "Хэш SHA-256 релизного архива 3x-ui пинить в самом инсталлере. Встроенная проверка .sha256 в install.sh по релиз-нотам v3.9.0 не подтверждена.",
+   "Из zoopanel/zoo-admin: для фоллбэк-движков ACL Hy2 reject 127.0.0.0/8 и 10.0.0.0/8 и nft/iptables drop с awg0 на локальные порты. geoip:private в Xray их не покрывает.",
+   "Из zoo-admin: запасной доступ к панели через отдельный mgmt-пир AWG (kernel) на случай проблем с ssh -L.",
+   "Из zoopanel: email клиента вида u<id> без ПДн, имя хранить в комментарии клиента 3x-ui."
+  ]
+ }
+]
