@@ -10,6 +10,7 @@
 - **Проверка:** каждое утверждение прошли 2 адверсария:
   - **evidence:** подтверждают ли источники то, что заявлено;
   - **applicability:** применимо ли это к самоделу на 1–2 VPS, и что из этого следует для сервера.
+- **Допроверка:** отдельный проход по 27 утверждениям ветки компрометаторов (`l-*`), которые в основной раунд не уложились. Каждое тоже прошли 2 адверсария (27 × 2 = 54 голоса). Их статусы и исправленные формулировки внесены в §1, §3, §4, §5 и §6.
 - **Калибровка.** Форумы, issue-трекеры и посты «X заблокирован» смещены в негатив: о сбоях пишут, о работающем молчат. Факты против этой картины: десятки коммерческих сервисов прямо сейчас продают VPN для всех устройств в РФ, а Hy2 владельца стабильно работает на мобильной сети. В этом докладе приоритет у **позитивных** данных: что работает, как устроены рабочие сервисы, разборы, замеры. Единичные жалобы считаются анекдотами. Маркетинг и самоотчёты сервисов помечены отдельно.
 - **Классы выводов** (как в `research/2026-10-04/vpn-news_04-10-26.md`):
   - **[репо]** дефект этого инсталлера;
@@ -23,10 +24,13 @@
 | ✅ verified | Оба адверсария не опровергли и подтвердили |
 | 🟡 partly | Подтверждено с сужением. **Используется исправленная формулировка**, она и приведена в тексте |
 | ⚔️ contested | Один адверсарий опроверг |
-| ❓ unverified | Не проверялось: не хватило лимита. Иногда стоит пометка «косвенно», если факт всплыл в голосах по другому пункту или в коде |
+| ❓ unverified | Не проверялось. После допроверки так помечены только детали конфига (флаги, синтаксис, поведение на стенде), а не утверждения |
 | 📄 код | Факт проверен по исходникам или файлам при подготовке черновика конфига (3x-ui v3.9.0, runetfreedom .dat), адверсариев не проходил |
 
-**Итог проверки.** 36 утверждений дошли до двух адверсариев. **Все 36 получили 🟡:** у каждого есть сужение, у 35 по обоим голосам «partly», у s-hosting-law «holds» + «partly». Чистых ✅ нет, ⚔️ нет. Ещё 27 утверждений про компрометаторов не уложились в лимит (❓). Это нормально для темы, где почти всё держится на самоотчётах сервисов и полевых постах. Целиком опровергнутых утверждений нет, но много опровергнутых **частей**: они собраны в §7.
+**Итог проверки.** Всего проверено 63 утверждения, каждое двумя адверсариями.
+- **Основной раунд, 36 утверждений.** Все 36 получили 🟡: у каждого есть сужение. У 35 оба голоса «partly», у s-hosting-law «holds» + «partly».
+- **Допроверка компрометаторов, 27 утверждений.** 26 получили 🟡. У l-hy2-acl и l-platform-demand один голос «holds», второй «partly», у остальных оба «partly». Одно утверждение, **l-ipv6-leak, опровергнуто обоими** адверсариями и перенесено в §6.
+- Чистых ✅ нет, ⚔️ нет, ❓ среди утверждений не осталось. Это нормально для темы, где почти всё держится на самоотчётах сервисов, пересказах СМИ и полевых постах. Целиком опровергнуто одно утверждение. Опровергнутых **частей** много, они собраны в §6.
 
 ---
 
@@ -55,13 +59,13 @@
 
 | # | Пункт | Сервер? |
 |---|---|---|
-| 1 | **Главный задокументированный канал утечки адреса сервера:** RU-приложение (MAX, март 2026) запрашивает свой внешний IP через echo-сервисы (ipify, checkip.amazonaws, ifconfig.me). Если этот запрос идёт в туннель, приложение видит IP exit. Что эти данные доходят до РКН/ТСПУ, **не доказано**. 🟡 | ✅ `ip-echo → warp/blocked` |
-| 2 | **Серверный блок RU-назначений на exit** (geoip:ru, category-ru, tld-ru → blackhole/WARP). Это страховка: RU-сервис не увидит IP VPS при прямом обращении. От локального SOCKS + зарубежного echo, `/proc/net/route` и RU-сервисов на зарубежных IP не спасает. 🟡 | ✅ фаза `07`, Hy2 ACL, AWG ipset |
-| 3 | **Разнос входа и выхода.** RU-вход + гео-сплит: RU-приложения видят российский IP. Второй IP через `sendThrough`/WARP на том же VPS лишь переживает точечный бан выхода. 🟡 | ✅ опционально |
-| 4 | **Факт VPN на Android сервер не скроет.** TRANSPORT_VPN, tun0, список установленных VPN-клиентов видны и исключённым из туннеля приложениям. По RKS Global, 22 из 30 топ-приложений, к 16.04 все 30. Помогает только роутер, второй телефон или рабочий профиль. ❓ (косвенно подтверждено в голосах по s-split-routing) | ❌ только клиент |
-| 5 | **Открытый локальный SOCKS у клиентов** (v2rayNG, Happ и др.) позволяет любому приложению узнать IP exit. Happ ещё и отдавал xray API с UUID и ключами. **Наша находка 📄:** JSON-подписка 3x-ui v3.9.0 сама кладёт клиенту `socks 127.0.0.1:10808 auth:noauth`. ❓ + 📄 | ✅ частично: `subHappLocalProxyAuth`, JSON-подписка выключена по умолчанию |
-| 6 | **Регуляторика:** методичка Минцифры (IP → устройство → десктоп), карта IP абонентов (216-ФЗ), 210-ФЗ против хостеров, проект «Антифрод 3.0» с годовым баном у RU-хостеров с 01.03.2028. Всё это бьёт по RU-входу, а не по зарубежному exit. 🟡 / ❓ | ✅ RU-вход только опцией |
-| 7 | **РКН покупает подписки** коммерческих VPN и автоматически вытаскивает из них конфиги. Для самодела это повод не пускать чужих или пробных пользователей на основную ноду. 🟡 | ✅ отдельная нода для внешних |
+| 1 | **Главный задокументированный канал утечки адреса сервера:** RU-приложение (MAX, март 2026) запрашивает свой внешний IP через echo-сервисы (ipify, checkip.amazonaws, ifconfig.me). Если этот запрос идёт в туннель, приложение видит IP exit. Что эти данные доходят до РКН/ТСПУ, **не доказано**. Все 6 echo-URL из реверса MAX есть в `category-ip-geo-detect`. Серверное правило прячет IP exit только от этих запросов, но не факт VPN и не IP, который приложение узнаёт через свой бэкенд или STUN. Для AWG (L3, без доменов) правило неприменимо. 🟡 | 🟡 `ip-echo → warp/blocked` (Xray, Hy2; не AWG) |
+| 2 | **Серверный блок RU-назначений на exit** (geoip:ru, category-ru, tld-ru → blackhole/WARP). Это страховка: RU-сервис не увидит IP VPS при прямом обращении. От локального SOCKS + зарубежного echo, `/proc/net/route` и RU-сервисов на зарубежных IP не спасает. Цена: у клиента без сплита ломаются банки и Госуслуги. Сплит из подписки (заголовок `Routing`) получают **только Happ и INCY**, а клиенты v2rayNG, Hy2 и AWG его не получают. 🟡 | ✅ фаза `07` (Xray); Hy2 ACL и AWG ipset — только opt-in |
+| 3 | **Разнос входа и выхода.** RU-вход + гео-сплит: RU-приложения видят российский IP. Второй IP через `sendThrough`/WARP на том же VPS лишь переживает точечный бан выхода. WARP даёт IP Cloudflare с геолокацией страны VPS, а не российский. 🟡 | ✅ опционально |
+| 4 | **Факт VPN на Android сервер не скроет.** Приложение, исключённое из туннеля, не видит TRANSPORT_VPN у своей активной сети, но видит `tun0` (NetworkInterface), VPN-сеть в `getAllNetworks()` и установленные VPN-клиенты. По RKS Global, VPN детектят 22 из 30 топ-приложений, к 16.04 все 30. Помогают только роутер (с RU напрямую) или второй телефон. Рабочий профиль прячет VpnService-API и список пакетов, но не `tun0`, маршруты и loopback. 🟡 | ❌ только клиент |
+| 5 | **Открытый локальный SOCKS у клиентов** (Happ, v2RayTun, V2BOX, v2rayNG, Hiddify, NekoBox и др.; «почти все» — преувеличение) позволяет любому приложению узнать IP exit. Happ ещё и отдавал xray API (в 4.7.2 убрали). Исправления опциональны: в v2rayNG 2.1.0 пароль и случайный порт выключены по умолчанию и ломают HEV TUN. **Наша находка 📄:** JSON-подписка 3x-ui v3.9.0 сама кладёт клиенту `socks 127.0.0.1:10808 auth:noauth`. 🟡 + 📄 | 🟡 только Happ: `subHappLocalProxyAuth=auto` + `subHappAutoDetect`; JSON-подписка выключена |
+| 6 | **Регуляторика:** методичка Минцифры (IP → устройство → десктоп), сбор адресных пулов операторов с привязкой к ТСПУ (приказ РКН №51; без привязки к абоненту), 210-ФЗ против хостеров, проект «Антифрод 3.0» с годовым баном у RU-хостеров с 01.03.2028. Мониторинг хостеров (08.2026) пока обсуждается и касается только IP из белого списка ЦМУ ССОП. Всё это бьёт по RU-входу, а не по зарубежному exit. Для RU-входа главный риск — уровень идентификации у хостера. 🟡 | ✅ RU-вход только опцией |
+| 7 | **РКН покупает подписки** коммерческих VPN и автоматически вытаскивает из них конфиги. Для самодела это повод не пускать чужих или пробных пользователей на основную ноду. Есть и правовая причина: если раздавать подписки посторонним, владелец сервера формально может подпасть под ст. 13.52 КоАП («владелец средства обхода»; так считает адверсарий по l-legal). 🟡 | ✅ отдельная нода для внешних |
 
 ---
 
@@ -307,8 +311,8 @@
   - ProxysVPN: «RU Split»;
   - roscomvpn-routing (2.7k★): профили DEFAULT/WHITELIST/JSONSUB, deeplink для Happ/INCY;
   - runetfreedom: обновление каждые 6 ч.
-- **Опровергнуто:** «банки не видят VPN». Сплит прячет только IP выхода. RKS Global: исключение приложений из VPN бесполезно, tun0 и TRANSPORT_VPN видны. Яндекс блокирует по серверному флагу. Даже в Habr 1040846 со включённым VPN все приложения, кроме Госуслуг, отказывались работать.
-- Баг 3x-ui: INCY получает Happ-профиль (#6273, not planned).
+- **Опровергнуто:** «банки не видят VPN». Сплит прячет только IP выхода. RKS Global: исключение приложений из VPN не прячет VPN: `tun0` и VPN-сеть в списке сетей видны (TRANSPORT_VPN у собственной активной сети исключённое приложение не видит, см. §3.2). Яндекс блокирует по серверному флагу. Даже в Habr 1040846 со включённым VPN все приложения, кроме Госуслуг, отказывались работать.
+- Баг 3x-ui: INCY получает Happ-профиль (#6273, not planned). В теге v3.9.0 он не исправлен (подтверждено голосом по l-routing-cost).
 - Серверный `block geoip:ru` без клиентского сплита ломает RU-сайты.
 - Источники: [roscomvpn-routing](https://github.com/hydraponique/roscomvpn-routing), [rules-dat](https://github.com/runetfreedom/russia-v2ray-rules-dat), [RKS Global](https://rks.global/ru/research/vpn-detection/), [kod.ru](https://kod.ru/vse-30-ru-prilojeniy-sledyat-za-vpn), [ProxysVPN](https://proxysvpn.com/guides/happ-routing-profiles), [3x-ui #6273](https://github.com/MHSanaei/3x-ui/issues/6273).
 
@@ -380,52 +384,56 @@
 | Приложение | Что делает | Метод | Дата / источник | Статус |
 |---|---|---|---|---|
 | **MAX** (Android) | Опрашивает echo (api.ipify.org, checkip.amazonaws.com, ifconfig.me), проверяет main.telegram.org и mmg.whatsapp.net. На api.oneme.ru уходят IP, тип сети, код оператора, VPN-флаг | Echo-IP + reachability, TRANSPORT_VPN | 04.03.2026, [Habr 1006394](https://habr.com/ru/articles/1006394/), [Хакер 06.03](https://xakep.ru/2026/03/06/max-reverse/) | 🟡. MAX объясняет запросы WebRTC и отрицает TG/WA. Связь с ТСПУ не доказана. VPN-флаг в payload на Habr не показан |
-| **30 топ RU-приложений** | 22 из 30 детектят VPN, к 16.04 все 30. 19 шлют статус на бэкенд, включая все банки | TRANSPORT_VPN (17, включая MAX), tun0 (13), список VPN-приложений через `queryIntentServices` (7) | 04.2026, [RKS Global](https://rks.global/ru/research/vpn-detection/), [The Bell](https://thebell.io/22-iz-30-populyarnykh-rossiyskikh-prilozheniy-sledyat-za-tem-vklyuchen-li-u-vas-vpn), [Meduza 11.04](https://meduza.io/feature/2026/04/11/rossiyskie-prilozheniya-dlya-android-sledyat-za-vami-po-suti-eto-polnotsennye-shpionskie-programmy) | ❓, косвенно 🟡: 22/30, 13 по tun0, 7 сканируют — повторено в голосах по s-split-routing |
-| **WB, Ozon, 2ГИС, RuStore, Самокат, MegaMarket** | Собирают список установленных VPN-клиентов | `queryIntentServices` | 04.2026, RKS Global, [iXBT](https://www.ixbt.com/news/2026/05/02/vpn-android-wildberries-ozon-2-rustore-vpn.html) | ❓, косвенно 🟡 |
+| **30 топ RU-приложений** | Статический анализ (jadx/apktool, 68 точек; у Хакера 80): VPN детектят 22 из 30. В обновлении 16.04, уже с динамическим тестом на устройстве, — все 30. 19 из 22 по коду шлют VPN-статус на свой сервер (у The Bell — 18). Среди них все три банка выборки: Т-Банк, Сбер, ВТБ. Перехват трафика не публиковался, отправка выведена из кода | TRANSPORT_VPN (цифра 17 и MAX среди них — по Meduza, на странице RKS её нет), сетевые интерфейсы / tun0 (13), `/proc/net/tcp`, прокси, список VPN-приложений через `queryIntentServices` | 04.2026, [RKS Global](https://rks.global/ru/research/vpn-detection/), [Хакер 10.04](https://xakep.ru/2026/04/10/apps-research/), [The Bell](https://thebell.io/22-iz-30-populyarnykh-rossiyskikh-prilozheniy-sledyat-za-tem-vklyuchen-li-u-vas-vpn), [Meduza 11.04](https://meduza.io/feature/2026/04/11/rossiyskie-prilozheniya-dlya-android-sledyat-za-vami-po-suti-eto-polnotsennye-shpionskie-programmy) | 🟡 (l-rks-app-survey). Про проверку exit-IP в исследовании ничего нет |
+| **WB, 2ГИС, МТС, Ozon, Мегамаркет, RuStore, ОК** | Собирают список установленных VPN-клиентов (7 приложений после обновления 16.04; до него — только Самокат и MegaMarket) | `queryIntentServices` | 04.2026, RKS Global, [iXBT](https://www.ixbt.com/news/2026/05/02/vpn-android-wildberries-ozon-2-rustore-vpn.html) | 🟡 (l-rks-app-survey) |
 | **Яндекс** | Блокирует по серверному флагу | Сервер получает VPN-флаг | [kod.ru](https://kod.ru/vse-30-ru-prilojeniy-sledyat-za-vpn) | 🟡 (голос по s-split-routing) |
-| **VK, Т-Банк, Сбер, Госуслуги, Avito** | IceCandidate — основной HIGH-признак | WebRTC/STUN: перечисление интерфейсов (виден tun) и server-reflexive кандидат с IP exit | 09.2026, [Habr 1081580](https://habr.com/ru/articles/1081580/), [Habr 1006950](https://habr.com/ru/news/1006950/) | ❓ |
-| **МТС, Ozon, WB, банки** | Реакция на детект: предупреждение или частичная работа (МТС: «данные могут не отображаться», у Ozon не грузятся картинки и checkout). Банки по части отчётов не пускали | — | 16.04.2026, [ComNews](https://www.comnews.ru/content/244810/2026-04-16/2026-w16/1009/rossiyskie-servisy-chastichno-ogranichivayut-rabotu-pri-vklyuchennom-vpn), [Meduza 16.04](https://meduza.io/feature/2026/04/16/krupneyshie-rossiyskie-servisy-zakryvayut-dostup-polzovatelyam-s-vklyuchennym-vpn) | ❓ |
-| **Ozon, WB, Яндекс, ритейл** | 27–28.04 после падения продаж снова пустили пользователей с VPN | — | [MT 28.04](https://ru.themoscowtimes.com/2026/04/28/marketpleisi-stali-puskat-rossiyan-s-vpn-posle-padeniya-prodazh-a193979), [Ведомости](https://www.vedomosti.ru/technology/news/2026/04/27/1193249-mintsifri-obyasnilo) | ❓ |
-| **Xray/sing-box-клиенты на Android** (v2rayNG и др.) | SOCKS5/HTTP на 127.0.0.1 без пароля. Любое приложение, даже исключённое или в Shelter/Knox (loopback общий), узнаёт через него IP exit | Сканирование localhost + echo | 07.04.2026, [Habr 1020080](https://habr.com/ru/articles/1020080/), [PoC](https://github.com/runetfreedom/per-app-split-bypass-poc), [v2rayNG #5467](https://github.com/2dust/v2rayNG/issues/5467), [Хакер](https://xakep.ru/2026/04/07/vless-bug/) | ❓, косвенно 🟡: голоса по l-server-ru-block и l-entry-exit-split опираются на этот кейс |
-| **Happ** | Открывал xray gRPC API: из него выгружались UUID, ключи, адрес входа, SNI | Локальный API | 04.2026, [kod.ru](https://kod.ru/vpn-happ-problems) | ❓, косвенно 🟡: «Happ API отдаёт и входной IP» в голосе по l-entry-exit-split |
+| **Приложения со звонками (VK, банки и др.)** | WebRTC/STUN технически может раскрыть VPN: в нативном WebRTC (без mDNS) host-кандидаты содержат IP tun, а srflx через полный туннель показывает IP exit. Что приложения реально так делают, не доказано. В аудите Habr 1081580 IceCandidate — лишь 1 из 8 литералов в smali (вместе с getNetworkInterfaces, tun0, ppp0, TYPE_VPN и др.), которые суммируются в балл (15+ совпадений = HIGH). Разбивки по приложениям нет, литерал есть в любом SDK звонков. MAX (05.03.2026) объяснил сбор IP звонками и отрицал связь с VPN | WebRTC/STUN | 03–09.2026, [Habr 1081580](https://habr.com/ru/articles/1081580/), [Habr 1006950](https://habr.com/ru/news/1006950/) | 🟡 (l-webrtc). Опровергнуто: «IceCandidate — основной HIGH-признак у VK, Т-Банка, Сбера, Госуслуг, Avito» |
+| **МТС, Ozon, WB** | Реакция на детект (9–16.04.2026) в основном мягкая. МТС: «Включен VPN. Данные могут не отображаться». Пресс-служба WB: «работа может быть затруднена». У Ozon, по Habr 1021392 (09.04), не грузились фото и checkout. Что банки не пускали, не подтверждено: ComNews у Т-Банка уведомлений не нашёл. Прямой отправки в РКН не доказано, но VPN-статус уходит на серверы компаний, а методичка, по РБК, требует передавать регулятору IP новых VPN | — | 04.2026, [ComNews](https://www.comnews.ru/content/244810/2026-04-16/2026-w16/1009/rossiyskie-servisy-chastichno-ogranichivayut-rabotu-pri-vklyuchennom-vpn), [Habr 1021392](https://habr.com/ru/articles/1021392/), [Meduza 16.04](https://meduza.io/feature/2026/04/16/krupneyshie-rossiyskie-servisy-zakryvayut-dostup-polzovatelyam-s-vklyuchennym-vpn) | 🟡 (l-app-behavior). Для сервера: RU-приложение в туннеле видит exit-IP VPS, по оценке Гильдии VPN это возможный источник IP-банов |
+| **Ozon, WB, Яндекс Пэй/Книги/Карты, ВкусВилл, Перекрёсток, Пятёрочка** | К 28.04 снова пускали пользователей с VPN. Связь с падением продаж — со слов селлеров, официально откат не признан. Про банки отката не найдено | — | [MT 28.04](https://ru.themoscowtimes.com/2026/04/28/marketpleisi-stali-puskat-rossiyan-s-vpn-posle-padeniya-prodazh-a193979), [Ведомости](https://www.vedomosti.ru/technology/news/2026/04/27/1193249-mintsifri-obyasnilo) | 🟡 (l-platform-demand) |
+| **VLESS-клиенты на Android**: Happ, v2RayTun, V2BOX, v2rayNG, Hiddify, Exclave, Npv Tunnel, NekoBox, «распространённые» конфигурации Clash/sing-box | SOCKS5 на 127.0.0.1 без авторизации. Любое приложение, даже исключённое или в Knox/Shelter/Island (loopback общий), узнаёт через него IP exit. При разнесённых входе и выходе утекает IP выхода. Разработчикам сообщили 10.03.2026. «Почти все» — преувеличение: Husi, SFA и Xray (saeeddev94) позволяли задать пароль ещё до раскрытия. HTTP-прокси без пароля в раскрытии не задокументирован. В v2rayNG 2.1.0 (17.04.2026) есть SOCKS-auth и случайный порт, но выключены по умолчанию и с HEV TUN ломают трафик (#5549, not planned) | Сканирование localhost + echo | 07.04.2026, [Habr 1020080](https://habr.com/ru/articles/1020080/), [PoC](https://github.com/runetfreedom/per-app-split-bypass-poc), [v2rayNG 2.1.0](https://github.com/2dust/v2rayNG/releases/tag/2.1.0), [v2rayNG #5382](https://github.com/2dust/v2rayNG/issues/5382), [#5549](https://github.com/2dust/v2rayNG/issues/5549), [Хакер](https://xakep.ru/2026/04/07/vless-bug/) | 🟡 (l-local-socks-vuln) |
+| **Happ** | Открывал xray API с HandlerService без авторизации: из него выгружались UUID, ключи, адрес входа, SNI. В 4.7.2 API убрали, открытый SOCKS остался. При включённом «Allow LAN» Happ сам снимает пароль с локального прокси | Локальный API | 04.2026, [kod.ru 11.04](https://kod.ru/vpn-happ-problems) | 🟡 (l-local-socks-vuln) |
 | **Happ (с Provider ID)** | Раз в сутки шлёт HWID, ОС и хэш домена подписки на check.happ-proxy.com | Телеметрия клиента | [docs.happ-proxy.com](https://docs.happ-proxy.com/getting-started/provider-id.md) | 🟡 (голос по s-happ-headers) |
 | **3x-ui v3.9.0, JSON-подписка** | Кладёт клиенту `{"listen":"127.0.0.1","port":10808,"protocol":"socks","settings":{"auth":"noauth"}}` | Тот же вектор открытого SOCKS, но со стороны сервера | [default.json](https://github.com/MHSanaei/3x-ui/blob/v3.9.0/internal/sub/default.json) | 📄 |
-| **Детекторы (RKNHardering)** | Сканируют 1024–65535 на 127.0.0.1/::1 (200 параллельных, SOCKS5-greeting, HTTP CONNECT), Xray gRPC, Clash API. Один случайный порт не спасает, нужна авторизация | Скан loopback | [RKNHardering](https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md) | ❓ |
-| **Android 16 (ОС)** | Обычное приложение шлёт UDP мимо VPN через `registerQuicConnectionClosePayload`, даже при Always-on. Google ответил Won't Fix. Выдаёт факт VPN и реальный IP, а не сервер | Баг ОС | 05.2026, [Forbes](https://www.forbes.com/sites/daveywinder/2026/05/15/wont-fix-all-vpn-apps-affected-as-google-android-16-leaks-info/), [lowlevel.fun](https://lowlevel.fun/posts/tiny-udp-cannon-android-vpn-bypass/) | ❓ |
-| **iOS (все)** | Детект слабее: sandbox не даёт сканировать loopback. Остаются эвристики (`__SCOPED__`, `getifaddrs`) и echo через туннель | Эвристики | [tarkalabs](https://tarkalabs.com/blogs/vpn-detection-guide-ios-android/) | ❓, косвенно 🟡: Минцифры признаёт, что на iOS детект «проблематичен» |
+| **Клиенты без локального прокси**: WireGuard/AmneziaWG, sing-box только с tun (без mixed и clash_api) | К сканированию localhost не уязвимы. Но от детекта VPN это не защищает (tun0 и VPN-сеть видны). На Android приложение, исключённое из split tunneling, может привязать сокет к tun0 (SO_BINDTODEVICE, `curl --interface tun0`) и узнать IP сервера: Amnezia #2457, фикс PR #3199 (22.09.2026) не влит и будет выключен по умолчанию. В клиенте Amnezia открытый SOCKS был только у Xray-моста: исправлен PR #2456 (влит 13.04.2026; PR #2453 закрыт **без** слияния). В 5.0.3.0 (18.09.2026) у моста случайные логин, пароль и порт. У sing-box-клиентов (Hiddify, Karing) отдельный вектор — clash_api | tun2socks → SOCKS, bind к tun0 | [Amnezia PR #2456](https://github.com/amnezia-vpn/amnezia-client/pull/2456), [#2457](https://github.com/amnezia-vpn/amnezia-client/issues/2457), [PR #3199](https://github.com/amnezia-vpn/amnezia-client/pull/3199), [PR #2453](https://github.com/amnezia-vpn/amnezia-client/pull/2453) | 🟡 (l-awg-clients). Отдельного аудита AWG-клиентов и sing-box TUN нет, вывод по архитектуре |
+| **RKNHardering** (открытый тестовый детектор, а не госприложение) | В режиме AUTO сканирует 127.0.0.1/::1: сначала популярные порты, потом 1024–65535 по 200 параллельно (SOCKS5-greeting и HTTP CONNECT). Вызывает Xray gRPC listOutbounds (100 потоков), опрашивает Clash API на 9090/19090/9091/9097, подбирает слабые пароли (admin/admin, user/password, пустой). Открытый прокси сам по себе даёт только needsReview, обход подтверждается сменой IP. Что реальные RU-приложения так перебирают весь localhost, не доказано: методичка называет конкретные порты, RKS описывает системные API и список пакетов | Скан loopback | [RKNHardering](https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md) | 🟡 (l-client-auth-ports). Вывод: один случайный порт не спасает, нужен **длинный случайный** пароль, `udp:false`, закрытые Xray API и Clash API. Порт с паролем всё равно виден, а VPN выдаёт сам TUN |
+| **Android 16 QPR1+ (ОС)** | Скрытый `@hide` API `registerQuicConnectionClosePayload` без проверки прав: приложение с INTERNET через Binder заставляет system_server отправить произвольный UDP мимо VPN, даже при Always-on и Block without VPN. Так утекает реальный IP, и бэкенд может связать его с exit-IP из туннеля. Работает только при включённом флаге DeviceConfig `tethering/close_quic_connection`; что он включён по умолчанию, источники расходятся. Google: Won't Fix. Исправлено в GrapheneOS 2026050400 (05.05.2026). На стоковом Android: `adb shell device_config put tethering close_quic_connection -1`. Использования этого вектора RU-приложениями не найдено | Баг ОС | 05.2026, [lowlevel.fun](https://lowlevel.fun/posts/tiny-udp-cannon-android-vpn-bypass/), [PoC](https://github.com/0x33c0unt/quic-vpn-bypass), [Mullvad](https://mullvad.net/en/blog/2026/5/12/any-app-on-recent-android-versions-can-leak-certain-traffic), [leewoobin](https://leewoobin.com/posts/android-quic-vpn-lockdown-exception/) | 🟡 (l-android16-udp) |
+| **iOS (все)** | Детект слабее, чем на Android: у сторонних приложений нет системного API статуса VPN, они не видят чужие приложения и таблицу маршрутов (методичка называет детект на iOS «затруднённым»). Остаются эвристики (`__SCOPED__` в CFNetworkCopySystemProxySettings с utun/ipsec/tun, `getifaddrs`), обе с ложными срабатываниями. **Тезис «sandbox не даёт сканировать loopback» неверен:** iOS-приложения могут слушать и подключаться к локальным портам, Happ iOS, V2BOX и Karing попали в список уязвимых к открытому SOCKS. Главный канал утечки — echo через туннель | Эвристики, loopback, echo | [Meduza 06.04](https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno), [zapret](https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability), [Local Mess](https://localmess.github.io/), [tarkalabs](https://tarkalabs.com/blogs/vpn-detection-guide-ios-android/) | 🟡 (l-ios). Работа `subHappLocalProxyAuth` на iOS не проверена |
 
-### 3.2 Системные признаки, видимые без разрешений (Android) ❓
+### 3.2 Системные признаки, видимые без разрешений (Android) 🟡
 
-- TRANSPORT_VPN/IS_VPN; интерфейсы tun, wg, ppp; маршруты (`/proc/net/route`); loopback-DNS; MTU<1500.
-- Протокол значения не имеет: VLESS, Hy2 и AWG выглядят одинаково.
-- Per-app bypass убирает проверки по IP и гео, но не по интерфейсу.
-- Источники: [RKNHardering](https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md), [Habr 1081580](https://habr.com/ru/articles/1081580/).
+- **Любому приложению** без разрешений видны: интерфейс `tun0`/`ppp0` и его MTU (NetworkInterface), сеть с TRANSPORT_VPN в `getAllNetworks()`, `getNetworkInfo(TYPE_VPN)=CONNECTED`, установленные VPN-клиенты.
+- **Приложение, исключённое из туннеля per-app,** не видит TRANSPORT_VPN/IS_VPN у своей `activeNetwork`. DNS и маршруты в её LinkProperties у него реальные, так что loopback-DNS ему не виден (эмулятор Android 15, linkshield PR #60 от 27.09.2026; правило RKNHardering «tun0 есть, но vpnActive=false»). Loopback-DNS вообще зависит от клиента.
+- Протокол почти не влияет: все клиенты работают через VpnService/tun, поэтому VLESS, Hy2 и AWG выглядят одинаково.
+- Per-app bypass снимает проверки по IP, гео и `activeNetwork`, но не по перечислению интерфейсов и сетей. По RKS, 13 из 30 приложений смотрят интерфейсы.
+- Отдельный профиль (Shelter/work) от детекта не защищает: VPN основного профиля виден и из рабочего (GrapheneOS #7511). Помогают только роутер или другое устройство.
+- Habr 1081580 — поиск строк в smali, а не проверка во время работы.
+- Источники: [linkshield PR #60](https://github.com/AlexMos555/linkshield/pull/60), [RKNHardering](https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md), [GrapheneOS #7511](https://github.com/GrapheneOS/os-issue-tracker/issues/7511), [RKS Global](https://rks.global/ru/research/vpn-detection/), [Habr 1081580](https://habr.com/ru/articles/1081580/).
 
-**Классификация IP ❓.** Базы оценивают три поля: страна, hosting, proxy.
-- Зарубежный VPS даёт три красных флага.
-- RU-хостинг даёт country=RU, но hosting-метку в 63–91% случаев.
-- Чистым выглядит только домашний IP.
-- WARP — это AS13335 Cloudflare, тоже признак VPN/прокси.
-- Источник: [Habr 1067230](https://habr.com/ru/articles/1067230/).
+**Классификация IP 🟡.** Три поля (страна, hosting, proxy) — упрощение для диагностики, а не модель решений сайта. Методичка Минцифры смотрит ещё ASN и репутационные списки VPN/proxy.
+- Зарубежный VPS почти наверняка даёт не-RU и hosting. Флаг proxy — только если IP уже попал в репутационные списки, у свежего VPS он не гарантирован.
+- RU-хостинг даёт country=RU, но DC-метку ставят 63% (ip-api) и 91% (ipapi.is). Это одна выборка: 14 RU-хостеров, 78 диапазонов, 2 базы, совпадение баз 56%. Флага proxy у RU-IP нет «пока»: репутационные базы со временем могут его поставить.
+- Чистыми выглядят домашний и мобильный (CGNAT) IP.
+- В RKNHardering RU-IP с hosting даёт NEEDS_REVIEW, а не DETECTED. DETECTED даёт зарубежный GeoIP при российском MCC, а также split tunnel (разные IP напрямую и через прокси, правило R1). То есть RU-вход по IP заметно помогает, но не убирает сигналы с устройства (TRANSPORT_VPN, tun).
+- WARP — это AS13335 Cloudflare с геолокацией страны VPS, тоже признак VPN/прокси.
+- Источники: [Habr 1067230](https://habr.com/ru/articles/1067230/), [RKNHardering](https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md), [ruitunion 09.04](https://ruitunion.org/posts/2026-04-09-the-ministry-of-digital-developments-guidelines-in-simple-terms/).
 
-**IPv6-утечка при сплите ❓.** Замер августа 2026: ни одна крупная GeoIP-база не относила российские IPv6-диапазоны к RU. Поэтому `geoip:ru` не ловит IPv6 российских сервисов, они уходят в туннель и видят exit. Источник: [Habr 1067230](https://habr.com/ru/articles/1067230/).
-- 📄 Однако runetfreedom `ru.txt` содержит 12 150 IPv6-строк из 25 094. Для ipset и Xray с этим набором вопрос частично снят, но качество покрытия не проверено.
+**IPv6 при сплите 🟡 (исходное утверждение l-ipv6-leak опровергнуто, см. §6).** RU-списки GeoIP содержат IPv6: v2fly ru.txt около 10 006 IPv6 из 22 825 строк, Loyalsoldier и runetfreedom около 12 150 из 25 094, в том числе Яндекс `2a02:6b8::` (/29 или /32 в зависимости от списка) и VK `2a00:bdc0::/29`. Значит, `geoip:ru` ловит IPv6. Утечка через IPv6 возможна только в узком случае: сплит построен по самодельному списку только из IPv4 (как снимок каскада на 8626 записей в Habr 1067230) или `AllowedIPs` у AWG, либо клиент или туннель не маршрутизирует IPv6 по правилам. Источники: [v2fly ru.txt](https://raw.githubusercontent.com/v2fly/geoip/release/text/ru.txt), [Loyalsoldier ru.txt](https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/ru.txt), [Habr 1067230](https://habr.com/ru/articles/1067230/).
 
 ### 3.3 Регуляторика
 
 | Мера | Суть | Статус |
 |---|---|---|
-| Методичка Минцифры (04.2026) | Три этапа: 1) сверка IP с RU-диапазонами и реестром РКН; 2) устройство: ConnectivityManager, tun0, порты SOCKS 1080/9000/5555, HTTP 3128/8080, Tor 9050; 3) десктоп. Признаёт, что iOS, роутер, VM и split детектировать трудно. Данные о новых VPN передавать в РКН | ❓, косвенно 🟡: упомянута в голосах по s-split-routing и s-entry-cascade. [Meduza](https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno), [SecurityLab](https://www.securitylab.ru/news/571257.php) |
-| Требование к 20+ платформам | Конец марта 2026: к 15.04 ограничить доступ пользователям с VPN, иначе отзыв IT-аккредитации. Исполнение мягкое | ❓ [Фонтанка](https://www.fontanka.ru/2026/04/02/76345065/), [CNews](https://www.cnews.ru/news/top/2026-04-06_rossijskim_it-kompaniyam) |
-| Карта IP абонентов | 216-ФЗ, приказ РКН №51, в силе с 12.04.2025. Передаются IPv4/IPv6, муниципалитет, ID ТСПУ. В марте 2026 уведомления получили 1359 операторов, в мае оштрафованы 85 | ❓ [Теплица](https://te-st.org/2026/05/27/collectip/), [MT](https://ru.themoscowtimes.com/2026/05/26/roskomnadzor-nachal-trebovat-u-operatorov-svyazi-ip-adresa-rossiyan-dlya-blokirovok-vpn-a196222) |
+| Методичка Минцифры (04.2026) | Разослана 20+ компаниям (РБК, 05–06.04.2026), срок до 15.04. Самой методички в открытом доступе нет, всё по пересказам. Три этапа: 1) сверка IP с RU-диапазонами и списками РКН, плюс ASN хостинга и репутационные списки; 2) проверка через своё приложение, на Android — флаги IS_VPN/TRANSPORT_VPN (ConnectivityManager/NetworkCapabilities) и dumpsys; 3) прочие ОС и десктоп, где проверяют интерфейсы tun/tap/wg/utun/ppp. Списки портов (SOCKS 1080/9000/5555/16000–16100, HTTP 80/443/3128/8080/8888, Tor 9050/9051/9150) есть только в утёкшем PDF (Хакер 08.04, подлинность не подтверждена). Порты сверяют с **системными настройками прокси на устройстве**, а не сканируют на удалённых серверах, так что порты VPS эта проверка не трогает. Нужно несколько признаков, одного недостаточно. iOS, роутер, VM, split и резидентные прокси названы источниками ошибок детекции. Новые VPN передавать в РКН | 🟡 (l-mintsifry-method). Вывод для клиента: не включать системный прокси и не держать открытый локальный SOCKS. [Meduza](https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno), [SecurityLab](https://www.securitylab.ru/news/571257.php), [Хакер 08.04](https://xakep.ru/2026/04/08/vpn-checks/), [ntc 23842](https://ntc.party/t/%D0%BC%D0%B5%D1%82%D0%BE%D0%B4%D0%B8%D1%87%D0%BA%D0%B0-%D0%BC%D0%B8%D0%BD%D1%86%D0%B8%D1%84%D1%80%D1%8B-%D0%BF%D0%BE-%D0%B2%D1%8B%D1%8F%D0%B2%D0%BB%D0%B5%D0%BD%D0%B8%D1%8E-vpn/23842) |
+| Требование к 20+ платформам | На закрытом совещании в конце марта 2026 (РБК 02.04) Минцифры потребовало от 20+ компаний (Сбер, Яндекс, VK, WB, Ozon, Avito, X5 и др.) к 15.04 ограничить доступ пользователям с VPN. Санкции: отзыв IT-аккредитации и льгот, исключение из белых списков и предустановки. Закона об этом нет. WB и Ozon начали раньше, около 07.04. К 28.04 часть сервисов откатила ограничения (см. §3.1). 27.04 Минцифры объяснило требование «безопасностью данных» и анонсировало в Max кнопку жалоб на ложные срабатывания на Госуслугах; запуск не подтверждён | 🟡 (l-platform-demand: holds + partly). [Фонтанка](https://www.fontanka.ru/2026/04/02/76345065/), [CNews](https://www.cnews.ru/news/top/2026-04-06_rossijskim_it-kompaniyam), [anti-malware 27.04](https://www.anti-malware.ru/news/2026-04-27-111332/49839) |
+| Сбор адресных пулов операторов | Приказ РКН №51 от 28.02.2025 (Минюст 31.03.2025 №81700, основание 216-ФЗ, п. 5.2-1 ст. 46 закона «О связи»; в силе с 11/12.04.2025). Операторы передают выделенные абонентам адреса и диапазоны IPv4/IPv6 с привязкой к региону/муниципалитету и номеру ТСПУ. Изменения — в течение 1 дня (рабочего или календарного, пересказы расходятся), по запросу РКН — за 1 час. Это **карта адресных пулов, а не «IP конкретного абонента»**: РКН это прямо опроверг 26.05.2026. Уведомлены 1359 операторов (март 2026), к 21.05 наказаны 85. Связь с блокировками VPN — оценки СМИ и экспертов. Нового детектора зарубежного VPS отсюда не следует | 🟡 (l-ip-map). [Ведомости 26.05](https://www.vedomosti.ru/technology/news/2026/05/26/1200076-roskomnadzor-oproverg-soobscheniya), [Теплица](https://te-st.org/2026/05/27/collectip/), [telecomika](https://www.telecomika.ru/prikaz_51_roskomnadzora_o_sredstvah_svyazi), [MT](https://ru.themoscowtimes.com/2026/05/26/roskomnadzor-nachal-trebovat-u-operatorov-svyazi-ip-adresa-rossiyan-dlya-blokirovok-vpn-a196222) |
 | 210-ФЗ «Антифрод 2.0» | Хостерам запрещено давать мощности под VPN по ст. 15.8 | 🟡 (s-hosting-law) |
 | Проект «Антифрод 3.0» | Реестр, KYC, годовой бан у всех RU-хостеров, с 01.03.2028 | 🟡 (s-hosting-law) |
-| Мониторинг хостеров (08.2026) | Если VPN-инфраструктура регулярно видна на IP неделю, хостер получает запрос. Идентификация клиента через Госуслуги, биометрию или паспорт. IP белого списка вынести в отдельные подсети | ❓, косвенно 🟡 (голос по s-entry-cascade: «31.08 Минцифры обязало…»). [MT 04.08](https://ru.themoscowtimes.com/2026/08/04/desyatki-vpn-servisov-perestali-rabotat-v-rossii-posle-novih-trebovanii-mintsifri-k-provaideram-a202667), [hightech.fm](https://hightech.fm/2026/08/31/fsb-vpn) |
-| Белый список корпоративных VPN | ~57–75 тыс. IP исключены из фильтрации ТСПУ | ❓ [cisoclub](https://cisoclub.ru/roskomnadzor-rasshiril-spisok-razreshjonnyh-korporativnyh-vpn-do-57-tysjach-adresov/) |
-| Плата за международный трафик | Сверх 15 ГБ/мес, отложено. 23.09 идея вернулась для 5G. Вымпелком: VPN не отличить от прочего зарубежного трафика | ❓ [Meduza 23.09](https://meduza.io/news/2026/09/23/bi-bi-si-v-pravitelstve-vernulis-k-idee-platy-za-mezhdunarodnyy-trafik-no-teper-v-seti-5g-v-rossii-ona-dostupna-tolko-vladeltsam-androidov) |
-| Ответственность пользователя | Пользоваться VPN законно. Штраф 3–5 тыс. ₽ за умышленный поиск экстремистских материалов, VPN — отягчающее обстоятельство. Реклама VPN: 50–80 тыс. ₽ для физлиц, 200–500 тыс. ₽ для юрлиц | ❓ [Ведомости](https://www.vedomosti.ru/press_releases/2025/08/27/v-rossii-vveli-otvetstvennost-za-poisk-ekstremistskih-materialov-i-reklamu-vpn) |
+| Мониторинг хостеров (08.2026) | **Предложение, а не действующая норма**: текста письма, НПА и сроков нет. 03–04.08.2026 РБК (4 источника) сообщил, что Минцифры обсуждает с хостерами мониторинг **только IP из перечня исключений ЦМУ ССОП** (белый список корпоративных VPN). Если VPN-инфраструктура видна на таком IP неделю, хостер получает запрос и за 24 ч должен подтвердить назначение, иначе IP выводят из перечня. Клиентов делят по уровню идентификации: ЕСИА/ЕБС/договор юрлица — уведомление, телефон или карта — приостановка за 30 мин. 31.08 Минцифры письмом **попросило** (а не обязало) хостеров, CDN и анти-DDoS вынести IP белого списка в отдельные подсети, ФСБ поддержала. Обычный арендованный RU-VPS не в перечне, напрямую мера его не задевает. Реальный риск для RU-входа — упрощённая идентификация у хостера | 🟡 (l-hosting-monitoring). [MT 03.08](https://ru.themoscowtimes.com/2026/08/03/mintsifri-velelo-internet-operatoram-usilit-borbu-s-vpn-a202553), [MT 04.08](https://ru.themoscowtimes.com/2026/08/04/desyatki-vpn-servisov-perestali-rabotat-v-rossii-posle-novih-trebovanii-mintsifri-k-provaideram-a202667), [Ведомости 31.08](https://www.vedomosti.ru/technology/news/2026/08/31/1224824-mintsifri-poprosilo), [Коммерсантъ](https://www.kommersant.ru/doc/8922142), [hightech.fm](https://hightech.fm/2026/08/31/fsb-vpn) |
+| Белый список корпоративных VPN | Ведёт ЦМУ ССОП при РКН. Заявка — на white_list@cmu.gov.ru: организация, ИНН, протокол, IP источника и назначения, цель («личный кабинет» упоминают только СМИ). На 22.04.2026, по РКН, — более 57 тыс. адресов и подсетей 1730 организаций. 75 тыс. — данные «Коммерсанта» на апрель 2025 в других единицах, цифры не противоречат друг другу. Список снимает только протокольную фильтрацию ТСПУ и на проверки VPN внутри приложений не влияет. «Технически отличить корпоративный VPN нельзя» — мнение экспертов, а не позиция РКН. Частному лицу неприменимо: нужны ИНН и раскрытие IP | 🟡 (l-corp-whitelist). [Habr 1026710](https://habr.com/ru/news/1026710/), [Интерфакс](https://www.interfax.ru/russia/1085410), [Хакер 2025](https://xakep.ru/2025/04/17/rkn-white-lists/), [cisoclub](https://cisoclub.ru/roskomnadzor-rasshiril-spisok-razreshjonnyh-korporativnyh-vpn-do-57-tysjach-adresov/) |
+| Плата за международный трафик | Весной 2026 Минцифры (поручение Шадаева от 28.03) обсуждало плату за мобильный международный трафик сверх 15 ГБ/мес, около 150 ₽/ГБ, к 01.05. Срок сдвигали на 01.06 и на осень. 07.07 замминистра Лебедев заявил в Думе, что плата «не рассматривается». 23.09 Би-би-си по анонимным источникам: идея вернулась для 5G с порогом **50 ГБ**, обсуждалась дата 01.10, не утверждена. Глава «Вымпелкома» Анохин 02.04 говорил, что VPN «очень сложно» выделить в международном трафике; к 5G это не относится. На 04.10.2026 плата не введена. Довод «трафик до RU-входа внутренний» — гипотеза: метод учёта не опубликован | 🟡 (l-intl-traffic-fee). [Meduza 23.09](https://meduza.io/news/2026/09/23/bi-bi-si-v-pravitelstve-vernulis-k-idee-platy-za-mezhdunarodnyy-trafik-no-teper-v-seti-5g-v-rossii-ona-dostupna-tolko-vladeltsam-androidov), [Коммерсантъ](https://www.kommersant.ru/doc/8625432), [Habr 1056566](https://habr.com/ru/news/1056566/) |
+| Ответственность пользователя | Пользоваться VPN законно. С 01.09.2025 (281-ФЗ) ст. 13.53 КоАП: 3–5 тыс. ₽ за умышленный поиск заведомо экстремистских материалов из списка Минюста и доступ к ним, «в том числе через VPN». Здесь VPN входит в состав правонарушения, а **не отягчает** его. Отягчающим VPN является только для преступлений: п. «ф» ч. 1 ст. 63 УК (282-ФЗ), суды его уже применяют. Реклама средств обхода (ч. 18 ст. 14.3 КоАП): граждане 50–80 тыс. ₽, должностные лица 80–150 тыс. ₽, юрлица 200–500 тыс. ₽. Ст. 13.52 КоАП штрафует владельцев средств обхода, не исполняющих требования РКН | 🟡 (l-legal). Для сервера: только для себя и близких, ничего не публиковать и не рекламировать. [Контур.Норматив 282-ФЗ](https://www.kontur-extern.ru/info/normativ/document/1/500800-federalnyy-zakon-ot-31-07-2025-n-282-fz), [alta.ru 281-ФЗ](https://www.alta.ru/tamdoc/25fz0281/), [Ведомости](https://www.vedomosti.ru/press_releases/2025/08/27/v-rossii-vveli-otvetstvennost-za-poisk-ekstremistskih-materialov-i-reklamu-vpn) |
 
-**Волны IP-банов ❓.** 04.08.2026, с 07.09 и после выборов (пик 25.09). Под них попали и self-hosted VPS. Из двух одинаковых серверов в одной /24 забанили один. Прямой связи «приложение сообщило IP → бан» публично **не доказано**. Источник: [ntc 25528](https://ntc.party/t/%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0-ip-%D0%B0%D0%B4%D1%80%D0%B5%D1%81%D0%BE%D0%B2-vpn-%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%BE%D0%B2-%D1%80%D0%BA%D0%BD-04082026/25528).
+**Волны IP-банов 🟡 (l-ip-waves).** Волны: 04.08.2026, 7–8.09, после выборов (рост с 21–22.09, пик 25.09). Банили и отдельные IP, и целые подсети хостеров; Теплица (30.09) пишет о блоках целых AS и подсетей с августа. Сбой с 07.09 по симптомам («туннель рвётся через секунды») похож скорее на DPI, чем на баны IP. Попадание self-hosted VPS и случай «из двух одинаковых серверов в одной /24 забанили один» известны по единичному сообщению на ntc.party (05.08), это анекдот, а не установленный факт. Прямой связи «приложение сообщило IP → бан» публично **не доказано**, есть только гипотезы экспертов (Козлюк, Meduza). Методичка, по пересказу SecurityLab, обязывает искать VPN, но прямо не требует передавать в РКН IP серверов. Эффективность серверных мер против банов не подтверждена; реально работают клиентский сплит для RU, RU-вход и быстрая ротация IP. Источники: [ntc 25528](https://ntc.party/t/%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0-ip-%D0%B0%D0%B4%D1%80%D0%B5%D1%81%D0%BE%D0%B2-vpn-%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%BE%D0%B2-%D1%80%D0%BA%D0%BD-04082026/25528), [Meduza 04.08](https://meduza.io/feature/2026/08/04/nekotorye-servisy-soobschili-o-novoy-volne-blokirovok-vpn-v-rossii-ee-nazyvayut-odnoy-iz-krupneyshih-za-poslednee-vremya), [MT 29.09](https://ru.themoscowtimes.com/2026/09/29/posle-viborov-v-dumu-v-rossii-nachalas-volna-blokirovok-vpn-a207251), [Теплица 30.09](https://te-st.org/2026/09/30/vlessmore/).
 
 ### 3.4 Технические методы детекта на стороне сети
 
@@ -448,22 +456,22 @@
 
 | Угроза | Серверная мера | Закрывает? | Клиентская мера |
 |---|---|---|---|
-| RU-сервис через туннель видит IP exit | `geoip:ru` + `category-ru` + `tld-ru` → `blocked`/`warp` на exit (Xray, Hy2 ACL, AWG ipset) | ✅ для RU-назначений | Сплит «РФ напрямую» |
-| Echo-сервисы (ipify и т.п.) через туннель | `category-ip-geo-detect` → `warp`/`blocked` (📄 165 доменов в runetfreedom) | ✅ для доменов из списка. Echo вне списка — нет | Per-app исключения |
-| Открытый локальный SOCKS у клиента | `subHappLocalProxyAuth=auto` (только Happ, 📄). JSON-подписку не включать по умолчанию | 🟡 частично | Включить auth, обновить клиент, Amnezia/WG без моста tun2socks |
+| RU-сервис через туннель видит IP exit | `geoip:ru` + `category-ru` + `tld-ru` → `blocked`/`warp` на exit (Xray; Hy2 ACL и AWG ipset — opt-in) | ✅ для RU-назначений. Без клиентского сплита ломает RU-сайты, а сплит из подписки получают только Happ/INCY | Сплит «РФ напрямую», per-app исключение RU-приложений |
+| Echo-сервисы (ipify и т.п.) через туннель | `category-ip-geo-detect` → `warp`/`blocked` (📄 165 доменов в runetfreedom; все 6 echo-URL MAX в списке) | 🟡 только для доменов из списка и только в Xray/Hy2 со sniffing. Не закрывает echo вне списка, IP-литералы, собственный бэкенд и STUN приложения, AWG (L3). Факт VPN не скрывает | RU-приложения direct или исключить из VPN — это главная защита |
+| Открытый локальный SOCKS у клиента | `subHappLocalProxyAuth=auto` + `subHappAutoDetect=true` (только Happ, проверено на Android 4.4.1; 📄 + l-3xui-socks-auth). JSON-подписку не включать. Привязка JSON-подписки к 127.0.0.1 (v3.8.0) закрывает доступ из LAN, но не от приложений на том же устройстве | 🟡 только Happ | Happ: не включать «Allow LAN». Клиенты без локального прокси (WG/AWG, sing-box TUN без mixed и clash_api, Amnezia ≥5.0.3.0). Husi/SFA — длинный случайный пароль. v2rayNG 2.1.0: auth и случайный порт есть, но ломают HEV TUN |
 | Утёкший exit-IP банят | Второй IP через `sendThrough` / WARP / второй VPS | 🟡 спасает от точечного бана, не от /24 | — |
-| RU-приложения видят зарубежный IP | RU-вход + гео-сплит на входе (RU и echo → `direct` со входа) | ✅ IP становится российским, но это RU-хостинг с hosting-флагом | Сплит |
-| TRANSPORT_VPN, tun0, MTU, маршруты | — | ❌ | Роутер, второй телефон, Island/Shelter (прячет VpnService, не loopback), Anubis (Shizuku) замораживает RU-приложения |
+| RU-приложения видят зарубежный IP | RU-вход + гео-сплит на входе (RU и echo → `direct` со входа) | ✅ IP становится российским, но это RU-хостинг с hosting-флагом (в RKNHardering — NEEDS_REVIEW вместо DETECTED) | Сплит |
+| TRANSPORT_VPN, tun0, MTU, маршруты | — | ❌ | Роутер (с RU напрямую, иначе IP VPS светится на этапе 1 методички; защищает только дома), второй телефон. Island/Shelter прячет VpnService-API и список пакетов, но не `tun0`, `/proc/net/route` и loopback/SOCKS. Anubis (Shizuku, `pm disable-user`) замораживает RU-приложения, но им не приходят пуши, Shizuku надо перезапускать после ребута, а сам он может считаться признаком модификации |
 | Список установленных VPN-клиентов | — | ❌ | Рабочий профиль, другое устройство |
-| WebRTC ICE (интерфейсы) | — | ❌. Server-reflexive через туннель частично прикрывает блок STUN-назначений, но это не проверено | — |
-| `/proc/net/route`, Android 16 UDP | — | ❌ | GrapheneOS, роутер |
+| WebRTC ICE (интерфейсы, srflx) | — | ❌. Сервер это не закрывает: STUN на не-RU серверы (Google) всё равно отдаст IP exit, host-кандидат с tun уходит через сигнализацию, а отказ UDP/STUN сам служит признаком | Сплит RU-приложений в обход туннеля или через RU-вход |
+| `/proc/net/route`, Android 16 QPR1+ UDP | — | ❌ | GrapheneOS ≥2026050400, `adb shell device_config put tethering close_quic_connection -1`, роутер |
 | Контрольные закупки / утечка конфига | Не раздавать публично; подписка на случайном пути; внешних держать на отдельной ноде | ✅ | Не пересылать подписку |
 | Отпечаток AWG | Уникальные Jc/Jmin/Jmax, S1–S4, H1–H4, I1 на установку | ✅ | Клиент ≥5.0.1.5 для 3.x |
 | Active probing / сканирование панели | REALITY (уже есть); панель на 127.0.0.1; Hy2 masquerade | ✅ | — |
 | Заморозка 16 КБ | Хостер вне засвеченных ASN; RU-вход; Hy2 как UDP-резерв | 🟡 | Смена транспорта |
 | БС на мобильном | RU-вход на **белом** IP | 🟡 только при белом IP | — |
 
-**Главный вывод.** Сервер закрывает **утечку адреса сервера** и **отпечаток**, но не **факт VPN на устройстве**. Последнее решается только на клиенте или роутере, и в CREDENTIALS нужно честно об этом написать.
+**Главный вывод.** Сервер закрывает **утечку адреса сервера** (частично: echo из списка и RU-назначения, только для Xray/Hy2) и **отпечаток**, но не **факт VPN на устройстве**. Последнее решается только на клиенте или роутере, и в CREDENTIALS нужно честно об этом написать. Допроверка сместила акцент ещё сильнее на клиента: главная защита от утечки exit-IP — RU-приложения напрямую или вне VPN, а серверные правила — страховка.
 
 ---
 
@@ -478,17 +486,24 @@
 - **Шаблон Xray по умолчанию** лежит в `internal/web/service/config.json`.
   - Там уже есть `freedom.finalRules` с block `geoip:private`, а routing блокирует `geoip:private` и `bittorrent`.
   - Шаблон хранится в настройке `xrayTemplateConfig`, через API это `POST /panel/xray/update` с form-полем `xraySetting`.
-- **Встроенный WARP 3x-ui:** `POST /panel/xray/warp/{reg|config|changeIp|license|interval}`.
-  - Outbound получает tag `warp`, протокол `wireguard`, `noKernelTun: true`, `sockopt.domainStrategy`/`targetStrategy: "ForceIPv4v6"` (смена формата с 26.9.30, issue #5205).
+- **Встроенный WARP 3x-ui:** `POST /panel/xray/warp/:action`, где action — `data|del|config|reg|changeIp|license|interval`. `reg` принимает ключи клиента в полях `skey`/`pkey` (`xray_setting.go`).
+  - **API только регистрирует аккаунт.** Outbound с tag `warp` собирает фронтенд по кнопке (`buildWarpOutbound` в `WarpModal.tsx`): протокол `wireguard`, `noKernelTun: true`, `sockopt.domainStrategy`/`targetStrategy: "ForceIPv4v6"` (смена формата с 26.9.30, issue #5205). Инсталлер должен собрать этот outbound сам (l-warp-egress).
+  - Issue #5205 (11.06.2026): WARP-outbound не поднимался на 3x-ui v3.3.0 с Xray 26.6.1, закрыт без фикса. Для v3.9.0 нужен smoke-test (§7).
   - Плановая смена IP WARP — `warp_ip_job.go`, интервал в днях.
 - **Теги runetfreedom:**
   - geoip: `ru`, `private`, `ru-blocked`, `ru-whitelist`, `yandex`, `telegram`;
-  - geosite: `category-ru` (1103), `tld-ru`, `category-gov-ru`, `category-bank-ru`, `category-ip-geo-detect` (165: `ipify.org`, `ifconfig.me`, `checkip.amazonaws.com`, `ip.mail.ru`, `2ip.ua`, `ip-api.com` …), `ru-blocked`, `category-ads-all`, `win-spy`, `private`.
-  - ⚠️ **`category-ru` не включает зону `.ru` целиком.** `max.ru` и `oneme.ru` ловит только `tld-ru`.
+  - geosite: `category-ru` (1103), `tld-ru`, `category-gov-ru`, `category-bank-ru`, `category-ip-geo-detect` (165: `ipify.org`, `ifconfig.me`, `checkip.amazonaws.com`, `ip.mail.ru`, `ipv4-internet.yandex.net`, `2ip.ru`, `2ip.ua`, `ip-api.com` …), `ru-blocked`, `category-ads-all`, `win-spy`, `private`.
+  - **Тега `ru` в geosite нет вообще** (1543 тега, RU среди них нет). Поэтому `geosite:ru` не грузится: ошибка конфига, а не нормализации регистра. Xray и сборщик v2fly оба переводят имена в верхний регистр (l-geo-lists-ops).
+  - В `category-ip-geo-detect` нет голого `internet.yandex.net`, только `ipv4-`/`ipv6-internet.yandex.net`. Все 6 echo-URL из реверса MAX покрыты.
+  - Прежняя пометка «`category-ru` не включает зону `.ru` целиком» **скорее всего ошибочна**: в v2fly `data/category-ru` первая строка `include:tld-ru` (проверено по master 04.10.2026), так считает и адверсарий по l-geo-lists-ops. `tld-ru` в правилах всё равно оставить явно: это безвредно и страхует от расхождений сборки.
+  - Релизы runetfreedom выходят по cron примерно каждые 4–10 ч (номинально 6 ч).
 - **CIDR для ipset:** `runetfreedom/russia-blocked-geoip/release/text/ru.txt`, 25 094 строки, из них 12 150 IPv6. Рядом лежит `ru-whitelist.txt`.
 - **Hysteria app/v2.12.3** (16.09.2026) исправляет перехват исходящего UDP правилами port hopping.
   - Если не задать `acl.geoip`/`acl.geosite`, Hysteria при старте сама качает файлы Loyalsoldier, где нужных тегов нет. Пути задавать явно.
+  - При своём пути `geoUpdateInterval` не действует (`geoloader.go`): обновлять файлы должен наш таймер с рестартом. Грузится только один geoip и один geosite. `geosite:ru` роняет старт (#1298), нужен `category-ru` (l-hy2-acl).
 - **JSON-подписка** (`internal/sub/default.json`) кладёт клиенту SOCKS `127.0.0.1:10808` с `auth: noauth`. Это тот самый вектор утечки (§3.1).
+- **Заголовки локального прокси для Happ** (PR #6628, влит 26.09.2026): `subHappLocalProxyAuth` принимает `auto` (по умолчанию), `disable` или пусто. Режимов `manual`/`from-json` в панели нет, хотя Happ их понимает. Заголовки `Socks-Auth-Mode`/`Http-Auth-Mode` уходят только при `subHappAutoDetect=true` и UA Happ (l-3xui-socks-auth).
+- **Заголовок `Routing`** (`internal/sub/controller.go`, v3.9.0): `ApplyCommonHeaders` берёт его из `subRoutingRules` (если поле пустое — из `subJsonRoutingRules`) **для любого клиента**, `Routing-Enable` — при `subEnableRouting` (по умолчанию `false`). Правила INCY (`subIncyRoutingRules`) попадают только в тело ответа, а INCY читает заголовок: баг #6273 не исправлен. Заголовок понимают только Happ и INCY (l-routing-cost).
 
 ### 5.1 Маршрутизация Xray: новая фаза `07-xray-routing.sh`
 
@@ -565,7 +580,7 @@
 - Smoke-тест: `vk.com` → `${RU_EGRESS}`, `ifconfig.me` → `${ECHO_EGRESS}`, `rutracker.org` → `direct`. ❓ Параметры эндпоинта `POST /panel/xray/routeTest` не проверены.
 - Путь к xray брать по `$ARCH` из `03-3xui.sh`, а не `xray-linux-amd64` (дефект [репо] в `04`, `XRAY_BIN`).
 
-**Geo-файлы: runetfreedom.** 3x-ui уже их поставляет, обновляются каждые 6 ч, все нужные теги на месте. roscomvpn отдавать **клиенту** в routing-заголовке (§5.5), а на сервере держать один набор.
+**Geo-файлы: runetfreedom.** 3x-ui уже их поставляет, релизы выходят примерно каждые 4–10 ч, все нужные теги на месте. roscomvpn отдавать **клиенту** в routing-заголовке (§5.5), а на сервере держать один набор.
 
 Файл `scripts/lib-geo.sh` + systemd timer, ставится в фазе `07`:
 
@@ -606,25 +621,25 @@ Persistent=true
 | Решение | Плюс | Цена или поломка |
 |---|---|---|
 | `RU_EGRESS=blocked` | IP exit не виден RU-сервисам вообще | У клиента без сплита не открываются RU-сайты («VPN сломал Госуслуги») |
-| `RU_EGRESS=warp` | RU-сайты работают у любого клиента | IP Cloudflare AS13335 тоже признак VPN. Часть банков и маркетплейсов режет ДЦ-IP или требует капчу. Внешняя зависимость |
-| `ip-echo → warp` | Exit-IP не утекает через ipify и подобные | Если WARP упал, эти домены не отвечают. WebRTC-логика приложений может ошибаться |
+| `RU_EGRESS=warp` | RU-сайты, которые режут диапазоны хостеров, у любого клиента работают. IP VPS RU-сервисам не виден | IP Cloudflare AS13335 с геолокацией страны VPS: зарубежный и известный как анонимайзер. Сервисы, требующие RU-IP, и антифрод по VPN-базам всё равно режут или требуют капчу. Без фолбэка при падении WARP RU-сайты перестают открываться. Внешняя зависимость |
+| `ip-echo → warp` | Exit-IP не утекает через ipify и подобные | Если WARP упал, эти домены не отвечают. Через WARP пойдут и browserleaks, maxmind, httpbin и т.п. Расхождение IP (Cloudflare против RU-IP у direct-трафика клиента) само может быть признаком |
 | `IPIfNonMatch` | Ловит RU-IP за не-RU доменами | DNS-запрос на каждое несовпавшее соединение. При недоступном DoH соединения висят до таймаута |
 | geosite_RU.dat ≈ 74 МБ | Полные списки | ❓ ОЗУ и время старта на VPS с 1 ГБ не измерены |
 | `bittorrent → blocked` | Меньше abuse-жалоб хостеру | Работает только при sniffing. Шифрованный BT (MSE) не ловится |
 
-**Не закрывает:** открытый локальный SOCKS в связке с echo вне списка, `/proc/net/route`, RU-сервисы на зарубежных IP с не-RU доменом. Это страховка, а не гарантия.
+**Не закрывает:** открытый локальный SOCKS в связке с echo вне списка, `/proc/net/route`, RU-сервисы на зарубежных IP с не-RU доменом, собственный бэкенд и STUN приложения в туннеле, IP-литералы, флаг TRANSPORT_VPN. Это страховка, а не гарантия. Эффективность правила против MAX не измерена.
 
 ### 5.2 Cloudflare WARP: новая фаза `08-warp.sh`, opt-in `WARP_ENABLE=1`
 
 **Вариант A (по умолчанию): встроенный WARP 3x-ui, только для Xray.**
 ```bash
 kp="$("$XUI_DIR/bin/xray-linux-$ARCH" wg)"          # PrivateKey / PublicKey
-api POST /panel/xray/warp/reg -F privateKey=... -F publicKey=...
+api POST /panel/xray/warp/reg -F skey=... -F pkey=...   # имена полей по xray_setting.go
 cfg="$(api POST /panel/xray/warp/config)"           # interface.addresses, peers[0], client_id
 # reserved = байты base64(client_id), endpoint = peers[0].endpoint.host
 api POST /panel/xray/warp/interval -F interval=7     # смена IP WARP раз в 7 дней
 ```
-После этого подставить значения в outbound `warp` из §5.1 и повторить `update`.
+После этого подставить значения в outbound `warp` из §5.1 и повторить `update`. Сам outbound панель через API не создаёт (это делает только кнопка во фронтенде), поэтому инсталлер собирает его из шаблона §5.1. Перед включением `RU_EGRESS=warp` — smoke-test: `curl` через outbound на `cloudflare.com/cdn-cgi/trace` должен дать `warp=on` (WARP-outbound на v3.3.0 не поднимался, #5205).
 
 **Вариант B: ядерный `warp0` через wgcf, общий для Xray, Hy2 и AWG.**
 ```bash
@@ -638,7 +653,8 @@ systemctl enable --now wg-quick@warp0
 - ❓ Не проверено вживую, что `SO_BINDTODEVICE` на интерфейс с `Table = off` маршрутизирует. Проверка: `curl --interface warp0 https://www.cloudflare.com/cdn-cgi/trace` должен дать `warp=on`.
 
 **Оговорки**
-- WARP не делает трафик «российским». Это средство против утечки exit-IP, а не замена сплиту или RU-входу.
+- WARP не делает трафик «российским»: RU-сервис видит IP Cloudflare с геолокацией страны VPS. Это средство против утечки exit-IP и против блоков по диапазонам хостеров, а не замена сплиту или RU-входу.
+- Свидетельств, что хостеры банят WARP, не найдено. Проблемы с узлом Cloudflare DME касаются WARP-клиентов из РФ, а не зарубежного exit (l-warp-egress).
 - Использование WARP на сервере неофициальное: регистрацию могут закрыть.
 - IPv6: если v6 на хосте недонастроен, рукопожатие с WARP молча уходит в чёрную дыру (3x-ui #5205). Отсюда `ForceIPv4v6`.
 - `noKernelTun: true` надёжнее на VPS, но тратит больше CPU.
@@ -684,8 +700,11 @@ acl:
     - direct(all)
 ```
 
-- `RU_EGRESS_HY` и `ECHO_EGRESS_HY` принимают значение `reject` или `warp`. Без WARP outbound `warp` из списка убрать.
-- Синтаксис `outbound(address[, proto/port])`, матчеры `geoip:`/`geosite:`/`suffix:`/`all` — по документации v2.hysteria.network.
+- `ECHO_EGRESS_HY` принимает `reject` или `warp` и включён по умолчанию: RU-сайты он не ломает.
+- `RU_EGRESS_HY` принимает `direct`, `reject` или `warp`. **По умолчанию `direct` (opt-in), изменено после l-routing-cost:** Hy2-клиенты не получают routing-заголовок из подписки, так что `reject(geoip:ru)` у пользователя без ручного сплита ломает банки и Госуслуги. Включать флагом, когда сплит настроен на клиенте. Без WARP outbound `warp` из списка убрать.
+- Синтаксис `outbound(address[, proto/port])`, матчеры `geoip:`/`geosite:`/`suffix:`/`all` — по документации v2.hysteria.network. Правила проверяются сверху вниз, срабатывает первое совпадение; домен резолвится, и к нему применяются и IP-правила. HTTP-outbound UDP не пропускает, поэтому для `warp` только socks5 или `bindDevice`.
+- `suffix:ru/su/xn--p1ai` дублируют `category-ru` (в нём есть `tld-ru`), это безвредно. Кириллическое «рф» в правилах бесполезно: SNI приходит в punycode.
+- ❓ UDP/QUIC через `warp` (вариант A) не проверен: Xray socks-inbound с `udp:true` UDP ASSOCIATE умеет, но прогнать QUIC-сайт на стенде. Если не пройдёт — `reject` для UDP RU-назначений.
 - **Пиннинг:** сейчас `bash <(curl https://get.hy2.sh/)` без версии, нужно `--version app/v2.12.3`. ❓ Флаг `--version` не перепроверен.
 - Повторный запуск фазы бинарник не обновляет: проверка `[ -x $HY_BIN ]` пропускает шаг. Для обновления нужна отдельная команда (дефект [репо]).
 - Компромиссы:
@@ -720,6 +739,8 @@ ipset swap vz-ru4-new vz-ru4; ipset swap vz-ru6-new vz-ru6
 ipset destroy vz-ru4-new; ipset destroy vz-ru6-new
 ```
 
+**Статус режимов (l-awg-ipset 🟡).** Источник паттерна, Habr 1056220 (07.07.2026), описывает только **RU-вход**: `mangle PREROUTING -i awg0 -m set --match-set ru dst -j RETURN`, остальное `MARK 0x1` → `ip rule fwmark 0x1 table 100` → `default dev awg1`. Exit там ничего не фильтрует. Режимы `block` и `warp` ниже на **exit** — наша экстраполяция, источником не подтверждена. Технически с kernel AWG (`-i awg0`) они работают. Задокументированная альтернатива для WARP на exit — вариант bivlked: BGP-фид antifilter + BIRD, таблица 200, `ip rule iif awg0`, без ipset/fwmark, только IPv4. **По умолчанию оба режима выключены (opt-in):** AWG-клиенты не получают routing-заголовок, и без `AllowedIPs`-сплита или per-app на клиенте `block` просто ломает RU-сайты. REJECT лучше DROP: нет таймаутов.
+
 **Режим `block`** (`awg0.conf`; `-I` ставит правило выше `FORWARD -i %i -j ACCEPT`):
 ```ini
 PostUp   = iptables  -I FORWARD -i %i -m set --match-set vz-ru4 dst -j REJECT --reject-with icmp-admin-prohibited
@@ -745,7 +766,9 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 - ❓ синтаксис ключей 3.1 по man не проверен (`awg.8` отдал 404).
 
 **Компромиссы**
-- Ловится только IP-назначение. Домены RU-сервисов на зарубежных CDN проходят мимо.
+- Ловится только IP-назначение. Домены RU-сервисов на зарубежных CDN проходят мимо. DNS идёт через exit, поэтому RU-CDN может отдать зарубежный IP, и такой трафик уйдёт мимо ipset.
+- Режим `warp` выше размечает только IPv4. Для IPv6 нужен аналог с `ip6tables` и `vz-ru6`, иначе v6 в туннеле отключить.
+- Echo-правило (`category-ip-geo-detect`) для AWG неприменимо: это L3, доменов нет.
 - Клиент с `AllowedIPs = 0.0.0.0/0` в режиме `block` ломает себе RU-сайты. «0.0.0.0/0 минус ru.txt» — это ~13k v4-сетей, а у мобильных клиентов есть лимит на число маршрутов. Реалистичнее рекомендовать сплит по приложениям.
 - ❓ `-m set` с iptables-nft на Ubuntu 22.04/24.04 не проверен. Запасной путь — нативный `nft` set с `flags interval`.
 - Сейчас `PostUp` использует только `iptables`. IPv6 FORWARD/NAT для AWG не настроен, хотя `ipv6.forwarding=1` включён (дефект [репо]). Либо отключить v6 в туннеле, либо дублировать правила.
@@ -757,8 +780,9 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 | `subUpdates` | `2` | `Profile-Update-Interval: 2` (по умолчанию 12) |
 | `subTitle` | имя | `Profile-Title` |
 | `subHappAutoDetect` | `true` | **Без этого Happ-заголовки не отдаются вообще** |
-| `subHappLocalProxyAuth` | `auto` | `Socks-Auth-Mode`/`Http-Auth-Mode`: Happ ставит пароль на локальный SOCKS/HTTP. Без Provider ID |
-| `subEnableRouting` + `subRoutingRules` | профиль roscomvpn DEFAULT (URL) | `Routing-Enable` + `Routing`. HTTPS-URL кешируется 10 мин, лимит 16 KiB |
+| `subHappLocalProxyAuth` | `auto` | `Socks-Auth-Mode`/`Http-Auth-Mode`: Happ сам ставит случайный пароль на локальный SOCKS/HTTP. Без Provider ID. Работает только вместе с `subHappAutoDetect`, проверено лишь на Happ Android 4.4.1 и desktop 4.3.0. Если в Happ включён «Allow LAN», он снимает пароль. Другие клиенты заголовок игнорируют |
+| `subEnableRouting` + `subRoutingRules` | `true` + профиль roscomvpn DEFAULT (URL) | `Routing-Enable` + `Routing`. `subEnableRouting` по умолчанию `false`. HTTPS-URL кешируется 10 мин. Лимит: 16 KiB по коду (📄), адверсарий по l-routing-cost называет 8 КиБ на заголовок, поэтому держать профиль меньше 8 КиБ. Понимают **только Happ и INCY** |
+| `subIncyRoutingRules` | тот же профиль, что в `subRoutingRules` | Обход бага #6273 (не исправлен в v3.9.0): INCY читает заголовок `Routing`, который берётся из `subRoutingRules` для любого клиента. Одинаковый профиль в обоих полях снимает расхождение |
 | `subJsonEnable` | **`false` по умолчанию** | См. ниже |
 | `subHappPerAppMode`/`List` | `exclude` + банки, MAX | `Per-App-Proxy-Mode: bypass` (Android). ⚠️ Вероятно, требует Provider ID и будет проигнорирован |
 | путь подписки | случайный (v3.8.0+) | Защита от угадывания |
@@ -766,21 +790,22 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 
 - Для v2RayTun отдавать `update-always: true`. Hy2 класть в подписку через external links (`hysteria2://`). AWG отдавать отдельным файлом.
 - **JSON-подписка и балансер (конфликт s-client-balancer ↔ утечка):** `default.json` открывает клиенту SOCKS без пароля. Варианты:
-  - (а) по умолчанию отдавать raw + Happ, JSON-подписку не включать;
-  - (б) ❓ переписать `noauth` на `password` через nginx `sub_filter` на `/json/`. Может сломать клиенты, чей TUN-слой ходит в этот SOCKS без пароля;
-  - (в) завести issue в 3x-ui.
-  - Балансер включать только вместе с (б) или после фикса в апстриме.
-- ❓ Допустимые значения `Socks-Auth-Mode`, кроме `auto`, не найдены. URL Happ-профиля roscomvpn брать из README `hydraponique/roscomvpn-routing`.
+  - (а) **рекомендуется:** по умолчанию отдавать raw + Happ, JSON-подписку не включать;
+  - ~~(б) переписать `noauth` на `password` через nginx `sub_filter` на `/json/`~~ — **снято после допроверки** (l-3xui-socks-auth, l-client-auth-ports). Пароль и порт получатся одинаковыми на всех, а не случайными на устройство, и RKNHardering подбирает слабые и известные пароли. Happ применит их только в режиме `from-json`, которого панель не отдаёт. tun2socks в v2rayNG ходит на локальный порт без auth (v2rayN #6981), так что своя socks-auth в JSON-шаблоне ломает VPN-режим v2rayNG;
+  - (в) завести issue в 3x-ui: случайные логин, пароль и порт на выдачу.
+  - Балансер (он есть только в JSON-подписке) не включать по умолчанию до фикса в апстриме. ❓ Перекрывает ли Happ в режиме `auto` значение `noauth` из JSON, не проверено.
+- Значения `Socks-Auth-Mode`: в доках Happ `auto|manual|from-json|disable`, панель отдаёт `auto`, `disable` или пусто. URL Happ-профиля roscomvpn брать из README `hydraponique/roscomvpn-routing`; для INCY нужен отдельный deeplink.
 
 **Текст для CREDENTIALS (`99-print-creds.sh`)**
 1. Клиенты: Happ, v2RayTun, на iOS при отсутствии Happ — INCY/Karing, на Android — v2rayNG. Добавлять **подписку**, автообновление включить. Для XHTTP нужно ядро клиента ≤v26.7.28 или сборка с http2legacy.
-2. **Сплит обязателен:** профиль «РФ напрямую». Без него RU-сайты не откроются (`blocked`) или пойдут через Cloudflare (`warp`).
-3. Android: исключить банки, Госуслуги, MAX, маркетплейсы. **Это прячет только IP, а не факт VPN.** tun и TRANSPORT_VPN видны всем, детект есть у 22 из 30 топ-приложений. Полностью прячет только роутер или второй телефон.
-4. Включить авторизацию локального SOCKS/HTTP или выключить локальный прокси. Обновлять клиент.
+2. **Сплит обязателен:** профиль «РФ напрямую». Без него RU-сайты не откроются (`blocked`) или пойдут через Cloudflare (`warp`). Happ и INCY получают профиль из подписки автоматически. В v2rayNG, Hy2-клиентах и AWG сплит настраивается вручную (geosite/geoip `category-ru`/`ru` → direct; для AWG — `AllowedIPs` или per-app), иначе серверная страховка для них по умолчанию выключена.
+3. Android: исключить банки, Госуслуги, MAX, маркетплейсы. **Это прячет только IP, а не факт VPN.** Исключённое приложение не видит TRANSPORT_VPN своей сети, но видит `tun0`, VPN-сеть в списке сетей и установленные VPN-клиенты. Детект VPN есть у 22 из 30 топ-приложений, к 16.04 — у всех 30. Полностью прячет только второй телефон или роутер с RU напрямую. Рабочий профиль (Shelter/Island) не спасает.
+4. Локальный прокси: в Happ не включать «Allow LAN» (иначе пароль снимается), сервер сам отдаёт `Socks-Auth-Mode: auto`. Лучше клиенты без локального прокси: WireGuard/AmneziaWG, Amnezia ≥5.0.3.0, sing-box TUN без mixed и clash_api. Где пароль задаётся вручную (Husi, SFA) — длинный случайный, UDP на локальном прокси выключить. В v2rayNG 2.1.0 auth и случайный порт есть, но с HEV TUN ломают трафик. Обновлять клиент.
 5. Режим TUN, а не системный прокси.
 6. Порядок транспортов при проблемах: Reality-TCP → XHTTP → Hy2 → AWG. «Wi-Fi не работает, LTE работает» значит менять транспорт, а не сервер.
-7. Подписку и ключи никому не пересылать.
+7. Подписку и ключи никому не пересылать. Сервер — для себя и близких: не публиковать и не рекламировать (ч. 18 ст. 14.3 и ст. 13.52 КоАП).
 8. Печатать ASN сервера (`curl ipinfo.io/org`) с предупреждением, если он из засвеченных (Hetzner AS24940, Contabo AS51167, DO, OVH, Amazon). Подавать как подсказку: список устаревает. Дать ссылку на чекер «TCP 16-20» и попросить прогнать его из РФ до раздачи.
+9. Android 16 QPR1+ на стоковой прошивке: при желании закрыть UDP-утечку мимо VPN командой `adb shell device_config put tethering close_quic_connection -1` (GrapheneOS ≥2026050400 уже исправлен).
 
 ### 5.6 Эксплуатация
 
@@ -825,7 +850,7 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 - UDP (Hy2/AWG) — L4-проброс: `nft add rule ip nat prerouting udp dport ${AWG_PORT} dnat to ${EXIT_IP}` + masquerade. ❓ Работу при БС никто не подтвердил.
 - На exit (`01-firewall.sh`): `ufw allow from ${ENTRY_IP} to any port ${VLESS_PORT_ENTRY} proto tcp`. Этот inbound в клиентскую подписку не публиковать.
 - В подписке вход — отдельная группа «LTE/БС». Проверка: IP входа есть в `ru-whitelist.txt` → «пригоден для БС», иначе предупреждение.
-- Риски: ToS RUVDS/Beget/NTX, 210-ФЗ, проект «Антифрод 3.0», ТСПУ в ДЦ, KYC и СОРМ на входе.
+- Риски: ToS RUVDS/Beget/NTX, 210-ФЗ, проект «Антифрод 3.0», ТСПУ в ДЦ, KYC и СОРМ на входе. По обсуждаемой схеме Минцифры (08.2026) клиента с упрощённой идентификацией (телефон, карта) могут приостановить за 30 мин, поэтому RU-хостера выбирать, понимая риск привязки к личности.
 
 **Проверки из РФ** (`scripts/probe.sh`, опционально):
 - серия из 3 проб раз в 10 мин;
@@ -855,9 +880,9 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 | `04-vless-reality.sh` | Inbound через API, а не прямой INSERT; xray по `$ARCH`; sniffing `routeOnly:true` без fakedns; 2–3 serverNames из RealiTLScanner; второй inbound XHTTP+Reality (packet-up) на альтернативном порту с другим SNI | [репо] |
 | **`07-xray-routing.sh`** (новая) | Шаблон §5.1, `RU_EGRESS`/`ECHO_EGRESS`, geo-таймер | новое |
 | **`08-warp.sh`** (новая, opt-in) | WARP A или B | новое |
-| `05-hysteria2.sh` | `--version app/v2.12.3`, команда обновления, `sniff`/`acl`/`outbounds`, masquerade proxy | [версия]/[репо] |
-| `06-amneziawg.sh` | Уникальные параметры 3.x, ipset + PostUp, v6-правила | [репо] |
-| **`09-subscription.sh`** (новая) | Настройки §5.5, external link Hy2 | новое |
+| `05-hysteria2.sh` | `--version app/v2.12.3`, команда обновления, `sniff`/`acl`/`outbounds`, masquerade proxy; echo-правило по умолчанию, RU-egress opt-in | [версия]/[репо] |
+| `06-amneziawg.sh` | Уникальные параметры 3.x, v6-правила; ipset + PostUp (RU-egress) только opt-in | [репо] |
+| **`09-subscription.sh`** (новая) | Настройки §5.5 (включая `subEnableRouting=true` и одинаковый профиль в `subRoutingRules`/`subIncyRoutingRules`), external link Hy2 | новое |
 | `99-print-creds.sh` | Текст §5.5, ASN, чекер, предупреждения | [репо] |
 | `scripts/entry.sh`, `probe.sh`, `vpnzoo-export/import` | §5.6 | новое |
 
@@ -868,8 +893,8 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 2. Фаза 04: API вместо INSERT по старой схеме, `XRAY_BIN` по `$ARCH`, sniffing.
 3. Пины: 3x-ui v3.9.0 (проверить на стенде, иначе v3.8.5), Hy2 app/v2.12.3 + отдельная команда обновления. Список клиентов в README.
 4. Уникальные параметры AWG на установку. Если 3.x, то с предупреждением о клиенте ≥5.0.1.5.
-5. Подписка: случайный путь, `subUpdates=2`, `subHappAutoDetect`, `subHappLocalProxyAuth=auto`, routing-профиль «РФ напрямую», **JSON-подписка выключена**.
-6. Серверный RU-egress (`07`): `ru-blocked→direct`, `ip-echo→blocked|warp`, `RU→blocked|warp`. Плюс Hy2 ACL и AWG ipset. Без клиентского сплита это ломает RU-сайты, поэтому идёт только вместе с п.5.
+5. Подписка: случайный путь, `subUpdates=2`, `subHappAutoDetect=true` (без него `subHappLocalProxyAuth` не работает), `subHappLocalProxyAuth=auto`, `subEnableRouting=true` + routing-профиль «РФ напрямую» в `subRoutingRules` **и** `subIncyRoutingRules` (баг #6273), **JSON-подписка выключена**, переписывание `noauth` через `sub_filter` не делать.
+6. Серверный RU-egress (`07`) для Xray: `ru-blocked→direct`, `ip-echo→blocked|warp`, `RU→blocked|warp`. Идёт только вместе с п.5, а п.5 доставляет сплит **только Happ и INCY**. Поэтому для Hy2 по умолчанию включено только echo-правило, а `RU_EGRESS_HY` и AWG ipset — opt-in флагами, с инструкцией по ручному сплиту в CREDENTIALS.
 
 **P1. Живучесть**
 7. `vpnzoo-export`/`import` + автобэкап наружу.
@@ -880,7 +905,7 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 12. Hy2: masquerade proxy, port hopping как опция.
 
 **P2. Опции**
-13. WARP (`08`) — вариант A.
+13. WARP (`08`) — вариант A. Outbound собирает инсталлер (API панели только регистрирует), включать `warp`-режимы после smoke-test на v3.9.0.
 14. `sendThrough` на второй IP.
 15. Роль `entry` (RU, opt-in, профиль «LTE/БС») + проверка по `ru-whitelist.txt`.
 16. `probe.sh` с RU-узла.
@@ -897,11 +922,34 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 
 ## 6. Мифы и опровергнутое
 
-Целиком опровергнутых утверждений нет. Ниже — **части** утверждений, которые адверсарии опровергли. Это то, что нельзя писать в README и CREDENTIALS.
+Целиком опровергнуто одно утверждение: **l-ipv6-leak** (оба адверсария, первая строка таблицы). Остальное ниже — **части** утверждений, которые адверсарии опровергли. Это то, что нельзя писать в README и CREDENTIALS.
 
 | Миф | Почему неверно |
 |---|---|
-| «Сплит прячет VPN от банков» | tun0 и TRANSPORT_VPN видны и исключённым приложениям (RKS Global). Сплит прячет только IP |
+| «Ни одна крупная GeoIP-база не относит российский IPv6 к RU, `geoip:ru` не ловит IPv6 RU-сервисов» (l-ipv6-leak, **опровергнуто целиком**) | RU-списки v2fly, Loyalsoldier и runetfreedom содержат 10–12 тыс. IPv6-CIDR, включая Яндекс `2a02:6b8::` и VK `2a00:bdc0::/29`. В Habr 1067230 замера по GeoIP-базам нет: там самодельный снимок каскада без IPv6. Утечка возможна только при самодельном IPv4-списке, `AllowedIPs` у AWG или если IPv6 не маршрутизируется по правилам |
+| «Сплит прячет VPN от банков» | Исключённое приложение не видит TRANSPORT_VPN своей сети, но видит `tun0`, VPN-сеть в `getAllNetworks()` и список VPN-клиентов (RKS Global, linkshield PR #60). Сплит прячет только IP |
+| «Рабочий профиль (Shelter/Island) прячет VPN» | Прячет VpnService-API и список пакетов, но не `tun0`, `/proc/net/route` и loopback/SOCKS. VPN основного профиля виден из рабочего (GrapheneOS #7511) |
+| «Почти все xray/sing-box-клиенты держат SOCKS без пароля» | Названы конкретные клиенты. Husi, SFA и Xray (saeeddev94) позволяли задать пароль ещё до раскрытия, HTTP-прокси в раскрытии не задокументирован |
+| «Детекторы сканируют весь localhost» | Подтверждено только для открытого тестера RKNHardering. Методичка называет конкретные порты, и то для сверки с настройками прокси на устройстве, а не скана |
+| «На iOS sandbox не даёт сканировать loopback» | iOS-приложения могут слушать локальные порты и подключаться к ним. Happ iOS, V2BOX, Karing в списке уязвимых |
+| «IceCandidate — основной HIGH-признак у VK, Т-Банка, Сбера, Госуслуг, Avito» | HIGH — сумма 15+ совпадений по 8 литералам в smali, разбивки по приложениям нет. Литерал есть в любом SDK звонков |
+| «Серверный блок STUN-назначений прикрывает WebRTC» | STUN на не-RU серверы отдаст IP exit, host-кандидат с tun уходит через сигнализацию, а отказ STUN — сам признак |
+| «`geosite:ru` не грузится из-за нормализации тега» | Тега RU в geosite.dat нет вообще. Xray и v2fly оба приводят имена к верхнему регистру |
+| «Баг INCY в 3x-ui был» | Есть и в v3.9.0: #6273 закрыт как not planned, заголовок `Routing` берётся из Happ-правил для любого клиента |
+| «3x-ui сам создаёт outbound warp» | API только регистрирует аккаунт. Outbound строит фронтенд по кнопке, инсталлеру — собирать самому |
+| «WARP на exit — RU-сайты работают у любого клиента» | IP Cloudflare с геолокацией страны VPS. Сервисы, требующие RU-IP, и антифрод по VPN-базам всё равно режут |
+| «Хостеры банят WARP», «DME мешает exit» | Банов не найдено. Проблема DME касается WARP-клиентов из РФ |
+| «Подписка с RU-direct снимает цену серверного RU-блока» | Заголовок `Routing` понимают только Happ и INCY. Клиенты v2rayNG, Hy2 и AWG его не получают |
+| «На exit AWG рабочий паттерн ipset → DROP/WARP» (по Habr 1056220) | Статья описывает только RU-вход. Exit-режимы — наша экстраполяция |
+| «19 приложений шлют статус, включая все банки», «TRANSPORT_VPN 17 по RKS» | Подтверждены три банка выборки (Т-Банк, Сбер, ВТБ). Цифра 17 — из Meduza, на странице RKS её нет. 19 — из 22 детектирующих, у The Bell 18 |
+| «Банки не пускали пользователей с VPN» | Не подтверждено: ComNews у Т-Банка уведомлений не нашёл |
+| «Минцифры потребовало от хостеров» (31.08), «мониторинг всех IP хостера» | Письмом «попросило». Недельный мониторинг касается только IP из перечня исключений ЦМУ ССОП, и это пока обсуждение |
+| «РКН собирает карту IP абонентов» | Это адресные пулы с регионом и ID ТСПУ, без привязки к абоненту. РКН опроверг 26.05.2026 |
+| «Методичка сканирует порты 1080/8080, не держать их на VPS» | Порты сверяют с системными настройками прокси на устройстве. Внешние порты VPS не проверяют |
+| «VPN — отягчающее обстоятельство для штрафа 3–5 тыс. ₽» | В ст. 13.53 КоАП VPN входит в состав правонарушения. Отягчает только преступления (п. «ф» ч. 1 ст. 63 УК) |
+| «Плата за международный трафик: 100–150 ₽/ГБ, для 5G тот же порог» | Около 150 ₽/ГБ. Для 5G порог 50 ГБ, по анонимным источникам. 07.07 Минцифры отрицало, что плата рассматривается |
+| «Из двух одинаковых серверов в /24 забанили один» как установленный факт | Единичное сообщение на форуме. Сбой с 07.09 похож скорее на DPI, чем на баны IP |
+| «Android 16 UDP-утечка — у всех Android 16, выдаёт только факт VPN» | Только QPR1+ и при включённом флаге DeviceConfig. Утечка связывает реальный IP с exit-IP. Есть ADB-митигация |
 | «С подпиской пользователь ничего не чинит» | Сервисы до сих пор просят вручную обновить подписку. Автообновление при кривой миграции стирает узлы (Habr 1040846) |
 | «Блокируют только IP, не протоколы» | Параллельно идут QUIC, DTLS, заморозка 16 КБ, Reality на голом TCP. Amnezia спасла смена AWG→VLESS, а не ротация |
 | «Банят ASN целиком» | Выборочно: Veesp 5000 из 30000, Amnezia Hosting 131 из 20000 |
@@ -952,11 +1000,13 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 - [ ] `-m set` с iptables-nft на Ubuntu 22.04/24.04 или переход на `nft` set.
 - [ ] `SO_BINDTODEVICE` на `warp0` с `Table = off` (`curl --interface warp0 …/cdn-cgi/trace`).
 - [ ] Observatory + wireguard outbound как фолбэк WARP→blocked.
+- [ ] Поднимается ли WARP-outbound на 3x-ui v3.9.0 / Xray v26.9.30 (на v3.3.0 не поднимался, #5205): `warp=on` в `cdn-cgi/trace`.
+- [ ] UDP/QUIC из Hy2 через `warp` (socks5 → Xray `hy2-egress`).
 - [ ] `*.dat.sha256sum` как release asset.
 
 **Подписка и клиенты**
-- [ ] Значения `Socks-Auth-Mode`, кроме `auto`. Применяет ли Happ его без Provider ID.
-- [ ] Переписывание `noauth` в JSON-подписке через `sub_filter`: какие клиенты ломаются.
+- [ ] `Socks-Auth-Mode: auto` на стенде: ставит ли Happ пароль без Provider ID, на iOS и на свежих версиях Android (проверено только 4.4.1), перекрывает ли он `noauth` из JSON-подписки.
+- [ ] Реальный лимит заголовка `Routing` в 3x-ui v3.9.0: 16 KiB (📄) или 8 КиБ (голос по l-routing-cost).
 - [ ] Какие клиенты (Happ, v2RayTun, Streisand, v2rayNG) понимают балансеры из JSON-подписки.
 - [ ] Поддержка `awg://` и `hysteria2://` через external links в Happ/v2rayNG/Karing; `mport`/`mportHopInt` в Happ.
 - [ ] Версия Xray-ядра в Happ, v2RayTun, v2rayNG: попадают ли они под баг #6797 при XHTTP.
@@ -968,16 +1018,12 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
 - [ ] Чекер «TCP 16-20» со своим хостом: принимает ли REALITY без selfsteal.
 - [ ] После включения `07`: открываются ли Госуслуги, банки, Ozon у клиента **со** сплитом и **без** него в обоих режимах `RU_EGRESS`.
 - [ ] Что видит `ifconfig.me` и `ip.mail.ru` из клиента без сплита (ожидается IP Cloudflare или ошибка).
+- [ ] Видят ли исключённые из туннеля приложения `tun0` через `getNetworkInterfaces` на реальном устройстве (пока данные с эмулятора Android 15).
 
 **RU-вход**
 - [ ] Проходит ли UDP-проброс Hy2/AWG через RU-вход при БС.
 - [ ] Белый ли IP у выбранного RU-хостера (`ru-whitelist.txt` + открыть :443 с мобильного без VPN).
 - [ ] Дата вступления в силу пункта 210-ФЗ о хостинге по первичному тексту.
-
-**Неподтверждённое (❓), что стоит добить отдельным раундом**
-- [ ] l-local-socks-vuln, l-3xui-socks-auth, l-echo-domains, l-hy2-acl, l-awg-ipset: напрямую влияют на P0.
-- [ ] l-ipv6-leak: насколько runetfreedom `ru.txt` покрывает RU-IPv6 сервисов.
-- [ ] l-webrtc: можно ли на сервере резать STUN-назначения без поломки звонков.
 
 ---
 
@@ -1067,5 +1113,14 @@ PostUp = iptables -t mangle -A FORWARD -o warp0 -p tcp --tcp-flags SYN,RST SYN -
   - чекеры: https://github.com/hyperion-cs/dpi-checkers, https://github.com/kutovoys/xray-checker, https://github.com/ku78/tspu-checker, https://github.com/matador955/TSPU_checker
   - ротация и CDN: https://github.com/UIbodulloev/vpn-ip-rotator, https://github.com/ServerTechnologies/proxy-via-russian-cdn
   - уязвимость SOCKS и детекторы: https://github.com/runetfreedom/per-app-split-bypass-poc, https://github.com/xtclovver/RKNHardering, https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability
-  - WARP: https://github.com/ViRb3/wgcf
+  - WARP: https://github.com/ViRb3/wgcf, https://github.com/bivlked/amneziawg-installer/blob/main/WARP-RU.md
   - прочее: https://github.com/legiz-ru/my-remnawave, https://github.com/petrochen/xray-double-hop, https://github.com/Leadaxe/sing-box-lx/issues/32
+
+**Допроверка компрометаторов: ключевые новые источники**
+- 3x-ui: PR #6628 https://github.com/MHSanaei/3x-ui/pull/6628, `internal/sub/controller.go` v3.9.0 https://github.com/MHSanaei/3x-ui/blob/v3.9.0/internal/sub/controller.go, issue #5205 https://github.com/MHSanaei/3x-ui/issues/5205, `WarpModal.tsx` https://raw.githubusercontent.com/MHSanaei/3x-ui/main/frontend/src/pages/xray/overrides/WarpModal.tsx
+- Клиенты: v2rayNG 2.1.0 https://github.com/2dust/v2rayNG/releases/tag/2.1.0, v2rayNG #5382 https://github.com/2dust/v2rayNG/issues/5382, v2rayN #6981 https://github.com/2dust/v2rayN/issues/6981, Amnezia PR #2456 https://github.com/amnezia-vpn/amnezia-client/pull/2456, #2457 https://github.com/amnezia-vpn/amnezia-client/issues/2457, PR #3199 https://github.com/amnezia-vpn/amnezia-client/pull/3199
+- Android: linkshield PR #60 https://github.com/AlexMos555/linkshield/pull/60, GrapheneOS #7511 https://github.com/GrapheneOS/os-issue-tracker/issues/7511, Android 16 QUIC: https://github.com/0x33c0unt/quic-vpn-bypass, https://mullvad.net/en/blog/2026/5/12/any-app-on-recent-android-versions-can-leak-certain-traffic, https://leewoobin.com/posts/android-quic-vpn-lockdown-exception/
+- Hysteria: issues #1298 https://github.com/apernet/hysteria/issues/1298, #1486 https://github.com/apernet/hysteria/issues/1486, `geoloader.go` https://raw.githubusercontent.com/apernet/hysteria/master/app/internal/utils/geoloader.go
+- Geo: Xray `rule_parser.go` https://raw.githubusercontent.com/XTLS/Xray-core/main/common/geodata/rule_parser.go, v2fly `category-ru` https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/category-ru, v2fly/Loyalsoldier `ru.txt` https://raw.githubusercontent.com/v2fly/geoip/release/text/ru.txt, https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/ru.txt
+- Регуляторика: Ведомости 26.05 https://www.vedomosti.ru/technology/news/2026/05/26/1200076-roskomnadzor-oproverg-soobscheniya, Ведомости 31.08 https://www.vedomosti.ru/technology/news/2026/08/31/1224824-mintsifri-poprosilo, Хакер 08.04 https://xakep.ru/2026/04/08/vpn-checks/, Интерфакс https://www.interfax.ru/russia/1085410, 282-ФЗ https://www.kontur-extern.ru/info/normativ/document/1/500800-federalnyy-zakon-ot-31-07-2025-n-282-fz
+- Habr: 1056220 (AWG + ipset на RU-входе), 1021392, 1026710 (`/ru/news/`), 1056566 (`/ru/news/`)
