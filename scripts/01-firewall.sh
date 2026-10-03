@@ -1,91 +1,115 @@
 #!/usr/bin/env bash
-# 01-firewall.sh — UFW + fail2ban
-# Открывает: 22/tcp (SSH), $PANEL_PORT/tcp (3x-ui), $VLESS_PORT/tcp,
-#            $HY2_PORT/udp, $AWG_PORT/udp
+# 01-firewall.sh — UFW (default deny, SSH с limit) + fail2ban для sshd.
+# Порты протоколов здесь не хардкодятся: их открывает фаза-владелец через fw_allow,
+# реестр — /etc/vpn-setup/ports.tsv. Эта фаза переприменяет реестр.
 
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 config_load
 
 # ------------------------------------------------------------
-# 1. Установка UFW + fail2ban
+# 1. Пакеты
 # ------------------------------------------------------------
 
-log_info "установка ufw + fail2ban"
+log_info "установка ufw, fail2ban, python3-systemd"
 wait_for_apt
-apt_install ufw fail2ban
+apt_install ufw fail2ban python3-systemd
 
 # ------------------------------------------------------------
-# 2. UFW правила
+# 2. SSH-порты
 # ------------------------------------------------------------
 
-if is_container; then
-    log_warn "контейнер — ufw активация пропущена (нет cap_net_admin), правила запишутся, но enable пропустим"
+mapfile -t ssh_ports < <(detect_ssh_ports)
+[ "${#ssh_ports[@]}" -gt 0 ] || die "не удалось определить SSH-порт — задайте SSH_PORTS=22"
+log_info "SSH-порты: ${ssh_ports[*]}"
+config_set SSH_PORTS "$(IFS=,; echo "${ssh_ports[*]}")"
+
+# ------------------------------------------------------------
+# 3. UFW: без reset — чужие правила на живой системе сохраняются
+# ------------------------------------------------------------
+
+ufw default deny incoming >/dev/null
+ufw default allow outgoing >/dev/null
+
+for p in "${ssh_ports[@]}"; do
+    # старая версия ставила allow 22/tcp: allow стоит раньше limit и отменяет его
+    if ufw show added 2>/dev/null | grep -qx "ufw allow ${p}/tcp comment 'SSH'"; then
+        ufw --force delete allow "${p}/tcp" >/dev/null
+    fi
+    fw_allow "$p/tcp" "SSH" limit
+done
+
+# Наследие старой версии: панель 3x-ui наружу (2053/PANEL_PORT) больше не открываем
+legacy_rules="$(ufw show added 2>/dev/null | grep -E "comment '3x-ui panel'" || true)"
+if [ -n "$legacy_rules" ]; then
+    while read -r rule; do
+        spec="$(awk '{print $3}' <<< "$rule")"
+        _fw_valid "$spec" || continue
+        ufw --force delete allow "$spec" >/dev/null && log_info "закрыт порт старой панели: $spec"
+    done <<< "$legacy_rules"
 fi
 
-# Сбрасываем только если ещё не настраивали (idempotent)
-if ! ufw status 2>/dev/null | grep -q "Status: active"; then
-    log_info "сброс UFW в дефолт"
-    ufw --force reset >/dev/null 2>&1 || true
+fw_apply_registry
+
+# Перед enable правило SSH обязано быть в списке, иначе отрежем себе доступ
+added="$(ufw show added 2>/dev/null)"
+for p in "${ssh_ports[@]}"; do
+    grep -qE "ufw limit ${p}/tcp" <<< "$added" || die "правило SSH ${p}/tcp не добавилось — UFW не включаю"
+done
+
+if ufw status | grep -q '^Status: active'; then
+    ufw reload >/dev/null
+    log_ok "UFW уже был включён — правила обновлены"
+else
+    ufw --force enable >/dev/null || die "ufw enable не удался"
+    log_ok "UFW включён"
 fi
-
-# Дефолтные политики
-ufw default deny incoming  >/dev/null 2>&1 || true
-ufw default allow outgoing >/dev/null 2>&1 || true
-
-# SSH — обязательно ДО enable, иначе закроем себе доступ
-log_info "разрешаю SSH (22/tcp)"
-ufw allow 22/tcp comment "SSH" >/dev/null 2>&1 || true
-
-# Панель 3x-ui
-log_info "разрешаю 3x-ui панель (${PANEL_PORT}/tcp)"
-ufw allow "${PANEL_PORT}/tcp" comment "3x-ui panel" >/dev/null 2>&1 || true
-
-# VLESS+Reality
-log_info "разрешаю VLESS+Reality (${VLESS_PORT}/tcp)"
-ufw allow "${VLESS_PORT}/tcp" comment "VLESS+Reality" >/dev/null 2>&1 || true
-
-# Hysteria2
-log_info "разрешаю Hysteria2 (${HY2_PORT}/udp)"
-ufw allow "${HY2_PORT}/udp" comment "Hysteria2" >/dev/null 2>&1 || true
-
-# AmneziaWG v2
-log_info "разрешаю AmneziaWG v2 (${AWG_PORT}/udp)"
-ufw allow "${AWG_PORT}/udp" comment "AmneziaWG v2" >/dev/null 2>&1 || true
-
-# Активируем UFW
-if ! is_container; then
-    log_info "активирую UFW"
-    ufw --force enable >/dev/null 2>&1 || log_warn "ufw enable не удалось (возможно нет cap_net_admin)"
-    log_info "ufw status:"
-    ufw status verbose 2>/dev/null | head -20 || true
-fi
+ufw status verbose | sed 's/^/    /'
 
 # ------------------------------------------------------------
-# 3. fail2ban для sshd
+# 4. fail2ban: sshd (journal) + recidive, бан через ufw
 # ------------------------------------------------------------
 
-log_info "настройка fail2ban для sshd"
-cat > /etc/fail2ban/jail.d/sshd.local <<'EOF'
+# старый файл первой версии — заменяем своим
+if [ -f /etc/fail2ban/jail.d/sshd.local ] && grep -q '^\[sshd\]' /etc/fail2ban/jail.d/sshd.local \
+   && grep -q 'backend = systemd' /etc/fail2ban/jail.d/sshd.local; then
+    rm -f /etc/fail2ban/jail.d/sshd.local
+fi
+
+ssh_port_list="$(IFS=,; echo "${ssh_ports[*]}")"
+cat > /etc/fail2ban/jail.d/vpn-zoo.local <<EOF
+# vpn-zoo: fail2ban для SSH
+[DEFAULT]
+banaction = ufw
+banaction_allports = ufw
+
 [sshd]
-enabled = true
-port = ssh
-filter = sshd
-backend = systemd
+enabled  = true
+port     = ${ssh_port_list}
+backend  = systemd
 maxretry = 5
 findtime = 10m
-bantime = 1h
+bantime  = 1h
+
+# повторные нарушители: бан на неделю по всем портам
+[recidive]
+enabled  = true
+bantime  = 1w
+findtime = 1d
+maxretry = 5
 EOF
 
-if ! is_container; then
-    systemctl enable fail2ban >/dev/null 2>&1 || true
-    systemctl restart fail2ban >/dev/null 2>&1 || log_warn "fail2ban не стартует (возможно нет systemd в окружении)"
-    if systemctl is-active --quiet fail2ban; then
-        log_ok "fail2ban активен"
-        fail2ban-client status sshd 2>/dev/null | head -5 || true
-    fi
-else
-    log_warn "контейнер — fail2ban systemd-сервис пропущен, конфиг записан"
-fi
+# recidive читает /var/log/fail2ban.log — файл должен существовать
+touch /var/log/fail2ban.log
+
+fail2ban-client -t >/dev/null 2>&1 || { fail2ban-client -t || true; die "конфиг fail2ban не прошёл проверку"; }
+systemctl enable fail2ban >/dev/null 2>&1
+systemctl restart fail2ban
+for _ in $(seq 1 15); do
+    fail2ban-client ping >/dev/null 2>&1 && break
+    sleep 1
+done
+fail2ban-client status sshd >/dev/null 2>&1 || { journalctl -u fail2ban -n 30 --no-pager || true; die "fail2ban: jail sshd не поднялся"; }
+log_ok "fail2ban активен: $(fail2ban-client status | awk -F': *' '/Jail list/ {print $2}')"
 
 log_ok "01-firewall завершён"
