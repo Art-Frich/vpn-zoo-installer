@@ -1,0 +1,682 @@
+[
+ {
+  "candidates": [
+   {
+    "name": "Psiphon Conduit (CLI/Docker-станция на VPS)",
+    "kind": "evolved",
+    "what": "Волонтёрский in-proxy узел сети Psiphon: клиенты Psiphon ходят через вашу станцию (WebRTC/in-proxy). CLI 1.0.0 вышел 2026-01-25, CLI 2.0.0 2026-02-20 (метрики Prometheus), CLI 2.1.0 2026-09-30, образ ghcr.io/psiphon-inc/conduit/cli. Hosted Conduit с привязкой до 99 знакомых.",
+    "why_now": "Иран, янв.–май 2026: почти половина трафика Psiphon шла через станции диаспоры. Пост Psiphon 2026-06-16 «To Russians with Love» прямо зовёт русскую диаспору поднимать станции для России.",
+    "status": "Активно развивается. Других цифр по России, кроме этого призыва, в источниках нет. Сеть сама распределяет клиентов по станциям: своим пользователям инсталлятора узел ничего не даёт.",
+    "works_in_ru": "Цифр нет, Psiphon в РФ работает с перебоями (4PDA, жалобы на downradar 09.2026). Плюс подхода: станции сменяются постоянно, IP-блокировкой их не перекрыть.",
+    "installer_fit": "Хорошо подходит как опциональный модуль «помочь другим»: один docker-контейнер с лимитами клиентов и полосы (1–40 Мбит/с). Есть готовый one-click SamNet-dev/conduit-manager v1.3.4 (Ubuntu, Telegram-бот, умеет Snowflake и MTProto).",
+    "sources": [
+     "https://github.com/Psiphon-Inc/conduit/releases",
+     "https://blog.psiphon.ca/2026/06/16/to-russians-with-love/",
+     "https://github.com/SamNet-dev/conduit-manager"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Tor Snowflake (WebRTC/DTLS) + standalone proxy",
+    "kind": "revived",
+    "what": "Мост Tor через WebRTC: временные прокси-волонтёры, брокер доступен через несколько фронтов. Standalone-прокси запускается на VPS одной командой: docker run --net=host thetorproject/snowflake-proxy.",
+    "why_now": "С 2026-03-30 ТСПУ блокировали DTLS по ja3/ja4-отпечатку Snowflake (net4people #603), до этого с ноября 2025 успешность была около 100%. В заметках Tor от 2026-10-01: «снова около 100% успешных подключений, даже с дефолтными bridge-строками». Идёт работа над DTLS 1.3 в pion.",
+    "status": "Рабочий на 10.2026 после волны блокировок весной. Медленнее obfs4/WebTunnel. Снова уязвим, если отпечаток DTLS опять станет детектируемым.",
+    "works_in_ru": "Да, по заметкам anti-censorship team от 2026-10-01. На мобильных белых списках Tor практически не работает: в обсуждении на встрече Tor 2026-08-27 там либо около 100 разрешённых сайтов, либо любой интернет на 16 КБ/с.",
+    "installer_fit": "Опционально: snowflake-proxy в docker как волонтёрский узел. Своим клиентам доступа это не даёт. Использование Tor в РФ юридически рискованно, нужно предупреждение.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/603",
+     "https://lists.torproject.org/mailman3/hyperkitty/list/tor-project@lists.torproject.org/message/Q4ZCT2ZAFNUAIFO33IBDJHBM3S7CMPMV/",
+     "https://lists.torproject.org/mailman3/hyperkitty/list/tor-project@lists.torproject.org/message/OXN7JL47YIOC6IHNKEJ5LRCJMEHFO2R4/",
+     "https://community.torproject.org/relay/setup/snowflake/standalone/docker/"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Tor obfs4 / meek / Conjure (классические мосты)",
+    "kind": "revived",
+    "what": "obfs4 — полностью случайный поток байтов. meek — domain fronting через CDN. Conjure — прокси на неиспользуемых адресах ISP, регистрация через DNS или AMP-cache, развёрнут в 2025 году.",
+    "why_now": "Волна блокировок Tor в РФ 2025-12-24…2026-01-01: obfs4 режется по DPI, но обходится zapret. В РФ около 240 тыс. пользователей Tor в сутки. В блоге Tor от 2025-12-03: WebTunnel — главный инструмент в РФ, раздаётся через Telegram-бота.",
+    "status": "НЕ РАБОТАЕТ в РФ без zapret: obfs4 блокируется по DPI. meek постепенно выводится, потому что CDN отказываются от fronting. Conjure на 10.2026 отлаживают для Китая, по России данных нет.",
+    "works_in_ru": "obfs4: нет, только вместе с zapret (форум Tor, 01.2026). meek: фактически мёртв. Conjure: данных по РФ нет.",
+    "installer_fit": "Низкая. Свой obfs4-мост на VPS бессмыслен против DPI ТСПУ. Если что-то делать для Tor, то WebTunnel (уже покрыт) или Snowflake.",
+    "sources": [
+     "https://forum.torproject.org/t/apparently-a-new-wave-of-tor-blocking-is-underway-in-russia/21006",
+     "https://blog.torproject.org/staying-ahead-of-censors-2025/"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "VLESS/Trojan/VMess over WebSocket/gRPC за Cloudflare CDN",
+    "kind": "revived",
+    "what": "Классика 2020–2023: прокси за CDN Cloudflare (WS/gRPC + TLS), IP сервера скрыт, плюс подбор «чистых» IP Cloudflare.",
+    "why_now": "С 2025-06-09 провайдеры РФ режут соединения к Cloudflare после ~16 КБ (данные Cloudflare). Трафик Cloudflare в РФ упал на 30% за полгода (Хабр, 2025-12-29). В Иране в июне 2026 DPI научился собирать фрагментированный ClientHello на VLESS/WS+CDN (net4people #628).",
+    "status": "В РФ практически НЕ РАБОТАЕТ: заморозка после 16 КБ, поведение разное у разных провайдеров и в разное время (тест 2026-05-11). В Иране работает частично, фрагментация там больше не помогает.",
+    "works_in_ru": "Нет, нестабильно: к Cloudflare-диапазонам применяется заморозка на 16 КБ. Ряд сайтов фильтруется и на российских PoP Cloudflare (DME/LED/KJA, ntc.party, 03.2026).",
+    "installer_fit": "Только как запасной транспорт для пользователей вне РФ. Для РФ рассчитывать на него нельзя. Если нужен CDN — российский (XHTTP уже покрыт).",
+    "sources": [
+     "https://habr.com/ru/news/981454/",
+     "https://github.com/net4people/bbs/issues/628",
+     "https://dimaserbun.ru/en/blog/cloudflare-v-rf-pochemu-otkazalsya/"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Cloudflare Workers/Pages панели (edgetunnel, BPB Panel)",
+    "kind": "evolved",
+    "what": "Бессерверный VLESS/Trojan/SS-over-WS на Cloudflare Workers, VPS не нужен, есть proxyIP/NAT64. BPB-Worker-Panel v5.1.1 (2026-07-19) умеет WARP, Warp Pro noise, fragment, цепочки с XHTTP/VLESS Encryption, Xray FinalMask.",
+    "why_now": "Массово используется в Иране и Китае в 2026 году. У BPB около 13 тыс. звёзд (08.2026), у cmliu/edgetunnel выходят гайды «2026版».",
+    "status": "Живые проекты. В РФ упираются в ту же заморозку Cloudflare на 16 КБ. *.workers.dev/pages.dev в РФ блокировали, но в PR от 2026-09-25 сообщают, что workers.dev работает лучше своего домена на Cloudflare.",
+    "works_in_ru": "Слабо или нестабильно. Отдельные успехи только на workers.dev и с подбором IP, надёжной схемы нет.",
+    "installer_fit": "Вне VPS-инсталлятора. Можно документировать как запасной вариант для иранских и китайских пользователей.",
+    "sources": [
+     "https://github.com/bia-pain-bache/BPB-Worker-Panel",
+     "https://github.com/cmliu/edgetunnel",
+     "https://github.com/oxionezhkov-hub/helpmedoctor/pull/7"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Cloudflare WARP / WARP-in-WARP / WARP как outbound",
+    "kind": "revived",
+    "what": "Бесплатный WireGuard или MASQUE-туннель Cloudflare. На клиенте — WARP-in-WARP и noise (Hiddify, BPB). На сервере — WARP как исходящий канал VPS (wgcf/warp-plus) для чистого egress-IP.",
+    "why_now": "Иран, 09.2026: DPI режет регистрацию WARP по SNI, уже выпущенные ключи работают. В РФ на ntc.party (03.2026) пишут, что российские PoP Cloudflare (DME/LED/KJA) применяют блокировки РКН, а WARP+ выходит через другие PoP.",
+    "status": "НЕ РАБОТАЕТ из РФ напрямую: регистрация в api.cloudflareclient.com отваливается по TLS timeout, WireGuard-сигнатура детектируется. Как outbound с зарубежного VPS — рабочий приём.",
+    "works_in_ru": "Клиент из РФ: нет или эпизодически. На VPS за рубежом как egress для гео-ограниченных сервисов (AI, стриминг): да.",
+    "installer_fit": "Средняя или высокая как опциональный WARP-outbound в Xray/sing-box (wgcf-профиль) для маршрутизации отдельных доменов. Клиентский WARP для РФ не предлагать.",
+    "sources": [
+     "https://ntc.party/t/%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B8-%D0%BD%D0%B0-%D1%80%D0%BE%D1%81%D1%81%D0%B8%D0%B9%D1%81%D0%BA%D0%B8%D1%85-%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%B0%D1%85-cloudflare-cdndnswarp/22551",
+     "https://github.com/CluvexStudio/Aether/issues/138",
+     "https://ntc.party/t/cloudflare-warp-%D0%BF%D0%B5%D1%80%D0%B5%D1%81%D1%82%D0%B0%D0%BB-%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B0%D1%82%D1%8C/10883"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "CDN domain fronting (Akamai/Fastly) — Shir-o-Khorshid",
+    "kind": "revived",
+    "what": "Возврат классического domain fronting: подключение к незаблокированному IP CDN-узла с «безопасным» SNI, нужный сайт указывается в Host внутри TLS. Shir-o-Khorshid — форк Psiphon для Android с CDN fronting через Akamai, Fastly, CloudFront, Azure и сканером IP (cdn-ip-finder).",
+    "why_now": "Иранский блэкаут 2026-01-08…2026-05-26: заработали IP Akamai и Fastly, на них сидели через Shir-o-Khorshid (net4people #626, 2026-06-04). Код уже переносят в другие клиенты (Aether PR #113).",
+    "status": "Работает в Иране, но нестабильно и зависит от региона (дайджест Amnezia, 06.2026). Зависит от того, терпят ли CDN fronting.",
+    "works_in_ru": "Данных по РФ нет. Теоретически применимо, если IP Akamai/Fastly не попадают под 16 КБ-заморозку зарубежного хостинга. Нужна проверка.",
+    "installer_fit": "Низкая для VPS-инсталлятора: технология клиентская и CDN-зависимая. Можно отслеживать как запасной вариант.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/626",
+     "https://github.com/shirokhorshid/shirokhorshid-android",
+     "https://github.com/hossein8360/cdn-ip-finder",
+     "https://amnezia.org/blog/amnezia-shutdown-digest-june-2026-global"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "ECH-fronting (Encrypted Client Hello через Cloudflare)",
+    "kind": "new",
+    "what": "Чужой ECHConfig: у всех сайтов на бесплатном тарифе Cloudflare один и тот же ключ ECH. Xray умеет брать ECHConfig из DNS другого домена (\"example.com+https://1.1.1.1/dns-query\") и ходить на любой Cloudflare-сайт со скрытым SNI.",
+    "why_now": "Обсуждение в net4people #529 открыто 2025-09-23. В Xray есть поддержка echConfigList и обсуждения MitM-режима с принудительным ECH (#5199, #5999).",
+    "status": "НЕ РАБОТАЕТ в РФ: с ноября 2024 ТСПУ блокируют связку SNI Cloudflare + ECH, РКН рекомендует отказаться от ECH (Хакер, 2025-04-02). В Китае мешают блокировка DoH и подмена HTTPS-записей.",
+    "works_in_ru": "Нет. ECH к Cloudflare режется, плюс общая заморозка Cloudflare на 16 КБ.",
+    "installer_fit": "Нет для РФ. Можно иметь в виду для других стран, если инсталлятор поддерживает клиентов там.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/529",
+     "https://xakep.ru/2025/04/02/rkn-tls-ech/",
+     "https://github.com/XTLS/Xray-core/discussions/5999"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Lantern Samizdat (lantern-box)",
+    "kind": "new",
+    "what": "Протокол Lantern: один слой TLS 1.3 с отпечатком Chrome (uTLS) и HTTP/2 CONNECT-туннели, как у браузерного HTTPS-прокси. Есть Reality-подобная PSK/HMAC-аутентификация в SessionID с маскировкой под реальный домен, джиттер и фрагментация ClientHello на границе SNI. Есть samizdat-server.",
+    "why_now": "Первый коммит 2026-02-17, последний 2026-08-19. Протокол явно проектировался против ТСПУ. Lantern v10.0.0 вышел 2026-09-18 на sing-box 1.13.19 с ротацией учётных данных samizdat раз в час. В lantern-box также Reflex, WATER, ALGeneva, Hysteria2X.",
+    "status": "Новый, используется в Lantern 10. Независимых замеров из РФ не найдено.",
+    "works_in_ru": "Заявлен как устойчивый к ТСПУ, подтверждений с ntc.party/Хабра пока нет. Низкая уверенность.",
+    "installer_fit": "Средняя: есть отдельный samizdat-server и форк sing-box (lantern-box), но клиентов кроме Lantern нет. Пока только наблюдать.",
+    "sources": [
+     "https://github.com/getlantern/samizdat",
+     "https://github.com/getlantern/lantern-box",
+     "https://github.com/getlantern/lantern/releases"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "tg-ws-proxy: Telegram через WebSocket (kws*.web.telegram.org) + CF Worker",
+    "kind": "revived",
+    "what": "Локальный MTProto/SOCKS5-прокси для Telegram Desktop. Трафик идёт по WSS на те же адреса, что у Telegram Web (kws{N}.web.telegram.org). При неудаче — через CfProxy (Cloudflare Worker) или напрямую по TCP. Есть Docker, Android-форк, серверная часть (qprots).",
+    "why_now": "Telegram в РФ замедляли и блокировали в 2026 году. У Flowseal/tg-ws-proxy около 10,3 тыс. звёзд. Релизы: v1.9.0 2026-07-28 … v1.10.4 2026-09-19 (отключаемый TLS для CF-прокси/worker).",
+    "status": "Активно развивается. Работает частично («частичный обход»): веб-домены Telegram фильтруются иначе, чем прямые подключения к DC.",
+    "works_in_ru": "Частично, по отзывам пользователей и самому проекту. Без гарантий: путь через Cloudflare подвержен заморозке на 16 КБ.",
+    "installer_fit": "Низкая или средняя: в основном клиентский инструмент. Можно дать ссылку и опционально поднимать серверную часть рядом с MTProto (MTProto Fake-TLS уже покрыт).",
+    "sources": [
+     "https://github.com/Flowseal/tg-ws-proxy",
+     "https://github.com/Flowseal/tg-ws-proxy/releases",
+     "https://github.com/qprots/tg-ws-proxy-server"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Shadowsocks / Outline (SS-2022, SS-over-WebSocket, prefix)",
+    "kind": "revived",
+    "what": "Классический Shadowsocks и Outline с маскировкой: WebSocket-транспорт, prefix ('POST ' и т.п.), Outline SDK Smart Dialer с запасным подключением через Psiphon (x/v0.0.3).",
+    "why_now": "Outline добавил SS-over-WebSockets и интеграцию с Psiphon. В РФ полностью шифрованные протоколы (SS, VMess) режутся по энтропии и эвристике (net4people #363, ntc.party).",
+    "status": "Голый SS и SS-2022 в РФ в основном НЕ РАБОТАЮТ: блокируются по энтропии у крупных операторов. Работает только в обёртке: WS+TLS, ShadowTLS v3 и т.п.",
+    "works_in_ru": "Голый SS: нет или нестабильно. SS в WS+TLS или ShadowTLS v3 на чистом IP — иногда, но хуже Reality и XHTTP.",
+    "installer_fit": "Низкая: в инсталляторе уже есть более сильные протоколы. Как совместимый вариант для клиентов Outline — только в WS+TLS.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/363",
+     "https://github.com/OutlineFoundation/outline-sdk/discussions/465",
+     "https://developers.google.com/outline/docs/guides/service-providers/websockets"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Stealth-режимы коммерческих VPN (Mullvad QUIC/LWO, Proton Stealth, Windscribe)",
+    "kind": "evolved",
+    "what": "Mullvad: QUIC-обфускация WireGuard (десктоп 2025-09-09, мобильные 2025-10-20) и LWO — скремблинг заголовков WireGuard (2025-11-12). Proton Stealth — WireGuard внутри TLS. В Windscribe переключатель «Circumvent Censorship» на AmneziaWG плюс Stealth/WStunnel.",
+    "why_now": "Волна обфускации у крупных провайдеров в 2025–2026 под давлением России и Ирана. Mullvad для РФ советует QUIC или Shadowsocks (обновлено 2026-04-22).",
+    "status": "В РФ НЕНАДЁЖНО: большинство серверов Mullvad заблокированы РКН. Proton Stealth не работал у ряда пользователей в 06–09.2026, в том числе в Санкт-Петербурге в 09.2026 (russiable). Windscribe — средне.",
+    "works_in_ru": "Mostly no/unstable — блокировка по IP известных серверов важнее маскировки протокола. LWO — тот же подход, что AmneziaWG, только слабее.",
+    "installer_fit": "Нет напрямую. Вывод для инсталлятора: свой непубличный IP плюс AWG/Reality надёжнее коммерческих stealth-режимов.",
+    "sources": [
+     "https://mullvad.net/en/help/connecting-to-mullvad-vpn-from-restrictive-locations",
+     "https://alternativeto.net/news/2025/11/mullvad-vpn-rolls-out-lwo-for-desktop-and-android-to-bypass-firewalls-and-censorship",
+     "https://russiable.com/vpn-russia/"
+    ],
+    "confidence": "medium"
+   }
+  ]
+ },
+ {
+  "candidates": [
+   {
+    "name": "ICMP-туннели (pingtunnel, udp2raw -raw-mode icmp, hans)",
+    "kind": "revived",
+    "what": "TCP/UDP внутри ICMP echo. pingtunnel (esrrhs) поддерживается: релизы 2.9 (13.09.2026) и 2.10 (14.09.2026) вышли после почти трёх лет без релизов (2.8, 29.11.2023). Внутрь обычно кладут WireGuard/KCP.",
+    "why_now": "Иран: Pingify замерил 26.09.2026, что при блокировке IP турецкого сервера (TCP и UDP режутся) ICMP оставался единственным прямым транспортом, который вообще ходил: 9.5 Мбит/с. Похоже на переживание бана по IP.",
+    "status": "Жив в Иране против бана по IP. В РФ в режиме белых списков ICMP к неразрешённым IP режется (Билайн, net4people #516, 09.2025). При обычной блокировке по IP в РФ подтверждений нет.",
+    "works_in_ru": "Под белыми списками не работает. Как запасной канал при бане IP сервера в РФ не проверялось, нужен свой тест. Скорость низкая, много потерь.",
+    "installer_fit": "Опциональный модуль «аварийный канал»: pingtunnel server + sysctl net.ipv4.icmp_echo_ignore_all=1. Ставить по умолчанию не стоит, лучше отдельным флагом. XICMP в Xray уже учтён отдельно.",
+    "sources": [
+     "https://github.com/GreatTeejay/Pingify",
+     "https://github.com/esrrhs/pingtunnel/releases",
+     "https://github.com/net4people/bbs/issues/516"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Fake-TCP: udp2raw / phantun (WireGuard поверх фейкового TCP)",
+    "kind": "revived",
+    "what": "UDP (WireGuard/Hysteria) заворачивается в пакеты с TCP-заголовками через raw socket. Ретрансмита и congestion control нет. phantun v0.8.0 (22.08.2025) и v0.8.1 (23.08.2025) вышли после v0.7.0 от 11.2023. У udp2raw есть ещё режим ICMP.",
+    "why_now": "Применяется в Иране, где UDP и WireGuard режут. Есть готовые связки Iran↔DE (wg-udp2raw) и туннель-менеджеры (Pingify: Fake TCP, ICMP). Форк sagan/phantun выпускал фиксы в 09.2025.",
+    "status": "Проекты живы, в Иране используются. Данных из РФ нет. Заморозка 16 КБ в РФ считает пакеты TCP к зарубежным ДЦ (около 25 пакетов), так что fake-TCP, скорее всего, тоже под неё попадёт.",
+    "works_in_ru": "Не подтверждено. Есть риск попасть под заморозку TCP 15–20 КБ к зарубежным хостингам (net4people #490, 06.2025). Против сигнатур WireGuard помогает, но AmneziaWG закрывает эту задачу проще.",
+    "installer_fit": "Низкий приоритет. Можно сделать экспериментальный флаг «phantun перед AWG/WG» для сетей, где режут UDP. Нужны правила iptables и снижение MTU.",
+    "sources": [
+     "https://github.com/dndx/phantun/releases",
+     "https://github.com/Aminsadr854/iran-de-wg-tunnel",
+     "https://github.com/net4people/bbs/issues/490"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "WireGuard через wstunnel (WS/HTTP2/WebTransport over TLS)",
+    "kind": "evolved",
+    "what": "Обычный WireGuard в WebSocket/HTTP2 по TLS на 443. В wstunnel v10.7.0 (28.08.2026) появился транспорт WebTransport. В v11.0.0 (19.09.2026) WebTransport объявлен стабильным и улучшены reverse-туннели.",
+    "why_now": "Windscribe 28.11.2025 рекомендует свой WStunnel (только порт 443) для РФ/Ирана/Китая. На 4pda и ntc wstunnel советуют как обёртку WG. Развивается активно: релизы почти каждый месяц в 2026.",
+    "status": "Инструмент живой. Сигнатуры WG прячет, но остаётся TLS-сессией к зарубежному ДЦ.",
+    "works_in_ru": "В РФ голый WG полностью заблокирован (02.2026). wstunnel к зарубежному хостингу попадает под заморозку TCP 16 КБ и под белые списки. Шанс есть только через CDN или российский релей.",
+    "installer_fit": "Средний. Можно добавить как лёгкую альтернативу XHTTP для клиентов, которым нужен именно WG-конфиг (роутеры). Ставится одним статическим бинарником за nginx/caddy.",
+    "sources": [
+     "https://github.com/erebe/wstunnel/releases",
+     "https://windscribe.com/knowledge-base/articles/troubleshooting-connection-issues-in-restricted-countries-(iran-china-russia-etc)",
+     "https://github.com/net4people/bbs/issues/490"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "OpenVPN 2.7 (TCP 443, tls-crypt-v2) и OpenVPN+Cloak",
+    "kind": "evolved",
+    "what": "OpenVPN 2.7.0 вышел 11.02.2026: multi-socket, DCO, TLS 1.3 на mbedTLS. Cloak маскирует трафик под браузерный TLS: v2.11.0 (30.06.2025) добавил PQC в сигнатуры, v2.12.0 (23.07.2025) обновил сигнатуры, v2.10.0 добавил паддинг первых кадров против детекта вложенного TLS.",
+    "why_now": "Amnezia и коммерческие VPN держат OpenVPN+Cloak как запасной вариант. Пользователи переходили на Cloak во время блокировок Amnezia летом 2026, и он работал, но медленно.",
+    "status": "Голый OpenVPN в РФ мёртв: по обзорам, полностью заблокирован с 02.2026, tls-crypt-v2 не спасает. С Cloak работает частично и медленно.",
+    "works_in_ru": "Без обфускации нет. С Cloak частично, но к зарубежному ДЦ действует та же заморозка 16 КБ и баны IP по хостингам.",
+    "installer_fit": "Не добавлять. VLESS+Reality/XHTTP закрывает ту же нишу лучше. Можно упомянуть в документации как legacy.",
+    "sources": [
+     "https://www.helpnetsecurity.com/2026/02/12/openvpn-releases-version-2-7-0/",
+     "https://github.com/cbeuw/Cloak/releases",
+     "https://www.techradar.com/vpn/vpn-services/this-is-an-important-release-amnezia-vpn-strengthens-its-apps-to-fight-russias-new-approach-to-vpn-blocking-in-latest-update"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "Shadowsocks: SS-2022 (shadowsocks-rust) и Outline SS-over-WebSocket",
+    "kind": "evolved",
+    "what": "shadowsocks-rust v1.25.0 (26.08.2026), первый релиз после v1.24.0 от 10.12.2024: цепочка ssserver→SOCKS5/HTTP(S), EIH. Outline (с 01.2026 у Outline Foundation, сервер переименован в tunnel-server) с v1.9.0 (11.02.2025) поддерживает SS поверх WebSocket.",
+    "why_now": "SS поверх WebSocket за Caddy/CDN и динамические YAML-ключи (клиент Outline 1.15+) обходят детект полностью шифрованного трафика. Проект получил нового независимого владельца.",
+    "status": "Чистый SS режется в РФ с 2024 (паттерн вложенного HTTPS, net4people #363). SS-2022 в 2026 работает частично: на части провайдеров детектируется.",
+    "works_in_ru": "Голый SS/SS-2022 нестабилен. Вариант через WS+TLS упирается в ту же заморозку 16 КБ к зарубежному ДЦ, если не идёт через CDN или релей.",
+    "installer_fit": "Низко-средний. SS-2022 можно оставить внутренним звеном каскада (RU-релей→зарубеж) через sing-box. Клиенту напрямую не выдавать.",
+    "sources": [
+     "https://github.com/shadowsocks/shadowsocks-rust/releases",
+     "https://github.com/OutlineFoundation/outline-ss-server/releases",
+     "https://developer.getoutline.org/vpn/advanced/websockets",
+     "https://github.com/net4people/bbs/issues/363"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "SOCKS5 / HTTP CONNECT поверх TLS (stunnel, gost v3)",
+    "kind": "evolved",
+    "what": "Классический прокси, обёрнутый в TLS. stunnel 5.80 (04.08.2026) закрыл обход в режиме SOCKS-сервера, вышел 5.81 (16.09.2026). gost v3.3.0 (30.08.2026), ночные сборки 3.3.1 до 03.10.2026. На Хабре 23.07.2026 вышла статья о SOCKS5 с нативным TLS (Alighieri).",
+    "why_now": "Голый SOCKS5 в РФ блокируется протокольно с конца 11.2025 (РБК/Хабр 04.12.2025). В Иране gost массово используют как релей Iran↔kharej (Gost-Tunnel-Manager, Eris Tunnel 2 на gost 3.3.0).",
+    "status": "Голый SOCKS5 в РФ мёртв. SOCKS/HTTP в TLS не детектируется по сигнатуре SOCKS, но это обычный TLS к зарубежному IP.",
+    "works_in_ru": "Напрямую к зарубежному ДЦ: заморозка 16 КБ и белые списки. Как межсерверное звено RU-VPS→зарубеж через gost может работать, данных из РФ нет.",
+    "installer_fit": "gost подходит как утилита для релей-звена в каскаде: один бинарник, есть relay+tls/kcp/quic. Клиентский протокол не нужен, NaiveProxy уже покрывает эту нишу.",
+    "sources": [
+     "https://habr.com/ru/news/973082/",
+     "https://www.stunnel.org/NEWS.html",
+     "https://newreleases.io/project/github/go-gost/gost/release/v3.3.0",
+     "https://github.com/behzadea12/Gost-Tunnel-Manager"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "GRE / IPIP / SIT (6to4) / GRE-FOU межсерверные каскады",
+    "kind": "revived",
+    "what": "Туннели L3 без шифрования между внутренним и зарубежным VPS, внутри идут Xray/WG. Иранские скрипты Azumi67/6TO4-GRE-IPIP-SIT (обновлялся 31.07.2025) и kalilovers/6TO4-all (GRE6, IP6IP6, Geneve, Erspan+IPsec). В Pingify (2026) есть транспорты GRE и GRE FOU.",
+    "why_now": "В Иране и РФ клиенту доступен только «внутренний» IP, поэтому нужен дешёвый линк внутренний ДЦ→зарубеж. GRE/IPIP дают минимальный оверхед и не похожи на VPN-протокол, поскольку это протоколы 47/4/41, а не TCP/UDP.",
+    "status": "В Иране массово используется для связки Iran↔kharej. В РФ данных о фильтрации GRE/IPIP между ДЦ нет. Корпоративный GRE раньше требовал исключений РКН.",
+    "works_in_ru": "Не проверено. Может быть полезен как звено RU-релей→зарубеж, но трафик открытый, поэтому шифрование нужно внутри (WG/AWG). Многие NAT/ACL режут протокол 47.",
+    "installer_fit": "Средний: режим «каскад» с выбором транспорта между нодами (GRE/IPIP+AWG внутри). Это несколько строк ip link. Покрытый «каскад через белый IP» можно дополнить этим транспортом.",
+    "sources": [
+     "https://github.com/Azumi67/6TO4-GRE-IPIP-SIT",
+     "https://github.com/kalilovers/6TO4-all",
+     "https://github.com/GreatTeejay/Pingify"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "SSTP (SoftEther / accel-ppp / MikroTik)",
+    "kind": "evolved",
+    "what": "PPP поверх HTTPS на 443. SoftEther Developer Edition 5.02: последний релиз 5.02.5188 (около 17.07.2025), проект едва жив. accel-ppp и VyOS по-прежнему поддерживают SSTP-сервер.",
+    "why_now": "Возрождения в 2025–2026 нет. Интерес держится за счёт MikroTik/Keenetic, где SSTP встроен. На ntc (10.2024) жаловались на обрыв SSTP/OpenVPN-TCP сразу после авторизации.",
+    "status": "Не работает или работает нестабильно. Коммерческая сводка (09.2025) даёт около 81% блокировок SSTP, источник слабый. Обзоры 2026 относят SSTP к устаревшим протоколам, которые ТСПУ легко режет.",
+    "works_in_ru": "Нет, к зарубежному ДЦ особенно: сигнатура PPP-в-TLS плюс заморозка 16 КБ.",
+    "installer_fit": "Не добавлять. Если нужен роутер MikroTik, лучше дать ему WG/AWG-конфиг (AWG есть в RouterOS 7 через контейнер или в Keenetic).",
+    "sources": [
+     "https://ntc.party/t/%D0%BE%D1%82%D0%B2%D0%B0%D0%BB%D0%B8%D0%B2%D0%B0%D0%B5%D1%82%D1%81%D1%8F-sstp-vpn/12163",
+     "https://blog.sigmavpn.pro/blog/massovye-blokirovki-vpn-v-rossii-chto-rabotaet-v-sentyabre-2025-goda",
+     "https://github.com/SoftEtherVPN/SoftEtherVPN/releases"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "L2TP/IPsec, PPTP, IKEv2 (strongSwan)",
+    "kind": "evolved",
+    "what": "Классические IPsec-VPN. strongSwan жив, но протоколы обфускации не имеют: UDP 500/4500 и ESP легко опознаются.",
+    "why_now": "Актуальность возникает только через исключения РКН для корпоративных VPN: около 57 тыс. адресов и подсетей 1730 компаний (заявление РКН от 22–23.04.2026). Свободным пользователям это недоступно.",
+    "status": "Мёртвы. L2TP блокируется протокольно с конца 11.2025 (РБК/Хабр 04.12.2025), PPTP ещё раньше. IKEv2/IPsec режут с 2022 (регионально с 29.05.2022), в 2026 повсеместно.",
+    "works_in_ru": "Нет, кроме IP из корпоративного whitelist РКН.",
+    "installer_fit": "Не добавлять. IKEv2 нужен только как нативный клиент iOS/Windows без приложений, но в РФ бесполезен.",
+    "sources": [
+     "https://habr.com/ru/news/973082/",
+     "https://xakep.ru/2026/04/23/vpn-white-list/",
+     "https://kod.ru/vpn-ikev2-i-ipsec-block",
+     "https://github.com/evilork/awesome-vpn-russia-2026"
+    ],
+    "confidence": "high"
+   },
+   {
+    "name": "Port-knocking / Single Packet Authorization (fwknop)",
+    "kind": "evolved",
+    "what": "Порт сервера закрыт, пока не придёт один подписанный пакет (HMAC/GPG). Задуман как защита от активного зондирования.",
+    "why_now": "Проверка гипотезы: если ТСПУ банит через active probing, SPA мог бы спасать. Но в волнах банов 04.08.2026 и 21.09.2026 попали и IP только с AmneziaWG, которые не зондируются. Значит, бан шёл по хостингу и ASN (Veesp 5000/30000 IP, Play2Go 2000/37000).",
+    "status": "Как средство обхода цензуры не возродился, свидетельств применения в 2025–2026 нет. Против банов РФ по ASN хостера бесполезен.",
+    "works_in_ru": "Не помогает: блокировки идут по IP и подсетям хостеров, по белым спискам и по поведению, а не по ответу на пробы.",
+    "installer_fit": "Не добавлять как обход. Как hardening SSH (fwknop) можно опционально, к VPN отношения не имеет.",
+    "sources": [
+     "https://github.com/net4people/bbs/issues/671",
+     "https://github.com/mrash/fwknop"
+    ],
+    "confidence": "medium"
+   },
+   {
+    "name": "IPv6-only / IPv6-обходы",
+    "kind": "revived",
+    "what": "Попытки обойти фильтрацию через IPv6: ТСПУ и операторы исторически хуже покрывают v6. Сюда же ротация адресов из /64 против бана по IP.",
+    "why_now": "ntc (16–25.06.2025): у Ростелекома фильтрация по SNI в IPv6 срабатывает «через раз». ntc.party был доступен по IPv6, когда IPv4 был заблокирован (08.2025). Российские хостеры почти не дают routed /48 и /56.",
+    "status": "Узкая и нестабильная лазейка на части проводных провайдеров. Мобильные операторы IPv6 почти не развернули, поэтому белые списки так не обойти.",
+    "works_in_ru": "Частично и непредсказуемо (Ростелеком, проводной). На мобильном, по сути, нет.",
+    "installer_fit": "Дёшево: слушать inbound'ы на [::] и выдавать клиенту v6-адрес запасным endpoint'ом. Ротацию /64 против банов не делать, бан идёт по префиксу и ASN.",
+    "sources": [
+     "https://ntc.party/t/%D1%80%D0%BE%D1%81%D1%82%D0%B5%D0%BB%D0%B5%D0%BA%D0%BE%D0%BC-ipv6-sni/16921",
+     "https://github.com/bol-van/zapret/discussions/1703"
+    ],
+    "confidence": "low"
+   },
+   {
+    "name": "Иранские reverse-туннели Iran↔kharej (Backhaul, BackPack, rathole, Pingify)",
+    "kind": "new",
+    "what": "Наборы мультитранспортных туннелей между внутренним и зарубежным VPS: TCP/WS/WSS MUX, Chrome-TLS, KCP, а также GRE, FakeTCP, ICMP, AWG. Ставятся bash-менеджерами (Eris Tunnel 2 на Backhaul/gost 3.3.0, Pingify с 12 транспортами).",
+    "why_now": "Иран после отключения 01.2026 перешёл на allowlist: обычные обходы через местный интернет почти не работают, нужен внутренний сервер. Это прямой аналог российских белых списков и каскадов через белый IP.",
+    "status": "Активно развиваются в 2025–2026 и используются в Иране. Pingify публикует замеры по транспортам (09.2026).",
+    "works_in_ru": "Не проверено в РФ. Архитектурно подходит для звена RU-релей (VK/Yandex Cloud)→зарубеж с выбором транспорта, который сейчас проходит.",
+    "installer_fit": "Хороший образец UX для режима «каскад»: выбор транспорта между нодами и автоматический замер. Можно заимствовать идею, не тянуть зависимость.",
+    "sources": [
+     "https://github.com/GreatTeejay/Pingify",
+     "https://github.com/eris4444/eris-tunnel-2",
+     "https://arxiv.org/html/2603.28753v1"
+    ],
+    "confidence": "medium"
+   }
+  ]
+ },
+ {
+  "name": "L2TP/IPsec, PPTP, IKEv2 (strongSwan)",
+  "verdict": "confirmed",
+  "corrected": "Подтверждено с оговорками: Хабр 04.12.2025 называет L2TP (вместе с SOCKS5/VLESS), а PPTP и IKEv2 не упоминает. Статья kod.ru от 29.05.2022 описывает региональные сбои IKEv2/IPsec. Слово «повсеместно в 2026» опирается только на блоги VPN-сервисов. По данным xakep.ru 23.04.2026, в исключениях 57 тыс.+ адресов 1730 компаний (в 04.2025 называлось 75 тыс.). Это не возрождение.",
+  "worth_adding": "no",
+  "reasoning": "Все три источника кандидата проверены, ключевые факты совпадают. Протоколы без обфускации опознаются ТСПУ по сигнатурам, возрождения нет. Исключение по whitelist РКН касается только корпоративных IP и обычным пользователям недоступно. В инсталлятор добавлять нечего.",
+  "sources": [
+   "https://habr.com/ru/news/973082/",
+   "https://xakep.ru/2026/04/23/vpn-white-list/",
+   "https://kod.ru/vpn-ikev2-i-ipsec-block",
+   "https://frankmedia.ru/250529"
+  ]
+ },
+ {
+  "name": "Port-knocking / Single Packet Authorization (fwknop)",
+  "verdict": "corrected",
+  "corrected": "«Не возродился» подтверждается. Ошибка в том, что бан был «по ASN». В n4p#671 (30.09.2026) заблокирована лишь часть IP: Veesp 5k/30k, Play2Go 2k/37k, FirstByte 3k/29k, Fornex 596/24k, Amnezia 131/20k. Значит, банили выборочно отдельные IP у популярных хостеров, целые ASN не трогали. Попали и IP только с AWG, поэтому SPA бы не спас.",
+  "worth_adding": "no",
+  "reasoning": "fwknop жив, но обновляется редко: последний релиз 2.6.11 вышел 07.02.2025. Это hardening для SSH, а не транспорт. Публичный VPN-порт под SPA не спрятать, для мобильных и iOS клиентов почти нет, CGNAT мешает. Упоминаний SPA как средства обхода в 2025–2026 не нашёл. Поэтому в установщик не добавлять, разве что как опциональную защиту SSH.",
+  "sources": [
+   "https://github.com/net4people/bbs/issues/671",
+   "https://github.com/mrash/fwknop/releases/tag/2.6.11",
+   "https://www.cipherdyne.org/fwknop/"
+  ]
+ },
+ {
+  "name": "Psiphon Conduit (CLI/Docker-станция на VPS)",
+  "verdict": "confirmed",
+  "corrected": "Это развитие проекта, а не возрождение старой техники. Факты подтверждаются: CLI 1.0.0 вышел 25.01, 2.0.0 20.02, 2.1.0 30.09, Prometheus есть с 1.2.0. 1–40 Мбит/с — лимит на одного пира. conduit-manager v1.3.4 — сторонний скрипт (MIT), не от Psiphon. Цифр по РФ нет.",
+  "worth_adding": "maybe",
+  "reasoning": "Релизы, образ ghcr, пост от 16.06.2026 (половина трафика Ирана, 99 друзей) подтверждены. Пользователям инсталлятора узел ничего не даёт: брокер раздаёт клиентов Psiphon. Риск: российские клиенты подключаются к IP VPS напрямую, и ТСПУ может засветить IP, где работают VLESS/Hy2. Поэтому только опция, выключенная по умолчанию.",
+  "sources": [
+   "https://github.com/Psiphon-Inc/conduit/releases",
+   "https://blog.psiphon.ca/2026/06/16/to-russians-with-love/",
+   "https://github.com/SamNet-dev/conduit-manager",
+   "https://4pda.to/forum/index.php?showtopic=1113536"
+  ]
+ },
+ {
+  "name": "SOCKS5 / HTTP CONNECT поверх TLS (stunnel, gost v3)",
+  "verdict": "corrected",
+  "corrected": "Последний stunnel 5.82 (17.09.2026). 5.80 закрыл CVE-2026-70367 (обход localhost-фильтра в SOCKS). gost v3.3.0 (30.08.2026), nightly 3.3.1 от 03.10.2026. Статья SerpentFly на Хабре от 23.07.2026 (Alighieri+ProxiFyre) не про обход ТСПУ. Связь Eris Tunnel 2 с gost 3.3.0 не подтверждена.",
+  "worth_adding": "no",
+  "reasoning": "Это не «возрождение», а обычный TLS-прокси. Данных, что он работает в РФ, нет: к зарубежным ДЦ он упирается в заморозку 16 КБ и белые списки. Хабр 973082 подтверждает блокировку голого SOCKS5 (конец 11.2025). Статья про Alighieri — только Windows/ProxiFyre. Нишу перекрывают NaiveProxy, VLESS и уже описанный каскад. gost-релей популярен в Иране, но Xray справляется с релеем сам.",
+  "sources": [
+   "https://www.stunnel.org/NEWS.html",
+   "https://github.com/go-gost/gost/releases",
+   "https://habr.com/ru/articles/1061886/",
+   "https://habr.com/ru/news/973082/"
+  ]
+ },
+ {
+  "name": "Tor Snowflake (WebRTC/DTLS) + standalone proxy",
+  "verdict": "corrected",
+  "corrected": "С 2026-03-30 ТСПУ блокировали DTLS-отпечаток standalone-прокси (pion), а не клиентов. Браузерные прокси это не затронуло. Исправлено в v2.13.1 (2026-04-16) флагом -covertdtls-config randomizemimic. В Debian лежит устаревший 2.10.1. Официальная установка: docker compose из GitLab с watchtower. «Около 100%» на 2026-10-01 сообщил один тестер.",
+  "worth_adding": "no",
+  "reasoning": "Источники совпадают: #603, заметки от 2026-10-01 и 2026-08-27. Это не «возрождение»: Snowflake всегда жив, а весной была кошка-мышка с отпечатками. Прокси на VPS — волонтёрский узел, своим пользователям он доступа не даёт. При белых списках бесполезен. Tor в РФ несёт юридический риск. Для инсталлятора не подходит.",
+  "sources": [
+   "https://github.com/net4people/bbs/issues/603",
+   "https://forum.torproject.org/t/tor-relays-please-update-standalone-snowflake-proxy-to-v2-13-1/21474",
+   "https://lists.torproject.org/mailman3/hyperkitty/list/tor-project@lists.torproject.org/message/Q4ZCT2ZAFNUAIFO33IBDJHBM3S7CMPMV/",
+   "https://community.torproject.org/relay/setup/snowflake/standalone/docker/"
+  ]
+ },
+ {
+  "name": "Fake-TCP: udp2raw / phantun (WireGuard поверх фейкового TCP)",
+  "verdict": "corrected",
+  "corrected": "Даты релизов phantun верны: v0.8.0 от 22.08.2025, v0.8.1 от 23.08.2025. Форк sagan/phantun в 09.2025 выпустил пре-релизы fix–fix6 (nft, fwmark). У udp2raw последний релиз 20230206.0, проект застыл. Иранский репо: 0 звёзд, использует ICMP, а не fake-TCP, и «живой установки не было». В #505 (01.2024) все режимы udp2raw заблокированы. Отчётов из РФ нет.",
+  "worth_adding": "no",
+  "reasoning": "«Возрождения» нет. Обновился только phantun (12 байт накладных расходов), и тот работает только на Linux: нужен raw socket или TUN с правами root/CAP_NET_ADMIN. Клиентов для Android/iOS без root нет. Форк udp2raw под Windows/macOS старый. Цензор-DPI уже ловил все режимы udp2raw (#505). Риск попасть под заморозку 16 КБ на TCP — моя гипотеза, не проверена. Для РФ AWG/Hysteria2 решают задачу лучше.",
+  "sources": [
+   "https://github.com/dndx/phantun/releases",
+   "https://github.com/sagan/phantun/releases",
+   "https://github.com/wangyu-/udp2raw/issues/505",
+   "https://github.com/Aminsadr854/iran-de-wg-tunnel"
+  ]
+ },
+ {
+  "name": "SSTP (SoftEther / accel-ppp / MikroTik)",
+  "verdict": "corrected",
+  "corrected": "Последний тег 5.2.5188 от 17.07.2025, не 5.02.5188. Называть проект «едва живым» неверно: коммиты в master идут до 01.10.2026, в 09.2026 добавлены правки под OpenSSL 4.0. Возрождения нет. Обзоры 2026 года пишут, что ТСПУ определяет SSTP по отпечатку TLS. Тред на ntc (10.2024) на самом деле про OpenVPN-TCP: обрыв после авторизации.",
+  "worth_adding": "no",
+  "reasoning": "Вывод «не добавлять» подтверждается. Новых сообщений о том, что SSTP работает в РФ в 2025–2026, я не нашёл. Протокол не маскирует трафик, отпечаток PPP-в-TLS легко детектируется. Ответы в треде ntc датированы только 2024 годом. Сводка sigmavpn с цифрой 81% — слабый маркетинговый источник. Ниша SSTP — роутеры MikroTik/Keenetic, но для них лучше подходит AWG.",
+  "sources": [
+   "https://github.com/SoftEtherVPN/SoftEtherVPN/tags",
+   "https://github.com/SoftEtherVPN/SoftEtherVPN/commits/master",
+   "https://ntc.party/t/%D0%BE%D1%82%D0%B2%D0%B0%D0%BB%D0%B8%D0%B2%D0%B0%D0%B5%D1%82%D1%81%D1%8F-sstp-vpn/12163",
+   "https://privacyproof.ru/blog/vpn-protocols-2026"
+  ]
+ },
+ {
+  "name": "Иранские reverse-туннели Iran↔kharej (Backhaul, BackPack, rathole, Pingify)",
+  "verdict": "corrected",
+  "corrected": "Это не возрождённый протокол, а мосты сервер→сервер. Зрелые проекты: Backhaul (877★, AGPL) и BackPack (435★, 12 транспортов, есть ICMP). У Pingify 1★ и своя лицензия, у Eris Tunnel 2 2★, rathole стоит на v0.5.0 (10.2023). В статье arXiv 2603.28753 описаны отключение 8–18.01.2026 и allowlist, но не туннели Iran↔kharej.",
+  "worth_adding": "no",
+  "reasoning": "В РФ проверок нет. Клиентов для пользователей нет: туннели связывают только серверы. Каскад через российский релей уже покрыт, а цепочки и транспорты есть в самих xray/sing-box. Pingify и Eris — малоизвестные однодневки, дату 09.2026 подтвердить не удалось. Брать можно разве что идею UX: замер и выбор транспорта между нодами.",
+  "sources": [
+   "https://github.com/Musixal/Backhaul",
+   "https://github.com/AminMGMT/BackPack",
+   "https://github.com/GreatTeejay/Pingify",
+   "https://arxiv.org/html/2603.28753v1"
+  ]
+ },
+ {
+  "name": "VLESS/Trojan/VMess over WebSocket/gRPC за Cloudflare CDN",
+  "verdict": "confirmed",
+  "corrected": "Это не возрождение, а продолжение деградации. Подтверждено: обрыв на 16 КБ с 2025-06-09 (блог Cloudflare); на ntc.party с 18.06.2025 жалобы, что VLESS+WS через CF перестал работать. Поправка: статья dimaserbun (11.05.2026) про 16 КБ по провайдерам не пишет, там только разная скорость (МТС и Билайн).",
+  "worth_adding": "no",
+  "reasoning": "Все ключевые факты подтвердились: Хабр 29.12.2025 пишет о −30%; net4people #628 от 10.06.2026: Иран собирает фрагменты пакетов, а с ними и ClientHello; на российских PoP CF (DME/LED/KJA) часть доменов блокируется. В РФ транспорт не работает, а белые списки на мобильных отсекают CF целиком. В установщик для RU добавлять не стоит, только как необязательный вариант для пользователей вне РФ.",
+  "sources": [
+   "https://blog.cloudflare.com/russian-internet-users-are-unable-to-access-the-open-internet/",
+   "https://ntc.party/t/vless-websocket-over-cloudflare-cdn-%D0%BF%D0%B5%D1%80%D0%B5%D1%81%D1%82%D0%B0%D0%BB-%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B0%D1%82%D1%8C/16977",
+   "https://github.com/net4people/bbs/issues/628",
+   "https://habr.com/ru/news/981454/"
+  ]
+ },
+ {
+  "name": "Tor obfs4 / meek / Conjure (классические мосты)",
+  "verdict": "corrected",
+  "corrected": "obfs4 в РФ режется DPI с 24.12.2025 (по признаку полностью шифрованного трафика, не по IP). Обходится zapret (multisplit). meek НЕ мёртв: meek-azure убрали в 02.2025, но в Tor Browser 15.0a4 мост вернулся встроенным под именем meek на другом CDN. Conjure официально «не для реального использования»; 01.10.2026 его отлаживают в Китае.",
+  "worth_adding": "no",
+  "reasoning": "Форум Tor (24–31.12.2025): obfs4 блокируют по шаблону полностью шифрованного трафика, пакеты частично доходят. Это подтверждает DPI. Свой obfs4/lyrebird на VPS ставится легко, но без zapret у клиента не работает и нужен только для Tor, а не для VPN. Тезис «meek мёртв» неверен. Conjure сырой. Возрождения нет, в установщик не добавлять.",
+  "sources": [
+   "https://forum.torproject.org/t/apparently-a-new-wave-of-tor-blocking-is-underway-in-russia/21006",
+   "https://archives.seul.org/or/dev/Aug-2025/msg00002.html",
+   "https://lists.torproject.org/mailman3/hyperkitty/list/tor-project@lists.torproject.org/message/Q4ZCT2ZAFNUAIFO33IBDJHBM3S7CMPMV/",
+   "https://forum.torproject.org/t/what-happened-to-conjure-bridges/17884"
+  ]
+ },
+ {
+  "name": "WireGuard через wstunnel (WS/HTTP2/WebTransport over TLS)",
+  "verdict": "corrected",
+  "corrected": "Релизы подтверждены: v10.7.0 (28.08.2026) добавил WebTransport, v11.0.0 (19.09.2026) объявил его стабильным. Но Windscribe WStunnel — их собственный протокол, а не erebe/wstunnel. Ни одного свежего отчёта из РФ про wstunnel я не нашёл. net4people #490 описывает заморозку 16 КБ (27.06.2025), wstunnel там не упоминается.",
+  "worth_adding": "no",
+  "reasoning": "Это не «возрождение»: инструмент обычный и активно поддерживается. Это TLS/WS к зарубежному ДЦ, поэтому он попадает под заморозку 16 КБ и белые списки, и XHTTP справляется лучше. Своих мобильных клиентов нет: на Android только через Termux, на iOS никак. Пропускная способность падает примерно на 35–45%. Для РФ полезнее AWG и XHTTP.",
+  "sources": [
+   "https://github.com/erebe/wstunnel/releases",
+   "https://windscribe.com/knowledge-base/articles/troubleshooting-connection-issues-in-restricted-countries-(iran-china-russia-etc)",
+   "https://github.com/net4people/bbs/issues/490",
+   "https://community.hetzner.com/tutorials/obfuscating-wireguard-using-wstunnel/"
+  ]
+ },
+ {
+  "name": "ICMP-туннели (pingtunnel, udp2raw -raw-mode icmp, hans)",
+  "verdict": "corrected",
+  "corrected": "pingtunnel 2.9 (13.09.2026) и 2.10 (14.09.2026) подтверждены, предыдущий 2.8 вышел 29.11.2023. В Pingify 9.5 Мбит/с (26.09.2026) показал WSS MUX через Cloudflare, а не ICMP. ICMP там только «единственный прямой транспорт, который ещё ходил», скорость не указана. Хабр (17.05.2026): при белых списках ICMP где-то не ходит совсем, а где-то проходит почти куда угодно.",
+  "worth_adding": "maybe",
+  "reasoning": "Ошибка в кандидате: 9.5 Мбит/с относятся к WSS MUX, а не к ICMP. Pingify — туннель между серверами Иран → заграница, а не клиентский VPN. В РФ замеров с датами нет, на ntc.party отчёты разнобойные. Клиенты есть под Win/Linux/Android (itismoej), под iOS нет, антивирусы считают HackTool. Ставить только по флагу как аварийный канал.",
+  "sources": [
+   "https://github.com/esrrhs/pingtunnel/releases",
+   "https://github.com/GreatTeejay/Pingify",
+   "https://habr.com/ru/articles/1036100/",
+   "https://ntc.party/t/pingtunnel-tcpudp-over-icmp/7052"
+  ]
+ },
+ {
+  "name": "OpenVPN 2.7 (TCP 443, tls-crypt-v2) и OpenVPN+Cloak",
+  "verdict": "corrected",
+  "corrected": "OpenVPN 2.7.0: 11.02.2026, факты верны. Cloak: v2.10.0 от 11.10.2024, v2.11.0 от 30.06.2025, v2.12.0 от 23.07.2025 (только обновление сигнатур). По обзору TechRadar, Amnezia сворачивает OVPN+Cloak и SS из-за детекта DPI, а не держит их про запас. Переход на Cloak летом 2026 не подтверждён.",
+  "worth_adding": "no",
+  "reasoning": "Даты релизов совпадают с GitHub и Help Net Security. Cloak почти заброшен: с 2024 года только обновляются сигнатуры. Голый OpenVPN в РФ блокируют, по обзорам с 02.2026. OVPN+Cloak медленный, Amnezia его сворачивает. Возрождения нет, это legacy. Reality/XHTTP закрывают ту же нишу лучше.",
+  "sources": [
+   "https://www.helpnetsecurity.com/2026/02/12/openvpn-releases-version-2-7-0/",
+   "https://github.com/cbeuw/Cloak/releases",
+   "https://www.techradar.com/vpn/amnezia-vpn-review-year",
+   "https://github.com/amnezia-vpn/amnezia-client/issues/2072"
+  ]
+ },
+ {
+  "name": "Shadowsocks: SS-2022 (shadowsocks-rust) и Outline SS-over-WebSocket",
+  "verdict": "corrected",
+  "corrected": "v1.24.0 вышел 10.12.2025, а не 10.12.2024: на crates.io дата 2025-12-11 UTC, в релизе MSRV 1.88 и RUSTSEC-2025-0120. v1.25.0 от 26.08.2026 подтверждён (цепочка через SOCKS5/HTTP(S), EIH). Outline Foundation с 01.2026, tunnel-server v1.9.0 (WS) от 11.02.2025, последняя v1.9.2 от 04.03.2025, клиент 1.15.0+ подтверждены. Это эволюция, а не «возрождение».",
+  "worth_adding": "maybe",
+  "reasoning": "Факты подтверждены, кроме года v1.24.0. Голый SS в РФ режут с 04.2024 (#363). Вариант WS+TLS по сути дублирует VLESS-WS/XHTTP и упирается в заморозку 16 КБ, если нет CDN. Сервер tunnel-server не выпускался с 03.2025. Имеет смысл только как внутреннее звено каскада SS-2022 через sing-box/xray, клиентам напрямую не выдавать.",
+  "sources": [
+   "https://crates.io/api/v1/crates/shadowsocks-rust/versions",
+   "https://github.com/OutlineFoundation/outline-ss-server/releases",
+   "https://medium.com/jigsaw/introducing-the-outline-foundation-an-independent-home-for-outline-39fba2ab4e25",
+   "https://github.com/net4people/bbs/issues/363"
+  ]
+ },
+ {
+  "name": "ECH-fronting (Encrypted Client Hello через Cloudflare)",
+  "verdict": "confirmed",
+  "corrected": "Уточнение: ТСПУ режут ECH к Cloudflare с 2024-11-05. Триггер: внешний SNI cloudflare-ech.com плюс расширение ECH. При ECH-fronting внешний SNI тот же, поэтому блокируется. В #5999 (2026-04-22) мейнтейнер советует общий ключ: \"cloudflarestaging.com+udp://1.1.1.1\".",
+  "worth_adding": "no",
+  "reasoning": "#529 открыт 2025-09-23 и касается обхода GFW (Китай), отчётов о работе в РФ там нет. В РФ любой ECH к Cloudflare режется по SNI cloudflare-ech.com. Сверху действуют заморозка Cloudflare на 16 КБ и перехват DNS 1.1.1.1/8.8.8.8. Это доменный фронтинг, а не возрождённая старая техника. Для инсталлятора под РФ бесполезно.",
+  "sources": [
+   "https://github.com/net4people/bbs/issues/417",
+   "https://github.com/net4people/bbs/issues/529",
+   "https://github.com/XTLS/Xray-core/discussions/5999",
+   "https://xakep.ru/2025/04/02/rkn-tls-ech/"
+  ]
+ },
+ {
+  "name": "IPv6-only / IPv6-обходы",
+  "verdict": "corrected",
+  "corrected": "Не «возрождение», а лазейка, которая закрывается. С 07.10.2024 ТСПУ блокирует OpenVPN по нативному IPv6 у Ростелекома. Про ntc.party факт неверен: 28.08.2025 IPv4 из DNS убрал сам админ, чтобы отсечь новичков, а не ТСПУ. SNI-фильтрация по v6 у РТ «через раз» (06.2025) — это разовый отчёт. Обхода белых списков по v6 не найдено.",
+  "worth_adding": "maybe",
+  "reasoning": "Как технику обхода не добавлять: ТСПУ работает и на v6, мобильные белые списки так не обойти. Как гигиену можно: dual-stack listen на [::] и v6-адрес запасным endpoint'ом в ссылке, если у VPS есть v6. Стоит дёшево, но заметной пользы против блокировок не даёт. Ротацию /64 не делать.",
+  "sources": [
+   "https://ntc.party/t/%D0%BE%D0%B1%D1%81%D1%83%D0%B6%D0%B4%D0%B5%D0%BD%D0%B8%D0%B5-%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0-vpn-%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D0%BA%D0%BE%D0%BB%D0%BE%D0%B2-%D0%BD%D0%B0-%D1%82%D1%81%D0%BF%D1%83-05082023-xxxxxxxx/5239?page=17",
+   "https://github.com/bol-van/zapret/discussions/1703",
+   "https://ntc.party/t/%D1%80%D0%BE%D1%81%D1%82%D0%B5%D0%BB%D0%B5%D0%BA%D0%BE%D0%BC-ipv6-sni/16921"
+  ]
+ },
+ {
+  "name": "GRE / IPIP / SIT (6to4) / GRE-FOU межсерверные каскады",
+  "verdict": "unverifiable",
+  "corrected": "Репозитории существуют: Azumi67 (~409★, 577 коммитов, тег iran). У kalilovers/6TO4-all и Pingify по 1★, это нишевые проекты. Pingify описывает GRE как протокол 47 без маскировки, а GRE-FOU как UDP. Дату 31.07.2025 проверить не удалось (403 от API). Свежих отчётов о GRE/IPIP через ТСПУ (РФ↔зарубеж) я не нашёл.",
+  "worth_adding": "maybe",
+  "reasoning": "«Возрождение» есть только в Иране: десятки скриптов Iran↔kharej. Для РФ подтверждений нет, известны лишь старые жалобы, что провайдеры режут GRE. Это только звено между серверами, клиентам не нужно. Без шифрования и аутентификации (CERT VU#199397) обязателен firewall по IP пира. Добавлять стоит максимум как опцию каскада, с низким приоритетом.",
+  "sources": [
+   "https://github.com/Azumi67/6TO4-GRE-IPIP-SIT",
+   "https://github.com/GreatTeejay/Pingify",
+   "https://kb.cert.org/vuls/id/199397",
+   "https://github.com/20elias01/GRE-IPv6Local"
+  ]
+ },
+ {
+  "name": "Stealth-режимы коммерческих VPN (Mullvad QUIC/LWO, Proton Stealth, Windscribe)",
+  "verdict": "corrected",
+  "corrected": "Mullvad: QUIC/MASQUE на десктопе с 2025-09-09, на мобильных начиная с 2025.8; LWO с 2025-11-12 (десктоп и Android, iOS позже). Mullvad (стр. от 2026-04-22): РКН блокирует большинство серверов, советуют QUIC/SS. Windscribe не «средне»: в СПб 09.2026 не работал и в stealth (russiable). Про Mullvad из РФ у russiable свежих отчётов нет.",
+  "worth_adding": "no",
+  "reasoning": "Даты Mullvad подтверждены. Страница Mullvad за 2026-04-22 говорит, что РКН блокирует большинство серверов. Russiable: Proton не работал в 06–09.2026, в СПб в 09.2026 даже со stealth; Windscribe там же не работал и в stealth. Поэтому оценка «средне» завышена. Это закрытые сервисы, сервер на Ubuntu из них не поставить; QUIC — это MASQUE (уже в покрытом), LWO слабее AWG.",
+  "sources": [
+   "https://mullvad.net/en/help/connecting-to-mullvad-vpn-from-restrictive-locations",
+   "https://mullvad.net/en/blog/introducing-quic-obfuscation-for-wireguard",
+   "https://www.techradar.com/vpn/vpn-services/mullvad-vpn-adds-ultra-fast-obfuscation-to-beat-wireguard-blocking",
+   "https://russiable.com/vpn-russia/"
+  ]
+ },
+ {
+  "name": "Cloudflare Workers/Pages панели (edgetunnel, BPB Panel)",
+  "verdict": "confirmed",
+  "corrected": "Small fixes: XHTTP and VLESS Encryption for chains, plus Xray FinalMask, arrived in BPB v4.2.2 (June), not v5.1.1. v5.1.1 (19 Jul 2026) added a dashboard, a Telegram bot and a mandatory secure path. BPB has about 13.6k stars and 31.6k forks.",
+  "worth_adding": "no",
+  "reasoning": "Holds up. BPB is active. PR #7 (2026-09-25) confirms the ~16 KB cap on Cloudflare in RU and that workers.dev worked where the CF-proxied domain did not. A May 2026 article reports partial DPI/TLS blocking of CF IPs. No evidence of a reliable RU setup. Serverless, so no Ubuntu VPS component. At most a doc note for IR/CN users.",
+  "sources": [
+   "https://github.com/bia-pain-bache/BPB-Worker-Panel/releases",
+   "https://github.com/oxionezhkov-hub/helpmedoctor/pull/7",
+   "https://dimaserbun.ru/en/blog/cloudflare-v-rf-pochemu-otkazalsya/",
+   "https://github.com/cmliu/edgetunnel"
+  ]
+ },
+ {
+  "name": "Lantern Samizdat (lantern-box)",
+  "verdict": "confirmed",
+  "corrected": "The facts check out: first commit \"samizdat first pass\" 2026-02-17, last 2026-08-19, 25 commits, 7 stars. Lantern v10.0.0 released 2026-09-18 (sing-box 1.13.19, samizdat credentials rotate hourly). This is not a revival but a NaiveProxy-like design (HTTP/2 CONNECT behind a Chrome TLS fingerprint), and NaiveProxy is already covered.",
+  "worth_adding": "no",
+  "reasoning": "The repo and release notes confirm everything; the TSPU resistance is only the README's claim. No independent tests from Russia on ntc.party, Habr or 4PDA. It works only with the Lantern client; there are no third-party clients. lantern-box is a vendor fork of sing-box, built from source. NaiveProxy already covers the idea. Watch it, don't install it.",
+  "sources": [
+   "https://github.com/getlantern/samizdat",
+   "https://github.com/getlantern/samizdat/commits/main",
+   "https://github.com/getlantern/lantern-box",
+   "https://github.com/getlantern/lantern/releases"
+  ]
+ },
+ {
+  "name": "tg-ws-proxy (Flowseal): Telegram Desktop через WSS kws*.web.telegram.org + CF Worker",
+  "verdict": "corrected",
+  "corrected": "Подтверждено: 10,3 тыс. звёзд; v1.9.0 28.07, v1.10.3 19.09 (выключение TLS для CF), v1.10.4 19.09 (certifi). Это клиент для ПК (Win/mac/Linux + Docker), не для мобильных. Аккаунт на GitHub был заблокирован 10–17.07.2026. qprots: 0 звёзд, 5 коммитов, только SOCKS5.",
+  "worth_adding": "no",
+  "reasoning": "По словам мейнтейнера (discussion #180), обход держится на одном IP Telegram из белого списка для DC2/DC4. Остальное идёт через CF или напрямую. Обход частичный и хрупкий. Работает только с Telegram Desktop. Серверная часть qprots сырая. Установщику VPS почти нечего ставить, в лучшем случае ссылка в документации.",
+  "sources": [
+   "https://github.com/Flowseal/tg-ws-proxy/releases",
+   "https://github.com/Flowseal/tg-ws-proxy/discussions/180",
+   "https://github.com/qprots/tg-ws-proxy-server",
+   "https://digital-report.ru/zapret-razblokirovan-na-github-proekty-flowseal-vernulis/"
+  ]
+ },
+ {
+  "name": "CDN domain fronting (Akamai/Fastly) — Shir-o-Khorshid",
+  "verdict": "corrected",
+  "corrected": "Shir-o-Khorshid (Android-only GPL форк Psiphon) включает штатный Psiphon FRONTED-MEEK через edge-узлы Akamai/Fastly к серверам Psiphon, а не к своему VPS. cdn-ip-finder ищет edge-IP Akamai/Google/CloudFront/Azure, не Fastly. В Иране нестабильно, зависит от региона. По РФ данных нет. Akamai попал под удар по зарубежному хостингу (16 КБ).",
+  "worth_adding": "no",
+  "reasoning": "#626 (tuleo1, 04.06.2026): автор сам подключиться не смог, дат блэкаута в посте нет. Aether PR #113 портирует FRONTED-MEEK (2 Fastly + 9 Akamai). Это клиент сети Psiphon, на сервер ставить нечего. Akamai/Fastly в РФ под 16 КБ-ограничениями. Для VPS-инсталлятора не годится.",
+  "sources": [
+   "https://github.com/net4people/bbs/issues/626",
+   "https://github.com/MrMatin0/Aether/pull/113",
+   "https://github.com/hossein8360/cdn-ip-finder",
+   "https://securitymedia.org/news/rossiya-nachala-blokirovku-inostrannykh-khostingov-kto-v-spiske-i-pochemu.html"
+  ]
+ },
+ {
+  "name": "Shadowsocks / Outline (SS-2022, SS-over-WebSocket, prefix)",
+  "verdict": "corrected",
+  "corrected": "Это не возрождение. SS-over-WSS появился в outline-ss-server v1.9.0 (11.02.2025, клиент Outline ≥1.15.0), последний релиз v1.9.2 вышел 04.03.2025. net4people #363 (май 2024) описывает не энтропию, а отпечаток TLS внутри туннеля: ≥3 пакета от клиента ≥411 байт. WSS-обёртка такой отпечаток не снимает. Psiphon-фолбэк есть только в SDK/Mobile Proxy, в серверной части его нет.",
+  "worth_adding": "no",
+  "reasoning": "Голый SS в РФ блокируется с 2024 года, в июле 2025 на ntc.party были новые сообщения о сбросах соединений. WSS-режим требует домен и TLS. Он лишь повторяет то, что уже даёт XHTTP/WS в Xray, и слабее Reality. С марта 2025 проект не развивался. Новых фактов о работе в РФ в 2026 году я не нашёл. Добавлять стоит максимум как совместимость с Outline-клиентами.",
+  "sources": [
+   "https://github.com/net4people/bbs/issues/363",
+   "https://github.com/Jigsaw-Code/outline-ss-server/releases",
+   "https://developer.getoutline.org/vpn/advanced/websockets",
+   "https://github.com/OutlineFoundation/outline-sdk/discussions/465"
+  ]
+ },
+ {
+  "name": "Cloudflare WARP как outbound (wgcf/Xray WireGuard outbound)",
+  "verdict": "corrected",
+  "corrected": "Не «возрождение»: WARP-outbound на VPS используется с 2022. Клиент в РФ заблокирован с 2022–2024, но в 2025 эпизодически работал через AmneziaWG с параметрами Jc/junk на отдельных endpoint'ах. Новое: Cloudflare отвечает 429 на старый отпечаток wgcf с IP дата-центров (09.2026); wgcf v2.3.0 вышел 18.09.2026.",
+  "worth_adding": "yes",
+  "reasoning": "Источники подтвердились. ntc 22551 (1–3.03.2026): блокировки на PoP DME/LED/KJA есть, WARP+ их обходит. Aether #138 (24.09.2026): в Иране режут регистрацию по SNI. Против цензуры WARP бесполезен, но как egress для AI и стриминга полезен. В Xray есть родной WireGuard outbound. Нужен запасной вариант на случай ответа 429 при регистрации.",
+  "sources": [
+   "https://github.com/ViRb3/wgcf/releases",
+   "https://github.com/Cmd81/up-marznode-xray/pull/1",
+   "https://ntc.party/t/%D0%BF%D0%B5%D1%80%D0%B5%D1%81%D1%82%D0%B0%D0%BB-%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B0%D1%82%D1%8C-warp-amneziawg/16807",
+   "https://github.com/CluvexStudio/Aether/issues/138"
+  ]
+ }
+]
