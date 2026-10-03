@@ -11,4 +11,4 @@
 | [vpn-news_04-10-26.md](2026-10-04/vpn-news_04-10-26.md) | Xray/REALITY/XHTTP, 3x-ui, Hysteria2, AmneziaWG 3.1, ТСПУ, клиенты, серверные практики, новые и ожившие протоколы (§5.5–5.6). В §8 — что сломано в репо и план обновления |
 | [admin-panel_04-10-26.md](2026-10-04/admin-panel_04-10-26.md) | Единая админка: все протоколы, учётки, трафик, метрики. Рекомендация и решения за владельцем |
 | [vpn-success-and-leaks_04-10-26.md](2026-10-04/vpn-success-and-leaks_04-10-26.md) | Секреты успеха работающих сервисов, компрометаторы (RU-приложения, палящие VPN), серверные контрмеры и черновик конфигов по фазам |
-| [raw/](2026-10-04/raw/) | `main-research.json`, `new-protocols.json`, `revived-protocols.json`, `admin-panel.json`, `success-and-leaks.json` |
+| [raw/](2026-10-04/raw/) | `main-research.json`, `new-protocols.json`, `revived-protocols.json`, `admin-panel.json`, `success-and-leaks.json`, `leaks-verification.json` (голоса адверсариев при повторной проверке 27 утверждений о компрометаторах) |
