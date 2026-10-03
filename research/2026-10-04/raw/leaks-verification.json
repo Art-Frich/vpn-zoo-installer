@@ -1,0 +1,636 @@
+[
+ {
+  "verdict": "partly",
+  "corrected": "Habr 1056220 (07.07.2026, автор lked) описывает только RU-вход: mangle PREROUTING -i awg0 -m set --match-set ru dst -j RETURN, остальное MARK 0x1, затем ip rule fwmark 0x1 table 100 → default dev awg1. Список с ipdeny (резерв — репозиторий), ipset swap, при пустом списке скрипт падает, IPv6 выключен. Про exit (DROP в FORWARD или WARP через ipset/fwmark) в статье ничего нет. Для WARP на exit есть задокументированный вариант bivlked: BGP-фид antifilter + BIRD, таблица 200, ip rule iif awg0, без ipset/fwmark.",
+  "notes": "Часть про вход полностью подтверждена статьёй. Exit-часть утверждения (DROP или ipset→fwmark→WARP) — экстраполяция, этот источник её не подтверждает. Единственный найденный первичный пример WARP-RU для AWG (WARP-RU.md, Ubuntu 24.04, BIRD 2.14) использует маршруты из BGP: фильтр отбрасывает 0.0.0.0/0, работает только IPv4. Ядро или amneziawg-go — в статье не сказано. Обновление там через перезапуск oneshot-юнита раз в неделю (cron), а не systemd-таймер. DROP RU на exit ломает RU-сайты клиентам без входа.",
+  "sources": [
+   "https://habr.com/ru/articles/1056220/",
+   "https://github.com/bivlked/amneziawg-installer/blob/main/WARP-RU.md",
+   "https://github.com/bivlked/amneziawg-installer/blob/main/ADVANCED.md"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Хабр 1020080 (runetfreedom, 07.04.2026; разработчикам сообщено 10.03.2026): у VLESS-клиентов на Android локальный SOCKS5 на 127.0.0.1 без авторизации. Любое приложение может узнать через него IP выхода, даже из Knox/Shelter/Island (loopback у них общий). Поимённо названы Happ, v2RayTun, V2BOX, v2rayNG, Hiddify, Exclave, Npv Tunnel и NekoBox, плюс «распространённые» конфигурации Clash/sing-box. Happ открывал xray API с HandlerService без авторизации; в 4.7.2 это убрали (kod.ru, 11.04), SOCKS остался. В v2rayNG позже появились опциональные SOCKS-auth и случайный порт.",
+  "notes": "Суть подтверждается первоисточником. Чем утверждение шире источника:\n1) Фразы «почти все» в статье нет. Karing в статье и на xakep не упоминается.\n2) Порты 10808 и 2080 в статье не указаны. В v2rayNG #5467 речь о 127.0.0.1:10805.\n3) В статье разобран SOCKS5. HTTP-прокси без пароля как часть раскрытия не задокументирован.\n4) #5467 закрыт как дубликат #5382. #5382 (18.03) закрыт как not planned.\n5) При этом к 25.04 (#5549) в v2rayNG уже есть настройки «SOCKS5 Authentication» и «Randomize local port». С Hev TUN они ломают трафик. Включены ли они по умолчанию, неясно.",
+  "sources": [
+   "https://habr.com/ru/articles/1020080/",
+   "https://github.com/runetfreedom/per-app-split-bypass-poc",
+   "https://github.com/2dust/v2rayNG/issues/5382",
+   "https://github.com/2dust/v2rayNG/issues/5549",
+   "https://kod.ru/vpn-happ-problems"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Если на сервере заблокирован RU, а у клиента нет split, российские сайты через туннель не откроются. Это следует из логики, но в источниках нет теста именно для банков и Госуслуг. Обходной путь работает только в Happ и INCY: 3x-ui v3.9.0 передаёт заголовок Routing из subRoutingRules (а если поле пустое, то из subJsonRoutingRules) и Routing-Enable при включённом subEnableRouting. v2rayNG, Hiddify и другие клиенты этот заголовок игнорируют. Баг INCY в v3.9.0 не исправлен: заголовок всё так же берётся из правил Happ, а правила INCY попадают только в тело ответа.",
+  "notes": "Код проверен. internal/sub/controller.go в теге v3.9.0 (релиз 3 октября 2026) побайтно совпадает с main. В ApplyCommonHeaders заголовок Routing выставляется без учёта типа клиента. Issue #6273 (открыт 20.08.2026) закрыт как «not planned», связанного PR нет. Слово «был» неверно, баг актуален. PR #6545 (влит 26.09.2026) — редактор правил в интерфейсе, к доставке заголовка он отношения не имеет. Профиль roscomvpn рассчитан на Happ, INCY и Mihomo. Для INCY нужен отдельный deeplink, например incy.routing.help.",
+  "sources": [
+   "https://github.com/MHSanaei/3x-ui/blob/v3.9.0/internal/sub/controller.go",
+   "https://github.com/MHSanaei/3x-ui/issues/6273",
+   "https://github.com/MHSanaei/3x-ui/pull/6545",
+   "https://github.com/hydraponique/roscomvpn-routing",
+   "https://f.docs.rw/t/topic/329"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Habr 1056220 описывает только RU-вход: mangle PREROUTING RETURN для ipset ru, иначе MARK 0x1, затем ip rule fwmark 0x1 table 100 → default dev awg1. Exit там ничего не фильтрует. Вариант с DROP или WARP на exit — наша экстраполяция, статья её не подтверждает. Он технически работает с kernel AWG (-i awg0), но без split-tunnel на клиенте DROP просто ломает RU-сайты. WARP скрывает IP VPS, но выход всё равно зарубежный. Нужен и аналог для IPv6 (ip6tables, inet6), иначе его отключить.",
+  "notes": "Что не совпало с источником: в статье (lked, 07.07.2026) WARP и FORWARD DROP не упоминаются, автор прямо пишет, что exit не различает направления. Список обновляется cron-строкой (Пн 05:00, systemctl restart awg-routing), а не systemd-таймером. DNS идёт через exit, поэтому RU-CDN может отдать зарубежный IP, и такой трафик уйдёт в туннель. На exit лучше REJECT, чем DROP: так нет таймаутов. В runetfreedom/russia-blocked-geoip, судя по всему, есть text/ru.txt (ветка release, список виден не целиком), но основа там — antifilter. Если список пустой, скрипт должен падать.",
+  "sources": [
+   "https://habr.com/ru/articles/1056220/",
+   "https://github.com/runetfreedom/russia-blocked-geoip",
+   "https://github.com/runetfreedom/russia-blocked-geoip/tree/release/text"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Альтернатива blackhole: RU-назначения заворачивать в WARP на exit. RU-сервис увидит IP Cloudflare (общий, VPN-помеченный, с геолокацией страны VPS), а не адрес ДЦ. Это помогает только против блоков по диапазонам хостеров; сервисы, требующие RU-IP, и антифрод по VPN-базам всё равно режут или дают капчу. 3x-ui не создаёт outbound сам: нужен WireGuard-outbound с тегом warp, панель лишь регистрирует аккаунт и заполняет ключи/peer. Проблема DME касается RU-клиентов WARP, а не exit за рубежом.",
+  "notes": "Docs 3x-ui: outbound warp создаётся вручную или кнопкой «Add outbound», панель только заполняет ключи. Issue #5205 (11.06.2026): WARP-outbound не поднимался на 3x-ui v3.3.0 с Xray 26.6.1, задача закрыта без фикса, поэтому для v3.9.0 нужен smoke-test. Без fallback при падении WARP RU-сайты перестают открываться. Бан WARP у хостеров не подтвердил. Для DME в источниках RU-локация пользователя, к exit это не относится.",
+  "sources": [
+   "https://docs.sanaei.dev/docs/operations/outbounds-routing/",
+   "https://github.com/MHSanaei/3x-ui/issues/5205",
+   "https://bivlked.github.io/amneziawg-installer/warp-ru/",
+   "https://community.cloudflare.com/t/connection-to-some-websites-blocked-when-connected-to-dme-data-center-from-russia/887229",
+   "https://github.com/MHSanaei/3x-ui/wiki/Advanced"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Факты подтверждены, но мера уже, чем заявлено. PR #6628 влит 26.09.2026, v3.9.0 вышла 03.10.2026, v3.8.0 — 14.09.2026, привязка JSON-подписки к 127.0.0.1 есть. Заголовки Socks-Auth-Mode/Http-Auth-Mode уходят только при включённом автоопределении Happ и User-Agent Happ. Значения: auto (по умолчанию), disable или пусто. Режимов manual/from-json в панели нет. Проверено только на Happ Android 4.4.1 и desktop 4.3.0. v2rayNG и Hiddify не защищены. Сам 127.0.0.1 не защищает от приложений на том же устройстве.",
+  "notes": "Проверял по API GitHub (published_at) и тексту PR. Важные уточнения для server_actionable. (1) Кроме subHappLocalProxyAuth=auto нужно включить автоопределение Happ, иначе заголовок не отправится. (2) Сценарий RKNHardering — сканирование localhost с того же телефона. Loopback (v3.8.0) от него не спасает, защищает только auth. (3) Habr 1022422 (12.04.2026, Wendor) описывает собственную рандомизацию порта и логина у автора, а не Happ/3x-ui. Это косвенное подтверждение, а не тест этого PR. Страница Happ docs не открылась (socket closed), значения auto|manual|from-json|disable подтверждены через поисковый сниппет.",
+  "sources": [
+   "https://github.com/MHSanaei/3x-ui/pull/6628",
+   "https://api.github.com/repos/MHSanaei/3x-ui/releases/tags/v3.9.0",
+   "https://api.github.com/repos/MHSanaei/3x-ui/releases/tags/v3.8.0",
+   "https://www.happ.su/main/dev-docs/app-management",
+   "https://habr.com/ru/articles/1022422/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Все 6 echo-URL из реверса MAX (Habr, 05.03.2026): ipv4/ipv6-internet.yandex.net, ifconfig.me, api.ipify.org, checkip.amazonaws.com, ip.mail.ru есть в v2fly category-ip-geo-detect (обновл. 20.09.2026). 2ip.ru там тоже есть, но голого internet.yandex.net нет. Правило warp/block с sniffing прячет IP exit только от этих echo-запросов, идущих через туннель. Свой IP-адрес выхода сервер всё равно раскрывает через бэкенд приложения, WebRTC/STUN и неперечисленные домены. IP WARP (Cloudflare) тоже не российский, так что признак VPN остаётся.",
+  "notes": "Проверено по сырому файлу: ipify.org (domain: покрывает api.), full:checkip.amazonaws.com, ip.mail.ru, ipv4-internet.yandex.net, 2ip.ru, ifconfig.me. В списке нет голого internet.yandex.net и yandex.ru/internet. Последний релиз runetfreedom вышел 03.10.2026, все категории v2fly входят. Узкие места: echo-список прячет только сам адрес. MAX может узнать IP через свой сервер или звонки. Если на клиенте RU-приложения идут direct, правило на сервере не нужно. Эффективность против MAX не измерена. По данным Хакера от 06.03.2026, разработчики MAX объясняют сбор IP работой звонков.",
+  "sources": [
+   "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/category-ip-geo-detect",
+   "https://habr.com/ru/articles/1006666/",
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat",
+   "https://xakep.ru/2026/03/06/max-reverse/",
+   "https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Мера есть, но только для Happ. В 3x-ui v3.9.0 (PR #6628, влит 26.09.2026) есть настройка subHappLocalProxyAuth (по умолчанию auto). Заголовки Socks-Auth-Mode/Http-Auth-Mode уходят, только если включено автоопределение Happ и UA клиента — Happ. Проверено лишь на Happ Android 4.4.1. Если в Happ включено «Allow LAN», он сам снимает пароль. Другие клиенты заголовки игнорируют. Привязка к 127.0.0.1 (v3.8.0) касается только JSON-подписки и закрывает доступ из LAN, но не от приложений на том же устройстве. Порт с паролем всё равно виден, а VPN выдают TUN, маршруты и список пакетов.",
+  "notes": "Факты подтверждены: PR #6628, раздел про local proxy auth в changelog v3.9.0, пункт v3.8.0 о 127.0.0.1 вместо 0.0.0.0, 4 режима в доках Happ. Сузил: (1) настройка зависит от переключателя автоопределения Happ; (2) 127.0.0.1 не защищает от сканирования изнутри устройства, а угроза именно в нём; (3) Habr 1022422: признаки TUN, маршрутов и пакетов не убрать. Рекомендация «auth=password в JSON-шаблоне» опасна: пароль и порт получатся одни на всех, а не случайные на устройство, и сработают только в режиме from-json. Лучше режим auto.",
+  "sources": [
+   "https://github.com/MHSanaei/3x-ui/pull/6628",
+   "https://github.com/MHSanaei/3x-ui/releases/tag/v3.9.0",
+   "https://github.com/MHSanaei/3x-ui/releases/tag/v3.8.0",
+   "https://www.happ.su/main/dev-docs/app-management",
+   "https://habr.com/ru/articles/1022422/"
+  ]
+ },
+ {
+  "verdict": "holds",
+  "corrected": "Верно. ACL в Hysteria2: outbound(адрес[, proto/port]); встроенные действия direct/reject/default, свои outbounds direct/socks5/http; geoip:/geosite: из v2ray .dat (без файлов качается Loyalsoldier, обновление раз в 168 ч); срабатывает первое совпавшее правило. Домен резолвится, и к нему применяются и IP-правила. Оговорки: грузится только один geoip и один geosite; geosite:ru не существует (ошибка запуска), нужен category-ru; HTTP-outbound не пропускает UDP.",
+  "notes": "Проверено 2026-10-04 по документации и по файлам runetfreedom. Я разобрал .dat: в geoip есть RU, в geosite есть CATEGORY-RU и CATEGORY-IP-GEO-DETECT, так что предложенный конфиг корректен. Issue #1298 (10.01.2025): с geosite:ru сервер не стартует. Issue #1486 (11.12.2025, открыт): только один geo-файл. Риск: SOCKS5 официального WARP в proxy mode не передаёт UDP (данные из сообщества, не из доков Cloudflare), значит UDP/QUIC, ушедший в warp, может ломаться. Нужна проверка или правило reject для udp.",
+  "sources": [
+   "https://v2.hysteria.network/docs/advanced/ACL/",
+   "https://v2.hysteria.network/docs/advanced/Full-Server-Config/",
+   "https://github.com/apernet/hysteria/issues/1298",
+   "https://github.com/apernet/hysteria/issues/1486",
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Суть верна: «RU — direct» нужно отдавать в подписке, а серверный блок RU держать как страховку. Но баг INCY не «был», он есть и сейчас: #6273 закрыт как not planned, и в теге v3.9.0 заголовок Routing по-прежнему берётся из subRoutingRules для любого клиента. Заголовок понимают только Happ и INCY, причём нужно включить subEnableRouting (по умолчанию false). Клиенты Hysteria2, AWG и v2rayN на обычной подписке его не получают, и у них серверный блок RU по-прежнему ломает банки.",
+  "notes": "Проверено по коду тега v3.9.0 (коммит 3cd4bf5, 03.10.2026), файл internal/sub/controller.go. ApplyCommonHeaders ставит Routing из subRoutingRules без проверки User-Agent. Правила INCY только дописываются в тело ответа, а INCY берёт заголовок. Обход: одинаковый профиль в обоих полях. Лимит заголовка 8 КиБ. PR #6545 (смержен 26.09) — редактор с пресетами для Ирана и Китая, пресета RU нет. Пост f.docs.rw датирован 30.06, а не июлем.",
+  "sources": [
+   "https://github.com/MHSanaei/3x-ui/issues/6273",
+   "https://github.com/MHSanaei/3x-ui/blob/v3.9.0/internal/sub/controller.go",
+   "https://github.com/MHSanaei/3x-ui/pull/6545",
+   "https://github.com/hydraponique/roscomvpn-routing",
+   "https://f.docs.rw/t/topic/329"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Гео-списки — отдельная зависимость: релизы runetfreedom выходят примерно раз в 6 ч (последний 2026-10-03T18:47Z). geosite:ru не грузится, потому что списка RU в .dat нет вовсе, а не из-за регистра: Xray и сборщик v2fly оба переводят имена в верхний регистр. В geosite.dat runetfreedom есть CATEGORY-RU, TLD-RU и RU-AVAILABLE-ONLY-INSIDE. Сайты на Cloudflare или зарубежном хостинге по geoip:ru не ловятся.",
+  "notes": "Объяснение «нормализация RU против ru» неверно. В Xray rule_parser.go стоит strings.ToUpper(code), а в v2fly main.go имя списка берётся через ToUpper(basename). Data/ru в v2fly нет (404), а data/category-ru есть. Распарсил свежий geosite.dat runetfreedom: 1543 списка, RU среди них нет. Автор #3961 пользовался файлом Loyalsoldier, а grep по бинарнику ничего не доказывает. Issue закрыли 29.05.2026 без комментариев. Источник Habr использует ipdeny, а не geoip:ru, но вывод тот же. Рекомендация брать category-ru/tld-ru вместо ru остаётся в силе.",
+  "sources": [
+   "https://github.com/MHSanaei/3x-ui/issues/3961",
+   "https://raw.githubusercontent.com/XTLS/Xray-core/main/common/geodata/rule_parser.go",
+   "https://raw.githubusercontent.com/v2fly/domain-list-community/master/main.go",
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat",
+   "https://habr.com/ru/articles/1056220/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Все 6 echo-URL из реверса MAX (ipv4/ipv6-internet.yandex.net, ifconfig.me, api.ipify.org, checkip.amazonaws.com, ip.mail.ru) есть в geosite:category-ip-geo-detect. Правило на сервере (Xray с sniffing, Hy2 с sniff) скрывает IP exit-сервера только от этих echo-запросов, но не скрывает факт VPN: остаются флаг TRANSPORT_VPN и расхождение IP (WARP=Cloudflare против RU-IP, если ru-домены у клиента идут direct). Не работает для собственного бэкенда или STUN приложения в туннеле, для IP-литералов и для AWG (L3, доменов нет). Главная защита — на клиенте: RU-приложения direct или исключение из VPN.",
+  "notes": "Сам список проверен (master, 2026-10-04). Совпадают ipify.org, ifconfig.me, full:checkip.amazonaws.com, ip.mail.ru, ipv4-internet.yandex.net, 2ip.ru. Сам internet.yandex.net в список не входит, только поддомены ipv4/ipv6. Реверс MAX от runetfreedom на Хабре (05.03.2026) показал такие проверки: TRANSPORT_VPN, ICMP и TCP:443 до Telegram и WhatsApp. Правило всё это не закрывает. Hy2 по умолчанию берёт geosite от Loyalsoldier, а не от runetfreedom. Что block «выглядит аномалией», не подтверждено: MAX просто ждёт 3 с и выкидывает неответивший источник. Побочный эффект: через WARP пойдут и browserleaks, maxmind, httpbin и т.п.",
+  "sources": [
+   "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/category-ip-geo-detect",
+   "https://habr.com/ru/articles/1006666/",
+   "https://xakep.ru/2026/03/06/max-reverse/",
+   "https://v2.hysteria.network/docs/advanced/Full-Server-Config/",
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "На 07.04.2026 утверждение верно: runetfreedom (Habr 1020080, PoC) показал, что xray/sing-box-клиенты держат SOCKS5 на 127.0.0.1 без пароля, а Happ ещё и открывал API с HandlerService. С тех пор появились исправления, но включать их нужно вручную. В v2rayNG 2.1.0 (17.04.2026) пароль и случайный порт есть, но выключены по умолчанию. 3x-ui v3.9.0 передаёт Happ заголовки Socks-Auth-Mode (PR #6628, по умолчанию auto). Husi и SFA позволяли настроить пароль ещё до раскрытия.",
+  "notes": "Слова «почти все» слишком сильные. Husi, SFA и Xray (saeeddev94) позволяли задать пароль. Порт v2rayNG в #5467 — 10805, а не 10808. Обе заявки по v2rayNG (#5382, #5549) закрыты как not planned. По #5549 пароль или случайный порт ломают связь при включённом HEV TUN. Happ отключает пароль, если включено «Allow LAN». Заголовок 3x-ui уходит только клиенту с User-Agent Happ, другим клиентам он не поможет. Пароль не скрывает сам факт VPN: это видно через VpnService. Если вход и выход разнесены, утекает IP выхода, а IP входа остаётся скрытым.",
+  "sources": [
+   "https://habr.com/ru/articles/1020080/",
+   "https://github.com/2dust/v2rayNG/releases/tag/2.1.0",
+   "https://github.com/2dust/v2rayNG/issues/5549",
+   "https://github.com/MHSanaei/3x-ui/pull/6628",
+   "https://kod.ru/vpn-happ-problems"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Механизм ACL подтверждается документацией: geoip/geosite из v2ray .dat, исходящие direct/socks5/http (у http нет UDP), правила сверху вниз, срабатывает первое совпадение, домен резолвится до проверки IP-правил. Две поправки. geoUpdateInterval обновляет только файлы Loyalsoldier, которые Hysteria скачивает сама. Если указать свой путь к файлам runetfreedom, они не обновляются, и нужен свой cron с рестартом. Выход через WARP даёт IP Cloudflare, а не российский: он только скрывает IP VPS. Основная мера — сплит на клиенте.",
+  "notes": "Код geoloader.go: если в geoip/geosite задан свой путь, файл не скачивается и UpdateInterval не действует. В runetfreedom geoip.dat указан как «оригинальный geoip + все категории» (geoip:ru есть). geosite включает v2fly, где есть category-ip-geo-detect. socks5-outbound в Hysteria умеет UDP ASSOCIATE, но поддержку UDP в proxy-режиме warp-cli подтвердить не удалось: QUIC может не пройти. reject(geoip:ru) ломает RU-сервисы при полном туннеле. Порядок outbounds важен: первый становится default.",
+  "sources": [
+   "https://v2.hysteria.network/docs/advanced/ACL/",
+   "https://v2.hysteria.network/docs/advanced/Full-Server-Config/",
+   "https://raw.githubusercontent.com/apernet/hysteria/master/app/internal/utils/geoloader.go",
+   "https://github.com/runetfreedom/russia-blocked-geoip",
+   "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/category-ip-geo-detect"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "WARP на exit скрывает IP VPS: RU-сервис увидит IP Cloudflare (AS13335), но с геолокацией региона VPS, то есть зарубежный и известный как анонимайзер. Сайты, которые закрыты для зарубежных IP, работать не начнут. Через API 3x-ui v3.9.0 доступна только регистрация WARP (/warp/reg с ключами клиента). Outbound с тегом warp собирает фронтенд по кнопке, а установщик должен собрать его сам. Проблемы с DME касаются WARP-клиентов из РФ и для зарубежного exit почти не важны. Свидетельств того, что хостеры банят WARP, не найдено.",
+  "notes": "Код 3x-ui (main, v3.9.0 от 03.10.2026): в xray_setting.go есть POST /warp/:action (data/del/config/reg/changeIp/license/interval), reg принимает skey/pkey. Outbound тегом 'warp' строит buildWarpOutbound в WarpModal.tsx. Docs: «Create a WireGuard outbound with the tag warp… 3x-ui fills… keys, peer». runetfreedom (07.04.2026) лишь упоминает WARP как альтернативу второму IP. ntc.party (март 2026) и сообщество CF: блокировки на DME касаются подключений из РФ.",
+  "sources": [
+   "https://docs.sanaei.dev/docs/operations/outbounds-routing/",
+   "https://raw.githubusercontent.com/MHSanaei/3x-ui/main/frontend/src/pages/xray/overrides/WarpModal.tsx",
+   "https://raw.githubusercontent.com/MHSanaei/3x-ui/main/internal/web/controller/xray_setting.go",
+   "https://habr.com/ru/articles/1020080/",
+   "https://community.cloudflare.com/t/connection-to-some-websites-blocked-when-connected-to-dme-data-center-from-russia/887229"
+  ]
+ },
+ {
+  "verdict": "refuted",
+  "corrected": "Общий тезис неверен. RU-списки geoip.dat, которыми пользуется Xray, содержат IPv6. В Loyalsoldier ru.txt (релиз 202610011501) около 12150 IPv6-префиксов из 25094 строк, в v2fly около 10006 из 22825. Там есть Яндекс 2a02:6b8::/29 и VK 2a00:bdc0::/29, так что geoip:ru ловит IPv6. Утечка возможна, только если в split используется самодельный список только из IPv4 (cascade-снимок или AllowedIPs в AWG) либо по IPv6 нет маршрута.",
+  "notes": "В Habr 1067230 (06.08.2026) про GeoIP-базы ничего не сказано. Там описаны две конкретные схемы: снимок на 8626 записей без IPv6 и список для WARP примерно на 11800 диапазонов. Обобщение на все базы в утверждении ошибочно. Для нашей установки IPv6 актуален в двух местах: AllowedIPs у AWG на клиенте и самодельные списки. Совет ставить geosite первым полезен. UseIPv4 на RU-входе безопасен, но не обязателен.",
+  "sources": [
+   "https://habr.com/ru/articles/1067230/",
+   "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/ru.txt",
+   "https://raw.githubusercontent.com/v2fly/geoip/release/text/ru.txt",
+   "https://github.com/Loyalsoldier/geoip/releases/tag/202610011501"
+  ]
+ },
+ {
+  "verdict": "refuted",
+  "corrected": "Тезис о том, что ни одна крупная GeoIP-база не включает российский IPv6, ложен. 04.10.2026 RU-списки v2fly/geoip, Loyalsoldier/geoip и runetfreedom geoip.dat содержат около 10–12 тыс. IPv6-CIDR, в том числе Яндекс 2a02:6b8::/32 и VK 2a00:bdc0::/29. Утечка через IPv6 возможна только в узком случае: split строится по самодельному списку только из IPv4 (как каскад в Habr 1067230) или клиент/туннель не маршрутизирует IPv6 по правилам. Меры (geosite в приоритете, проверить IPv6 в Hy2/AWG) полезны, но обоснование нужно исправить.",
+  "notes": "Проверено напрямую 04.10.2026. ru.txt v2fly (релиз 202609050329): 22825 строк, из них 10006 IPv6. ru.txt Loyalsoldier: 25094 строки, 12150 IPv6. Распарсил geoip.dat runetfreedom (релиз 202610031847): 12944 IPv4 и 12150 IPv6, 2a02:6b8 входит. В самой статье на Habr нет замера по GeoIP-базам и нет geoip:ru. Там сказано, что «ни одна из схем ниже не делит IPv6» и что снимок каскада (8626 записей) не содержит IPv6. Это частный список автора, а не GeoIP-базы.",
+  "sources": [
+   "https://raw.githubusercontent.com/v2fly/geoip/release/text/ru.txt",
+   "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/ru.txt",
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/download/202610031847/geoip.dat",
+   "https://habr.com/ru/articles/1067230/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Гео-списки действительно отдельная зависимость: релизы runetfreedom выходят по cron примерно каждые 4–10 ч. Но с geosite:ru дело не в нормализации тега: тега RU в geosite.dat просто нет. Xray переводит коды в верхний регистр, и в .dat они тоже хранятся в верхнем. Нужно писать geosite:category-ru, в нём уже есть tld-ru: ru, su, xn--p1ai (рф), moscow и другие. Поэтому domain:ru и регулярка для этого не нужны. Регулярка с кириллическим «рф» ничего не поймает, потому что SNI приходит в punycode. RU-сайты за Cloudflare или на зарубежном хостинге geoip:ru действительно не ловит.",
+  "notes": "Скачал geosite.dat runetfreedom (релиз 202610031847). В нём 1543 тега: RU нет, есть CATEGORY-RU (1103), TLD-RU, RU-BLOCKED и другие. В geoip.dat тег RU есть. Ошибка в #3961 и runetfreedom#51 звучит как «code not found», а не «failed to parse», и это ошибка конфига. Почему 26.1.13 не падал, не выяснил. roscomvpn-geosite не обновлялся с 15.04.2026. Статья на Habr про AWG+ipset, не про Xray. Гео-правила имеют смысл на клиенте или на RU-узле, на зарубежном exit от них мало пользы.",
+  "sources": [
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat",
+   "https://github.com/runetfreedom/russia-v2ray-rules-dat/issues/51",
+   "https://github.com/MHSanaei/3x-ui/issues/3961",
+   "https://raw.githubusercontent.com/v2fly/domain-list-community/master/data/category-ru",
+   "https://habr.com/ru/articles/1056220/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "На Android любое приложение без разрешений видит tun0/ppp0 через NetworkInterface, его MTU, getAllNetworks() с сетью TRANSPORT_VPN и getNetworkInfo(TYPE_VPN)=CONNECTED, в том числе если оно исключено из туннеля per-app. А вот TRANSPORT_VPN на activeNetwork и его LinkProperties (DNS, маршруты) исключённое приложение видит уже от реальной сети. Протокол почти не влияет, потому что все клиенты работают через VpnService/tun. Per-app bypass снимает проверки по IP, гео и activeNetwork, но не по перечислению интерфейсов и сетей.",
+  "notes": "Утверждение завышено: исключённое приложение (addDisallowedApplication) не видит TRANSPORT_VPN/IS_VPN и loopback-DNS/маршруты на своей activeNetwork. Это видно из PR linkshield #60 от 27.09.2026 (только эмулятор Android 15, черновик) и правила RKNHardering «tun0 есть, но vpnActive=false». Loopback-DNS вообще зависит от клиента. RKS (апрель 2026): 13 из 30 приложений видят интерфейс у исключённых приложений. Habr 1081580 про split tunneling ничего не пишет. Дату v1.5 в README найти не удалось.",
+  "sources": [
+   "https://github.com/AlexMos555/linkshield/pull/60",
+   "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md",
+   "https://rks.global/ru/research/vpn-detection/",
+   "https://developer.android.com/reference/android/net/VpnService.Builder",
+   "https://habr.com/ru/articles/1081580/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "GeoIP-проверка смотрит на страну, принадлежность к ДЦ/хостингу и репутацию VPN/прокси (так в методичке Минцифры, 04.2026). Зарубежный VPS почти наверняка даёт не-RU и hosting, а proxy только если IP уже есть в репутационных списках. RU-хостинг: country=RU, но DC-метка в 63–91% случаев (одна выборка: 78 диапазонов, 2 базы). Домашний IP чист по всем трём. На Android VPN виден на устройстве при любом IP выхода, в т.ч. при split tunneling.",
+  "notes": "Цифры подтверждены (Habr 1067230, 06.08.2026, автор lked): 14 RU-хостеров, 78 диапазонов, 63%/91% DC, совпадение 56%, 1 без метки. Но это одна выборка и только 2 базы, а не «базы» вообще. Автор сам пишет, что три поля — это удобство для диагностики, а не модель решений сайта. В RKNHardering RU-хостинг+MCC 250 даёт NEEDS_REVIEW, не DETECTED. Proxy-флаг у свежего зарубежного VPS не гарантирован. Совет «direct с устройства» не прячет VPN-интерфейс на Android.",
+  "sources": [
+   "https://habr.com/ru/articles/1067230/",
+   "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md",
+   "https://ruitunion.org/posts/2026-04-09-the-ministry-of-digital-developments-guidelines-in-simple-terms/",
+   "https://www.securitylab.ru/news/571257.php"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "RKS Global (статический анализ jadx/apktool; Хакер 10.04.2026): 22 из 30 RU-Android-приложений детектят VPN, 19 шлют статус на сервер, включая все три банка выборки (Т-Банк 65, Сбер 64, ВТБ 59 баллов). Методы: TRANSPORT_VPN, tun0 (13), /proc/net/tcp, прокси. Список VPN-приложений через queryIntentServices сначала собирали только Самокат и MegaMarket. В апдейте 16.04 (уже с динамическими тестами): детект во всех 30, список VPN-клиентов собирают 7 (WB, 2ГИС, МТС, Ozon, Мегамаркет, RuStore, ОК).",
+  "notes": "Не подтвердилось: «TRANSPORT_VPN 17» и что MAX входит в эти 17. По MAX сказано только, что он прячет имена tun/ppp/tap в байтовых массивах. Число точек расходится: 68 у RKS, 80 у Хакера. «Только статика» устарело: апдейт 16.04 был динамическим. Про проверку exit IP в исследовании ничего нет. Значит, совет «сервер прячет IP через routing» этот источник не подтверждает. Исключение приложения из туннеля на клиенте убирает TRANSPORT_VPN, но tun0 и список пакетов остаются видны.",
+  "sources": [
+   "https://rks.global/ru/research/vpn-detection/",
+   "https://xakep.ru/2026/04/10/apps-research/",
+   "https://ecomhub.ru/vpn-android-rks-global-sberbank-t-bank-wildberries-ozon-avito-max-russia-2026/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Цифры Habr верны: по 78 RU DC-диапазонам метку DC ставят 63% (ip-api) и 91% (ipapi.is), базы совпадают в 56% случаев. Но «три поля» — упрощение: методичка Минцифры (апр. 2026) смотрит ещё ASN и репутационные списки VPN/proxy. В RKNHardering сам по себе RU-IP с hosting даёт NEEDS_REVIEW, а не DETECTED; DETECTED даёт только зарубежный GeoIP при российском MCC. RU-вход снижает IP-сигнал, но не убирает сигналы с устройства (TRANSPORT_VPN, tun).",
+  "notes": "Применимость: тезис «RU-вход не скрывает VPN» верен по сигналам с устройства, а не по IP — по IP вход заметно помогает (DETECTED→NEEDS_REVIEW). Чистым выглядит не только домашний IP, но и мобильный (CGNAT). Proxy-флага у RU-IP нет «пока»: репутационные базы со временем могут его поставить. Совет «RU direct через routing» сигнал TRANSPORT_VPN не снимает. Нужно исключать RU-приложения из туннеля поприложно (per-app). В RKNHardering split tunnel (разные IP напрямую и через прокси) по R1 даёт DETECTED безусловно.",
+  "sources": [
+   "https://habr.com/ru/articles/1067230/",
+   "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md",
+   "https://ruitunion.org/posts/2026-04-09-the-ministry-of-digital-developments-guidelines-in-simple-terms/",
+   "https://www.securitylab.ru/news/571257.php"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "На Android приложение, исключённое из VPN (per-app), не видит TRANSPORT_VPN у активной сети. DNS и маршруты в LinkProperties у него тоже реальные. Но интерфейс tun0 с его MTU виден через NetworkInterface, VPN-сеть видна через getAllNetworks(), а getNetworkInfo(TYPE_VPN) возвращает CONNECTED. Видны и установленные VPN-клиенты. Протокол не важен: все клиенты работают через VpnService. Отдельный профиль (Shelter/work) от детекта не защищает, помогают только роутер или другое устройство.",
+  "notes": "Сужаю утверждение. Эксперимент на Android 15 (PR #60, 27.09.2026) показал: исключённое приложение получает false по activeNetwork TRANSPORT_VPN и реальные DNS/маршруты. Значит, loopback-DNS и маршруты ему не видны. GrapheneOS #7511: VPN из основного профиля виден и из work-профиля, так что совет «отдельный профиль» неверен. Habr 1081580 — это лишь поиск строк в smali, а не проверка во время работы. #6650 не проверял. Не упомянута утечка через локальный SOCKS-порт клиента.",
+  "sources": [
+   "https://github.com/AlexMos555/linkshield/pull/60",
+   "https://rks.global/ru/research/vpn-detection/",
+   "https://github.com/GrapheneOS/os-issue-tracker/issues/7511",
+   "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md",
+   "https://habr.com/ru/articles/1081580/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Методика Минцифры (РБК, 06.04.2026; разослана 20+ компаниям, срок до 15.04) состоит из трёх этапов: проверка IP по RU-диапазонам и спискам РКН, проверка через собственное приложение (на Android через ConnectivityManager/NetworkCapabilities) и проверка на прочих ОС. В документе признаётся, что плохо выявляются iOS, VPN на роутере, VM, split и резидентные прокси. Новые VPN нужно передавать в РКН. Номера портов и tun0 взяты из утёкшего PDF (xakep, 08.04, подлинность не подтверждена). Порты там нужны для проверки настроек прокси на самом устройстве, а не для сканирования удалённых серверов.",
+  "notes": "Факты в целом подтверждаются, но есть три уточнения. 1) Списки портов (SOCKS 1080/9000/5555/16000-16100, HTTP 80/443/3128/8080/8888, Tor 9050/9051/9150) и tun0/wg0 есть только в утечке из Telegram (по NTC: §6.4 и §7.4). У РБК, Хабра и Медузы их нет. 2) Порты проверяются в настройках прокси на клиенте (System.getProperty). Значит, совет «не держать на VPS сервисы на портах 1080/8080» этой методикой не обоснован. Применимый вывод другой: на клиенте не включать системный прокси и не открывать локальный SOCKS. 3) Нужна несколько признаков, одного недостаточно.",
+  "sources": [
+   "https://xakep.ru/2026/04/08/vpn-checks/",
+   "https://www.securitylab.ru/news/571257.php",
+   "https://doxa.team/news/2026-04-06-mincifry-vpn",
+   "https://ntc.party/t/%D0%BC%D0%B5%D1%82%D0%BE%D0%B4%D0%B8%D1%87%D0%BA%D0%B0-%D0%BC%D0%B8%D0%BD%D1%86%D0%B8%D1%84%D1%80%D1%8B-%D0%BF%D0%BE-%D0%B2%D1%8B%D1%8F%D0%B2%D0%BB%D0%B5%D0%BD%D0%B8%D1%8E-vpn/23842",
+   "https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "RKS Global (апрель 2026, статика jadx/apktool, 68 точек): VPN детектили 22/30; в обновлении 16.04 со статикой и динамическим тестом на устройстве — все 30. 19 из 22 по коду передают VPN-статус на сервер (у The Bell — 18). Т-Банк, Сбер и ВТБ передают точно; что все банки — не подтверждено (про Альфа-Банк данных нет). TRANSPORT_VPN — 17 приложений, включая MAX (по Meduza). Сетевые интерфейсы (tun0) сканируют 13. Список VPN через queryIntentServices: сначала Самокат и MegaMarket, после обновления 7 — WB, 2ГИС, МТС, Ozon, Мегамаркет, RuStore, ОК.",
+  "notes": "Суть подтверждена первоисточником rks.global: 22/30, затем 30/30 (16.04), 19 шлют статус, 68 точек, Т-Банк 65 / Сбер 64 / ВТБ 59, Avito 200+ пакетов, AppMetrica в 17/30. Неточности в утверждении: «все банки» (подтверждены только 3), Самокат в списке после обновления (его там нет), «19» (The Bell пишет 18). Цифры 17 для TRANSPORT_VPN на странице RKS нет, она взята у Meduza. То, что статус уходит на сервер, выведено из кода, перехват трафика не публиковался. Вывод для сервера верный: само наличие VPN сервер не скроет.",
+  "sources": [
+   "https://rks.global/ru/research/vpn-detection/",
+   "https://xakep.ru/2026/04/10/apps-research/",
+   "https://meduza.io/feature/2026/04/11/rossiyskie-prilozheniya-dlya-android-sledyat-za-vami-po-suti-eto-polnotsennye-shpionskie-programmy",
+   "https://thebell.io/22-iz-30-populyarnykh-rossiyskikh-prilozheniy-sledyat-za-tem-vklyuchen-li-u-vas-vpn",
+   "https://novayagazeta.eu/articles/2026/05/01/30-samykh-populiarnykh-rossiiskikh-prilozhenii-otslezhivaiut-vpn-na-ustroistvakh-polzovatelei-d541e4ce4cebafe2d46883a1739a31af84b50282"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Методичка (РБК 05.04.2026, 20+ компаний) есть. Уточнения: tun/tap/wg/utun/ppp — это этап 3 (десктоп). На Android проверяют флаги IS_VPN/TRANSPORT_VPN и dumpsys. Порты (SOCKS 1080/9000/5555/16000–16100, HTTP 80/443/3128/8080/8888, Tor 9050/9051/9150) сверяют с системными настройками прокси на устройстве. Внешние порты VPS не сканируют. На этапе 1 также учитывают ASN хостинга и репутационные списки. Split и роутер названы источниками ошибок детекции, а не способами обхода.",
+  "notes": "Сама методичка в открытом доступе не найдена, всё взято из пересказов. Совет про порты на VPS к этой проверке не относится: проверяют прокси в настройках устройства. Голый IP датацентра заметен на этапе 1 при любом порте. Split через маршруты Xray (geoip:ru direct) скрывает только IP. Флаг TRANSPORT_VPN на телефоне остаётся: нужны исключения по приложениям, и даже они скрывают VPN не полностью. Роутер убирает следы на устройстве, но не IP. Для RU-сайтов нужен direct или RU-вход.",
+  "sources": [
+   "https://www.securitylab.ru/news/571257.php",
+   "https://xakep.ru/2026/04/08/vpn-checks/",
+   "https://habr.com/ru/news/1020186/",
+   "https://www.securitylab.ru/news/571207.php",
+   "https://zona.media/news/2026/04/06/metodichka"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Сканировать весь localhost умеет RKNHardering, но это открытый тестовый детектор, а не реверс приложений РФ. В режиме AUTO он проверяет 127.0.0.1/::1: сначала популярные порты, потом 1024–65535 по 200 параллельно (SOCKS5 и HTTP CONNECT). Ещё он вызывает Xray gRPC listOutbounds, опрашивает Clash API на 9090/19090/9091/9097 и подбирает слабые пароли. В методичке Минцифры есть только конкретные порты (SOCKS 1080, 9000, 5555, 16000–16100). Поэтому нужен длинный случайный пароль и udp=false. Ошибка v2rayNG #5549 закрыта как not planned, исправление не подтверждено.",
+  "notes": "Факты про RKNHardering и #5549 (25.04.2026, auth или random port с Hev TUN ломает трафик) подтверждены, но обобщение «детекторы сканируют весь localhost» не доказано. По RKS Global (апрель 2026) приложения РФ ищут VPN через системные API и список установленных пакетов. Что они перебирают весь localhost, первичными данными не показано. Важная поправка: RKNHardering подбирает admin/admin, user/password и пустой пароль, так что слабый пароль не спасает. Совет для сервера верный, но в нём должны быть сильный пароль, udp=false и закрытый или отключённый Xray API и Clash API.",
+  "sources": [
+   "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md",
+   "https://habr.com/ru/articles/1020080/",
+   "https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability",
+   "https://github.com/2dust/v2rayNG/issues/5549",
+   "https://thebell.io/22-iz-30-populyarnykh-rossiyskikh-prilozheniy-sledyat-za-tem-vklyuchen-li-u-vas-vpn"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "WebRTC/STUN как канал утечки технически реален: host-кандидаты показывают tun, srflx через туннель раскрывает exit-IP. MAX 05.03.2026 объяснил сбор IP звонками через WebRTC и отрицал отслеживание VPN. Аудит Habr 1081580 (12.09.2026) не называет IceCandidate основным HIGH-признаком. HIGH означает 15+ совпадений по 8 литералам в smali (IceCandidate, getNetworkInterfaces, tun0, ppp0, TYPE_VPN и др.). Разбивки по приложениям нет, logcat для Avito и Госуслуг недоступен, отправка на бэкенд не доказана.",
+  "notes": "Опровергнуто: IceCandidate не основной HIGH-признак. HIGH считается по числу совпадений 8 литералов, и IceCandidate вполне может объясняться SDK звонков (VK, банки). Ответ MAX подтверждён дословно. Что можно сделать на сервере: блок geoip:ru мешает российским STUN только для трафика, который идёт через туннель. Видимость tun в host-кандидатах и TRANSPORT_VPN на устройстве сервер не скроет. При split-routing ru→direct STUN покажет реальный IP. RKNHardering действительно проверяет UDP/STUN и MTProto (Call Transport checker).",
+  "sources": [
+   "https://habr.com/ru/news/1006950/",
+   "https://habr.com/ru/articles/1081580/",
+   "https://github.com/xtclovver/RKNHardering"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Роутер или второй телефон действительно надёжнее всего: на устройстве нет tun, и методичка Минцифры это признаёт. Но первая проверка методички серверная: IP сверяют с российскими. Если роутер гонит RU-трафик через VPS, IP VPS засвечивается, поэтому RU-направления надо пускать напрямую. И роутер защищает только дома. Рабочий профиль прячет VpnService и список пакетов, но не скрывает tun0 (NetworkInterface), маршруты и loopback/SOCKS. Anubis работает через Shizuku: его надо перезапускать после ребута, а замороженные приложения не получают пуши.",
+  "notes": "Атака на применимость. 1) «Роутер не детектируется» верно только на уровне устройства. Методичка (РБК, 06.04.2026) первым шагом сверяет IP пользователя с российскими и с блок-листом, так что весь трафик через VPS = детект и утечка IP VPS. Конфиги для роутера должны направлять geoip/geosite:ru напрямую. 2) Habr 1023352: в work profile видны tun0 и /proc/net/route, а не только loopback. 3) Shizuku сам по себе может считаться признаком модификации.",
+  "sources": [
+   "https://habr.com/ru/articles/1023352/",
+   "https://habr.com/ru/articles/1020080/",
+   "https://rks.global/ru/research/vpn-detection/",
+   "https://meduza.io/cards/esli-u-vas-est-takaya-vozmozhnost-zavedite-vtoroy-telefon-eto-samaya-nadezhnaya-garantiya-togo-chto-vy-i-dalshe-smozhete-obhodit-tsenzuru-roskomnadzora",
+   "https://novayagazeta.eu/articles/2026/04/06/rbk-mintsifry-razoslalo-metodichku-po-poisku-vpn-na-ustroistvakh-polzovatelei-na-iphone-vyiavlenie-takikh-prilozhenii-sushchestvenno-ogranicheno-news"
+  ]
+ },
+ {
+  "verdict": "holds",
+  "corrected": "Минцифры (Шадаев) на закрытом совещании в конце марта 2026 разослало 20+ компаниям (Сбер, Яндекс, VK, WB, Ozon, Avito, X5 и др.) методичку: ограничить доступ с VPN к 15.04. Санкции: отзыв IT-аккредитации и льгот, исключение из белых списков и предустановки. WB/Ozon начали раньше, ~7.04. К 28.04, по данным «Верстки» и MT, Ozon, WB, часть сервисов Яндекса и ритейл снова пускали пользователей с VPN; связь с падением продаж — со слов селлеров. Минцифры анонсировало кнопку жалоб на ложные срабатывания на Госуслугах.",
+  "notes": "Опровергнуть не удалось. Есть только пересказы СМИ со ссылкой на РБК, первичного документа (самой методички) нет. Минцифры косвенно подтвердило требование, а 27.04 объяснило его «безопасностью данных». Откат подтверждают только «Верстка» и MT (наблюдения пользователей и селлеров), официально его никто не признавал. Ограничения начались до дедлайна (Известия, 07.04). Кнопку жалоб по Госуслугам анонсировали 27–28.04, запуск не подтверждён. Позже Минцифры прорабатывало новые меры, в том числе давление на хостеров (CNews, 01.10.2026).",
+  "sources": [
+   "https://www.cnews.ru/news/top/2026-04-06_rossijskim_it-kompaniyam",
+   "https://www.fontanka.ru/2026/04/02/76345065/",
+   "https://ru.themoscowtimes.com/2026/04/28/marketpleisi-stali-puskat-rossiyan-s-vpn-posle-padeniya-prodazh-a193979",
+   "https://www.vedomosti.ru/technology/news/2026/04/27/1193249-mintsifri-obyasnilo",
+   "https://meduza.io/news/2026/04/07/izvestiya-soobschili-chto-rossiyskie-marketpleysy-ogranichivayut-dostup-polzovatelyam-s-vklyuchennym-vpn"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "RKNHardering (открытый тестер, не госприложение) сканирует 1024–65535 на 127.0.0.1/::1 (200 потоков; SOCKS5 0x05 0x01 0x00 и CONNECT), Xray gRPC (100 потоков) и Clash API (9090/19090/9091/9097). Открытый прокси даёт только needsReview, обход подтверждается сменой IP; есть перебор слабых паролей. Сильная auth мешает узнать exit-IP, но порт виден, а VPN выдаёт сам TUN. Своя socks-auth/порт в JSON-подписке ломает VPN-режим v2rayNG.",
+  "notes": "Сканирование полного диапазона подтверждено только для RKNHardering. Методичка (Habr) называет конкретные порты. Сканируют ли так реальные приложения РФ, не доказано. Issue v2rayNG #5549 (25.04.2026) закрыт как not planned, исправления нет. tun2socks в v2rayNG ходит на локальный порт из настроек, без auth (v2rayN #6981): нестандартный socks-inbound в JSON-шаблоне ломает трафик. Лучше: sing-box TUN без mixed inbound, без Xray API в клиенте, udp:false.",
+  "sources": [
+   "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md",
+   "https://github.com/2dust/v2rayNG/issues/5549",
+   "https://github.com/2dust/v2rayN/issues/6981",
+   "https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability",
+   "https://github.com/2dust/v2rayNG/issues/5457"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Требование подтверждается: методичка Минцифры для 20+ компаний (Сбер, Яндекс, VK, WB, Ozon, Avito, X5), срок 15.04.2026. За отказ грозят отзыв аккредитации и льгот и исключение из белых списков. Закона об этом нет. Частичный откат был: к 28.04 снова пускали Ozon, WB, Яндекс Пэй/Книги/Карты, ВкусВилл, Перекрёсток и Пятёрочку. Кнопку жалоб на Госуслугах Минцифры анонсировало 27.04 в Max. Вывод «опасна только утечка IP» слишком узкий: 2-й этап методички ищет VPN на самом устройстве, а найденные IP передаются властям.",
+  "notes": "О закрытой встрече РБК написало 02.04; формулировка «в конце марта» взята из CNews. В статье Ведомостей от 27.04 кнопки жалоб нет, это анонс Минцифры в Max (anti-malware.ru). MT пишет об откате «сервисов Яндекса» только про Пэй, Книги и Карты. Про банки отката не нашёл. Для проекта важно: 01.10.2026 Минцифры предложило реестр РКН для клиентов хостингов, держащих VPN, с запретом на год на любой российский хостинг. Это прямой риск для опционального entry VPS в РФ.",
+  "sources": [
+   "https://www.fontanka.ru/2026/04/02/76345065/",
+   "https://www.cnews.ru/news/top/2026-04-06_rossijskim_it-kompaniyam",
+   "https://ru.themoscowtimes.com/2026/04/28/marketpleisi-stali-puskat-rossiyan-s-vpn-posle-padeniya-prodazh-a193979",
+   "https://www.anti-malware.ru/news/2026-04-27-111332/49839",
+   "https://zona.media/news/2026/10/01/vpn"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "VPN на роутере не оставляет следов на самом устройстве (это признаёт методичка Минцифры), но первый этап проверки идёт по IP на стороне сервиса, и его роутер не обходит. Помогает только раздельная маршрутизация на роутере: RU-трафик идёт напрямую. Рабочий профиль (Island/Shelter) скрывает от приложений только признак VPN в API (ConnectivityManager). tun0, /proc/net/route и loopback/SOCKS остаются видны. Anubis (Shizuku, pm disable-user) работает, но у замороженных приложений не приходят уведомления. Второй телефон надёжнее всего.",
+  "notes": "Сама статья про Anubis (14.04.2026) говорит, что профиль НЕ защищает от tun0, /proc/net/route и localhost SOCKS: ядро одно на всё устройство. YourVPNDead и RKNHardering находят VPN из любого профиля, Meduza (23.04.2026) пишет то же. Методичка: «на самом устройстве отсутствуют локальные артефакты». Это про устройство, а не про IP-этап. Про MAX первичных тестов нет, только общий совет завести второй телефон.",
+  "sources": [
+   "https://habr.com/ru/articles/1023352/",
+   "https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno",
+   "https://meduza.io/cards/esli-u-vas-est-takaya-vozmozhnost-zavedite-vtoroy-telefon-eto-samaya-nadezhnaya-garantiya-togo-chto-vy-i-dalshe-smozhete-obhodit-tsenzuru-roskomnadzora",
+   "https://github.com/loop-uh/yourvpndead",
+   "https://habr.com/ru/articles/1020080/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "WebRTC/STUN технически может раскрыть VPN: в нативном (не браузерном, без mDNS) WebRTC host-кандидаты содержат IP tun, а srflx через полный туннель показывает IP exit. Что приложения реально это делают, не доказано. Аудит Habr 1081580 не называет IceCandidate «основным» признаком: это 1 из 8 литералов, которые суммируются в балл (15+ = HIGH), разбивки по приложениям нет, а сам литерал есть в любой SDK звонков. MAX не подтверждал детект: компания заявила, что IP нужен только для звонков, а к VPN «не имеет отношения».",
+  "notes": "Совет «geoip:ru block на exit» неверный. При полном туннеле он ломает RU-сервисы. STUN на не-RU серверы (например, Google) всё равно отдаст IP exit, host-кандидат tun уходит через сигнализацию, а сам отказ UDP/STUN тоже служит признаком (RKNHardering проверяет его доступность). Правильнее делать раздельную маршрутизацию на клиенте: RU-приложения или домены пускать напрямую либо через RU-вход. RKNHardering при этом отдельно ловит паттерн split tunneling. Видят ли исключённые из туннеля приложения tun через getNetworkInterfaces, нужно проверить.",
+  "sources": [
+   "https://habr.com/ru/articles/1081580/",
+   "https://habr.com/ru/news/1006950/",
+   "https://github.com/xtclovver/RKNHardering/blob/main/README.md"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Публичных доказательств цепочки «приложение сообщило IP → бан» нет. Волны: 04.08.2026, 7–8.09, после выборов (рост с 21–22.09, пик 25.09). Банили IP и целые подсети хостеров. В треде ntc.party один участник пишет, что в /24 забанили один из двух одинаковых серверов. Это единичный случай, а не установленный факт. Meduza не писала «точечные»: сервисы сообщили, что задета лишь часть серверов. По пересказу SecurityLab, методичка обязывает искать VPN, но прямо не требует передавать в РКН IP серверов.",
+  "notes": "Применимость. Блок RU (geoip/geosite:ru→block) на сервере не прячет IP. Приложение видит VPN через ConnectivityManager и узнаёт внешний IP через зарубежные эндпоинты, а у пользователя без client-side split ломаются RU-сервисы. Выход через WARP меняет exit IP, но может вызвать капчи и гео-отказы. auth-заголовки и fallback помогают от active probing (te-st называет его одним из механизмов), но не спасают от бана подсети. Реально работают client split-tunnel для RU, RU-вход (2 хопа) и быстрая ротация IP. Эффективность ни одной меры не подтверждена.",
+  "sources": [
+   "https://ntc.party/t/%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0-ip-%D0%B0%D0%B4%D1%80%D0%B5%D1%81%D0%BE%D0%B2-vpn-%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%BE%D0%B2-%D1%80%D0%BA%D0%BD-04082026/25528",
+   "https://meduza.io/feature/2026/08/04/nekotorye-servisy-soobschili-o-novoy-volne-blokirovok-vpn-v-rossii-ee-nazyvayut-odnoy-iz-krupneyshih-za-poslednee-vremya",
+   "https://te-st.org/2026/09/30/vlessmore/",
+   "https://ru.themoscowtimes.com/2026/09/29/posle-viborov-v-dumu-v-rossii-nachalas-volna-blokirovok-vpn-a207251",
+   "https://www.securitylab.ru/news/571207.php"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Публичного доказательства цепочки «приложение сообщило IP → РКН забанил» нет, есть только гипотезы экспертов (Козлюк, Meduza). 04.08.2026 прошла волна блокировок по IP и подсетям хостеров. Пик 25.09 после выборов подтверждён. Сбой с 07.09 задокументирован, но по симптомам («туннель рвётся через секунды») похож скорее на DPI, чем на баны IP. Self-hosted VPS и случай «из двух в одной /24 забанили один» известны только по одному сообщению на форуме.",
+  "notes": "Нет ни официальных документов, ни воспроизводимых тестов. Te-st.org (30.09) пишет о блоках целых AS и подсетей хостеров с августа, это не вяжется с картиной «точечных» банов отдельных IP. Случай с /24 (Tyman, ntc.party, 05.08) — единичный. Совет «блок .ru в xray» автор поста сам называет малоэффективным. Методичка (SecurityLab, 05.04.2026) описывает, как приложения определяют VPN. Передачу IP в РКН она описывает только как требование, фактов передачи нет. Server_actionable разумен, но связь с причиной банов не доказана.",
+  "sources": [
+   "https://ntc.party/t/%D0%B1%D0%BB%D0%BE%D0%BA%D0%B8%D1%80%D0%BE%D0%B2%D0%BA%D0%B0-ip-%D0%B0%D0%B4%D1%80%D0%B5%D1%81%D0%BE%D0%B2-vpn-%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%BE%D0%B2-%D1%80%D0%BA%D0%BD-04082026/25528",
+   "https://meduza.io/feature/2026/08/04/nekotorye-servisy-soobschili-o-novoy-volne-blokirovok-vpn-v-rossii-ee-nazyvayut-odnoy-iz-krupneyshih-za-poslednee-vremya",
+   "https://ru.themoscowtimes.com/2026/09/29/posle-viborov-v-dumu-v-rossii-nachalas-volna-blokirovok-vpn-a207251",
+   "https://rb.ru/news/vpn-v-rossii-vtoroj-den-rabotayut-s-pereboyami-polzovateli-zhaluyutsya-na-poteryu-soedineniya-s-zarubezhnymi-serverami/",
+   "https://te-st.org/2026/09/30/vlessmore/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Апрель 2026 (9–16.04): МТС пишет «Включен VPN. Данные могут не отображаться». Ozon советует отключить VPN, а по Habr (09.04) у него не грузятся фото и checkout. Пресс-служба WB: «работа может быть затруднена». У Т-Банка и Яндекс Go ComNews всплывающих окон не нашёл. По RKS Global, 22 из 30 Android-приложений детектируют VPN, 18–19 из них шлют статус на свои серверы. Прямая отправка в РКН не доказана. По данным СМИ, методичка Минцифры требует от сервисов выявлять VPN.",
+  "notes": "Всё это пересказы СМИ: саму методичку Минцифры никто не опубликовал. Habr 1021392 вышел 09.04, а не в середине апреля, и WB там пишет другое: «Лучше его отключить». Фраза «банки по части отчётов не пускали» не подтверждена: Meduza лишь включает Сбер, ВТБ, Альфу и Т-Банк в список 50+, а ComNews у Т-Банка уведомлений не нашёл. В узкой формулировке «напрямую в РКН не шлют» верно, но статус VPN уходит на серверы компаний. Блокировку IP VPN-серверов по данным Max (istories) никто не проверил.",
+  "sources": [
+   "https://www.comnews.ru/content/244810/2026-04-16/2026-w16/1009/rossiyskie-servisy-chastichno-ogranichivayut-rabotu-pri-vklyuchennom-vpn",
+   "https://habr.com/en/articles/1021392/",
+   "https://thebell.io/22-iz-30-populyarnykh-rossiyskikh-prilozheniy-sledyat-za-tem-vklyuchen-li-u-vas-vpn",
+   "https://istories.media/news/2026/04/07/vlasti-khotyat-zastavit-servisi-otslezhivat-vpn-u-polzovatelei-i-peredavat-dannie-dlya-blokirovok/",
+   "https://www.securitylab.ru/news/571207.php"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Приказ РКН №51 от 28.02.2025 (Минюст 31.03.2025 №81700, в силе с 12.04.2025, основание: 216-ФЗ) обязывает операторов передавать сетевые адреса (IPv4/IPv6, для динамики — диапазоны) с привязкой к региону/муниципалитету и номера ТСПУ, через которые идёт трафик. Это карта адресных пулов, а не «IP конкретного абонента»: РКН это прямо опровергает (26.05.2026). Уведомлены 1359 операторов (март 2026), к 21.05 наказаны 85. Связь с блокировками VPN — оценки экспертов, не официальная позиция. Новый детектор зарубежного VPS из этого не следует.",
+  "notes": "Цифры, номер и даты приказа подтвердил сам РКН (Ведомости). Сужаю: (1) передаются пулы и диапазоны с гео и ID ТСПУ, без ФИО; РКН отрицает, что получает связку «IP — пользователь». (2) Срок обновления в пересказах разный: 1 рабочий день у Теплицы, 1 сутки у telecomika; срок «1 час» относится к запросу РКН или к dual-stack. (3) Приказ точнее направляет ТСПУ, но не раскрывает VPS сам. Совет про RU-вход верен и без приказа: ТСПУ видит весь трафик RU-хостинга.",
+  "sources": [
+   "https://www.vedomosti.ru/technology/news/2026/05/26/1200076-roskomnadzor-oproverg-soobscheniya",
+   "https://www.telecomika.ru/prikaz_51_roskomnadzora_o_sredstvah_svyazi",
+   "https://te-st.org/2026/05/27/collectip/",
+   "https://kod.ru/rkn-shtraf-operatory-ip-adresa-vpn",
+   "https://ru.themoscowtimes.com/2026/05/26/roskomnadzor-nachal-trebovat-u-operatorov-svyazi-ip-adresa-rossiyan-dlya-blokirovok-vpn-a196222"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Без локального SOCKS к сканированию localhost клиенты WG/AWG не уязвимы. Но на Android приложение, исключённое из split tunneling, может привязать сокет к tun0 (curl --interface tun0, SO_BINDTODEVICE, ping) и узнать IP сервера. Это issue #2457 (AWG 2.0), открыто с 09.04.2026, фикс PR #3199 от 22.09.2026 пока не влит. Xray-мост в Amnezia исправлен PR #2456, влитым 13.04.2026; PR #2453 закрыт 25.06.2026 без слияния.",
+  "notes": "Через GitHub API: #2453 merged_at=null, комментарий «already fixed in another PR». Фикс PR #2456 влит в dev, и в dev xrayProtocol.cpp передаёт tun2socks адрес socks5://user:pass@127.0.0.1. Issue #2452 формально открыто. Утверждение «уязвимость появляется только из-за моста» неверно для Android split tunneling: обход через tun0 затрагивает WG/AWG. Фикс strict split tunneling будет выключен по умолчанию. Для sing-box tun без mixed отдельного аудита нет, вывод сделан по архитектуре.",
+  "sources": [
+   "https://github.com/amnezia-vpn/amnezia-client/pull/2453",
+   "https://github.com/amnezia-vpn/amnezia-client/pull/2456",
+   "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+   "https://github.com/amnezia-vpn/amnezia-client/pull/3199",
+   "https://github.com/throneproj/ThroneForAndroid/issues/62"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Это предложения, а не действующая норма. 03.08.2026 РБК со ссылкой на источники сообщил: Минцифры обсуждает с хостерами мониторинг только тех IP, что включены в перечень ЦМУ ССОП (белый список). Если VPN на таком IP регулярно виден неделю, хостеру шлют запрос, ответить надо за 24 ч, иначе IP исключат. Для клиентов хостинга способы идентификации хотят сократить до ЕСИА, ЕБС или паспорта лично. 31.08 Минцифры письмом «попросило», а не «потребовало», хостеров, CDN и анти-DDoS вынести IP белого списка в отдельные подсети. ФСБ поддержала.",
+  "notes": "Факты подтверждены несколькими независимыми СМИ (РБК через MT, Коммерсант, Ведомости). Первоисточника нет: ни текста письма, ни НПА, ни сроков. Утверждение надо сузить. Недельный мониторинг касается IP из перечня ЦМУ ССОП, а не любых IP. Минимально идентифицированного клиента могут отключить за 30 минут. Для проекта: обычный арендованный RU-VPS не в белом списке, и этот механизм его напрямую не задевает. Но покупку RU-VPS усложнит ужесточение идентификации, о котором Коммерсант и Forbes писали ещё в июле.",
+  "sources": [
+   "https://ru.themoscowtimes.com/2026/08/03/mintsifri-velelo-internet-operatoram-usilit-borbu-s-vpn-a202553",
+   "https://www.kommersant.ru/doc/8922142",
+   "https://www.vedomosti.ru/technology/news/2026/08/31/1224824-mintsifri-poprosilo",
+   "https://www.kommersant.ru/doc/8812971",
+   "https://ru.themoscowtimes.com/2026/08/04/desyatki-vpn-servisov-perestali-rabotat-v-rossii-posle-novih-trebovanii-mintsifri-k-provaideram-a202667"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Минцифры просило ввести плату за мобильный международный трафик сверх 15 ГБ/мес (обсуждали около 150 ₽/ГБ) к 01.05.2026. Затем срок сдвинули на 01.06, потом на осень. 23.09.2026 BBC сообщила, что идею вернули для 5G, но с порогом 50 ГБ, а не 15. Дату обсуждали с 01.10, правительство её не утвердило. Слова главы «Вымпелкома» Анохина о том, что VPN не отделить от прочего зарубежного трафика, прозвучали 02.04.2026 на «Телекоме 2026» и к 5G не относятся. На 04.10.2026 введения не нашёл.",
+  "notes": "Неточности в утверждении: для 5G порог 50 ГБ (Meduza, iStories), «100–150 ₽» в источниках выглядит как «~150 ₽». Применимость RU-входа: если считать по геолокации IP назначения, трафик до RU-VPS внутренний, и плата его не касается. Но нормативного документа нет, метод учёта не опубликован, так что это предположение. Есть и обратный риск: на мобильных при белых списках RU-хостинг тоже может быть недоступен. Сейчас аргумент второстепенный.",
+  "sources": [
+   "https://meduza.io/news/2026/09/23/bi-bi-si-v-pravitelstve-vernulis-k-idee-platy-za-mezhdunarodnyy-trafik-no-teper-v-seti-5g-v-rossii-ona-dostupna-tolko-vladeltsam-androidov",
+   "https://istories.media/news/2026/09/23/operatori-mogut-nachat-vzimat-doplatu-za-mezhdunarodnii-trafik-5g-v-ramkakh-borbi-s-vpn/",
+   "https://habr.com/ru/news/1018584/",
+   "https://www.kommersant.ru/doc/8625432",
+   "https://zona.media/news/2026/05/21/trafik"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "На 15–16.04.2026 реакции в основном мягкие: МТС «Данные могут не отображаться», WB «работа может быть затруднена», у Ozon не грузились карточки и оформление. Но к 29.04 Ozon, WB, Яндекс и ритейл ослабили ограничения из-за падения продаж. Что приложения «ничего не шлют в РКН», неверно: по данным РБК, методичка Минцифры требует передавать IP новых VPN регулятору. RKS Global: 19 из 30 приложений отправляют VPN-статус на свой сервер. Прямых доказательств передачи в РКН нет. Вывод для сервера: exit-IP своего VPS тоже может засветиться.",
+  "notes": "ComNews: банки (T-Bank) уведомлений сразу не показывали, тезис про банки шаткий. Meduza даёт только список без деталей. Habr 1021392 от 09.04, а не 16.04. Применимость: «server_actionable: нет» — слишком оптимистично. Если открывать RU-приложения через туннель, они видят exit-IP VPS. По словам Козлюка (Гильдия VPN, MT 29.09.2026), такие данные — возможный источник блокировок по IP. Нужен split-routing RU-трафика в обход туннеля (geoip:ru → direct). Флаг TRANSPORT_VPN на Android это не скроет, только исключение приложения из VPN или рабочий профиль.",
+  "sources": [
+   "https://www.comnews.ru/content/244810/2026-04-16/2026-w16/1009/rossiyskie-servisy-chastichno-ogranichivayut-rabotu-pri-vklyuchennom-vpn",
+   "https://ura.news/news/1053089318",
+   "https://habr.com/ru/news/1019646/",
+   "https://rks.global/ru/research/vpn-detection/",
+   "https://ru.themoscowtimes.com/2026/09/29/posle-viborov-v-dumu-v-rossii-nachalas-volna-blokirovok-vpn-a207251"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Приказ РКН №51 от 28.02.2025 (основание: 216-ФЗ, п.5.2-1 ст.46 закона «О связи»; в силе с 11/12.04.2025) обязывает операторов передавать сетевые адреса/диапазоны (IPv4/IPv6), выделенные абонентам, с привязкой к субъекту/муниципалитету и номеру ТСПУ. Изменения: в течение 1 дня, по запросу — за 1 час. Привязки IP к конкретному абоненту там нет, РКН это отрицает (26.05.2026). Известия: 1359 уведомлений (март 2026), 85 штрафов к 21.05.2026.",
+  "notes": "Слова «карта IP абонентов» преувеличивают: это пулы адресов + гео + ID ТСПУ, без ФИО/договора. Расходятся: дата вступления (11 или 12.04), срок обновления (рабочий/календарный день), статья КоАП (19.7.10 ч.6 у Теплицы против 14.1 ч.3 в пересказе Известий), суммы штрафов. Связь с VPN — вывод СМИ и экспертов; в первоисточнике у Известий про VPN, похоже, ничего нет. Полный текст приказа на Гаранте прочитать не удалось. Практический вывод для RU-входа верен.",
+  "sources": [
+   "https://iz.ru/2103263/valerii-kodachigov/v-rf-usilili-kontrol-za-ip-adresami-polzovatelej",
+   "https://www.vedomosti.ru/technology/news/2026/05/26/1200076-roskomnadzor-oproverg-soobscheniya",
+   "https://www.telecomika.ru/prikaz_51_roskomnadzora_o_sredstvah_svyazi",
+   "https://te-st.org/2026/05/27/collectip/",
+   "https://www.garant.ru/products/ipo/prime/doc/411683761/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Без локального SOCKS/HTTP-порта (WireGuard/AmneziaWG, sing-box только с tun, без mixed и clash_api) уязвимости «открытый прокси на localhost» нет. Но от обнаружения VPN это не защищает: флаг TRANSPORT_VPN и интерфейс tun0 видны любому приложению. В Amnezia проблема была только в Xray-мосте. PR #2453 закрыли без слияния с пометкой «already fixed in another PR». В коде 5.0.3.0 (18.09.2026) есть случайные логин/пароль и случайный порт на десктопе, Android и iOS.",
+  "notes": "Проверил клон amnezia-client 94b51df (5.0.3.0). Логин/пароль SOCKS есть в inbound.cpp, xrayProtocol.cpp, Xray.kt и HevSocksTunnel. Других слушателей на 127.0.0.1 не нашёл. Issue #2452 по-прежнему открыт, в каком релизе появился фикс — не установил. В Xray main UDP ASSOCIATE работает только после TCP-рукопожатия с авторизацией. В sing-box-клиентах (Hiddify, Karing) clash_api — отдельный вектор. Отдельного аудита AWG-клиентов нет.",
+  "sources": [
+   "https://github.com/amnezia-vpn/amnezia-client/pull/2453",
+   "https://github.com/amnezia-vpn/amnezia-client/issues/2452",
+   "https://github.com/amnezia-vpn/amnezia-client/releases",
+   "https://raw.githubusercontent.com/XTLS/Xray-core/main/proxy/socks/server.go",
+   "https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "3–4.08.2026 РБК (4 источника) сообщил, что Минцифры обсуждает с хостерами, но не утвердило, мониторинг только тех IP, что внесены в перечень исключений ЦМУ ССОП (корпоративные VPN). Если VPN-инфраструктура видна там неделю, хостер получает запрос и за сутки должен подтвердить назначение или вывести IP из перечня. Клиентов делят по уровню идентификации: ЕСИА/ЕБС/договор юрлица → уведомление, телефон/карта → приостановка за 30 мин. 31.08 Минцифры письмом попросило хостеров, CDN и анти-DDoS вынести IP белого списка в отдельные подсети.",
+  "notes": "Сужение: мониторинг касается не всех IP хостера, а только перечня исключений ЦМУ ССОП. Статус: обсуждение, сроков и НПА нет; письмо от 31.08 известно по копии у РБК. Для схемы проекта: зарубежный VPS эти меры не задевают. RU-нода не в перечне исключений, так что напрямую тоже нет. Реальный риск для RU-ноды — уровень идентификации у хостера: при упрощённой возможна приостановка за 30 мин. server_actionable в целом верен; добавить: брать RU-хостера, понимая риск привязки к личности.",
+  "sources": [
+   "https://telesputnik.ru/materials/gov/news/mincifry-obsuzdaet-usilenie-kontrolya-za-vpn-servisami-cerez-xosting-provaiderov",
+   "https://www.cableman.ru/content/mintsifry-usilit-kontrol-za-ip-adresami-legitimnykh-vpn",
+   "https://ru.themoscowtimes.com/2026/08/04/desyatki-vpn-servisov-perestali-rabotat-v-rossii-posle-novih-trebovanii-mintsifri-k-provaideram-a202667",
+   "https://www.vedomosti.ru/technology/news/2026/08/31/1224824-mintsifri-poprosilo",
+   "https://hightech.fm/2026/08/31/fsb-vpn"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Весной 2026 Минцифры (поручение Шадаева от 28.03) обсуждало плату за мобильный международный трафик сверх 15 ГБ/мес, около 150 ₽/ГБ, срок «до 01.05». Затем срок перенесли на 01.06 и после выборов в Думу. 07.07 замминистра Лебедев заявил в Думе, что такая плата «не рассматривается». 23.09 Би-би-си со ссылкой на анонимные источники сообщила о плате за трафик сверх 50 ГБ в сети 5G, возможно с 01.10. Глава «Вымпелкома» Анохин 02.04 сказал, что VPN трудно выделить внутри международного трафика. Официального документа нет, о введении платы не сообщалось.",
+  "notes": "Основа верна, но требует уточнений. (1) Цена: в источниках около 150 ₽/ГБ, диапазон «100–150» не подтверждён. (2) Вариант для 5G: порог 50 ГБ, а не 15; всё держится на анонимных источниках Би-би-си, дата 01.10 не утверждена. (3) Нет официального НПА; 07.07.2026 Минцифры публично отрицало, что такая плата рассматривается. Это пропущено в заявлении. (4) Анохин высказался 02.04 и мягче: не «не могут», а «очень сложно». Вывод о RU-входе — гипотеза: правила тарификации неизвестны.",
+  "sources": [
+   "https://www.kommersant.ru/doc/8553907",
+   "https://www.kommersant.ru/doc/8625432",
+   "https://www.kommersant.ru/doc/8674760",
+   "https://habr.com/ru/news/1056566/",
+   "https://meduza.io/news/2026/09/23/bi-bi-si-v-pravitelstve-vernulis-k-idee-platy-za-mezhdunarodnyy-trafik-no-teper-v-seti-5g-v-rossii-ona-dostupna-tolko-vladeltsam-androidov"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Android 16 QPR1+: скрытый @hide API registerQuicConnectionClosePayload без проверки прав. Приложение с правом INTERNET вызывает его через Binder, и system_server шлёт UDP мимо VPN даже при Always-on и Block without VPN. Так утекает реальный IP. Работает только при включённом флаге DeviceConfig tethering/close_quic_connection. По README PoC на патче 04.2026 флаг по умолчанию выключен, Mullvad пишет, что включён. Google: Won't Fix. GrapheneOS 2026050400 (05.05.2026) отключил функцию.",
+  "notes": "Основа подтверждена первоисточниками: writeup, PoC, Mullvad, ответ Google. Сужаю: нужен QPR1+, эксплойт зависит от флага, а данные о его дефолте расходятся. Обход ADB: device_config put tethering close_quic_connection -1. Forbes вернул 403, не проверен. Оценка «выдаёт только факт VPN» неполная: сравнив реальный IP с IP из туннеля, бэкенд узнаёт и exit-IP VPS. Правда, этот IP он видит и так.",
+  "sources": [
+   "https://lowlevel.fun/posts/tiny-udp-cannon-android-vpn-bypass/",
+   "https://github.com/0x33c0unt/quic-vpn-bypass",
+   "https://mullvad.net/en/blog/2026/5/12/any-app-on-recent-android-versions-can-leak-certain-traffic",
+   "https://www.androidauthority.com/grapheneos-fixed-android-vpn-flaw-3664926/",
+   "https://cyberinsider.com/grapheneos-fixes-android-vpn-leak-google-refused-to-patch/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "На iOS приложение не видит чужие процессы, таблицу маршрутов и VPN-API, поэтому методичка Минцифры называет детект «затруднённым». Но тезис «sandbox не даёт сканировать loopback» не доказан: приложения на iOS могут слушать локальные порты и подключаться к ним, а iOS-версии Happ, V2BOX и Karing отмечены как уязвимые для атаки через открытый SOCKS5 на 127.0.0.1. Ещё есть эвристики (__SCOPED__, utun в getifaddrs), но они дают ложные срабатывания. Через echo-сервис утекает IP выходного узла.",
+  "notes": "Medusa от 06.04.2026 подтверждает слова методички: на iOS доступ к системным параметрам «существенно ограничен». Про loopback иначе: Local Mess (2025) пишет, что iOS-приложения могут слушать локальные порты. Zapret (07.04.2026) отмечает уязвимые iOS-клиенты. Воспроизводимого теста скана на iOS я не нашёл. Блокировку тоже не подтвердить, поэтому «не даёт» заменено на «не доказано». Сервер: SOCKS с auth/без inbound на клиенте плюс RU→direct.",
+  "sources": [
+   "https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno",
+   "https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability",
+   "https://localmess.github.io/",
+   "https://habr.com/ru/articles/1020080/",
+   "https://developer.apple.com/forums/thread/650650"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "ЦМУ ССОП (РКН) ведёт список исключений для организаций, использующих иностранные протоколы шифрования / доступ к зарубежным ресурсам. По словам РКН от 22.04.2026, туда входят более 57 тыс. адресов и подсетей 1730 организаций. Цифра 75 тыс. IP — это данные «Коммерсанта» от апреля 2025 г., то есть другая дата и другая единица счёта. Заявки подают по e-mail white_list@cmu.gov.ru: название организации, ИНН, протокол, IP источника и назначения, цель. Список снимает только протокольную фильтрацию ТСПУ. На проверки VPN внутри приложений он не влияет.",
+  "notes": "Цифры 57 и 75 тыс. не противоречат друг другу: это разные даты, и 57 тыс. — «адреса и подсети», так что IP по факту больше. Фразы «технически отличить нельзя» в первоисточниках РКН нет. SecurityLab/РБК пишут о методике Минцифры для приложений: на iOS, роутере или в ВМ корпоративный VPN не распознать. К ТСПУ это не относится. Что заявку принимают через «личный кабинет», пишут СМИ, а РКН называет e-mail. Для частного сервера: нужны ИНН/юрлицо, IP сервера раскрывается, а детект VPN в приложениях список не обходит. Практически неприменимо.",
+  "sources": [
+   "https://habr.com/ru/news/1026710/",
+   "https://www.anti-malware.ru/news/2026-04-22-111332/49798",
+   "https://xakep.ru/2025/04/17/rkn-white-lists/",
+   "https://www.securitylab.ru/news/571207.php",
+   "https://cisoclub.ru/roskomnadzor-rasshiril-spisok-razreshjonnyh-korporativnyh-vpn-do-57-tysjach-adresov/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Android 16 QPR1+ (по leewoobin, также 17): приложение с правами INTERNET и ACCESS_NETWORK_STATE через ConnectivityManager.registerQuicConnectionClosePayload заставляет system_server отправить произвольный UDP мимо VPN, даже при Always-on и Block without VPN. Так раскрывается реальный IP. Google ответил Won't Fix. Фикс есть в GrapheneOS 2026050400. На стоковом Android есть обход через adb: device_config put tethering close_quic_connection -1. Факт VPN приложение и так видит через TRANSPORT_VPN.",
+  "notes": "1) Уязвимы не все Android 16, а начиная с QPR1. 2) Есть ADB-митигация на клиенте, так что «только уровень ОС» сказано слишком жёстко. 3) «Выдаёт не сервер» верно лишь отчасти. Трафик в туннеле и так показывает IP выходного VPS, а утечка привязывает к нему реальный IP. 4) leewoobin пишет, что в апреле 2026 флаг выключен по умолчанию, но сам этого не проверял. 5) Случаев, когда российские приложения используют этот вектор, не найдено. Forbes отдал 403, дату взял из URL.",
+  "sources": [
+   "https://lowlevel.fun/posts/tiny-udp-cannon-android-vpn-bypass/",
+   "https://leewoobin.com/posts/android-quic-vpn-lockdown-exception/",
+   "https://cyberinsider.com/grapheneos-fixes-android-vpn-leak-google-refused-to-patch/",
+   "https://www.techradar.com/vpn/vpn-privacy-security/grapheneos-patches-an-android-vpn-bypass-that-google-decided-to-leave-alone",
+   "https://www.forbes.com/sites/daveywinder/2026/05/15/wont-fix-all-vpn-apps-affected-as-google-android-16-leaks-info/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Белый список (список исключений) ведёт ЦМУ ССОП при РКН. Официальный канал: заявка на white_list@cmu.gov.ru, где указываются ИНН, протокол, IP-адреса и цель. «Личный кабинет» упоминает только анонимный источник «Коммерсанта». Цифры не противоречат друг другу: 75 тыс. записей на апрель 2025 года (в 2023-м было 12 тыс.) и более 57 тыс. адресов и подсетей у 1730 организаций на 22.04.2026 (Интерфакс со ссылкой на РКН). Что корпоративный VPN технически не отличить, РКН не утверждал: это мнение экспертов, а методика из материала РБК предлагает различать по паттернам подключений.",
+  "notes": "Сам белый список подтверждается заявлениями РКН (апрель 2025 и 22.04.2026). Разница в цифрах объясняется датой и единицей подсчёта: «записи» против «адресов и подсетей». Источника, что 57 тыс. и 75 тыс. — это одновременные оценки «по разным источникам», нет. Тезис «пока нельзя отличить» — экспертная оценка (бывший сотрудник «Яндекса» в «Коммерсанте»), а не установленный факт. Вывод «частному лицу почти неприменимо» верен: в заявке нужны ИНН организации и раскрытие IP.",
+  "sources": [
+   "https://www.interfax.ru/russia/1085410",
+   "https://habr.com/ru/news/1026710/",
+   "https://xakep.ru/2025/04/17/rkn-white-lists/",
+   "https://paperpaper.io/papernews/2026/4/10/belyj-spisok-vpn-servisov-formiruet-ro/",
+   "https://www.securitylab.ru/news/571207.php"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Само использование VPN гражданами не запрещено и не наказывается. С 01.09.2025 действует ст. 13.53 КоАП: штраф 3–5 тыс. ₽ за умышленный поиск заведомо экстремистских материалов (из списка Минюста) и доступ к ним, «в том числе через VPN». VPN здесь входит в состав правонарушения, а не отягчает его. Отягчающим обстоятельством VPN стал только в уголовном праве: п. «ф» ч. 1 ст. 63 УК (282-ФЗ). Штраф за рекламу VPN (ч. 18 ст. 14.3 КоАП): 50–80 тыс. ₽ для граждан, 80–150 тыс. ₽ для должностных лиц, 200–500 тыс. ₽ для юрлиц.",
+  "notes": "Штрафы и даты подтверждаются. Ошибка в утверждении: VPN не отягчает штраф по ст. 13.53 КоАП, а входит в её состав. Отягчающим обстоятельством VPN является только для преступлений: это п. «ф» ч. 1 ст. 63 УК (закон 282-ФЗ от 31.07.2025), действует с 01.09.2025. Текст пункта проверен по Контур.Норматив. Ст. 13.53 введена законом 281-ФЗ. В формулировке пропущена категория должностных лиц (80–150 тыс. ₽). 01.09.2026 Свинцов (Госдума) повторил, что штрафов за само использование VPN не будет. Новых норм на 2026 год не найдено.",
+  "sources": [
+   "https://www.kontur-extern.ru/info/normativ/document/1/500800-federalnyy-zakon-ot-31-07-2025-n-282-fz",
+   "https://www.consultant.ru/document/cons_doc_LAW_34661/d698a1c3214cb529c29991c00154e985d9d7f607/",
+   "https://www.consultant.ru/document/cons_doc_LAW_34661/2d50fc1c4013ea9ab20b8b2666c1650b1dc4c982/",
+   "https://www.vedomosti.ru/press_releases/2025/08/27/v-rossii-vveli-otvetstvennost-za-poisk-ekstremistskih-materialov-i-reklamu-vpn",
+   "https://www.vbr.ru/novosti/tehnologii/2026/09/01/budut-li-shtrafovat-za-vpn/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "На iOS клиентский детект слабее, чем на Android: у сторонних приложений нет системного API статуса VPN, и они не видят чужие приложения. Остаются эвристики: __SCOPED__ в CFNetworkCopySystemProxySettings (utun/ipsec/tun) и getifaddrs, и обе дают ложные срабатывания. Тезис «sandbox не даёт сканировать loopback» неверен: Happ iOS попал в список уязвимых к атаке через локальный SOCKS без авторизации и через gRPC HandlerService. Главный канал утечки — echo-запросы к иностранным адресам, а маршрут RU→direct их не закрывает.",
+  "notes": "Слова Минцифры о том, что на iOS доступ «существенно ограничен», подтверждаются (Meduza, 06.04.2026). Но разбор от 07.04.2026 (Habr, zapret) прямо называет Happ (iOS) «особо опасным» из-за открытого SOCKS и HandlerService, то есть loopback на iOS доступен. Маршрут RU→direct прячет exit IP только от российских бэкендов, а echo на зарубежном хосте всё равно увидит exit IP. Против localhost-утечки есть серверная мера: subHappLocalProxyAuth=auto (заголовок Socks-Auth-Mode) из PR #6628, она вошла в 3x-ui v3.9.0. Работу на iOS я не проверял. Статья Tarka Labs — общий разбор, не российский.",
+  "sources": [
+   "https://meduza.io/news/2026/04/06/mintsifry-razoslalo-rossiyskim-kompaniyam-metodichku-po-poisku-vpn-na-ustroystvah-polzovateley-v-vedomstve-zayavili-chto-vyyavlenie-takih-servisov-v-ayfonah-problematichno",
+   "https://habr.com/ru/articles/1020080/",
+   "https://publish.obsidian.md/zapret/VLESS-SOCKS5-vulnerability",
+   "https://github.com/MHSanaei/3x-ui/pull/6628",
+   "https://tarkalabs.com/blogs/vpn-detection-guide-ios-android/"
+  ]
+ },
+ {
+  "verdict": "partly",
+  "corrected": "Пользоваться VPN законно. По 281-ФЗ (в силе с 01.09.2025): ст. 13.53 КоАП — 3–5 тыс. ₽ за умышленный поиск заведомо экстремистских материалов из списка Минюста, «в т.ч. через VPN». Отягчающим VPN там не назван (в ст. 4.3 КоАП такого пункта нет). VPN отягчает только преступления: п. «ф» ч.1 ст. 63 УК. Реклама обхода блокировок (ч.18 ст. 14.3 КоАП): граждане 50–80 тыс., должностные лица 80–150 тыс., юрлица 200–500 тыс. ₽. Ст. 13.52 КоАП штрафует владельцев средств обхода блокировок, не исполняющих требования РКН.",
+  "notes": "Ошибка в утверждении: «отягчающее» приписано штрафу 3–5 тыс., а на деле это норма УК для преступлений. Суды её уже применяют в делах о наркотиках (Тула, 12.2025; Коми, 02.2026). Значимо для этого стека: ст. 13.52 КоАП (50–80 тыс. ₽ для граждан) касается «владельцев» средств обхода, и если раздавать подписки посторонним, сервер формально может попасть под эту норму. Отсюда совет: сервер только для себя и близких, ничего не публиковать и не рекламировать. Законопроект о VPN/ИИ как отягчающем ожидается осенью 2026, Минцифры обсуждает плату за международный трафик.",
+  "sources": [
+   "https://www.alta.ru/tamdoc/25fz0281/",
+   "https://legalacts.ru/kodeks/UK-RF/obshchaja-chast/razdel-iii/glava-10/statja-63/",
+   "https://www.consultant.ru/document/cons_doc_LAW_34661/db46e4653ac1b0caabf19476c9dbda096d59369d/",
+   "https://www.interfax.ru/russia/1038024",
+   "https://life.ru/p/1866746"
+  ]
+ }
+]
