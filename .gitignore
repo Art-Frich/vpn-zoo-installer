@@ -23,3 +23,7 @@ Thumbs.db
 
 # Docker-стенд: отчёты прогонов
 docker/out/
+
+# Python
+__pycache__/
+*.pyc

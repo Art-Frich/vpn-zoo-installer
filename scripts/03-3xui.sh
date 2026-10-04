@@ -7,6 +7,7 @@
 # POST /panel/api/setting/updateUser телом запроса. Если API недоступно — фолбэк
 # на `x-ui setting -password` (argv) с предупреждением.
 
+# shellcheck disable=SC2153 # PANEL_* приходят из config.env (config_load)
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/xui.sh"
@@ -76,7 +77,9 @@ else
     # старая установка остаётся нетронутой
     tmpd="$(mktemp -d /usr/local/.x-ui-new.XXXXXX)"
     trap 'rm -rf "$tmpd"' EXIT
-    tar -xzf "$tarball" -C "$tmpd" || die "не удалось распаковать $tarball"
+    # --no-same-owner: в архиве владелец uid 1001 (сборщик GitHub) — на VPS это может быть
+    # обычный пользователь, который тогда подменит бинари, запускаемые от root
+    tar --no-same-owner -xzf "$tarball" -C "$tmpd" || die "не удалось распаковать $tarball"
     [ -x "$tmpd/x-ui/x-ui" ] || die "в архиве нет x-ui/x-ui"
     [ -f "$tmpd/x-ui/bin/xray-linux-$ZOO_ARCH" ] || die "в архиве нет bin/xray-linux-$ZOO_ARCH"
     [ -f "$tmpd/x-ui/x-ui.service.debian" ] || die "в архиве нет x-ui.service.debian"
@@ -104,6 +107,12 @@ else
     systemctl daemon-reload
     fresh_bin=1
     log_ok "3x-ui $WANT_VER распакован в $XUI_DIR"
+fi
+
+# Установки до --no-same-owner (и v1) оставили файлы uid 1001 — бинари root обязаны быть root
+if [ -n "$(find "$XUI_DIR" \( ! -user root -o ! -group root \) -print -quit 2>/dev/null)" ]; then
+    chown -R root:root "$XUI_DIR"
+    log_ok "$XUI_DIR: владелец исправлен на root (в архиве был uid 1001)"
 fi
 
 got_ver="$(xui_cli_version)"
@@ -200,10 +209,23 @@ sub_enable="$(jq -r '.subEnable' <<< "$settings")"
 sub_listen="$(jq -r '.subListen' <<< "$settings")"
 need_restart=0
 
+# JSON-подписка не включается никогда: её шаблон кладёт клиенту SOCKS 127.0.0.1:10808
+# без пароля — канал утечки IP сервера (RISK-REDUCTION §5)
+if [ "$(jq -r '.subJsonEnable' <<< "$settings")" != "false" ]; then
+    xui_settings_update '{"subJsonEnable":false}'
+    need_restart=1
+    log_ok "JSON-подписка 3x-ui выключена (локальный SOCKS без пароля у клиента)"
+fi
+
 if [ "${SUB_PUBLIC:-0}" = "1" ]; then
     # D8: с доменом и TLS подписку включают явно; настройку домена делает отдельная фаза
     if [ "$sub_enable" != "true" ]; then
         xui_settings_update '{"subEnable":true}'; need_restart=1
+    fi
+    # Happ по заголовкам подписки сам ставит пароль на свой локальный прокси (RISK-REDUCTION §5)
+    if [ "$(jq -r '.subHappAutoDetect' <<< "$settings")" != "true" ] \
+       || [ "$(jq -r '.subHappLocalProxyAuth' <<< "$settings")" != "auto" ]; then
+        xui_settings_update '{"subHappAutoDetect":true,"subHappLocalProxyAuth":"auto"}'; need_restart=1
     fi
     log_warn "SUB_PUBLIC=1: подписка 3x-ui включена ($(jq -r '.subPort' <<< "$settings")/tcp) — порт открывает фаза подписки"
 elif [ "$sub_enable" != "false" ] || [ "$sub_listen" != "127.0.0.1" ]; then

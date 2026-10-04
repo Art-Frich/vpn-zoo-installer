@@ -4,11 +4,16 @@
 #   docker/test.sh [--distro 24.04|22.04] [--phases all|00-bootstrap,03-3xui,...]
 #                  [--mode phases|full] [--modes git|fs] [--env VAR=val]...
 #                  [--name NAME] [--timeout СЕК] [--stop-on-fail] [--keep]
+#                  [--tests all|vless-reality,hysteria2,...]
 #
 #   --mode phases  каждая фаза отдельным `install.sh --phase X` (по умолчанию)
 #   --mode full    один `install.sh`, как у пользователя; итог по фазам — из state
 #   --modes git    права файлов как после git clone (по умолчанию), fs — все shebang-файлы +x
 #   --keep         не удалять контейнер после прогона
+#   --tests        после установки запустить docker/tests/<id>.sh против сервера
+#                  (all — тесты протоколов, чьи манифесты есть на сервере, routing и security)
+#   --probe-profiles  профили клиентского пробника (docker/probe/run.sh), через запятую:
+#                  direct,clean,drop-udp,ip-block,freeze-16k,rst-tls (по умолчанию все); none — без него
 #
 # Итог: таблица в stdout и docker/out/<ts>/ (summary.md, summary.tsv, phases/*.log,
 # diag.txt, files/). Код выхода 0 — все выбранные фазы PASS.
@@ -27,6 +32,8 @@ TIMEOUT=1800
 STOP_ON_FAIL=0
 KEEP=0
 EXTRA_ENV=()
+TESTS_ARG=""
+PROBE_PROFILES=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -39,6 +46,8 @@ while [ $# -gt 0 ]; do
         --timeout)      TIMEOUT="$2"; shift 2 ;;
         --stop-on-fail) STOP_ON_FAIL=1; shift ;;
         --keep)         KEEP=1; shift ;;
+        --tests)        TESTS_ARG="$2"; shift 2 ;;
+        --probe-profiles) PROBE_PROFILES="${2//,/ }"; shift 2 ;;
         -h|--help)      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) zoo_die "неизвестный аргумент: $1" ;;
     esac
@@ -222,13 +231,47 @@ if docker exec "$NAME" bash -c 'command -v zoo' >/dev/null 2>&1; then
         PROBE_LOCAL="FAIL"
     fi
 fi
+# Клиентский пробник: напрямую и через цензора; вердикты сверяются с профилем (OUT/probe/expect.tsv)
 PROBE_CLIENT="SKIPPED"
-if [ -f "$ZOO_DOCKER_DIR/probe/run.sh" ]; then
-    if bash "$ZOO_DOCKER_DIR/probe/run.sh" "$NAME" "$OUT" > "$OUT/probe-client.log" 2>&1; then
+if [ -f "$ZOO_DOCKER_DIR/probe/run.sh" ] && [ "$PROBE_PROFILES" != "none" ] \
+        && docker exec "$NAME" bash -c 'ls /etc/vpn-setup/protocols.d/*.json' >/dev/null 2>&1; then
+    zoo_log "клиентский пробник: ${PROBE_PROFILES:-все профили}"
+    if ZOO_PROBE_PROFILES="${PROBE_PROFILES:-}" ZOO_PROBE_PREFIX="$NAME-probe" \
+            bash "$ZOO_DOCKER_DIR/probe/run.sh" "$NAME" "$OUT" > "$OUT/probe-client.log" 2>&1; then
         PROBE_CLIENT="PASS"
     else
         PROBE_CLIENT="FAIL"
     fi
+    zoo_log "  пробник: $PROBE_CLIENT (probe/expect.tsv)"
+fi
+
+# ---------- сквозные тесты протоколов (docker/tests/) ----------
+declare -A TSTATUS=()
+TESTS=()
+if [ -n "$TESTS_ARG" ]; then
+    mkdir -p "$OUT/tests"
+    if [ "$TESTS_ARG" = "all" ]; then
+        have="$(docker exec "$NAME" bash -c 'ls /etc/vpn-setup/protocols.d/ 2>/dev/null' | tr -d '\r' || true)"
+        for t in vless-reality vless-xhttp ss2022 tuic hysteria2 amneziawg; do
+            grep -qx "$t.json" <<< "$have" && TESTS+=("$t")
+        done
+        docker exec "$NAME" test -f /var/lib/vpn-zoo/geo/state.json 2>/dev/null && TESTS+=(routing)
+        # выданные ссылки owner (не probe) импортируются клиентами и пропускают трафик
+        [ -z "$have" ] || TESTS+=(links)
+        TESTS+=(security)
+    else
+        IFS=',' read -r -a TESTS <<< "$TESTS_ARG"
+    fi
+    for t in "${TESTS[@]}"; do
+        [ -f "$ZOO_DOCKER_DIR/tests/$t.sh" ] || { TSTATUS[$t]="MISSING"; continue; }
+        zoo_log "тест $t"
+        if bash "$ZOO_DOCKER_DIR/tests/$t.sh" "$NAME" > "$OUT/tests/$t.log" 2>&1; then
+            TSTATUS[$t]="PASS"
+        else
+            TSTATUS[$t]="FAIL"
+        fi
+        zoo_log "  $t: ${TSTATUS[$t]}"
+    done
 fi
 
 # ---------- итог ----------
@@ -241,6 +284,17 @@ all_pass=1
     done
     printf 'probe-local\t%s\t-\t-\t-\t\n' "$PROBE_LOCAL"
     printf 'probe-client\t%s\t-\t-\t-\t\n' "$PROBE_CLIENT"
+    # по профилю цензора: PASS — все вердикты совпали с ожидаемыми
+    if [ -s "$OUT/probe/expect.tsv" ]; then
+        tail -n +2 "$OUT/probe/expect.tsv" | awk -F'\t' '
+            !($1 in st) { order[++n] = $1; st[$1] = "PASS" }
+            $5 == "FAIL" { st[$1] = "FAIL"; why[$1] = why[$1] $2 "=" $3 " " }
+            END { for (i = 1; i <= n; i++) printf "probe:%s\t%s\t-\t-\t-\t%s\n", order[i], st[order[i]], why[order[i]] }'
+    fi
+    for t in "${TESTS[@]:-}"; do
+        [ -n "$t" ] || continue
+        printf 'test:%s\t%s\t-\t-\t-\t%s\n' "$t" "${TSTATUS[$t]}" "tests/$t.log"
+    done
 } > "$OUT/summary.tsv"
 
 {
@@ -254,6 +308,8 @@ all_pass=1
 } > "$OUT/summary.md"
 
 for phase in "${PHASES[@]}"; do [ "${STATUS[$phase]}" = "PASS" ] || all_pass=0; done
+for t in "${TESTS[@]:-}"; do [ -z "$t" ] || [ "${TSTATUS[$t]}" = "PASS" ] || all_pass=0; done
+[ "$PROBE_LOCAL" != "FAIL" ] && [ "$PROBE_CLIENT" != "FAIL" ] || all_pass=0
 
 echo
 column -t -s $'\t' "$OUT/summary.tsv" 2>/dev/null || cat "$OUT/summary.tsv"

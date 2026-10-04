@@ -70,6 +70,33 @@ docker/run-server.sh exec dev bash /repo/docker/xui-smoke.sh
 
 Итоги фаз: `PASS`, `FAIL`, `TIMEOUT`, `NOEXEC` (код 126, нет +x), `SKIPPED` (install.sh пропустил фазу сам), `REBOOT`, `NOT_RUN`.
 
+## Тесты протоколов (`docker/tests/`)
+
+Сквозные тесты трафика по одному на протокол. Аргумент — уже установленный сервер стенда:
+
+```bash
+docker/tests/vless-reality.sh zoo-dev    # VLESS RAW+REALITY+Vision (клиент Xray)
+docker/tests/vless-xhttp.sh zoo-dev      # VLESS XHTTP+REALITY (клиент Xray)
+docker/tests/ss2022.sh zoo-dev           # Shadowsocks-2022 (клиент Xray), + UDP (DNS)
+docker/tests/tuic.sh zoo-dev             # TUIC v5 (клиент sing-box, пин из versions.env)
+docker/tests/hysteria2.sh zoo-dev        # Hysteria2 (+ Salamander и hopping, если включены)
+docker/tests/amneziawg.sh zoo-dev        # AmneziaWG (amneziawg-go + awg с сервера)
+docker/tests/routing.sh zoo-dev          # анти-утечки: echo, RU_EGRESS, sniffing, WARP, AWG L3
+docker/tests/security.sh zoo-dev         # сокеты/ufw/права/секреты/3x-ui + из каждого туннеля: echo, loopback и
+                                         # сервисы на адресе сервера за ufw недоступны (на время теста ALIAS_IP на lo)
+docker/tests/links.sh zoo-dev [USER]     # ссылки USER (owner) из манифестов, разобранные как в клиентах
+                                         # (v2rayN-разбор vless/ss → Xray, tuic → sing-box, hysteria2:// — как есть)
+
+# или сразу после установки: --tests all | список через запятую
+docker/test.sh --mode full --tests all
+```
+
+Каждый тест поднимает отдельный клиентский контейнер в `zoo-net` (`<сервер>-…`), строит клиента из `probe` манифеста, **закрывает клиенту прямой выход в интернет** (iptables, `--cap-add NET_ADMIN`) и проверяет: малый запрос (204), загрузку ≥2 МБ, IP выхода = IP сервера, а также `user_add` / `user_enable false|true` / `user_del` через `scripts/lib/proto-<id>.sh`. Без блокировки выхода проверка IP бессмысленна: клиент и сервер выходят через один NAT хоста.
+
+`links.sh` проверяет не `probe`, а сами ссылки, которые человек вставит в приложение: ловит расхождения «probe работает, ссылка нет». С `LINKS_FILE=файл` (строки `id<TAB>uri`) и `EXPECT_FAIL=1` — проверка, что сохранённые ссылки удалённого или выключенного пользователя больше не пускают.
+
+IP выхода берётся из `https://www.cloudflare.com/cdn-cgi/trace` (строка `ip=`): после фазы 07 `api.ipify.org` и другие echo-сервисы через туннель блокируются или уходят в WARP (D9). jq на хосте не нужен — тесты вызывают его внутри контейнеров.
+
 ## Пробники и цензор
 
 `test.sh` подхватывает их по мере появления:
