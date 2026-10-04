@@ -42,6 +42,14 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(c.int("PORT"), 443)
         self.assertIsNone(c.int("BAD"))
 
+    def test_ssh_login_port(self):
+        self.assertEqual(config.Config({}).ssh_login_port(), "22")
+        self.assertEqual(config.Config({"SSH_PORTS": "2222,22"}).ssh_login_port(), "2222")
+        # фаза 01b до подтверждения: порты оба, входить — на старый
+        c = config.Config({"SSH_PORTS": "22,30366", "SSH_LOGIN_PORT": "22"})
+        self.assertEqual(c.ssh_login_port(), "22")
+        self.assertEqual(config.Config({"SSH_PORTS": "22", "SSH_LOGIN_PORT": "x"}).ssh_login_port(), "22")
+
     def test_missing_file(self):
         with ZooEnv() as env:
             os.remove(env.etc / "config.env")

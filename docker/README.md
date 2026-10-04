@@ -94,6 +94,8 @@ docker/tests/security.sh zoo-dev         # сокеты/ufw/права/секр�
 docker/tests/links.sh zoo-dev [USER]     # ссылки USER (owner) из манифестов, разобранные как в клиентах
                                          # (v2rayN-разбор vless/ss → Xray, tuic → sing-box, hysteria2:// — как есть)
 docker/tests/collector.sh zoo-dev        # коллектор трафика под песочницей, AWG-счётчики, скрытый zoo-probe
+docker/tests/ssh-harden.sh zoo-dev       # SSH_HARDEN (фаза 01b): отказ без ключа, шаг 1, автооткат, подтверждение,
+                                         # SSH_HARDEN=0 в два запуска, повторы; при полной установке — 07/99/zoo на новом порту
 
 # или сразу после установки: --tests all | список через запятую
 docker/test.sh --mode full --tests all
@@ -118,6 +120,10 @@ IP выхода берётся из `https://www.cloudflare.com/cdn-cgi/trace` (
 
 - `web` — `zoo/tests/web_smoke.sh --users` на сервере: вход, CSP, CSRF, все страницы и полный цикл пользователя через формы (добавить во все протоколы, отключить, включить, удалить);
 - `collector` — [tests/collector.sh](tests/collector.sh): `zoo-collector.service` под своей песочницей (ProtectSystem=strict, PrivateDevices) снимает счётчики без ошибок, у каждого включённого протокола есть серия, счётчик AmneziaWG у `zoo-probe` растёт после пробы через туннель; `zoo-probe` скрыт из `zoo user list` и `zoo traffic` (виден с `--all`), удалить его без `--force` нельзя.
+
+## Закрытие SSH (`ssh-harden`)
+
+С `--tests all` последним идёт [tests/ssh-harden.sh](tests/ssh-harden.sh): он переносит SSH сервера и в конце возвращает исходное (`SSH_HARDEN=0`). Клиент — контейнер `<сервер>-sshcli` со своим ключом; на время теста ключ root сервера откладывается в сторону, заводится пользователь с sudo `zoosshtest`, а адрес клиента — в `ignoreip` fail2ban (пробы «без ключа» иначе дали бы бан). Между SSH-подключениями — пауза 7 с: `ufw limit` отвергает шестое подключение за 30 с с одного адреса. Тест идёт 6–8 минут, из них около двух — ожидание таймера отката (`SSH_REVERT_MIN=1`) при занятой блокировке install.sh. Без фазы 01 на сервере тест сам ставит 00 и 01, так что годится и голый контейнер: `docker/run-server.sh up ssh --distro 22.04 && docker/tests/ssh-harden.sh zoo-ssh`.
 
 ## Образы, сеть, метки
 

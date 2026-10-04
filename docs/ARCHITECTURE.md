@@ -22,6 +22,7 @@ research/YYYY-MM-DD/          исследования
 |---|---|---|
 | 00 | `00-bootstrap.sh` | apt, базовые пакеты, swap, sysctl (без udp_mem, без ipv6 forwarding глобально), conntrack modules-load, unattended-upgrades |
 | 01 | `01-firewall.sh` | UFW: SSH (определяется, не хардкод), default deny, без `ufw reset` на живой системе; fail2ban. Порты протоколов открывает каждая фаза через `fw_allow` |
+| 01b | `01b-ssh.sh` | Закрыть SSH (opt-in `SSH_HARDEN=1`, D30): новый порт, вход только по ключу, root только по ключу. Два шага: оба порта + таймер отката → подтверждение из сессии на новом порту, пришедшей снаружи (`SSH_CONFIRM=1 --phase 01b`), закрывает старый. Без подтверждения таймер возвращает прежнее; `SSH_HARDEN=0` — исходное, при сменённом порту в два запуска (порт фазы закрывается из сессии на исходном). Состояние — `/var/lib/vpn-setup/ssh/` |
 | 02 | `02-kernel.sh` | Проверка совместимости ядра с DKMS amneziawg (не «≥6.2»), блок известных сломанных ядер |
 | 03 | `03-3xui.sh` | 3x-ui закреплённой версии + sha256, панель на `127.0.0.1`, API-токен, ожидание API |
 | 04 | `04-vless-reality.sh` | VLESS RAW+REALITY+Vision через API 3x-ui, 443/tcp, валидированный target |
@@ -37,13 +38,15 @@ research/YYYY-MM-DD/          исследования
 
 Фаза, которой нет на диске или которая выключена флагом, пропускается. Порядок задаётся массивом `PHASES` в `install.sh`.
 
+Если в прогоне 01b применила шаг 1 и ждёт подтверждения, `install.sh` в самом конце (после самопроверки) печатает инструкцию ещё раз и запускает отсчёт таймера отката заново: пока идёт установка, таймер только откладывается (блокировка `/run/vpn-setup.lock`).
+
 После 99 (полный прогон или `--only` с 99, не `--phase`) `install.sh` запускает самопроверку `zoo probe --local --summary` (§7): таблица «работает в принципе» по каждому протоколу, провалы подсвечены, но установку не валят; затем — точная инструкция для проверки с машины пользователя. Итог сохраняется в `/var/lib/vpn-zoo/probe-local.json` (админка, страница «Проверка») и вкладывается в пакет `/etc/vpn-setup/probe-export.json`. `ZOO_SELFTEST=0` — без самопроверки.
 
 Журналы установки (`/var/log/vpn-zoo/install-*.log`) и бэкапы (`/var/backups/vpn-setup/<ts>/`) содержат ключи. `install.sh` при каждом запуске оставляет 10 последних (`ZOO_KEEP_LOGS`, `ZOO_KEEP_BACKUPS`); из остальных удаляются журналы старше 7 дней и бэкапы старше 30 дней.
 
 Повторный полный запуск `install.sh` (D24):
-- фаза со state `done` и флагом `ENABLE_*=0` запускается ещё раз и выключает свой протокол (inbound/сервис, порт, манифест `enabled=false`), state становится `disabled`; так умеют 04, 04b, 04c, 04d, 05, 06, 08. У 09 пути выключения нет: `ENABLE_ZOO=0` только не даёт поставить zoo, уже установленный остаётся;
-- ключ, изменённый через окружение, перезапускает фазу-владельца (`phase_owns_key` в `install.sh`): `VLESS_*` → 04, `XHTTP_*` → 04b, `SS_*` → 04c, `TUIC_*` → 04d, `HY2_*`/`ENABLE_HY2_OBFS` → 05, `AWG_*` → 06, `RU_EGRESS`/`HY2_RU_EGRESS`/`AWG_RU_EGRESS`/`ENABLE_BITTORRENT`/`ROUTING_ECHO_EXTRA`/`ENABLE_WARP` → 07 (и 08), `SERVER_IP`/`LABEL` → 04–06, `PANEL_*`/`SUB_PUBLIC`/`DOMAIN` → 03. `AUTO_REBOOT*` и `SSH_PORTS` фазу-владельца не перезапускают: после смены — `--phase 00`, для `SSH_PORTS` — `--phase 01` и `--phase 07` (SSH-порт сервера разрешён из туннеля, D25);
+- фаза со state `done` и флагом `ENABLE_*=0` запускается ещё раз и выключает свой протокол (inbound/сервис, порт, манифест `enabled=false`), state становится `disabled`; так умеют 01b, 04, 04b, 04c, 04d, 05, 06, 08. У 09 пути выключения нет: `ENABLE_ZOO=0` только не даёт поставить zoo, уже установленный остаётся;
+- ключ, изменённый через окружение, перезапускает фазу-владельца (`phase_owns_key` в `install.sh`): `VLESS_*` → 04, `XHTTP_*` → 04b, `SS_*` → 04c, `TUIC_*` → 04d, `HY2_*`/`ENABLE_HY2_OBFS` → 05, `AWG_*` → 06, `RU_EGRESS`/`HY2_RU_EGRESS`/`AWG_RU_EGRESS`/`ENABLE_BITTORRENT`/`ROUTING_ECHO_EXTRA`/`ENABLE_WARP` → 07 (и 08), `SERVER_IP`/`LABEL` → 04–06, `PANEL_*`/`SUB_PUBLIC`/`DOMAIN` → 03, `SSH_HARDEN`/`SSH_PORT` → 01b (01b сама переприменяет 07, если та выполнена, и после подтверждения — 99). `AUTO_REBOOT*` и `SSH_PORTS` фазу-владельца не перезапускают: после смены — `--phase 00`, для `SSH_PORTS` — `--phase 01` и `--phase 07` (SSH-порт сервера разрешён из туннеля, D25);
 - после любой отработавшей фазы протокола заново применяется 07 (новые inbound, ACL Hysteria), в конце печатается 99;
 - упавшая фаза получает state `failed` и проходит заново при следующем запуске: значение из окружения уже записано в config.env, и пропуск «done» оставил бы его неприменённым. `failed`/`disabled` сбрасываются перед запуском фазы, успешный проход ставит `done`;
 - 09 проходит снова, если копия `zoo/` и `scripts/` в `/opt/vpn-zoo` отличается от репозитория (после `git pull`): zoo вызывает `lib/proto-*.sh` из этой копии;
@@ -61,7 +64,8 @@ research/YYYY-MM-DD/          исследования
 |---|---|
 | общие | `SERVER_IP` (определяется сам), `LABEL` (имя в ссылках, `vpn`) |
 | 00 bootstrap | `AUTO_REBOOT=0\|1`, `AUTO_REBOOT_TIME=ЧЧ:ММ` (D12) |
-| 01 firewall | `SSH_PORTS` (через запятую; дополняется найденными: текущее подключение, `sshd -T`, `ssh.socket`, `ss`) |
+| 01 firewall | `SSH_PORTS` (через запятую; дополняется найденными: текущее подключение, `sshd -T`, `ssh.socket`, `ss`; пока SSH закрыт фазой 01b — только её значение) |
+| 01b SSH | `SSH_HARDEN=0\|1`, `SSH_PORT=N\|random\|keep` (по умолчанию random); пишет `SSH_PORTS`, `SSH_LOGIN_PORT` (порт в печатаемых командах ssh/scp: до подтверждения — старый). Разовые: `SSH_CONFIRM=1`, `SSH_CONFIRM_FORCE=1`, `SSH_REVERT_MIN` (минуты, 1–120, по умолчанию 10) |
 | 02 kernel | `AWG_NO_HWE=1` — не ставить HWE-ядро, AWG в userspace; пишет `AWG_ENGINE_HINT`, `AWG_ENGINE_REASON` |
 | 03 3x-ui | `PANEL_PORT`, `PANEL_PATH`, `PANEL_USER` (генерируются), `PANEL_2FA=1` (D15); пишет `PANEL_PASS`, `XUI_API_TOKEN`. `SUB_PUBLIC=1` — **заготовка**: включает подписку и Happ-заголовки в настройках панели, но фазы с доменом (`DOMAIN`), TLS и открытием порта подписки нет (D8) |
 | 04 VLESS | `VLESS_PORT`, `VLESS_SNI` (+`VLESS_SNI_CHECK=0`), `VLESS_TARGET=host:port`; пишет `VLESS_PRIV/PUB/SID/UUID/SNI_PICKED/PORT_MIGRATED` |

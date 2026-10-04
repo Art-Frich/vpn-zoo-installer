@@ -52,6 +52,15 @@ class Config:
         except (KeyError, ValueError):
             return default
 
+    def ssh_login_port(self) -> str:
+        """Порт для печатаемых команд ssh/scp, как ssh_login_port в lib.sh: SSH_LOGIN_PORT
+        (пишет фаза 01b), иначе первый из SSH_PORTS, иначе 22."""
+        port = self.get("SSH_LOGIN_PORT").strip()
+        if port.isdigit():
+            return port
+        ports = [p for p in self.get("SSH_PORTS").replace(",", " ").split() if p.isdigit()]
+        return ports[0] if ports else "22"
+
 
 def parse_line(line: str) -> tuple[str, str] | None:
     """KEY=value → (KEY, value); комментарии и пустые строки → None. ValueError при мусоре."""

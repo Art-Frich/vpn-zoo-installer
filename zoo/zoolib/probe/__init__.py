@@ -342,8 +342,7 @@ def _repo_url() -> str:
 
 
 def _ssh_port(cfg: Config) -> str:
-    ports = [p.strip() for p in (cfg.get("SSH_PORTS") or "").replace(",", " ").split() if p.strip()]
-    return ports[0] if ports else "22"
+    return cfg.ssh_login_port()
 
 
 def cmd_export_probe(args: argparse.Namespace, cfg: Config) -> int:

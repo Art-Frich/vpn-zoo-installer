@@ -58,7 +58,7 @@ def setup(cfg: Config) -> None:
 def access_info(cfg: Config) -> dict[str, Any]:
     port = cfg.get("ZOO_WEB_PORT") or "PORT"
     ip = cfg.get("SERVER_IP") or "SERVER_IP"
-    ssh_port = (cfg.get("SSH_PORTS") or "22").replace(",", " ").split()[0]
+    ssh_port = cfg.ssh_login_port()
     # под sudo — тот, кто вошёл по SSH (при PermitRootLogin no root@ не пустит), как в фазе 99
     who = os.environ.get("SUDO_USER") or "root"
     host = f"[{ip}]" if ":" in ip else ip
