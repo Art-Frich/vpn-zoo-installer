@@ -12,13 +12,17 @@ allowed-tools: Bash(bash docker/test.sh *) Bash(bash docker/run-server.sh *) Bas
 ## Что запустить
 
 1. Дистрибутив: из первого аргумента (`22.04`, `24.04` или `both`), по умолчанию `24.04`. Остальные аргументы — дополнительные ключи `docker/test.sh` (полный список: `bash docker/test.sh --help`).
-2. Базовые ключи, если пользователь не задал свои: `--mode full --tests all --keep --name e2e<дистрибутив без точки>`, например:
+2. **По умолчанию — точечно:** только тесты, которые задевают изменения (`git diff --name-only` → `docker/tests/<id>.sh` по затронутым протоколам/модулям), без матрицы цензора:
+   ```bash
+   bash docker/test.sh --mode full --tests allowlist,amneziawg --distro 24.04 --name dev24 --probe-profiles none
+   ```
+   Установка ~1.5 мин, тест — минуты. **Полный** прогон (`--tests all`, матрица цензора, оба дистрибутива) — только если пользователь просит `all`/`both` или это `/release-check`:
    ```bash
    bash docker/test.sh --mode full --tests all --distro 24.04 --name e2e24 --keep
    ```
-   `--mode full` — один `install.sh`, как у пользователя; `--tests all` — тесты протоколов, links, routing, security, web, collector и последним ssh-harden.
-3. Прогон идёт 15–30 минут: запускать через Bash с `run_in_background: true` и ждать уведомления о завершении, а не опрашивать. Для `both` — два фоновых прогона одновременно с разными `--name` (`e2e22`, `e2e24`). Лучше отдать это сабагенту `e2e-runner`, чтобы не держать основной тред.
-4. Пока идёт прогон, **не править `docker/*.sh`** (bash читает скрипт по ходу, test.sh упадёт). Правки в `scripts/` и `zoo/` можно, но в этот прогон они уже не попадут.
+   `--mode full` — один `install.sh`, как у пользователя; `--tests all` — тесты протоколов, links, routing, security, web, collector и последним ssh-harden (6–8 мин).
+3. Перед запуском назвать пользователю ожидаемое время. Полный прогон (до ~20 мин на дистрибутив) — через Bash с `run_in_background: true`, ждать уведомления, не опрашивать. Для `both` — два фоновых прогона с разными `--name` (`e2e22`, `e2e24`) или сабагент `e2e-runner`.
+4. Пока идёт прогон, **не править `docker/*.sh`** (bash читает скрипт по ходу). Чтобы править репо параллельно, гонять из замороженной копии: `rm -rf /tmp/zoo-frozen && mkdir -p /tmp/zoo-frozen && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - | tar -C /tmp/zoo-frozen -xf - && cd /tmp/zoo-frozen && bash docker/test.sh …`.
 5. На Windows/Git Bash скрипты стенда сами ставят `MSYS_NO_PATHCONV=1`; для ручных `docker`-команд ставить его самому.
 
 ## Как разобрать итог
