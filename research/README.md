@@ -11,7 +11,9 @@
 | [vpn-news_04-10-26.md](2026-10-04/vpn-news_04-10-26.md) | Xray/REALITY/XHTTP, 3x-ui, Hysteria2, AmneziaWG 3.1, ТСПУ, клиенты, серверные практики, новые и ожившие протоколы (§5.5–5.6). В §8 — что сломано в репо и план обновления |
 | [admin-panel_04-10-26.md](2026-10-04/admin-panel_04-10-26.md) | Единая админка: все протоколы, учётки, трафик, метрики. Рекомендация и решения за владельцем |
 | [vpn-success-and-leaks_04-10-26.md](2026-10-04/vpn-success-and-leaks_04-10-26.md) | Секреты успеха работающих сервисов, компрометаторы (RU-приложения, палящие VPN), серверные контрмеры и черновик конфигов по фазам |
-| [raw/](2026-10-04/raw/) | `main-research.json`, `new-protocols.json`, `revived-protocols.json`, `admin-panel.json`, `success-and-leaks.json`, `leaks-verification.json` (голоса адверсариев при повторной проверке 27 утверждений о компрометаторах) |
+| [clients-and-allowlist_04-10-26.md](2026-10-04/clients-and-allowlist_04-10-26.md) | Клиенты для массового пользователя против нашего сервера, белый список приложений (только разрешённые идут через VPN): что задаётся с сервера (INCY-заголовки, `IncludedApplications` в AWG `.conf`, sing-box JSON), что allowlist прячет и чего нет, Brave как браузер под VPN, пошаговые настройки |
+| [own-android-client_04-10-26.md](2026-10-04/own-android-client_04-10-26.md) | Свой Android-клиент «для нас»: почему публичные так не делают, аналоги, варианты (преднастройка / форк / с нуля), архитектура MVP, лимиты без root, сроки, лицензии, распространение, решения за владельцем |
+| [raw/](2026-10-04/raw/) | `main-research.json`, `new-protocols.json`, `revived-protocols.json`, `admin-panel.json`, `success-and-leaks.json`, `leaks-verification.json` (голоса адверсариев при повторной проверке 27 утверждений о компрометаторах), `clients-and-own-app.json` (потоки clients, android-mechanics, browser, own-client с вердиктами фактчекеров) |
 
 ## Уточнения после исследований
 
