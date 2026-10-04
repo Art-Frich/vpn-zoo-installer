@@ -41,6 +41,10 @@ docker container inspect "$SRV" >/dev/null || { echo "нет контейнер�
 srv test -x /usr/local/bin/zoo || { echo "на $SRV нет zoo (фаза 09)" >&2; exit 2; }
 
 # ---------- 1. снятие под песочницей ----------
+# Свежий трафик по всем протоколам: счётчики Hysteria обнуляются при её рестарте (routing,
+# security), и без этого серия зависела бы от того, успел ли таймер сработать раньше
+info "трафик по всем протоколам кредами zoo-probe (zoo probe --local)"
+srv zoo probe --local --quiet >/dev/null 2>&1 || true
 res="$(collect)"
 if [ "${res%%$'\t'*}" = "1" ]; then pass "zoo-collector.service: без ошибок источников"; else fail "zoo-collector.service: $res"; fi
 srv systemctl show zoo-collector.service -p ProtectSystem -p PrivateDevices | tr '\n' ' ' | sed 's/^/....  юнит: /'; echo

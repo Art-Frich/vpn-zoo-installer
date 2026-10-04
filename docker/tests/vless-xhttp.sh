@@ -140,7 +140,7 @@ done
 [ "$delta" -ge "$BIG_BYTES" ] && pass "traffic: owner down +$delta" || fail "traffic: owner down +$delta (ожидалось ≥ $BIG_BYTES)"
 
 # ---------- новый пользователь ----------
-U="zt$(date +%s | tail -c 6)"
+U="zvx$$"   # уникален и при параллельных тестах
 if lib user_add "$U" >/dev/null 2>&1; then pass "user_add $U"; else fail "user_add $U"; fi
 link="$(lib links "$U" 2>/dev/null | head -1)"
 [[ "$link" == vless://*type=xhttp* ]] && pass "links $U: ${link:0:60}…" || fail "links $U: «$link»"
