@@ -13,6 +13,9 @@
 #
 # Флаги протоколов и параметры — через окружение, сохраняются в /etc/vpn-setup/config.env:
 #   ENABLE_XHTTP=0 ENABLE_TUIC=1 AWG_ENGINE=userspace SERVER_IP=1.2.3.4 sudo -E bash scripts/install.sh
+# Изменённый параметр перезапускает фазу-владельца (HY2_HOP=1 → 05, RU_EGRESS=block → 07).
+# Протокол, выключенный флагом после установки (ENABLE_HY2=0), фаза выключает сама:
+# сервис/inbound остановлен, порт закрыт, манифест enabled=false (state=disabled).
 # Тестовый стенд: ZOO_TEST_ENV=docker (см. docker/README.md).
 
 set -euo pipefail
@@ -56,6 +59,36 @@ phase_flag() {
         09-*) echo ENABLE_ZOO ;;
         *) echo "" ;;
     esac
+}
+
+# Фазы, которые умеют выключать уже установленный протокол (запуск с флагом = 0)
+phase_can_disable() {
+    case "$1" in 04-*|04b-*|04c-*|04d-*|05-*|06-*|08-*) return 0 ;; esac
+    return 1
+}
+
+# Фаза, которой принадлежит ключ config.env: его смена через окружение перезапускает её
+phase_owns_key() {
+    local phase="$1" key="$2"
+    case "$phase:$key" in
+        03-*:PANEL_PORT|03-*:PANEL_PATH|03-*:PANEL_USER|03-*:PANEL_2FA|03-*:SUB_PUBLIC|03-*:DOMAIN) return 0 ;;
+        04-*:VLESS_*|04b-*:XHTTP_*|04c-*:SS_*|04d-*:TUIC_*) return 0 ;;
+        05-*:HY2_RU_EGRESS|06-*:AWG_RU_EGRESS) return 1 ;;
+        05-*:HY2_*|05-*:ENABLE_HY2_OBFS|06-*:AWG_*) return 0 ;;
+        0[456]*:SERVER_IP|0[456]*:LABEL) return 0 ;;
+        07-*:RU_EGRESS|07-*:HY2_RU_EGRESS|07-*:AWG_RU_EGRESS|07-*:ENABLE_BITTORRENT|07-*:ROUTING_ECHO_EXTRA|07-*:ENABLE_WARP) return 0 ;;
+        08-*:ENABLE_WARP) return 0 ;;
+    esac
+    return 1
+}
+
+# Изменённый через окружение ключ, из-за которого фазу надо перезапустить (или пусто)
+changed_key_for() {
+    local k
+    for k in "${ZOO_ENV_CHANGED[@]:-}"; do
+        [ -n "$k" ] && phase_owns_key "$1" "$k" && { printf '%s\n' "$k"; return 0; }
+    done
+    return 0
 }
 
 usage() { sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -133,6 +166,7 @@ exec 8>/run/vpn-setup.lock
 flock -n 8 || die "install.sh уже запущен (блокировка /run/vpn-setup.lock)"
 
 config_capture_env
+ZOO_ENV_CHANGED=()
 
 if [ "$DRY_RUN" = "1" ]; then
     # dry-run ничего не пишет: читаем то, что есть, и показываем план
@@ -149,6 +183,12 @@ else
     config_apply_env
     config_init_defaults
     config_load
+    # Фазы-владельцы изменённых ключей — pending до запуска: если прогон упадёт раньше
+    # (на другой фазе), следующий запуск всё равно их пройдёт, а не оставит новое
+    # значение в config.env неприменённым
+    for p in "${PHASES[@]}"; do
+        if is_done "$p" && [ -n "$(changed_key_for "$p")" ]; then state_set "$p" pending; fi
+    done
 fi
 
 if is_test_env; then
@@ -174,7 +214,8 @@ log_info "SERVER_IP: ${SERVER_IP:-?}   config: $CONFIG_FILE   state: $STATE_FILE
 # Выбор фаз
 # ============================================================
 
-# Причина пропуска фазы или пусто, если фазу надо запускать
+# Причина пропуска фазы или пусто, если фазу надо запускать. «@disable» — фаза выключена
+# флагом, но была установлена: запустить, чтобы она выключила протокол
 skip_reason() {
     local phase="$1" flag
     if [ -n "$SINGLE_PHASE" ]; then
@@ -186,21 +227,55 @@ skip_reason() {
     if [ -n "$ONLY_LIST" ] && ! in_list "$phase" "$ONLY_LIST"; then echo "не в --only"; return; fi
     if [ -n "$SKIP_LIST" ] && in_list "$phase" "$SKIP_LIST"; then echo "--skip"; return; fi
     flag="$(phase_flag "$phase")"
-    if [ -n "$flag" ] && [ "${!flag:-1}" != "1" ]; then echo "выключена ($flag=${!flag})"; return; fi
-    if [ "$RERUN" = "0" ] && is_done "$phase"; then echo "уже выполнена (state=done)"; return; fi
+    if [ -n "$flag" ] && [ "${!flag:-1}" != "1" ]; then
+        if phase_can_disable "$phase" && [[ "$(state_get "$phase")" =~ ^(done|failed|pending)$ ]]; then
+            echo "@disable"; return
+        fi
+        echo "выключена ($flag=${!flag})"; return
+    fi
+    [ "$RERUN" = "0" ] && is_done "$phase" || return 0
+    [ -z "$(changed_key_for "$phase")" ] || return 0
+    # zoo вызывает lib/proto-*.sh из своей копии в /opt/vpn-zoo: после обновления репо
+    # (git pull) копия отстаёт от фаз, и 09 нужно пройти снова
+    case "$phase" in
+        09-*) if zoo_copy_stale; then log_info "$phase: копия zoo/scripts в ${ZOO_HOME:-/opt/vpn-zoo} устарела — обновляю" >&2; return 0; fi ;;
+    esac
+    # полный прогон: маршрутизация переприменяется после любой фазы протокола (новые
+    # inbound, ACL Hysteria), итог печатается, если что-то менялось
+    if [ -z "$ONLY_LIST" ]; then
+        case "$phase" in
+            07-*) [ "$RAN_PROTO" = "0" ] || return 0 ;;
+            99-*) [ "$RAN" = "0" ] || return 0 ;;
+        esac
+    fi
+    echo "уже выполнена (state=done)"
+}
+
+# Копия zoo/ и scripts/ (фаза 09) отличается от репозитория
+zoo_copy_stale() {
+    local home="${ZOO_HOME:-/opt/vpn-zoo}" d
+    [ -d "$home/scripts" ] || return 1
+    for d in scripts zoo; do
+        diff -rq -x __pycache__ -x '*.pyc' -x tests "$REPO_ROOT/$d" "$home/$d" >/dev/null 2>&1 || return 0
+    done
+    return 1
 }
 
 declare -A RESULT=()
 RAN=0
+RAN_PROTO=0
 
 run_phase() {
-    local phase="$1" script="$SCRIPTS_DIR/$1.sh" rc st
+    local phase="$1" script="$SCRIPTS_DIR/$1.sh" rc st flag
     if [ "$DRY_RUN" = "1" ]; then
         log_info "(dry-run) запустил бы: bash $script"
         RESULT[$phase]="dry-run"
         return 0
     fi
     [ -n "$SINGLE_PHASE" ] && state_set "$phase" ""
+    # failed/disabled/pending от прошлого запуска сбрасываем: иначе успешный проход не отметится done
+    # (и повторное ENABLE_*=0 потом не выключит протокол). rebooting фаза 02 читает сама
+    case "$(state_get "$phase")" in failed|disabled|pending) state_set "$phase" "" ;; esac
     [ "$(state_get "$phase")" = "rebooting" ] && log_info "$phase: возврат после reboot, проверяю..."
 
     log_step "фаза $phase"
@@ -214,7 +289,11 @@ run_phase() {
     set -e
     if [ "$rc" -ne 0 ]; then
         RESULT[$phase]="FAIL (rc=$rc)"
+        # не done: следующий запуск пройдёт фазу снова, а не пропустит её с неприменённым
+        # (или неверным) значением из окружения, которое уже записано в config.env
+        state_set "$phase" failed
         log_err "$phase: ошибка (rc=$rc). Лог: ${LOG_FILE:-stdout}"
+        log_err "после исправления причины запусти install.sh снова — фаза $phase пройдёт заново"
         print_summary
         exit 1
     fi
@@ -228,9 +307,18 @@ run_phase() {
         log_warn "После reboot снова запусти: sudo bash $0"
         exit 0
     fi
-    [ -n "$st" ] || mark_done "$phase"
-    RESULT[$phase]="OK"
-    log_ok "$phase: готово"
+    flag="$(phase_flag "$phase")"
+    if [ -n "$flag" ] && [ "${!flag:-1}" != "1" ]; then
+        # фаза выключила свой протокол: при ENABLE_*=1 она снова пройдёт целиком
+        state_set "$phase" disabled
+        RESULT[$phase]="выключена ($flag=0)"
+        log_ok "$phase: протокол выключен"
+    else
+        [ -n "$st" ] || mark_done "$phase"
+        RESULT[$phase]="OK"
+        log_ok "$phase: готово"
+    fi
+    case "$phase" in 04*|05-*|06-*|08-*) RAN_PROTO=1 ;; esac
 }
 
 print_summary() {
@@ -245,6 +333,15 @@ print_summary() {
 
 for phase in "${PHASES[@]}"; do
     reason="$(skip_reason "$phase")"
+    if [ "$reason" = "@disable" ]; then
+        log_info "$phase: $(phase_flag "$phase")=0 — выключаю установленный протокол"
+        run_phase "$phase"
+        continue
+    fi
+    k="$(changed_key_for "$phase")"
+    if [ -z "$reason" ] && [ "$(state_get "$phase")" = pending ]; then
+        log_info "$phase: изменены её параметры${k:+ ($k)} — перезапуск фазы"
+    fi
     if [ -n "$reason" ]; then
         RESULT[$phase]="пропуск: $reason"
         [ "$reason" = "не выбрана (--phase)" ] && unset 'RESULT[$phase]'

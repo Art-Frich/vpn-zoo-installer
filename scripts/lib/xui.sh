@@ -158,7 +158,8 @@ xui_api_form() {
     local args=()
     for arg in "$@"; do args+=(--data-urlencode "$arg"); done
     resp="$(mktemp)"
-    code="$(curl -sS -o "$resp" -w '%{http_code}' --max-time 120 -H @"$hdr" "${args[@]}" "$url")" || code="000"
+    # -X POST: без полей curl отправил бы GET, а маршруты POST отвечают на GET 404
+    code="$(curl -sS -o "$resp" -w '%{http_code}' --max-time 120 -X POST -H @"$hdr" "${args[@]+"${args[@]}"}" "$url")" || code="000"
     if [ "$code" != "200" ] || ! jq -e '.success == true' "$resp" >/dev/null 2>&1; then
         log_err "xui: POST $path → HTTP $code $(jq -r '.msg // empty' "$resp" 2>/dev/null | head -c 500)"
         rm -f "$resp"
@@ -229,8 +230,17 @@ xui_inbound_find_by_remark() {
 # xui_inbound_add JSON → печатает id нового inbound
 xui_inbound_add() { xui_post inbounds/add "$1" | jq -r '.id'; }
 
-# Полная замена полей inbound (в v3.9.0 клиентов не трогает — для них clients/*)
-xui_inbound_update() { xui_post "inbounds/update/$1" "$2" >/dev/null; }
+# Полная замена полей inbound (в v3.9.0 клиентов не трогает — для них clients/*).
+# Поле enable inbounds/update в v3.9.0 игнорирует: если в теле оно задано и отличается
+# от текущего, применяем через setEnable
+xui_inbound_update() {
+    local id="$1" body="$2" want cur
+    xui_post "inbounds/update/$id" "$body" >/dev/null || return 1
+    want="$(jq -r 'if (.enable|type) == "boolean" then .enable else empty end' <<< "$body" 2>/dev/null || true)"
+    [ -n "$want" ] || return 0
+    cur="$(xui_inbound_get "$id" | jq -r '.enable')" || return 1
+    [ "$cur" = "$want" ] || xui_inbound_set_enable "$id" "$want"
+}
 
 xui_inbound_set_enable() {
     local en="${2:-true}"
@@ -243,6 +253,7 @@ xui_inbound_del() { xui_api POST "inbounds/del/$1" >/dev/null; }
 
 # ---------- клиенты ----------
 
+# Внимание (v3.9.0): поле flow в clients/list всегда пустое — настоящее в clients/get/:email
 xui_client_list() { xui_get clients/list; }
 
 # {client:{...,uuid,...}, inboundIds:[...], externalLinks, tunnelAllowedIPs, usedTraffic}
@@ -307,11 +318,11 @@ xui_settings_update() {
     xui_settings_get | jq -c --argjson p "$patch" '. + $p' | xui_api POST setting/update - >/dev/null
 }
 
-# Смена логина/пароля через API: пароль идёт телом запроса, не в argv
+# Смена логина/пароля через API: пароль идёт телом запроса и в jq через окружение,
+# не в argv (D13: argv любого процесса виден всем через /proc)
 xui_set_credentials() {
-    local old_user="$1" old_pass="$2" new_user="$3" new_pass="$4"
-    jq -cn --arg ou "$old_user" --arg op "$old_pass" --arg nu "$new_user" --arg np "$new_pass" \
-        '{oldUsername:$ou, oldPassword:$op, newUsername:$nu, newPassword:$np}' \
+    ZOO_X_OU="$1" ZOO_X_OP="$2" ZOO_X_NU="$3" ZOO_X_NP="$4" jq -cn \
+        '{oldUsername: env.ZOO_X_OU, oldPassword: env.ZOO_X_OP, newUsername: env.ZOO_X_NU, newPassword: env.ZOO_X_NP}' \
         | xui_api POST setting/updateUser - >/dev/null
 }
 
@@ -336,4 +347,92 @@ xui_xray_template_set() {
         rm -f "$tmp"
         return 1
     fi
+}
+
+# ---------- пользователи зоопарка поверх клиентов ----------
+# Один пользователь = один клиент 3x-ui (email=<имя>), привязанный ко всем Xray-inbound
+# зоопарка (VLESS, XHTTP, SS-2022, TUIC): один uuid, один subId, один password.
+# password общий для SS, Trojan и TUIC: при attach к SS-2022 панель заменяет его, если это
+# не ключ нужной длины (тогда меняется и пароль TUIC). Поэтому новый клиент сразу получает
+# ключ SS-2022 (16 байт base64): он годится и для TUIC. flow Vision ставится при создании;
+# там, где Vision неприменим (XHTTP, SS, TUIC), панель его убирает сама.
+
+xui_ss2022_key() { openssl rand -base64 16; }
+
+# subId для подписки: 16 символов [a-z0-9]
+xui_new_subid() { gen_random_alnum 16 | tr '[:upper:]' '[:lower:]'; }
+
+# Запись клиента из clients/list (id, email, uuid, enable, inboundIds, ...) или пусто
+xui_user_row() {
+    xui_client_list | jq -c --arg e "$1" '[.[] | select(.email == $e)][0] // empty'
+}
+
+# Имена клиентов, привязанных к inbound ID
+xui_inbound_users() {
+    xui_client_list | jq -r --argjson id "$1" '.[] | select((.inboundIds // []) | index($id)) | .email'
+}
+
+# «имя<TAB>true|false» для клиентов inbound ID (формат user_list всех протоколов)
+xui_inbound_user_list() {
+    xui_client_list | jq -r --argjson id "$1" '.[] | select((.inboundIds // []) | index($id)) | "\(.email)\t\(.enable)"'
+}
+
+# Привязан ли клиент NAME к inbound ID
+xui_user_attached() {
+    local row
+    row="$(xui_user_row "$1")" || return 1
+    # пустой ввод jq 1.6 (Ubuntu 22.04) с -e считает успехом
+    [ -n "$row" ] && jq -e --argjson id "$2" '(.inboundIds // []) | index($id) != null' <<< "$row" >/dev/null 2>&1
+}
+
+# xui_user_attach NAME INBOUND_ID [UUID] — создать клиента или привязать существующего
+# (идемпотентно). UUID — только для нового клиента (перенос uuid из прежней установки)
+xui_user_attach() {
+    local name="$1" ib="$2" uuid="${3:-}" row client
+    row="$(xui_user_row "$name")"
+    if [ -z "$row" ]; then
+        if [ -z "$uuid" ]; then
+            uuid="$("$(xui_xray_bin)" uuid)" || return 1
+        fi
+        [[ "$uuid" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+            || { log_err "xui: неверный uuid для $name: $uuid"; return 1; }
+        client="$(jq -cn --arg id "$uuid" --arg e "$name" --arg s "$(xui_new_subid)" --arg p "$(xui_ss2022_key)" \
+            '{id:$id, email:$e, flow:"xtls-rprx-vision", password:$p, subId:$s, enable:true,
+              limitIp:0, totalGB:0, expiryTime:0, tgId:0, reset:0, comment:""}')"
+        xui_client_add "$client" "$ib"
+        return
+    fi
+    jq -e --argjson id "$ib" '(.inboundIds // []) | index($id) != null' <<< "$row" >/dev/null && return 0
+    # клиент от другой установки/панели: пустой пароль панель заполнила бы по протоколу
+    # (TUIC — hex), а attach к SS потом заменил бы его
+    if [ -z "$(xui_client_get "$name" | jq -r '.client.password // empty')" ]; then
+        xui_client_update "$name" "$(jq -cn --arg p "$(xui_ss2022_key)" '{password:$p}')" || return 1
+    fi
+    xui_client_attach "$name" "$ib"
+}
+
+# xui_user_detach NAME INBOUND_ID — отвязать; клиента без inbound удалить совсем
+xui_user_detach() {
+    local name="$1" ib="$2" row left
+    row="$(xui_user_row "$name")"
+    [ -n "$row" ] || return 0
+    if jq -e --argjson id "$ib" '(.inboundIds // []) | index($id) != null' <<< "$row" >/dev/null; then
+        xui_client_detach "$name" "$ib" || return 1
+    fi
+    left="$(xui_user_row "$name" | jq -r '(.inboundIds // []) | length')"
+    if [ "${left:-0}" = "0" ]; then
+        xui_client_del "$name" || return 1
+    fi
+}
+
+# Флаг enable у клиента 3x-ui общий для всех его inbound (всех протоколов Xray)
+xui_user_set_enable() {
+    case "${2:-}" in true|false) ;; *) log_err "xui: enable — ожидаю true|false, получено: ${2:-}"; return 1 ;; esac
+    xui_client_update "$1" "{\"enable\":$2}"
+}
+
+# Трафик клиентов inbound: JSON-строки {user, up, down, shared:true}. Счётчик клиента в
+# v3.9.0 общий для всех его inbound (client_traffics по email) — это сумма по протоколам
+xui_inbound_traffic() {
+    xui_inbound_get "$1" | jq -c '(.clientStats // [])[] | {user: .email, up: (.up // 0), down: (.down // 0), shared: true}'
 }

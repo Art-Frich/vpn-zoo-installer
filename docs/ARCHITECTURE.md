@@ -28,7 +28,7 @@ research/YYYY-MM-DD/          исследования
 | 04b | `04b-vless-xhttp.sh` | VLESS XHTTP+REALITY (запасной TCP) |
 | 04c | `04c-ss2022.sh` | Shadowsocks-2022 (запасной не-TLS) через 3x-ui |
 | 04d | `04d-tuic.sh` | TUIC v5 через 3x-ui (флаг) |
-| 05 | `05-hysteria2.sh` | Hysteria2 apernet закреплённой версии, userpass, pinSHA256, опционально Salamander-инстанс и port hopping |
+| 05 | `05-hysteria2.sh` | Hysteria2 закреплённой версии, `auth.type: command` (D17), pinSHA256, опционально Salamander-инстанс и port hopping |
 | 06 | `06-amneziawg.sh` | AmneziaWG: движок kernel (DKMS) или userspace (amneziawg-go), уникальные параметры на каждую установку |
 | 07 | `07-routing.sh` | Анти-утечки: echo-сервисы → WARP или блок, RU-egress (opt-in), sniffing, geo-файлы и таймер обновления |
 | 08 | `08-warp.sh` | Cloudflare WARP как outbound (opt-in) |
@@ -37,12 +37,34 @@ research/YYYY-MM-DD/          исследования
 
 Фаза, которой нет на диске или которая выключена флагом, пропускается. Порядок задаётся массивом `PHASES` в `install.sh`.
 
+Повторный полный запуск `install.sh` (D24):
+- фаза со state `done` и флагом `ENABLE_*=0` запускается ещё раз и выключает свой протокол (inbound/сервис, порт, манифест `enabled=false`), state становится `disabled`; так умеют 04, 04b, 04c, 04d, 05, 06, 08;
+- ключ, изменённый через окружение, перезапускает фазу-владельца (`phase_owns_key` в `install.sh`): `VLESS_*` → 04, `XHTTP_*` → 04b, `SS_*` → 04c, `TUIC_*` → 04d, `HY2_*`/`ENABLE_HY2_OBFS` → 05, `AWG_*` → 06, `RU_EGRESS`/`HY2_RU_EGRESS`/`AWG_RU_EGRESS`/`ENABLE_BITTORRENT`/`ROUTING_ECHO_EXTRA`/`ENABLE_WARP` → 07 (и 08), `SERVER_IP`/`LABEL` → 04–06, `PANEL_*` → 03;
+- после любой отработавшей фазы протокола заново применяется 07 (новые inbound, ACL Hysteria), в конце печатается 99;
+- упавшая фаза получает state `failed` и проходит заново при следующем запуске: значение из окружения уже записано в config.env, и пропуск «done» оставил бы его неприменённым. `failed`/`disabled` сбрасываются перед запуском фазы, успешный проход ставит `done`;
+- 09 проходит снова, если копия `zoo/` и `scripts/` в `/opt/vpn-zoo` отличается от репозитория (после `git pull`): zoo вызывает `lib/proto-*.sh` из этой копии;
+- 99 перед выводом делает `zoo user sync`: протокол, включённый после установки, получает уже заведённых пользователей (§5).
+
 ## 3. Конфиг
 
 - `/etc/vpn-setup/config.env` (0600). Все параметры и сгенерированные секреты. Каждый модуль добавляет свои переменные через `config_set KEY VALUE`, а не через переписывание файла целиком.
 - Флаги включения: `ENABLE_VLESS=1 ENABLE_XHTTP=1 ENABLE_SS=1 ENABLE_TUIC=0 ENABLE_HY2=1 ENABLE_HY2_OBFS=0 ENABLE_AWG=1 ENABLE_WARP=0 RU_EGRESS=direct|block|warp`.
 - Движки: `AWG_ENGINE=auto|kernel|userspace` (`auto` = kernel, если DKMS собирается, иначе userspace), `HY2_ENGINE=apernet`.
 - Порты по умолчанию: VLESS 443/tcp, Hy2 443/udp, остальные — случайные высокие порты при первой установке, сохраняются в config.env. Никогда не используем 1080, 3128, 8080, 9050, 2053, 54321.
+- Ключи модулей (через окружение install.sh, сохраняются в config.env; список — `CONFIG_ENV_KEYS_RE` в lib.sh):
+
+| Модуль | Ключи |
+|---|---|
+| 04 VLESS | `VLESS_PORT`, `VLESS_SNI` (+`VLESS_SNI_CHECK=0`), `VLESS_TARGET=host:port`; пишет `VLESS_PRIV/PUB/SID/UUID/SNI_PICKED/PORT_MIGRATED` |
+| 04b XHTTP | `XHTTP_PLACEMENT=port\|fallback` (D16), `XHTTP_PORT`, `XHTTP_SNI`, `XHTTP_PATH`, `XHTTP_MODE=auto\|packet-up\|…`; пишет `XHTTP_PRIV/PUB/SID` |
+| 04c SS-2022 | `SS_PORT`; пишет `SS_PSK` |
+| 04d TUIC | `TUIC_PORT`, `TUIC_SNI` |
+| 05 Hysteria2 | `HY2_PORT`, `HY2_SNI`, `HY2_MASQ_URL`, `HY2_HOP=1`, `HY2_HOP_RANGE`, `HY2_HOP_IFACE`, `HY2_OBFS_PORT`, `HY2_LOG_LEVEL`; пишет `HY2_PASSWORD` (токен owner), `HY2_PIN`, `HY2_STATS_*`, `HY2_OBFS_PASSWORD` |
+| 06 AmneziaWG | `AWG_PORT`, `AWG_NETWORK`, `AWG_PROFILE=v2\|v3`, `AWG_RT=1`, `AWG_MTU`, `AWG_DNS`, `AWG_KEEPALIVE`, параметры обфускации `AWG_JC…AWG_I1` (генерируются) |
+| 07 маршрутизация | `RU_EGRESS`, `HY2_RU_EGRESS`, `AWG_RU_EGRESS` (D21), `ENABLE_BITTORRENT` (D20), `ROUTING_ECHO_EXTRA` (домены через запятую) |
+| 08 WARP | пишет `WARP_*`; разовый `WARP_REREGISTER=1` не сохраняется |
+
+Разовые переключатели `ZOO_*` (`ZOO_FORCE`, `ZOO_VLESS_REPICK`, `ZOO_AWG_TOOLS_SRC`, `ZOO_TEST_ENV`, …) в config.env не попадают.
 
 ## 4. Манифест протокола
 
@@ -67,14 +89,25 @@ research/YYYY-MM-DD/          исследования
 
 `probe.kind` ∈ `xray` | `hysteria` | `awg` | `sing-box`. Пробник строит клиентский конфиг из `probe`, без знания внутренностей модуля. Манифесты читают 99, `zoo` и firewall-аудит.
 
+| kind | Содержимое `probe` |
+|---|---|
+| `xray` | `outbound` — готовый outbound Xray с тегом `proxy` (VLESS, XHTTP, SS-2022); у VLESS/XHTTP ещё `link`/`uri` |
+| `hysteria` | `client` — готовый конфиг клиента Hysteria (JSON = YAML: `server`, `auth`, `tls{sni,insecure,pinSHA256}`, `obfs`), `hop` при port hopping, `version` |
+| `awg` | `conf` — полный клиентский `.conf`, `endpoint`, `address`, `server_tunnel_ip`, `mtu`, `profile` |
+| `sing-box` | `outbound` — outbound sing-box (TUIC: сертификат закреплён PEM в `tls.certificate`), `certificate_public_key_sha256` |
+
+Во всех `probe.user` — чей это конфиг (owner, если он включён). Необязательные поля, которые пишут модули: `links[].enabled`, `files[].enabled`; VLESS — `xui_inbound_id`, `xui_tag`, `sni`, `target`; XHTTP — `params{placement, inbound_id, inbound_port, listen, path, mode}`; SS/TUIC — `transports`, `xui{inbound_id, tag, socks_relay}`, `tls{self_signed, cert_path, cert_sha256, pubkey_sha256}`; Hysteria2 — `version`, `tls{sni, pinSHA256, self_signed}`, `hop_ports`; AWG — `interface`, `network`, `profile`.
+
+Отдельные манифесты: `hysteria2-obfs` (инстанс Salamander, есть только при `ENABLE_HY2_OBFS=1`). Фаза 99 собирает `probe` всех манифестов в `/etc/vpn-setup/probe-export.json` (`{version, server_ip, label, protocols:[{id, name, layer, port, engine, enabled, probe}]}`) — вход клиентского пробника.
+
 ## 5. Пользователи
 
 Один пользователь зоопарка = креды во всех включённых протоколах:
-- Xray-семейство (VLESS, XHTTP, SS, TUIC): клиент 3x-ui, общий `subId`, `email=<name>`.
-- Hysteria2: `auth.type: userpass`, запись `<name>: <password>` в config.yaml, reload.
+- Xray-семейство (VLESS, XHTTP, SS, TUIC): один клиент 3x-ui на все inbound (D18): `email=<name>`, общие uuid, `subId`, `password` (ключ SS-2022). Создание и привязка — только `xui_user_attach`/`xui_user_detach` из `lib/xui.sh`; `enable` у клиента общий для всех Xray-протоколов, счётчик трафика тоже.
+- Hysteria2: `auth.type: command` (D17): `/etc/hysteria/users.tsv` (`имя<TAB>токен<TAB>1|0`), помощник `/usr/local/lib/vpn-zoo/hy2-auth`, изменения вживую, отключение рвёт сессии через trafficStats `/kick`.
 - AmneziaWG: отдельный peer (ключи, PSK, /32 из пула), живое применение через `awg set`/`awg syncconf`, `.conf` в `/etc/vpn-setup/clients/<name>/`.
 
-Хранилище: `/etc/vpn-setup/users.json` (источник правды для зоопарка), операции — `zoo user add|del|disable|enable|list|show`. Пользователь `owner` создаётся при установке.
+Хранилище: `/etc/vpn-setup/users.json` (источник правды для зоопарка), операции — `zoo user add|del|disable|enable|list|show`. Пользователь `owner` создаётся при установке. Имя — `zoo_user_valid` (lib.sh: латиница, цифры, `_.-`, до 32), файлы пользователя — `/etc/vpn-setup/clients/<имя>/` (0700, файлы 0600, `zoo_client_file_write`).
 
 ## 6. Инструмент zoo (Python 3 stdlib)
 

@@ -237,7 +237,8 @@ config_default() {
 # Ключи, которые пользователь может задать через окружение: install.sh сохраняет их
 # в config.env до запуска фаз. Фазы читают только файл. ZOO_* (ZOO_FORCE, ZOO_SKIP_UPGRADE,
 # ZOO_NO_REBOOT, ZOO_TEST_ENV) — разовые переключатели, в файл не попадают.
-CONFIG_ENV_KEYS_RE='^(SERVER_IP|LABEL|DOMAIN|ENABLE_[A-Z0-9_]+|[A-Z0-9]+_ENGINE|RU_EGRESS|SUB_PUBLIC|PANEL_2FA|PANEL_PORT|PANEL_PATH|PANEL_USER|VLESS_[A-Z_]+|HY2_[A-Z_]+|AWG_[A-Z0-9_]+|SSH_PORTS|AUTO_REBOOT|AUTO_REBOOT_TIME)$'
+# WARP_REREGISTER и ZOO_VLESS_REPICK — разовые, поэтому WARP_* и ZOO_* сюда не входят.
+CONFIG_ENV_KEYS_RE='^(SERVER_IP|LABEL|DOMAIN|ENABLE_[A-Z0-9_]+|[A-Z0-9]+_ENGINE|RU_EGRESS|SUB_PUBLIC|PANEL_2FA|PANEL_PORT|PANEL_PATH|PANEL_USER|VLESS_[A-Z_]+|XHTTP_[A-Z_]+|SS_[A-Z_]+|TUIC_[A-Z_]+|HY2_[A-Z0-9_]+|AWG_[A-Z0-9_]+|ROUTING_ECHO_EXTRA|SSH_PORTS|AUTO_REBOOT|AUTO_REBOOT_TIME)$'
 
 # Снимок «что задано в окружении» — делать ДО config_load
 config_capture_env() {
@@ -249,11 +250,14 @@ config_capture_env() {
     done < <(compgen -e)
 }
 
+# Изменённые ключи — в ZOO_ENV_CHANGED: install.sh по ним перезапускает фазы-владельцы
 config_apply_env() {
     local kv
+    ZOO_ENV_CHANGED=()
     for kv in "${ZOO_ENV_OVERRIDES[@]:-}"; do
         [ -n "$kv" ] || continue
         if [ "$(config_get "${kv%%=*}")" != "${kv#*=}" ] || ! config_has "${kv%%=*}"; then
+            config_has "${kv%%=*}" && ZOO_ENV_CHANGED+=("${kv%%=*}")
             config_set "${kv%%=*}" "${kv#*=}"
             log_info "config: ${kv%%=*} взят из окружения"
         fi
@@ -286,24 +290,10 @@ config_init_defaults() {
     config_legacy_defaults
 }
 
-# Старые фазы 04/05/06/99 (до переписывания) ждут эти переменные под set -u.
-# Только в окружение: в файл их пишет фаза-владелец.
-config_legacy_defaults() {
-    : "${VLESS_PORT:=443}"
-    : "${VLESS_SNI:=}"
-    : "${VLESS_UUID:=}" "${VLESS_PRIV:=}" "${VLESS_PUB:=}" "${VLESS_SID:=}"
-    : "${HY2_PORT:=443}"
-    : "${HY2_SNI:=bing.com}"
-    : "${HY2_PASSWORD:=}"
-    : "${AWG_PORT:=51822}"
-    : "${AWG_NETWORK:=10.66.66.0/24}"
-    : "${AWG_SERVER_KEY:=}" "${AWG_SERVER_PUB:=}" "${AWG_CLIENT_KEY:=}" "${AWG_CLIENT_PUB:=}" "${AWG_CLIENT_PSK:=}"
-    : "${PANEL_PORT:=}" "${PANEL_PATH:=}" "${PANEL_USER:=}" "${PANEL_PASS:=}"
-    export VLESS_PORT VLESS_SNI VLESS_UUID VLESS_PRIV VLESS_PUB VLESS_SID \
-        HY2_PORT HY2_SNI HY2_PASSWORD AWG_PORT AWG_NETWORK \
-        AWG_SERVER_KEY AWG_SERVER_PUB AWG_CLIENT_KEY AWG_CLIENT_PUB AWG_CLIENT_PSK
-    [ -n "$HY2_PASSWORD" ] || { HY2_PASSWORD="$(gen_random_alnum 24)"; export HY2_PASSWORD; }
-}
+# Раньше подставляла в окружение умолчания VLESS_*/HY2_*/AWG_* для фаз первой версии.
+# Фазы v2 сами заводят свои ключи (config_default) и читают их из файла: случайный
+# HY2_PASSWORD в окружении был ловушкой для всех, кто читал $HY2_PASSWORD без config_get.
+config_legacy_defaults() { :; }
 
 # Совместимость со старыми фазами: раньше config_save переписывал файл целиком.
 # Теперь — config_set для каждого известного ключа, который задан.
@@ -353,6 +343,45 @@ manifest_get() { cat "$(manifest_path "$1")"; }
 manifest_del() { rm -f "$(manifest_path "$1")"; }
 
 # ============================================================
+# Пользователи зоопарка: имя и каталог /etc/vpn-setup/clients/<имя>
+# ============================================================
+
+ZOO_CLIENTS_DIR="${ZOO_CLIENTS_DIR:-$VPN_ETC/clients}"
+
+# Имя пользователя: латиница, цифры, _.- до 32 символов (email клиента 3x-ui, имя
+# каталога, метка в ссылках — одно и то же во всех протоколах)
+zoo_user_valid() { [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$ ]]; }
+
+zoo_user_require() {
+    zoo_user_valid "${1:-}" || die "недопустимое имя пользователя: «${1:-}» (латиница, цифры, _ . -, до 32 символов)"
+}
+
+# Каталог пользователя (0700), печатает путь
+zoo_client_dir() {
+    local d="$ZOO_CLIENTS_DIR/$1"
+    ( umask 077; mkdir -p "$d" )
+    chmod 700 "$ZOO_CLIENTS_DIR" "$d"
+    printf '%s\n' "$d"
+}
+
+# zoo_client_file_write NAME FILE — stdin в файл 0600 каталога пользователя (атомарно)
+zoo_client_file_write() {
+    local d tmp
+    d="$(zoo_client_dir "$1")"
+    tmp="$(mktemp "$d/.${2}.XXXXXX")"
+    cat > "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$d/$2"
+}
+
+# Удалить файл пользователя и каталог, если он опустел
+zoo_client_file_del() {
+    local d="$ZOO_CLIENTS_DIR/$1"
+    rm -f "${d:?}/$2"
+    rmdir "$d" 2>/dev/null || true
+}
+
+# ============================================================
 # Firewall: реестр портов + ufw
 #   ports.tsv: порт/proto <TAB> комментарий <TAB> кто открыл
 # ============================================================
@@ -365,12 +394,17 @@ _fw_ufw_active() { command -v ufw >/dev/null && [[ "$(ufw status 2>/dev/null)" =
 
 # fw_allow PORT/PROTO COMMENT [limit] — запись в реестр и правило ufw (идемпотентно)
 fw_allow() {
-    local spec="$1" comment="${2:-vpn-zoo}" mode="${3:-allow}" owner tmp
+    local spec="$1" comment="${2:-vpn-zoo}" mode="${3:-allow}" owner tmp prev
     _fw_valid "$spec" || die "fw_allow: ожидаю PORT/tcp|udp или A:B/proto, получено: $spec"
     owner="${ZOO_PHASE:-$(basename "${0:-?}" .sh)}"
     comment="${comment//[$'\t\n\'']/ }"
     mkdir -p "$(dirname "$PORTS_FILE")"
     [ -f "$PORTS_FILE" ] || : > "$PORTS_FILE"
+    # Чужую запись не перехватываем: иначе смена порта у одной фазы потом закроет
+    # (fw_revoke старого порта) порт другого протокола
+    prev="$(awk -F'\t' -v s="$spec" '$1 == s {print $3}' "$PORTS_FILE" | tail -1)"
+    [ -z "$prev" ] || [ "$prev" = "$owner" ] \
+        || die "fw_allow: $spec уже открыт фазой $prev — порт занят другим протоколом, задайте другой"
     tmp="$(mktemp "${PORTS_FILE}.XXXXXX")"
     { awk -F'\t' -v s="$spec" '$1 != s' "$PORTS_FILE"; printf '%s\t%s\t%s\t%s\n' "$spec" "$comment" "$owner" "$mode"; } > "$tmp"
     mv -f "$tmp" "$PORTS_FILE"
