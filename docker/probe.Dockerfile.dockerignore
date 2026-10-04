@@ -1,4 +1,8 @@
-# Контекст сборки пробника — корень репо; нужны только scripts/ и docker/probe/
+# Контекст сборки пробника — корень репо; нужны scripts/versions.env, docker/probe/ и zoo/
 *
-!scripts/
+!scripts/versions.env
 !docker/probe/
+!zoo/
+zoo/tests/
+**/__pycache__/
+**/*.pyc

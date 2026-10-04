@@ -1,0 +1,35 @@
+# zoo-collector — снятие счётчиков трафика (zoo traffic --collect), запускает zoo-collector.timer.
+# Ставит фаза 09 из zoo/systemd/. Пишет только /var/lib/vpn-zoo/traffic.sqlite, поэтому
+# файловая система для него read-only. Root нужен: токен 3x-ui и секрет Hysteria лежат
+# в /etc/vpn-setup (0700), `awg show` требует CAP_NET_ADMIN.
+[Unit]
+Description=vpn-zoo: снятие счётчиков трафика
+After=network-online.target x-ui.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zoo traffic --collect
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=4min
+UMask=0077
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/vpn-zoo
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

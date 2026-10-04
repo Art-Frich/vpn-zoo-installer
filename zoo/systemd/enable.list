@@ -1,0 +1,4 @@
+# Юниты zoo, которые фаза 09 включает и запускает (systemctl enable --now).
+# Файлы юнитов лежат рядом: zoo/systemd/<юнит>. По одному имени в строке, # — комментарий.
+zoo-collector.timer
+zoo-web.service

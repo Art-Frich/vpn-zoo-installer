@@ -1,0 +1,11 @@
+# Раз в 5 минут, на границе корзины (:00, :05, ...): приращения ложатся в свою 5-минутку.
+[Unit]
+Description=vpn-zoo: снятие счётчиков трафика каждые 5 минут
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=15s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
