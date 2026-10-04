@@ -275,9 +275,32 @@ def run_one(entry: dict[str, Any], st: Settings, workdir: Path) -> dict[str, Any
     return {**base, **res, "duration_s": round(time.monotonic() - t0, 1)}
 
 
+def _tcp_context(raw: list[dict[str, Any]], context: list[dict[str, Any]], st: Settings,
+                 tcp_by_host: dict[str, bool]) -> None:
+    """Молчащий UDP без TCP-соседей в прогоне (--proto): проверить TCP-порты непроверенных
+    протоколов того же адреса — иначе IP_BLOCKED нельзя отличить от UDP_BLOCKED."""
+    need = {r["host"] for r in raw if r.get("layer") == "udp" and r.get("host")
+            and r["host"] not in tcp_by_host}
+    probed = {r.get("id") for r in raw}
+    for e in context:
+        if not need or e.get("id") in probed or not e.get("probe"):
+            continue
+        try:
+            ep = endpoint_of(e["probe"])
+        except (EndpointError, KeyError, TypeError, ValueError):
+            continue
+        if ep.layer != "tcp" or ep.host not in need:
+            continue
+        status, _ = tcp_check(ep.host, ep.port, st.connect_timeout)
+        if status != "unknown":
+            tcp_by_host[ep.host] = tcp_by_host.get(ep.host, False) or status in ("ok", "refused")
+
+
 def run(entries: list[dict[str, Any]], st: Settings, server_ip: str | None = None,
-        selftest: dict[str, str] | None = None, my_ip: str | None = None) -> list[dict[str, Any]]:
-    """Прогон по всем протоколам и классификация. selftest — {id: вердикт серверной самопроверки}."""
+        selftest: dict[str, str] | None = None, my_ip: str | None = None,
+        context: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Прогон по всем протоколам и классификация. selftest — {id: вердикт серверной самопроверки};
+    context — все протоколы пакета (до фильтра --proto), для TCP-контекста молчащего UDP."""
     workdir = Path(tempfile.mkdtemp(prefix="zoo-probe-"))
     try:
         raw = []
@@ -292,6 +315,8 @@ def run(entries: list[dict[str, Any]], st: Settings, server_ip: str | None = Non
         if r.get("layer") == "tcp" and r.get("host") and r["obs"].l4 != "unknown":
             reachable = r["obs"].l4 in ("ok", "refused")
             tcp_by_host[r["host"]] = tcp_by_host.get(r["host"], False) or reachable
+    if context:
+        _tcp_context(raw, context, st, tcp_by_host)
     results = []
     for r in raw:
         obs: Obs = r.pop("obs")

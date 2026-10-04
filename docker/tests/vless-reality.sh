@@ -27,7 +27,7 @@ BIG_URL="${BIG_URL:-https://speed.cloudflare.com/__down?bytes=2000000}"
 BIG_MIN="${BIG_MIN:-2000000}"
 # IP выхода — по cdn-cgi/trace (строка ip=): api.ipify.org после фазы 07 блокируется или уходит в WARP (D9)
 IP_URL="${IP_URL:-https://www.cloudflare.com/cdn-cgi/trace}"
-TU="zt$(date +%s | tail -c 6)"     # временный пользователь
+TU="zvr$$"                         # временный пользователь (уникален и при параллельных тестах)
 SU="${TU}s"                          # «чужой» клиент с flow ""
 
 fail=0

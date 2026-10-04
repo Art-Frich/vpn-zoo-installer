@@ -16,6 +16,8 @@
 #                  web (zoo/tests/web_smoke.sh --users) и collector; последним — ssh-harden)
 #   --probe-profiles  профили клиентского пробника (docker/probe/run.sh), через запятую:
 #                  direct,clean,drop-udp,ip-block,freeze-16k,rst-tls (по умолчанию все); none — без него
+#   --serial       тесты и профили пробника по очереди (по умолчанию тесты протоколов и links
+#                  идут параллельно, профили пробника — параллельно; для отладки флаппинга)
 #
 # Итог: таблица в stdout и docker/out/<ts>/ (summary.md, summary.tsv, phases/*.log,
 # diag.txt, files/). Код выхода 0 — фазы PASS (или выключены флагом), тесты PASS,
@@ -37,6 +39,7 @@ KEEP=0
 EXTRA_ENV=()
 TESTS_ARG=""
 PROBE_PROFILES=""
+SERIAL=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -49,6 +52,7 @@ while [ $# -gt 0 ]; do
         --timeout)      TIMEOUT="$2"; shift 2 ;;
         --stop-on-fail) STOP_ON_FAIL=1; shift ;;
         --keep)         KEEP=1; shift ;;
+        --serial)       SERIAL=1; shift ;;
         --tests)        TESTS_ARG="$2"; shift 2 ;;
         --probe-profiles) PROBE_PROFILES="${2//,/ }"; shift 2 ;;
         -h|--help)      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -252,7 +256,7 @@ PROBE_CLIENT="SKIPPED"
 if [ -f "$ZOO_DOCKER_DIR/probe/run.sh" ] && [ "$PROBE_PROFILES" != "none" ] \
         && docker exec "$NAME" bash -c 'ls /etc/vpn-setup/protocols.d/*.json' >/dev/null 2>&1; then
     zoo_log "клиентский пробник: ${PROBE_PROFILES:-все профили}"
-    if ZOO_PROBE_PROFILES="${PROBE_PROFILES:-}" ZOO_PROBE_PREFIX="$NAME-probe" \
+    if ZOO_PROBE_PROFILES="${PROBE_PROFILES:-}" ZOO_PROBE_PREFIX="$NAME-probe" ZOO_PROBE_SERIAL="$SERIAL" \
             bash "$ZOO_DOCKER_DIR/probe/run.sh" "$NAME" "$OUT" > "$OUT/probe-client.log" 2>&1; then
         PROBE_CLIENT="PASS"
     else
@@ -286,27 +290,37 @@ if [ -n "$TESTS_ARG" ]; then
     else
         IFS=',' read -r -a TESTS <<< "$TESTS_ARG"
     fi
-    for t in "${TESTS[@]}"; do
+    # run_test ТЕСТ — статус в OUT/tests/ТЕСТ.status: фоновые запуски не видят TSTATUS
+    run_test() {
+        local t="$1" st
         if [ "$t" = "web" ]; then
             zoo_log "тест web (zoo/tests/web_smoke.sh --users)"
             if docker exec -e ZOO_TEST_ENV=docker "$NAME" bash /repo/zoo/tests/web_smoke.sh --users \
-                    > "$OUT/tests/web.log" 2>&1; then
-                TSTATUS[$t]="PASS"
-            else
-                TSTATUS[$t]="FAIL"
-            fi
-            zoo_log "  $t: ${TSTATUS[$t]}"
-            continue
-        fi
-        [ -f "$ZOO_DOCKER_DIR/tests/$t.sh" ] || { TSTATUS[$t]="MISSING"; continue; }
-        zoo_log "тест $t"
-        if bash "$ZOO_DOCKER_DIR/tests/$t.sh" "$NAME" > "$OUT/tests/$t.log" 2>&1; then
-            TSTATUS[$t]="PASS"
+                    > "$OUT/tests/web.log" 2>&1; then st=PASS; else st=FAIL; fi
+        elif [ ! -f "$ZOO_DOCKER_DIR/tests/$t.sh" ]; then
+            st=MISSING
         else
-            TSTATUS[$t]="FAIL"
+            zoo_log "тест $t"
+            if bash "$ZOO_DOCKER_DIR/tests/$t.sh" "$NAME" > "$OUT/tests/$t.log" 2>&1; then st=PASS; else st=FAIL; fi
         fi
-        zoo_log "  $t: ${TSTATUS[$t]}"
+        echo "$st" > "$OUT/tests/$t.status"
+        zoo_log "  $t: $st"
+    }
+    # Параллельно — тесты, которые трогают только своих пользователей и своих клиентов.
+    # Остальные (routing, security, allowlist, web, collector, ssh-harden) меняют общее
+    # состояние сервера или ждут накопленного трафика — по очереди после них
+    PARALLEL_OK=" vless-reality vless-xhttp ss2022 tuic hysteria2 amneziawg links "
+    PAR=(); SEQ=()
+    for t in "${TESTS[@]}"; do
+        if [ "$SERIAL" = "0" ] && [[ "$PARALLEL_OK" == *" $t "* ]]; then PAR+=("$t"); else SEQ+=("$t"); fi
     done
+    if [ ${#PAR[@]} -gt 0 ]; then
+        zoo_log "параллельно: ${PAR[*]}"
+        for t in "${PAR[@]}"; do run_test "$t" & done
+        wait
+    fi
+    for t in "${SEQ[@]}"; do run_test "$t"; done
+    for t in "${TESTS[@]}"; do TSTATUS[$t]="$(cat "$OUT/tests/$t.status" 2>/dev/null || echo FAIL)"; done
 fi
 
 # ---------- итог ----------

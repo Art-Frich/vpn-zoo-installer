@@ -21,7 +21,7 @@ allowed-tools: Bash(bash docker/test.sh *) Bash(bash docker/run-server.sh *) Bas
    bash docker/test.sh --mode full --tests all --distro 24.04 --name e2e24 --keep
    ```
    `--mode full` — один `install.sh`, как у пользователя; `--tests all` — тесты протоколов, links, routing, security, web, collector и последним ssh-harden (≈4 мин).
-3. Перед запуском назвать пользователю ожидаемое время. Полный прогон (≈14 мин на дистрибутив, замер 05.10.2026) — через Bash с `run_in_background: true`, ждать уведомления, не опрашивать. Для `both` — два фоновых прогона с разными `--name` (`e2e22`, `e2e24`) или сабагент `e2e-runner`.
+3. Перед запуском назвать пользователю ожидаемое время. Полный прогон (≈11.5 мин на дистрибутив, замер 05.10.2026; тесты протоколов и профили цензора идут параллельно, `--serial` — по очереди) — через Bash с `run_in_background: true`, ждать уведомления, не опрашивать. Для `both` — два фоновых прогона с разными `--name` (`e2e22`, `e2e24`) или сабагент `e2e-runner`.
 4. Пока идёт прогон, **не править `docker/*.sh`** (bash читает скрипт по ходу). Чтобы править репо параллельно, гонять из замороженной копии: `rm -rf /tmp/zoo-frozen && mkdir -p /tmp/zoo-frozen && git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - | tar -C /tmp/zoo-frozen -xf - && cd /tmp/zoo-frozen && bash docker/test.sh …`.
 5. На Windows/Git Bash скрипты стенда сами ставят `MSYS_NO_PATHCONV=1`; для ручных `docker`-команд ставить его самому.
 

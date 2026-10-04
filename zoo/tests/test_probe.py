@@ -177,6 +177,36 @@ class EndpointTest(unittest.TestCase):
         self.assertNotIn("hop", endpoints.with_host(HY, "127.0.0.1"))
 
 
+class TcpContextTest(unittest.TestCase):
+    """--proto amneziawg: молчащий UDP без TCP-соседей в прогоне — проверить TCP из пакета."""
+
+    def raw_awg(self):
+        return [{"id": "amneziawg", "layer": "udp", "host": "1.2.3.4"}]
+
+    def context(self):
+        return [{"id": "amneziawg", "probe": AWG}, {"id": "vless-reality", "probe": VLESS},
+                {"id": "hysteria2", "probe": HY}]
+
+    def test_tcp_neighbour_silent_means_ip_blocked(self):
+        tcp = {}
+        with mock.patch.object(engine, "tcp_check", return_value=("timeout", None)) as chk:
+            engine._tcp_context(self.raw_awg(), self.context(), engine.Settings(), tcp)
+        chk.assert_called_once_with("1.2.3.4", 443, mock.ANY)   # только TCP vless, не UDP hysteria
+        self.assertEqual(tcp, {"1.2.3.4": False})
+
+    def test_tcp_neighbour_ok_means_udp_blocked(self):
+        tcp = {}
+        with mock.patch.object(engine, "tcp_check", return_value=("ok", 12.0)):
+            engine._tcp_context(self.raw_awg(), self.context(), engine.Settings(), tcp)
+        self.assertEqual(tcp, {"1.2.3.4": True})
+
+    def test_known_host_not_rechecked(self):
+        tcp = {"1.2.3.4": True}
+        with mock.patch.object(engine, "tcp_check") as chk:
+            engine._tcp_context(self.raw_awg(), self.context(), engine.Settings(), tcp)
+        chk.assert_not_called()
+
+
 class AwgConfTest(unittest.TestCase):
     def test_strip(self):
         s = clients.strip_conf(AWG_CONF)

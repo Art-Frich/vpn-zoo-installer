@@ -200,11 +200,13 @@ def run_remote(export: Any, protocols: list[str] | None = None,
     st = st or engine.Settings()
     st.mode = "remote"
     entries, meta = load_bundle(export)
+    everything = entries
     if protocols:
         entries = [e for e in entries if e["id"] in protocols]
     selftest = (meta.get("selftest") or {}).get("verdicts") or None
     my_ip = engine.direct_ip(st)
-    results = engine.run(entries, st, server_ip=meta["server_ip"], selftest=selftest, my_ip=my_ip)
+    results = engine.run(entries, st, server_ip=meta["server_ip"], selftest=selftest, my_ip=my_ip,
+                         context=everything if protocols else None)
     rep = make_report("remote", results, st, server_ip=meta["server_ip"], label=meta.get("label"),
                       user=meta.get("user"), direct_ip=my_ip,
                       selftest_generated=(meta.get("selftest") or {}).get("generated"))
