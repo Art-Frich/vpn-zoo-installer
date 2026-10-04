@@ -1,6 +1,6 @@
 """CLI zoo: разбор аргументов и команды status, user, links, version, setup.
 
-Команды traffic/probe/export-probe/web/upgrade/smoke живут в своих модулях: модуль даёт
+Команды traffic/journal/probe/export-probe/web/upgrade/smoke живут в своих модулях: модуль даёт
 add_arguments(parser) и cmd_<name>(args, cfg) -> int; cli.py их только подключает.
 Коды выхода: 0 — успех, 1 — ошибка или найдены проблемы, 2 — неверные аргументы.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
-from . import traffic, upgrade
+from . import journal, traffic, upgrade
 from . import probe as probe_mod
 from . import web as web_mod
 from .config import Config, ConfigError
@@ -417,7 +417,7 @@ def cmd_setup(args: argparse.Namespace, cfg: Config) -> int:
             output.warn(f"приложения через VPN: {n}: {e} (повторить: sudo zoo allow apply)")
     except (allowlist.AllowlistError, LockTimeout, OSError) as e:
         output.warn(f"приложения через VPN: файлы не пересобраны: {e} (sudo zoo allow apply)")
-    for mod in (traffic, probe_mod, web_mod):
+    for mod in (traffic, journal, probe_mod, web_mod):
         mod.setup(cfg)
     return EXIT_OK
 
@@ -515,10 +515,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = add("traffic", traffic.cmd_traffic, "трафик по пользователям и протоколам")
     traffic.add_arguments(p)
+    p = add("journal", journal.cmd_journal, "журнал атак: кто и чем пробовал сервер снаружи")
+    journal.add_arguments(p)
     p = add("probe", probe_mod.cmd_probe, "проверка протоколов: --local с сервера, --remote с клиента")
     probe_mod.add_arguments(p)
     p = add("export-probe", probe_mod.cmd_export_probe, "пакет для клиентского пробника")
     probe_mod.add_export_arguments(p)
+    p = add("history", probe_mod.history.cmd_history, "история проб: add, list, export (для history/ в репо)")
+    probe_mod.history.add_arguments(p)
     p = add("web", web_mod.cmd_web, "веб-админка на 127.0.0.1 (доступ через ssh -L)")
     web_mod.add_arguments(p)
     p = add("upgrade", upgrade.cmd_upgrade, "обновление закреплённых версий")

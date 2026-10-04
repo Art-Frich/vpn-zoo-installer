@@ -32,7 +32,7 @@ SECURITY_HEADERS = [
     ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
 ]
 NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/traffic", "Трафик"),
-       ("/probe", "Проверка"), ("/logs", "Журнал"), ("/settings", "Настройки")]
+       ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Журнал"), ("/settings", "Настройки")]
 
 
 @dataclass
@@ -70,7 +70,7 @@ def text(body: str, status: int = 200, content_type: str = "text/plain; charset=
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import allowviews, userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import allowviews, journalviews, userviews, views  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token)
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -98,6 +98,7 @@ class App:
             ("GET", r"/probe", views.probe_page, True),
             ("POST", r"/probe/run", views.probe_run, True),
             ("POST", r"/probe/compare", views.probe_compare, True),
+            ("GET", r"/journal", journalviews.journal_page, True),
             ("GET", r"/logs", views.logs_page, True),
             ("GET", r"/settings", views.settings_page, True),
             ("POST", r"/settings/action", views.settings_action, True),

@@ -79,7 +79,8 @@ hy2_ensure_user() {
         --shell /usr/sbin/nologin "$HY_SVC_USER" || die "не удалось создать пользователя $HY_SVC_USER"
 }
 
-# Помощник авторизации: только встроенные команды bash, без внешних процессов
+# Помощник авторизации: на успешном пути только встроенные команды bash, без внешних процессов
+# (logger — лишь на отказе)
 hy2_install_auth_helper() {
     local tmp
     mkdir -p "$(dirname "$HY_AUTH_BIN")"
@@ -88,18 +89,29 @@ hy2_install_auth_helper() {
 #!/bin/bash
 # vpn-zoo: auth.type=command для Hysteria2. $1=адрес клиента $2=строка auth $3=tx.
 # Успех: код 0 и имя пользователя в stdout. Формат users.tsv: имя<TAB>токен<TAB>1|0
+# Отказ: в журнал (тег zoo-hy2-auth) уходит только адрес клиента — это источник для zoo journal;
+# строка auth (секрет) и имя не пишутся. Сама Hysteria при неверном ключе молчит.
+rej() {
+    case "${1-}" in *[!0-9a-fA-F:.\[\]]*|"") set -- "?" ;; esac
+    [ -x /usr/bin/logger ] && /usr/bin/logger -t zoo-hy2-auth -p authpriv.notice -- "reject $1" 2>/dev/null
+    exit 1
+}
 a="${2-}"
-[ -n "$a" ] && [ "${#a}" -le 300 ] || exit 1
+[ -n "$a" ] && [ "${#a}" -le 300 ] || rej "${1-}"
 u="" p="$a"
 case "$a" in *:*) u="${a%%:*}" p="${a#*:}" ;; esac
-[ -n "$p" ] || exit 1
+[ -n "$p" ] || rej "${1-}"
+off=""
 while IFS=$'\t' read -r n t e _; do
-    [ "$e" = 1 ] && [ -n "$t" ] && [ "$t" = "$p" ] || continue
+    [ -n "$t" ] && [ "$t" = "$p" ] || continue
     [ -z "$u" ] || [ "${u,,}" = "${n,,}" ] || continue
+    [ "$e" = 1 ] || { off=1; continue; }
     printf '%s\n' "$n"
     exit 0
 done < /etc/hysteria/users.tsv
-exit 1
+# верный ключ выключенного пользователя — свой человек, не атака: адрес не пишем
+[ -z "$off" ] || exit 1
+rej "${1-}"
 EOF
     chmod 0755 "$tmp"
     mv -f "$tmp" "$HY_AUTH_BIN"

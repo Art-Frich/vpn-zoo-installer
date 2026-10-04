@@ -64,6 +64,14 @@ else
     ufw --force enable >/dev/null || die "ufw enable не удался"
     log_ok "UFW включён"
 fi
+# Журнал атак (zoo journal) берёт блокировки закрытых портов из журнала ядра. ufw сам включает
+# уровень low (не чаще 3 записей в минуту на весь сервер), поэтому трогаем только выключенный лог;
+# уровень, выбранный владельцем, не меняем. Через переменную: grep -q в пайпе при pipefail падает по SIGPIPE
+ufw_state="$(ufw status verbose 2>/dev/null || true)"
+if grep -q '^Logging: off' <<< "$ufw_state"; then
+    ufw logging low >/dev/null || die "ufw logging low не включился"
+    log_info "ufw: лог блокировок был выключен — включён low (для zoo journal)"
+fi
 ufw status verbose | sed 's/^/    /'
 
 # ------------------------------------------------------------

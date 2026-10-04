@@ -29,7 +29,8 @@ from .config import Config
 
 # префикс ключа versions.env → фаза, которая ставит компонент
 VERSION_PHASES = (("XUI_", "03-3xui"), ("HY2_", "05-hysteria2"), ("AWG_", "06-amneziawg"),
-                  ("GO_", "06-amneziawg"), ("GEO_", "07-routing"), ("SINGBOX_", "04d-tuic"))
+                  ("GO_", "06-amneziawg"), ("GEO_", "07-routing"), ("SINGBOX_", "04d-tuic"),
+                  ("AGE_", "09-zoo"))
 PHASE_ORDER = ("03-3xui", "04-vless-reality", "04b-vless-xhttp", "04c-ss2022", "04d-tuic",
                "05-hysteria2", "06-amneziawg", "07-routing", "08-warp", "09-zoo", "99-print-creds")
 

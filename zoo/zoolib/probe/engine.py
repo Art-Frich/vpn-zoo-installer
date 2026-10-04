@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from .. import output, system
 from . import clients, verdicts
+from . import metrics as metrics_mod
 from .endpoints import Endpoint, EndpointError, endpoint_of, with_host
 from .fetch import fetch
 from .verdicts import Obs, Thresholds
@@ -28,6 +29,9 @@ LARGE_URLS = ("https://speed.cloudflare.com/__down?bytes={bytes}", "https://proo
 # IP выхода: cloudflare.com не входит в geosite:category-ip-geo-detect (07-routing блокирует
 # echo-сервисы, ipify и т. п. через туннель не ответят); запасной — IP-литерал без SNI
 IP_URLS = ("https://cloudflare.com/cdn-cgi/trace", "https://1.1.1.1/cdn-cgi/trace")
+# отдача: POST на speed.cloudflare.com/__up принимает тело любого размера и отвечает 200 (проверено
+# 05.10.2026); документированного API у неё нет, поэтому замер отдачи — по запросу (--upload-mb)
+UPLOAD_URL = "https://speed.cloudflare.com/__up"
 IP_RE = re.compile(r"(?m)^ip=([0-9a-fA-F:.]+)\s*$")
 RETRY_KINDS = verdicts.TARGET_KINDS | {"connect_timeout", "refused"}
 
@@ -38,12 +42,19 @@ class Settings:
     timeout: float = 10.0           # рукопожатие и малый запрос
     connect_timeout: float = 5.0    # TCP-connect к порту сервера
     stall: float = 8.0              # нет данных дольше — застой
-    large_bytes: int = 2_000_000
+    large_bytes: int = 5_000_000    # объём большого запроса: по нему же скорость (--speed-mb)
     large_max_time: float = 60.0
     small_urls: tuple[str, ...] = SMALL_URLS
     large_urls: tuple[str, ...] = LARGE_URLS
     ip_urls: tuple[str, ...] = IP_URLS
     thresholds: Thresholds = field(default_factory=Thresholds)
+    latency_samples: int = 5        # замеров задержки на каждую из двух целей (0 — не мерить)
+    latency_urls: tuple[str, ...] = SMALL_URLS
+    upload_bytes: int = 0           # 0 — отдачу не мерить (--upload-mb)
+    upload_url: str = UPLOAD_URL
+    tag: str | None = None          # метки владельца (--tag, --device) и поиск провайдера (--no-lookup)
+    device: str | None = None
+    lookup: bool = True
     fallback: bool = True           # local: при неудаче по публичному IP — повтор через loopback
     loopback: str = "127.0.0.1"
     progress: Callable[[str], None] | None = output.info
@@ -119,7 +130,7 @@ def measure(entry: dict[str, Any], probe: dict[str, Any], st: Settings, workdir:
     """Замеры без вердикта: {"obs": Obs, ...поля отчёта}."""
     res: dict[str, Any] = {"host": None, "port": entry.get("port"), "layer": entry.get("layer"),
                            "l4": {}, "handshake": {}, "small": {}, "large": {}, "egress_ip": None,
-                           "latency_ms": None, "speed_mbps": None, "client_log": ""}
+                           "latency_ms": None, "speed_mbps": None, "metrics": {}, "client_log": ""}
     try:
         ep: Endpoint = endpoint_of(probe)
     except (EndpointError, KeyError, TypeError, ValueError) as e:
@@ -169,6 +180,7 @@ def measure(entry: dict[str, Any], probe: dict[str, Any], st: Settings, workdir:
         if not obs.small_ok:
             res["client_log"] = client.log_tail()
             return res
+        metrics = res["metrics"]
         # повторный малый запрос (туннель уже поднят) — задержка
         again = client.run_jobs([dict(url=small["url"], connect_timeout=st.timeout, stall=st.timeout,
                                       max_time=st.timeout * 1.5)])[0]
@@ -191,6 +203,7 @@ def measure(entry: dict[str, Any], probe: dict[str, Any], st: Settings, workdir:
         body_s = large.get("body_seconds") or large.get("seconds")
         if obs.large_ok and body_s:
             obs.speed_mbps = res["speed_mbps"] = round(obs.large_bytes * 8 / 1e6 / max(body_s, 1e-3), 2)
+        metrics["download"] = metrics_mod.download_block(large)
         res["large"] = {"ok": obs.large_ok, "bytes": obs.large_bytes, "seconds": large.get("seconds"),
                         "url": large.get("url"), "stalled": bool(large.get("stalled")), "error": obs.large_error}
         if not obs.large_ok:
@@ -202,11 +215,33 @@ def measure(entry: dict[str, Any], probe: dict[str, Any], st: Settings, workdir:
         res["egress_ip"] = m.group(1) if m else None
         if not m:
             obs.notes.append(f"IP выхода не определён ({ipr.get('error') or 'нет ip= в ответе'})")
+        # расширенные метрики — после всех замеров вердикта: они его не меняют
+        if st.latency_samples > 0:
+            metrics["latency"] = measure_latency(client, st)
+        if st.upload_bytes and obs.large_ok:
+            metrics["upload"] = measure_upload(client, st)
     except (clients.ClientError, OSError) as e:
         obs.client_error = str(e)
     finally:
         client.stop()
     return res
+
+
+def measure_latency(client: Any, st: Settings) -> dict[str, Any]:
+    """latency_samples замеров на каждую из двух целей (чередуются). Первый круг — один запрос
+    на цель: если оба провалились, остальное не гоним (каждый провал стоит до таймаута)."""
+    urls = st.latency_urls[:2]
+    job = {"connect_timeout": st.timeout, "stall": st.timeout, "max_time": st.timeout * 1.5}
+    done = client.run_jobs([dict(url=u, **job) for u in urls])
+    if any(j.get("ok") for j in done) and st.latency_samples > 1:
+        done += client.run_jobs([dict(url=u, **job) for _ in range(st.latency_samples - 1) for u in urls])
+    return metrics_mod.latency_from_jobs(done)
+
+
+def measure_upload(client: Any, st: Settings) -> dict[str, Any]:
+    job = client.run_jobs([dict(url=st.upload_url, post_bytes=st.upload_bytes, connect_timeout=st.timeout,
+                                stall=st.stall, max_time=st.large_max_time, keep_body=64)])[0]
+    return metrics_mod.upload_block(job)
 
 
 def _ms(seconds: float | None) -> float | None:
@@ -335,6 +370,8 @@ def run(entries: list[dict[str, Any]], st: Settings, server_ip: str | None = Non
                 notes.append(f"выход не с IP сервера, а с {ip} (WARP или NAT хостера)")
         if verdict in verdicts.WORKING:
             r.pop("client_log", None)
+        if not r.get("metrics"):
+            r.pop("metrics", None)
         r.update(verdict=verdict, reason=reason, notes=notes)
         results.append(r)
         _say(st, f"{r['id']}: {verdict}" + (f" — {reason}" if reason else ""))

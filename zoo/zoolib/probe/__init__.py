@@ -5,11 +5,14 @@
 `zoo probe --remote FILE`  с любой Linux-машины или из контейнера zoo-probe: блокируется ли
                            у этого провайдера. FILE — пакет `zoo export-probe`.
 `zoo probe --compare L R`  сравнить отчёты сервера и клиента.
+`zoo probe --rank`         лучшие протоколы по накопленной истории (rank.py).
 `zoo export-probe`         пакет для клиента: probe-объекты манифестов (с ключами!) и итог
                            последней самопроверки сервера.
 
 Модули: endpoints (адрес в probe), clients (xray/hysteria/sing-box/awg), fetch (HTTP через
-SOCKS5 или интерфейс), engine (прогон), verdicts (классификация), report (вывод).
+SOCKS5 или интерфейс), engine (прогон), verdicts (классификация), report (вывод), metrics
+(задержка, скорость), context (метки и провайдер), history (SQLite), rank (рейтинг), export
+(анонимный jsonl и age для history/ в репо).
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import argparse
 import json
 import re
 import socket
+import subprocess
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +30,8 @@ from typing import Any
 from .. import __version__, manifests, output, paths, protolib, users
 from ..config import Config
 from ..fsutil import atomic_write_json, atomic_write_text, read_json
-from . import engine, report as report_mod, verdicts
+from . import context as ctx_mod
+from . import engine, export, history, rank, report as report_mod, verdicts
 from .verdicts import Thresholds
 
 VERDICTS = verdicts.VERDICTS
@@ -173,25 +178,32 @@ def load_bundle(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 # ---------- прогоны ----------
 
 def make_report(mode: str, results: list[dict[str, Any]], st: engine.Settings, **meta: Any) -> dict[str, Any]:
+    """Схема 1; поля context и metrics (задержка p90/джиттер, отдача) добавлены позже и необязательны."""
     return {
         "schema": 1, "type": REPORT_TYPE, "mode": mode, "generated": _now(), "zoo": __version__,
         "host": socket.gethostname(), **meta,
         "settings": {"timeout": st.timeout, "stall": st.stall, "large_bytes": st.large_bytes,
-                     "slow_mbps": st.thresholds.min_mbps},
+                     "slow_mbps": st.thresholds.min_mbps, "latency_samples": st.latency_samples,
+                     "upload_bytes": st.upload_bytes},
         "results": results, "summary": report_mod.summary(results),
     }
 
 
 def run_local(cfg: Config, protocols: list[str] | None = None, user: str | None = None,
-              st: engine.Settings | None = None) -> dict[str, Any]:
+              st: engine.Settings | None = None, record_history: bool = True) -> dict[str, Any]:
     st = st or engine.Settings()
     st.mode = "local"
     user = user or users.probe_user()
     entries = collect_entries(user, protocols)
     server_ip = cfg.get("SERVER_IP") or None
     results = engine.run(entries, st, server_ip=server_ip)
-    rep = make_report("local", results, st, server_ip=server_ip, label=cfg.get("LABEL"), user=user)
+    rep = make_report("local", results, st, server_ip=server_ip, label=cfg.get("LABEL"), user=user,
+                      context=ctx_mod.build(st.tag, st.device))
     _save_selftest(rep, partial=bool(protocols))
+    if record_history:
+        err = history.record_safely(rep, "local")
+        if err:
+            output.warn(f"не записал прогон в историю ({history.db_path()}): {err}")
     return rep
 
 
@@ -204,11 +216,13 @@ def run_remote(export: Any, protocols: list[str] | None = None,
     if protocols:
         entries = [e for e in entries if e["id"] in protocols]
     selftest = (meta.get("selftest") or {}).get("verdicts") or None
-    my_ip = engine.direct_ip(st)
+    direct = ctx_mod.direct_context(st.ip_urls, st.lookup)
+    my_ip = direct["ip"]
     results = engine.run(entries, st, server_ip=meta["server_ip"], selftest=selftest, my_ip=my_ip,
                          context=everything if protocols else None)
     rep = make_report("remote", results, st, server_ip=meta["server_ip"], label=meta.get("label"),
                       user=meta.get("user"), direct_ip=my_ip,
+                      context=ctx_mod.build(st.tag, st.device, direct, ctx_mod.net_hint()),
                       selftest_generated=(meta.get("selftest") or {}).get("generated"))
     if selftest:
         rep["compare"] = report_mod.compare(selftest, rep)
@@ -227,12 +241,36 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     mode.add_argument("--remote", metavar="FILE", help="клиентский прогон по пакету export-probe")
     mode.add_argument("--compare", nargs=2, metavar=("LOCAL", "REMOTE"),
                       help="сравнить отчёты сервера и клиента (JSON)")
+    mode.add_argument("--rank", action="store_true",
+                      help="лучшие протоколы по истории проб (по контекстам: метка или провайдер)")
     p.add_argument("--proto", action="append", help="только этот протокол (можно несколько раз)")
     p.add_argument("--user", help=f"чьими кредами проверять (--local; по умолчанию {users.PROBE_USER}, "
                                   "без него — owner)")
     p.add_argument("--timeout", type=float, default=10.0, help="таймаут рукопожатия и малого запроса, с")
     p.add_argument("--stall", type=float, default=8.0, help="застой большого запроса, с")
-    p.add_argument("--large-bytes", type=int, default=2_000_000, help="объём большого запроса, байт")
+    p.add_argument("--speed-mb", type=float, default=5.0,
+                   help="объём загрузки для замера скорости, МБ (по умолчанию 5; на мобильном интернете — меньше)")
+    p.add_argument("--large-bytes", type=int, help="то же в байтах (перекрывает --speed-mb)")
+    p.add_argument("--upload-mb", type=float, default=0.0,
+                   help="замер отдачи: столько МБ на speed.cloudflare.com/__up (0 — не мерить)")
+    p.add_argument("--upload-url", help="адрес приёма для замера отдачи (POST, любое тело, ответ 2xx)")
+    p.add_argument("--latency-samples", type=int, default=5, metavar="N",
+                   help="замеров задержки на каждую из двух целей (0 — не мерить)")
+    p.add_argument("--tag", type=ctx_mod.label_arg("tag"), metavar="МЕТКА",
+                   help="метка условий пробы (mobile-mts, cafe-wifi); с --rank — только эта метка")
+    p.add_argument("--device", type=ctx_mod.label_arg("device"), metavar="УСТРОЙСТВО",
+                   help="устройство, с которого идёт проба (pixel7, laptop)")
+    p.add_argument("--no-lookup", action="store_true",
+                   help="--remote: не узнавать провайдера и страну (запрос к speed.cloudflare.com/meta)")
+    p.add_argument("--no-history", action="store_true", help="--local: не записывать прогон в историю")
+    p.add_argument("--history-dir", metavar="DIR",
+                   help="--remote: дописать анонимный jsonl и зашифрованный сырой отчёт в DIR (история в репо)")
+    p.add_argument("--history-recipients", metavar="FILE",
+                   help="публичные ключи для сырого отчёта (по умолчанию DIR/recipients.txt)")
+    p.add_argument("--period", default="30d", help="--rank: период (24h, 30d, 2w, all)")
+    p.add_argument("--by", choices=rank.BY_CHOICES, default="context",
+                   help="--rank: чем группировать (по умолчанию метка, а без неё провайдер)")
+    p.add_argument("--with-local", action="store_true", help="--rank: учесть и прогоны с сервера")
     p.add_argument("--slow-mbps", type=float, default=2.0, help="ниже этой скорости — SLOW")
     p.add_argument("--no-fallback", action="store_true", help="--local: не повторять через loopback")
     p.add_argument("--small-url", action="append", help="URL малого запроса (вместо стандартных)")
@@ -255,8 +293,15 @@ def add_export_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def settings_from_args(args: argparse.Namespace) -> engine.Settings:
-    st = engine.Settings(timeout=args.timeout, stall=args.stall, large_bytes=args.large_bytes,
-                         thresholds=Thresholds(min_mbps=args.slow_mbps), fallback=not args.no_fallback)
+    large = args.large_bytes or int(args.speed_mb * 1_000_000)
+    if large <= 0 or args.latency_samples < 0 or args.upload_mb < 0:
+        raise ValueError("--speed-mb, --upload-mb, --latency-samples: нужны положительные числа")
+    st = engine.Settings(timeout=args.timeout, stall=args.stall, large_bytes=large,
+                         thresholds=Thresholds(min_mbps=args.slow_mbps), fallback=not args.no_fallback,
+                         latency_samples=args.latency_samples, upload_bytes=int(args.upload_mb * 1_000_000),
+                         tag=args.tag, device=args.device, lookup=not args.no_lookup)
+    if args.upload_url:
+        st.upload_url = args.upload_url
     if args.small_url:
         st.small_urls = tuple(args.small_url)
     if args.large_url:
@@ -290,14 +335,20 @@ def cmd_probe(args: argparse.Namespace, cfg: Config) -> int:
         else:
             report_mod.render_compare(rows)
         return 0
-    st = settings_from_args(args)
+    if args.rank:
+        return rank.cmd_rank(args)
+    try:
+        st = settings_from_args(args)
+    except ValueError as e:
+        output.error(str(e))
+        return 2
     if args.remote:
         export = _load_json(args.remote)
         if export is None:
             return 1
         rep = run_remote(export, args.proto, st)
     else:
-        rep = run_local(cfg, args.proto, args.user, st)
+        rep = run_local(cfg, args.proto, args.user, st, record_history=not args.no_history)
     if args.out:
         atomic_write_json(Path(args.out), rep, 0o644)
     if args.md:
@@ -308,6 +359,8 @@ def cmd_probe(args: argparse.Namespace, cfg: Config) -> int:
         if any(e.get("probe") for e in bundle["protocols"]):
             atomic_write_text(Path(args.export), json.dumps(bundle, ensure_ascii=False, indent=2) + "\n", 0o600)
             bundle_path = args.export
+    if args.history_dir:
+        _write_history_dir(rep, args)
     if args.json:
         output.print_json(rep)
     elif args.summary and not args.remote:
@@ -319,6 +372,25 @@ def cmd_probe(args: argparse.Namespace, cfg: Config) -> int:
         output.warn("нет протоколов для проверки" + ("" if args.remote else " (манифесты protocols.d пусты?)"))
         return 1
     return 0 if all_working(rep) else 1
+
+
+def _write_history_dir(rep: dict[str, Any], args: argparse.Namespace) -> None:
+    """Клиентский прогон → history/ (jsonl без IP; сырой отчёт под age, если есть recipients.txt и age)."""
+    out = Path(args.history_dir)
+    rfile = Path(args.history_recipients) if args.history_recipients else out / "recipients.txt"
+    try:
+        recipients = export.parse_recipients(rfile.read_text(encoding="utf-8"), allow_empty=True) if rfile.is_file() else None
+        age_bin = export.find_age() if recipients else None
+        if recipients and not age_bin:
+            output.warn("нет бинаря age: сырой отчёт не сохранён, в историю пошёл только анонимный jsonl")
+            recipients = None
+        elif not recipients:
+            recipients = None
+            output.info(f"в {rfile} нет ключей получателей: сырой отчёт не сохранён (только анонимный jsonl)")
+        stats = export.write_dir(out, [rep], recipients, age_bin)
+        output.ok(f"история: {out} (строк {stats['rows']}, сырых отчётов {stats['raw_new']})")
+    except (history.HistoryError, OSError, subprocess.SubprocessError) as e:
+        output.warn(f"история в {out} не записана: {e}")
 
 
 DEFAULT_REPO_URL = "https://github.com/Art-Frich/vpn-zoo-installer.git"

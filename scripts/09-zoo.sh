@@ -6,7 +6,10 @@
 #   /opt/vpn-zoo/INSTALL.json                когда и из какого коммита поставлено
 #   /usr/local/bin/zoo                       симлинк на /opt/vpn-zoo/zoo/zoo
 #   /etc/vpn-setup/users.json                реестр пользователей с owner (zoo setup)
-#   /var/lib/vpn-zoo                         данные zoo: traffic.sqlite (история трафика)
+#   /var/lib/vpn-zoo                         данные zoo: traffic.sqlite (история трафика),
+#                                            probe-history.sqlite (история проб)
+#   /usr/local/lib/vpn-zoo/bin/age           закреплённый age (AGE_* в versions.env): шифрует сырые
+#                                            отчёты в `zoo history export`; не в PATH, сбой — не провал фазы
 #   config.env: ZOO_WEB_PORT, ZOO_WEB_TOKEN  порт (127.0.0.1) и токен веб-админки (zoo setup)
 #
 # Юниты: все zoo/systemd/*.service|*.timer копируются в /etc/systemd/system, включаются
@@ -22,12 +25,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 require_root
 config_load
+versions_load
+detect_arch >/dev/null
 
 ZOO_HOME="${ZOO_HOME:-/opt/vpn-zoo}"
 ZOO_BIN_LINK="/usr/local/bin/zoo"
 ZOO_STATE_DIR="${ZOO_STATE_DIR:-/var/lib/vpn-zoo}"
 ZOO_UNIT_DIR="/etc/systemd/system"
 ZOO_MIN_PY="3.10"
+ZOO_AGE_BIN="${ZOO_AGE_BIN:-/usr/local/lib/vpn-zoo/bin/age}"
 
 zoo_python_ok() {
     command -v python3 >/dev/null \
@@ -83,6 +89,29 @@ zoo_install_units() {
     done < "$d/enable.list"
 }
 
+# age закреплённой версии для шифрования истории проб. Без него zoo history export отдаёт только
+# анонимный jsonl, поэтому сбой — предупреждение, а не провал фазы
+zoo_age_install() {
+    local sum tarball tmpd
+    if [ -x "$ZOO_AGE_BIN" ] && [ "$("$ZOO_AGE_BIN" --version 2>/dev/null)" = "$AGE_VERSION" ]; then
+        log_info "age $AGE_VERSION уже стоит: $ZOO_AGE_BIN"
+        return 0
+    fi
+    sum="$(version_for AGE_SHA256 "$ZOO_ARCH")"
+    tarball="/var/cache/vpn-zoo/age-$AGE_VERSION-linux-$ZOO_ARCH.tar.gz"
+    # download_verified при сбое делает die — в подоболочке это только код возврата
+    ( download_verified "$AGE_URL_BASE/age-$AGE_VERSION-linux-$ZOO_ARCH.tar.gz" "$sum" "$tarball" ) || return 1
+    tmpd="$(mktemp -d)"
+    if ! tar -xzf "$tarball" -C "$tmpd" age/age; then
+        rm -rf "$tmpd"
+        return 1
+    fi
+    mkdir -p "$(dirname "$ZOO_AGE_BIN")"
+    install -m 0755 "$tmpd/age/age" "$ZOO_AGE_BIN"
+    rm -rf "$tmpd" "$tarball"
+    log_ok "age $AGE_VERSION: $ZOO_AGE_BIN"
+}
+
 log_step "zoo: Python"
 wait_for_apt
 command -v python3 >/dev/null || apt_install python3
@@ -101,6 +130,9 @@ chmod 700 "$ZOO_STATE_DIR"
 "$ZOO_BIN_LINK" version >/dev/null || die "zoo: не запускается ($ZOO_BIN_LINK version)"
 mark_owned zoo
 log_ok "zoo $("$ZOO_BIN_LINK" version --json | jq -r '.zoo') → $ZOO_BIN_LINK"
+
+log_step "zoo: age для истории проб"
+zoo_age_install || log_warn "zoo: age не установлен — zoo history export выгрузит только анонимный jsonl (повтор: --phase 09)"
 
 log_step "zoo: пользователи и модули"
 # owner заводят фазы протоколов; setup только записывает его в реестр users.json

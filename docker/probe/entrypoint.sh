@@ -8,6 +8,9 @@
 # Окружение:
 #   ZOO_PROBE_DATA    каталог с пакетом и отчётом (по умолчанию /data)
 #   ZOO_PROBE_VIA     стенд: IP маршрутизатора-цензора — маршрут к серверу пойдёт через него
+#   ZOO_HISTORY_DIR   подключённый каталог истории (по умолчанию /history; docker run -v "$PWD/history:/history"):
+#                     анонимные строки и сырой отчёт под age (history/recipients.txt) дописываются в него
+#   Метки условий: docker run … zoo-probe --tag mobile-mts --device pixel7 (history/README.md)
 
 set -euo pipefail
 
@@ -19,6 +22,9 @@ esac
 
 DATA="${ZOO_PROBE_DATA:-/data}"
 EXPORT="$DATA/probe-export.json"
+HIST="${ZOO_HISTORY_DIR:-/history}"
+hist_args=()
+[ ! -d "$HIST" ] || hist_args=(--history-dir "$HIST")
 
 if [ ! -f "$EXPORT" ]; then
     echo "[x] нет $EXPORT" >&2
@@ -38,7 +44,7 @@ fi
 [ -e /dev/net/tun ] || echo "[!] нет /dev/net/tun — AmneziaWG не проверить (docker run --device /dev/net/tun --cap-add NET_ADMIN)" >&2
 
 set +e
-zoo probe --remote "$EXPORT" --out "$DATA/probe-report.json" --md "$DATA/probe-report.md" "$@"
+zoo probe --remote "$EXPORT" --out "$DATA/probe-report.json" --md "$DATA/probe-report.md" "${hist_args[@]}" "$@"
 rc=$?
 set -e
 echo

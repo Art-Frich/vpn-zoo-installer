@@ -15,6 +15,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 | `scripts/versions.env` | закреплённые версии и sha256 всего скачиваемого (D1). Только присваивания |
 | `README.md` | пользовательская документация (русский): установка, zoo, флаги, ограничения, FAQ |
 | `docker/README.md` | стенд: ключи test.sh, контракт `ZOO_TEST_ENV=docker`, отчёты, тесты |
+| `history/README.md` | история проб в репо: модель приватности (анонимный jsonl без IP, сырые отчёты под age), формат, расшифровка |
 
 При расхождении кода и документа правда — код; документ поправить в том же коммите.
 
@@ -48,9 +49,9 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 - Приложения через VPN (D31): `/etc/vpn-setup/allowlist.json` (пишет только `zoolib/allowlist.py`, `zoo allow`), пресет `scripts/allowlist-default.json`, bash читает `zoo_allowlist` (lib.sh). Из него — `clients/<имя>/amneziawg-android.conf` (`IncludedApplications`, общий `.conf` без ключа) и `v2rayn-routing.json`.
 - Серверные файлы: `/etc/vpn-setup/config.env` (0600, секреты), `clients/<имя>/`, `/var/lib/vpn-zoo/`, `/var/log/vpn-zoo/install-*.log` и `/var/backups/vpn-setup/` (содержат ключи, ротация D29).
 
-**zoo** (`zoo/zoo` → `zoo/zoolib/`): `cli.py` (argparse), `config.py`, `manifests.py`, `users.py`, `allowlist.py` (zoo allow), `protolib.py` (мост в bash), `xui.py`, `traffic.py` (SQLite), `status.py`, `upgrade.py` (`zoo upgrade/smoke`), `probe/` (`engine.py`, `clients.py`, `verdicts.py`, `report.py`), `web/` (сервер, auth, CSRF/CSP, views). Юниты — `zoo/systemd/`. Тесты — `zoo/tests/` (unittest) + `zoo/tests/web_smoke.sh`.
+**zoo** (`zoo/zoo` → `zoo/zoolib/`): `cli.py` (argparse), `config.py`, `manifests.py`, `users.py`, `allowlist.py` (zoo allow), `protolib.py` (мост в bash), `xui.py`, `traffic.py` (SQLite), `journal.py` (журнал атак «Кто нас щупал», SQLite; `zoo journal`) + `geoip.py` (страна по geoip.dat Xray), `status.py`, `upgrade.py` (`zoo upgrade/smoke`), `probe/` (`engine.py`, `clients.py`, `verdicts.py`, `report.py`; метрики и история — `metrics.py`, `context.py`, `history.py` (SQLite), `rank.py`, `export.py` (анонимный jsonl + age); `zoo history`, `zoo probe --rank`), `web/` (сервер, auth, CSRF/CSP, views). Юниты — `zoo/systemd/`. Тесты — `zoo/tests/` (unittest) + `zoo/tests/web_smoke.sh`.
 
-**Стенд** (`docker/`): `server.Dockerfile` (Ubuntu + systemd PID 1), `run-server.sh` (up/sync/install/shell/exec/down), `test.sh` (e2e), `tests/<id>.sh` (трафик настоящими клиентами, links, routing, security, collector, ssh-harden), `probe/` (образ `zoo-probe`, ожидаемые вердикты — `expect.py`), `censor/` (эмулятор ТСПУ: clean, drop-udp, ip-block, freeze-16k, rst-tls), `lint.sh` (shellcheck). Отчёты — `docker/out/<ts>/` (в .gitignore, внутри секреты стенда).
+**Стенд** (`docker/`): `server.Dockerfile` (Ubuntu + systemd PID 1), `run-server.sh` (up/sync/install/shell/exec/down), `test.sh` (e2e), `tests/<id>.sh` (трафик настоящими клиентами, links, routing, security, collector, journal, history, ssh-harden), `probe/` (образ `zoo-probe`, ожидаемые вердикты — `expect.py`), `censor/` (эмулятор ТСПУ: clean, drop-udp, ip-block, freeze-16k, rst-tls), `lint.sh` (shellcheck). Отчёты — `docker/out/<ts>/` (в .gitignore, внутри секреты стенда).
 
 ## Как проверять
 
