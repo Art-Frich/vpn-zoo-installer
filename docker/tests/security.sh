@@ -201,7 +201,7 @@ if sx test -f /etc/vpn-setup/protocols.d/tuic.json; then
 fi
 
 # панель не видна из сети (ни на IP сервера, ни через его loopback)
-if cx bash -c "exec 3<>/dev/tcp/$SRV_IP/${PANEL_PORT:-1}" 2>/dev/null; then fail "панель доступна снаружи $SRV_IP:$PANEL_PORT"; else pass "панель недоступна снаружи ($SRV_IP:$PANEL_PORT)"; fi
+if cx timeout 3 bash -c "exec 3<>/dev/tcp/$SRV_IP/${PANEL_PORT:-1}" 2>/dev/null; then fail "панель доступна снаружи $SRV_IP:$PANEL_PORT"; else pass "панель недоступна снаружи ($SRV_IP:$PANEL_PORT)"; fi
 
 # наружу из клиента — только сервер
 cx sh -c "iptables -A OUTPUT -o lo -j ACCEPT && iptables -A OUTPUT -o awg0 -j ACCEPT \
@@ -245,9 +245,11 @@ check_tunnel() {
         pass "[$name] echo $ECHO_URL не видит IP сервера"
     fi
     h0="$(hits)"
+    # негативные проверки: доступная канарейка ответила бы сразу, поэтому короткий таймаут и параллельно
     for t in "127.0.0.1:$C_LO" "localhost:$C_LO" "[::1]:$C_LO" "$ALIAS_IP:$C_ANY" "$SRV_IP:$C_ANY" "127.0.0.1.nip.io:$C_LO"; do
-        cx curl -s -o /dev/null --max-time 6 "$@" "http://$t/" >/dev/null 2>&1 || true
+        cx curl -s -o /dev/null --max-time 3 "$@" "http://$t/" >/dev/null 2>&1 &
     done
+    wait
     [ "$(hits)" = "$h0" ] && pass "[$name] сервисы сервера на loopback и за ufw недоступны" \
         || fail "[$name] через туннель дошли до сервиса сервера: $(sx cat /tmp/zoo-canary.$C_LO /tmp/zoo-canary.$C_ANY 2>/dev/null | tr '\n' ' ')"
     sx sh -c "rm -f /tmp/zoo-canary.$C_LO /tmp/zoo-canary.$C_ANY"
@@ -297,7 +299,7 @@ if sx test -f /etc/vpn-setup/protocols.d/amneziawg.json && [ "$(sx jq -r '.enabl
         check_tunnel awg
         if [ -n "$tip" ]; then
             h0="$(hits)"
-            cx curl -s -o /dev/null --max-time 6 "http://$tip:$C_ANY/" >/dev/null 2>&1 || true
+            cx curl -s -o /dev/null --max-time 3 "http://$tip:$C_ANY/" >/dev/null 2>&1 || true
             [ "$(hits)" = "$h0" ] && pass "[awg] $tip:$C_ANY (адрес сервера в туннеле) закрыт ufw" || fail "[awg] $tip:$C_ANY доступен из туннеля"
         fi
         cx awg-quick down awg0 >/dev/null 2>&1 || true

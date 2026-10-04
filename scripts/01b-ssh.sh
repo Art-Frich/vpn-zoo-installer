@@ -394,7 +394,9 @@ creds_refresh() {
 # ============================================================
 
 timer_arm() {
-    local min="$1" d
+    local min="$1" d on="${1}min"
+    # только стенд: таймер в секундах, чтобы тест не ждал минутами
+    if is_test_env && [[ "${ZOO_TEST_REVERT_SEC:-}" =~ ^[0-9]+$ ]]; then on="${ZOO_TEST_REVERT_SEC}s"; fi
     ( umask 077; mkdir -p "$BIN_COPY" )
     d="$(dirname "${BASH_SOURCE[0]}")"
     if ! [ "$d" -ef "$BIN_COPY" ]; then
@@ -415,7 +417,7 @@ EOF
 Description=vpn-zoo: таймер отката SSH_HARDEN (фаза 01b)
 
 [Timer]
-OnActiveSec=${min}min
+OnActiveSec=${on}
 AccuracySec=1s
 
 [Install]

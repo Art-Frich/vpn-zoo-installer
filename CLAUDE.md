@@ -63,7 +63,11 @@ bash docker/lint.sh
 
 # точечно: установка (~1.5 мин, замер 05.10.2026) + только затронутые тесты — по умолчанию
 bash docker/test.sh --mode full --tests allowlist,amneziawg --distro 24.04 --name dev24 --probe-profiles none
-# полный e2e как у пользователя + все тесты + матрица цензора, до ~20 мин (из них ssh-harden 6–8) — только перед релизом
+# Замеры 05.10.2026 (24.04, Windows + Docker Desktop): установка 93 с; матрица цензора 145 с;
+# тесты: vless-reality 39, vless-xhttp 22, ss2022 45, hysteria2 31, amneziawg 47, routing 73, links 26,
+# security 65, allowlist 17, web 12, collector 7, ssh-harden 248 с. Полный --tests all ≈ 14 мин.
+# Цифры без замера в документы не писать: сначала прогнать с метками времени, потом записать.
+# полный e2e как у пользователя + все тесты + матрица цензора, ≈14 мин — только перед релизом
 bash docker/test.sh --mode full --tests all --distro 24.04 --name e2e24 --keep
 bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
 # с флагами: --env ENABLE_TUIC=1 --env ENABLE_HY2_OBFS=1 --env HY2_HOP=1 --env ENABLE_WARP=1

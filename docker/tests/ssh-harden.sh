@@ -216,17 +216,18 @@ case "$code" in 2??|3??|401|403) pass "ssh -L через новый порт к 
 step "c) без подтверждения — автооткат (SSH_REVERT_MIN=1)"
 # ------------------------------------------------------------
 
-out="$(sx bash -c 'cd /repo && SSH_HARDEN=1 SSH_REVERT_MIN=1 bash scripts/install.sh --phase 01b' 2>&1)" && rc=0 || rc=$?
+out="$(sx bash -c 'cd /repo && SSH_HARDEN=1 SSH_REVERT_MIN=1 ZOO_TEST_REVERT_SEC=15 bash scripts/install.sh --phase 01b' 2>&1)" && rc=0 || rc=$?
 [ "$rc" = "0" ] && [ "$(pending_val NEW_PORT)" = "$NEW" ] && grep -q "уже применён" <<< "$out" \
     && pass "повтор шага 1: тот же порт $NEW, таймер заново" || fail "повтор шага 1: rc=$rc"
 # занятая блокировка install.sh: откат должен отложиться, а не идти параллельно
-sx bash -c 'flock /run/vpn-setup.lock sleep 75' >/dev/null 2>&1 &
+# таймер на стенде — 15 с (ZOO_TEST_REVERT_SEC), блокировка держится дольше первого срабатывания
+sx bash -c 'flock /run/vpn-setup.lock sleep 28' >/dev/null 2>&1 &
 LOCK_PID=$!
-sleep 70
+sleep 22
 sx test -f "$ST/pending.env" && sx test -f "$DROPIN" && pass "пока install.sh держит блокировку, откат отложен" || fail "откат прошёл при занятой блокировке"
 wait "$LOCK_PID" 2>/dev/null || true
-for _ in $(seq 1 24); do sx test -f "$ST/pending.env" || break; sleep 5; done
-if sx test ! -f "$ST/pending.env"; then pass "таймер откатил шаг 1"; else fail "отката нет за 2 мин"; sx journalctl -u vpn-zoo-ssh-revert --no-pager -n 20; fi
+for _ in $(seq 1 45); do sx test -f "$ST/pending.env" || break; sleep 2; done
+if sx test ! -f "$ST/pending.env"; then pass "таймер откатил шаг 1"; else fail "отката нет за 90 с"; sx journalctl -u vpn-zoo-ssh-revert --no-pager -n 20; fi
 sx test ! -e "$DROPIN" && sx test ! -e "$ST/orig.env" && pass "drop-in и состояние фазы убраны" || fail "после отката остались файлы фазы"
 listening "$NEW" && fail "после отката порт $NEW слушается" || pass "порт $NEW не слушается"
 ufw_has "$NEW" && fail "после отката ufw $NEW открыт" || pass "ufw: $NEW закрыт"
