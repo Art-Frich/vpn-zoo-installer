@@ -1,0 +1,50 @@
+# zoo-web — веб-админка vpn-zoo на 127.0.0.1:$ZOO_WEB_PORT (порт и токен — в config.env).
+# Доступ только через туннель: zoo web --info печатает команду ssh -L.
+#
+# Работает от root: действия админки (пользователи, рестарт сервисов) вызывают те же
+# bash-модули протоколов, что CLI, а они пишут в /etc/vpn-setup, /etc/hysteria,
+# /etc/amnezia, ходят в API 3x-ui с токеном из /etc/vpn-setup (0700) и вызывают
+# `awg set` (CAP_NET_ADMIN). Компромисс:
+#  - ProtectSystem=strict + ReadWritePaths: запись только в каталоги зоопарка;
+#    /usr, /boot и остальной /etc — только чтение. Модуль, который начнёт писать
+#    в другое место, из админки упадёт с EROFS (из CLI сработает) — тогда путь добавить сюда;
+#  - NoNewPrivileges, Restrict*, Protect{Kernel*,Clock,Hostname,ControlGroups} не мешают:
+#    модулям не нужны setuid, модули ядра, sysctl и namespaces;
+#  - сеть не ограничена (IPAddressDeny нельзя): API 3x-ui и Hysteria на loopback,
+#    но smoke/пробник ходят на публичный IP сервера;
+#  - рестарт сервисов и обновление geo идут через systemctl: их выполняет PID 1 вне песочницы.
+[Unit]
+Description=vpn-zoo: веб-админка (127.0.0.1)
+After=network-online.target x-ui.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/zoo web
+Restart=on-failure
+RestartSec=5
+UMask=0077
+Environment=PYTHONUNBUFFERED=1 NO_COLOR=1
+MemoryMax=512M
+TasksMax=256
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=-/etc/vpn-setup -/etc/hysteria -/etc/amnezia -/var/lib/vpn-zoo -/var/log/vpn-zoo -/var/backups/vpn-setup -/run/lock
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

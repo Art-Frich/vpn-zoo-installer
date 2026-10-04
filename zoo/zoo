@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""zoo — управление VPN-зоопарком. Справка: zoo --help"""
+
+import os
+import sys
+
+if sys.version_info < (3, 10):
+    sys.stderr.write("zoo: нужен Python >= 3.10, сейчас %s\n" % sys.version.split()[0])
+    sys.exit(1)
+
+# /usr/local/bin/zoo — симлинк: пакет zoolib ищем рядом с настоящим файлом
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+from zoolib.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
