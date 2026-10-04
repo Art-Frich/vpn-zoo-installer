@@ -152,11 +152,17 @@ def _parse_head(head: bytes) -> tuple[int, dict[str, str]]:
     return int(parts[1]), headers
 
 
+ZERO_CHUNK = bytes(65536)
+
+
 def fetch(url: str, socks: dict[str, Any] | None = None, bind_dev: str | None = None,
           dns: str | None = None, connect_timeout: float = 10.0, stall: float = 8.0,
-          max_time: float = 60.0, keep_body: int = 0, limit: int = 0) -> dict[str, Any]:
+          max_time: float = 60.0, keep_body: int = 0, limit: int = 0,
+          extra_headers: dict[str, str] | None = None, post_bytes: int = 0) -> dict[str, Any]:
     """GET url. socks={host, port, user, password} — через прокси; bind_dev — сокет на интерфейсе
-    туннеля (DNS тогда через dns по тому же интерфейсу). limit — хватит стольких байт тела."""
+    туннеля (DNS тогда через dns по тому же интерфейсу). limit — хватит стольких байт тела.
+    post_bytes > 0 — POST с таким числом нулевых байт (замер отдачи): sent_bytes — сколько ушло,
+    upload_seconds — от начала тела до первого байта ответа (сервер отвечает, дочитав тело)."""
     u = urlsplit(url)
     https = u.scheme == "https"
     host = u.hostname or ""
@@ -164,7 +170,7 @@ def fetch(url: str, socks: dict[str, Any] | None = None, bind_dev: str | None = 
     path = (u.path or "/") + (f"?{u.query}" if u.query else "")
     res: dict[str, Any] = {"url": url, "ok": False, "status": None, "bytes": 0, "expected": None,
                            "seconds": None, "connect_ms": None, "ttfb_ms": None, "body_seconds": None,
-                           "stalled": False, "error": "", "error_kind": "", "body": ""}
+                           "sent_bytes": 0, "upload_seconds": None, "stalled": False, "error": "", "error_kind": "", "body": ""}
     t0 = time.monotonic()
     deadline = t0 + max_time
     sock: socket.socket | None = None
@@ -186,10 +192,26 @@ def fetch(url: str, socks: dict[str, Any] | None = None, bind_dev: str | None = 
             sock.settimeout(connect_timeout)
             sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
         stage = "header"
-        req = (f"GET {path} HTTP/1.1\r\nHost: {u.netloc.rsplit('@', 1)[-1]}\r\nUser-Agent: {USER_AGENT}\r\n"
-               "Accept: */*\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")
-        t_req = time.monotonic()
+        extra = "".join(f"{k}: {v}\r\n" for k, v in (extra_headers or {}).items())
+        if post_bytes:
+            extra += f"Content-Type: application/octet-stream\r\nContent-Length: {post_bytes}\r\n"
+        req = (f"{'POST' if post_bytes else 'GET'} {path} HTTP/1.1\r\nHost: {u.netloc.rsplit('@', 1)[-1]}\r\n"
+               f"User-Agent: {USER_AGENT}\r\nAccept: */*\r\nAccept-Encoding: identity\r\n{extra}"
+               "Connection: close\r\n\r\n")
+        t_req = t_up0 = time.monotonic()
         sock.sendall(req.encode())
+        if post_bytes:
+            stage = "upload"
+            sock.settimeout(stall)
+            t_up0 = time.monotonic()
+            while res["sent_bytes"] < post_bytes:
+                if time.monotonic() >= deadline:
+                    raise FetchError("timeout", f"дольше {max_time:.0f} с")
+                n = min(len(ZERO_CHUNK), post_bytes - res["sent_bytes"])
+                sock.sendall(ZERO_CHUNK[:n])
+                res["sent_bytes"] += n
+            stage = "header"
+            t_req = time.monotonic()
         sock.settimeout(min(stall, max(0.5, deadline - time.monotonic())))
         buf = b""
         while b"\r\n\r\n" not in buf:
@@ -198,6 +220,8 @@ def fetch(url: str, socks: dict[str, Any] | None = None, bind_dev: str | None = 
                 raise FetchError("eof", "соединение закрыто до ответа")
             if not buf:
                 res["ttfb_ms"] = round((time.monotonic() - t_req) * 1000, 1)
+                if post_bytes:
+                    res["upload_seconds"] = round(time.monotonic() - t_up0, 3)
             buf += chunk
             if len(buf) > 65536:
                 raise FetchError("http", "слишком длинные заголовки")
@@ -240,11 +264,11 @@ def fetch(url: str, socks: dict[str, Any] | None = None, bind_dev: str | None = 
     except FetchError as e:
         res["error_kind"], res["error"] = e.kind, str(e)
     except socket.timeout:
-        kind = {"connect": "connect_timeout", "tls": "tls_timeout"}.get(stage, "header_timeout")
+        kind = {"connect": "connect_timeout", "tls": "tls_timeout", "upload": "stall"}.get(stage, "header_timeout")
         res["error_kind"], res["error"] = kind, f"таймаут ({stage})"
     except ConnectionRefusedError:
         res["error_kind"], res["error"] = "refused", "соединение отвергнуто"
-    except ConnectionResetError:
+    except (ConnectionResetError, BrokenPipeError):
         res["error_kind"], res["error"] = "reset", f"соединение сброшено (RST, {stage})"
     except ssl.SSLError as e:
         eof = "EOF" in str(e) or "UNEXPECTED_EOF" in str(e)

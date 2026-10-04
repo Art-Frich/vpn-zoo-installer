@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import probe as probe_mod
-from .. import paths, status, system, traffic, upgrade
+from .. import journal, paths, status, system, traffic, upgrade
 from ..output import human_bytes, human_duration
-from . import charts, logs
+from . import charts, logs, probeviews
 from .html import Markup, badge, card, csrf_input, join, kv, post_button, t, table
 from .jobs import Job, outside_sandbox, zoo_argv
 
@@ -108,6 +108,7 @@ def collect_alerts(st: dict[str, Any]) -> list[tuple[str, Any]]:
     if traffic.last_run() is None:
         out.append(("warn", "Трафик ещё не собирался: zoo-collector.timer снимает счётчики раз в 5 минут, "
                             "первое снятие — в течение 5 минут после установки"))
+    out += journal.alerts()
     return out
 
 
@@ -298,7 +299,7 @@ def verdict_legend(results: list[dict[str, Any]]) -> Markup | None:
 
 
 def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | None = None,
-               report_text: str = "", error: str = "") -> "Response":
+               report_text: str = "", error: str = "", notice: str = "") -> "Response":
     csrf = req.session.csrf if req.session else ""
     running = app.jobs.running("probe")
     last = load_selftest()
@@ -333,16 +334,23 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
           t("div", t("div", t("label", "или файл", for_="report-file"),
                      t("input", type="file", id="report-file", accept=".json,application/json", data_fill="report"),
                      class_="field grow"),
-            t("button", "Сравнить", type="submit", class_="btn primary"), class_="form-row"),
+            t("div", t("label", "метка (необязательно)", for_="tag"),
+              t("input", type="text", name="tag", id="tag", maxlength="40", placeholder="mobile-mts"), class_="field"),
+            t("div", t("label", "устройство", for_="device"),
+              t("input", type="text", name="device", id="device", maxlength="40", placeholder="pixel7"),
+              class_="field"),
+            t("button", "Сравнить и записать в историю", type="submit", class_="btn primary"), class_="form-row"),
           method="post", action="/probe/compare", class_="stack")]
     if error:
         cmp_body.insert(0, alert_list([("bad", error)]))
+    if notice:
+        cmp_body.insert(0, alert_list([("info", notice)]))
     if compare_rows is not None:
         rows = [[t("strong", r["id"]), verdict_badge(r.get("server")), verdict_badge(r.get("client")),
                  badge(r.get("verdict", ""), CATEGORY.get(r.get("category", ""), "muted"))] for r in compare_rows]
         cmp_body += [t("h3", "Сравнение"), table(["протокол", "сервер", "клиент", "вывод"], rows)]
     body = [page_head("Проверка", "работает ли протокол в принципе и блокируется ли он у пользователя"),
-            local, card("Сравнить с клиентом", *cmp_body)]
+            local, *probeviews.cards(req), card("Сравнить с клиентом", *cmp_body)]
     return app.render(req, "Проверка", body, active="/probe")
 
 
@@ -371,11 +379,18 @@ def probe_compare(app: "App", req: "Request") -> "Response":
     if not isinstance(results, list) or not all(isinstance(r, dict) and isinstance(r.get("id"), str)
                                                  and isinstance(r.get("verdict"), str) for r in results):
         return probe_page(app, req, report_text=raw, error="В отчёте нет списка results вида {id, verdict}.")
+    try:
+        tag = probe_mod.context.clean_label(req.form["tag"], "метка") if req.form.get("tag", "").strip() else None
+        device = (probe_mod.context.clean_label(req.form["device"], "устройство")
+                  if req.form.get("device", "").strip() else None)
+    except ValueError as e:
+        return probe_page(app, req, report_text=raw, error=str(e))
+    notice = probe_mod.history.record_notice(remote, "upload", tag=tag, device=device)
     local = load_selftest()
     if local is None:
-        return probe_page(app, req, report_text=raw,
+        return probe_page(app, req, report_text=raw, notice=notice,
                           error="Нет серверной самопроверки для сравнения — сначала нажмите «Запустить».")
-    return probe_page(app, req, probe_mod.report.compare(local, remote), report_text=raw)
+    return probe_page(app, req, probe_mod.report.compare(local, remote), report_text=raw, notice=notice)
 
 
 # ---------- журнал ----------

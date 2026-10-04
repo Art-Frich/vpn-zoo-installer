@@ -22,6 +22,28 @@ def _num(v: Any, fmt: str) -> str:
     return "—" if v is None else format(v, fmt)
 
 
+def _metrics(r: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    m = r.get("metrics") or {}
+    return m.get("latency") or {}, m.get("upload") or {}
+
+
+def _p50_p90(lat: dict[str, Any]) -> str:
+    if lat.get("median_ms") is None:
+        return "—"
+    return f"{lat['median_ms']:.0f}/{_num(lat.get('p90_ms'), '.0f')}"
+
+
+def context_line(report: dict[str, Any]) -> str:
+    """«метка …, устройство …, провайдер … (AS…), страна, сеть» — условия пробы; пусто, если их нет."""
+    c = report.get("context") or {}
+    isp = (f"AS{c['asn']} " if c.get("asn") else "") + (c.get("isp") or "")
+    net = {"wifi": "Wi-Fi", "ethernet": "кабель", "cellular": "мобильная сеть"}.get(c.get("net") or "", c.get("net"))
+    parts = [f"метка {c['tag']}" if c.get("tag") else "", f"устройство {c['device']}" if c.get("device") else "",
+             f"провайдер {isp.strip()}" if isp.strip() else "", c.get("country") or "",
+             f"сеть: {net}" if net else ""]
+    return ", ".join(x for x in parts if x)
+
+
 def _verdict(v: str) -> str:
     return output.color(v, VERDICT_COLOR.get(v, "red"))
 
@@ -50,20 +72,40 @@ def render(report: dict[str, Any]) -> None:
     head = "Самопроверка с сервера" if local else "Проба с этой машины"
     print(f"{head}: сервер {report.get('server_ip') or '?'}, пользователь {report.get('user') or '?'}"
           + (f", ваш IP {report['direct_ip']}" if report.get("direct_ip") else ""))
+    if context_line(report):
+        print(f"Условия: {context_line(report)}")
     print()
+    results = report.get("results", [])
+    # расширенные метрики (задержка p50/p90, джиттер, отдача) — колонки только если они есть в отчёте
+    has_lat = any(_metrics(r)[0].get("median_ms") is not None for r in results)
+    has_up = any(_metrics(r)[1].get("mbps") is not None for r in results)
     rows = []
-    for r in report.get("results", []):
+    for r in results:
         port = f"{r.get('port') or '?'}/{r.get('layer') or '?'}"
+        lat, up = _metrics(r)
         row = [r["id"], port, _verdict(r["verdict"]), _num(r.get("l4", {}).get("rtt_ms"), ".0f"),
-               _num(r.get("latency_ms"), ".0f"), _num(r.get("speed_mbps"), ".1f"), r.get("egress_ip") or "—"]
+               _num(r.get("latency_ms"), ".0f")]
+        if has_lat:
+            row += [_p50_p90(lat), _num(lat.get("jitter_ms"), ".0f")]
+        row.append(_num(r.get("speed_mbps"), ".1f"))
+        if has_up:
+            row.append(_num(up.get("mbps"), ".1f"))
+        row.append(r.get("egress_ip") or "—")
         if local:
             row.insert(2, TARGET_TEXT.get(r.get("target"), r.get("target") or ""))
         rows.append(row)
-    headers = ["протокол", "порт", "итог", "RTT, мс", "задержка, мс", "Мбит/с", "IP выхода"]
+    headers = ["протокол", "порт", "итог", "RTT, мс", "задержка, мс"]
+    if has_lat:
+        headers += ["ответ p50/p90, мс", "джиттер, мс"]
+    headers.append("загрузка, Мбит/с" if has_up else "Мбит/с")
+    if has_up:
+        headers.append("отдача, Мбит/с")
+    headers.append("IP выхода")
     if local:
         headers.insert(2, "куда")
     if rows:
-        print(output.table(rows, headers, right=(4, 5, 6) if local else (3, 4, 5)))
+        first_num = 4 if local else 3
+        print(output.table(rows, headers, right=tuple(range(first_num, first_num + len(headers) - 4 - (1 if local else 0)))))
     else:
         print("Протоколов для проверки нет.")
     details = [r for r in report.get("results", []) if r.get("reason") or r.get("notes")]
@@ -180,13 +222,28 @@ def markdown(report: dict[str, Any]) -> str:
              f"- пользователь: {report.get('user') or '?'}"]
     if report.get("direct_ip"):
         lines.append(f"- ваш IP (без VPN): {report['direct_ip']}")
-    lines += ["", "| Протокол | Порт | Итог | RTT, мс | Задержка, мс | Мбит/с | IP выхода | Причина |",
-              "|---|---|---|---|---|---|---|---|"]
-    for r in report.get("results", []):
+    if context_line(report):
+        lines.append(f"- условия: {context_line(report)}")
+    results = report.get("results", [])
+    has_lat = any(_metrics(r)[0].get("median_ms") is not None for r in results)
+    has_up = any(_metrics(r)[1].get("mbps") is not None for r in results)
+    head = ["Протокол", "Порт", "Итог", "RTT, мс", "Задержка, мс"]
+    if has_lat:
+        head += ["Ответ p50/p90, мс", "Джиттер, мс"]
+    head += ["Загрузка, Мбит/с" if has_up else "Мбит/с"] + (["Отдача, Мбит/с"] if has_up else []) + ["IP выхода", "Причина"]
+    lines += ["", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)]
+    for r in results:
         why = "; ".join(([r["reason"]] if r.get("reason") else []) + (r.get("notes") or []))
-        lines.append("| " + " | ".join(_md(x) for x in (
-            r["id"], f"{r.get('port')}/{r.get('layer')}", f"**{r['verdict']}**", _num(r.get("l4", {}).get("rtt_ms"), ".0f"),
-            _num(r.get("latency_ms"), ".0f"), _num(r.get("speed_mbps"), ".1f"), r.get("egress_ip"), why)) + " |")
+        lat, up = _metrics(r)
+        cells = [r["id"], f"{r.get('port')}/{r.get('layer')}", f"**{r['verdict']}**",
+                 _num(r.get("l4", {}).get("rtt_ms"), ".0f"), _num(r.get("latency_ms"), ".0f")]
+        if has_lat:
+            cells += [_p50_p90(lat), _num(lat.get("jitter_ms"), ".0f")]
+        cells.append(_num(r.get("speed_mbps"), ".1f"))
+        if has_up:
+            cells.append(_num(up.get("mbps"), ".1f"))
+        cells += [r.get("egress_ip"), why]
+        lines.append("| " + " | ".join(_md(x) for x in cells) + " |")
     if report.get("compare"):
         lines += ["", "## Сравнение с самопроверкой сервера", "",
                   "| Протокол | Сервер | У вас | Вывод |", "|---|---|---|---|"]

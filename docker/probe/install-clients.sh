@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install-clients.sh OUT — клиенты пробника по закреплённым версиям с проверкой sha256.
 # Запускается в сборочной стадии docker/probe.Dockerfile; результат — бинари в OUT:
-#   xray (из архива 3x-ui, как на сервере), hysteria, sing-box, amneziawg-go, awg.
+#   xray (из архива 3x-ui, как на сервере), hysteria, sing-box, amneziawg-go, awg, age.
 # Версии и sha256 — scripts/versions.env (в образе /build/versions.env), как у сервера.
 
 set -euo pipefail
@@ -57,6 +57,12 @@ tar -C "$BUILD/awg-tools" --strip-components=1 -xzf "$BUILD/awg-tools.tgz"
 make -s -C "$BUILD/awg-tools/src" wg >/dev/null
 install -m 0755 "$BUILD/awg-tools/src/wg" "$OUT/awg"
 
+# age — шифрование сырых отчётов (zoo history export, расшифровка на машине владельца)
+fetch "$AGE_URL_BASE/age-$AGE_VERSION-linux-$ARCH.tar.gz" "$(pin AGE_SHA256)" "$BUILD/age.tgz"
+tar -xzf "$BUILD/age.tgz" -C "$BUILD" age/age age/age-keygen
+install -m 0755 "$BUILD/age/age" "$OUT/age"
+install -m 0755 "$BUILD/age/age-keygen" "$OUT/age-keygen"
+
 rm -rf "$BUILD"
 {
     echo "xray=$("$OUT/xray" version | head -1)"
@@ -64,4 +70,5 @@ rm -rf "$BUILD"
     echo "sing-box=$SINGBOX_VERSION"
     echo "amneziawg-go=$AWG_GO_REF"
     echo "amneziawg-tools=$AWG_TOOLS_REF"
+    echo "age=$AGE_VERSION"
 } | tee "$OUT/VERSIONS"
