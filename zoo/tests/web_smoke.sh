@@ -106,6 +106,17 @@ if [ "$WITH_USERS" = 1 ]; then
     check "$U удалён отовсюду" bash -c "! zoo user list --json | jq -e '.users[] | select(.name == \"$U\")' >/dev/null"
     code /users >/dev/null
     check "сообщение «пользователь удалён»" grep -q 'пользователь удалён' "$TMP/body"
+
+    P=zoo-probe
+    if zoo user list --all --json | jq -e ".users[] | select(.name == \"$P\" and .system == true)" >/dev/null; then
+        echo "-- служебный пользователь $P"
+        check "в списке пользователей его нет" bash -c "! curl -s -b '$JAR' '$BASE/users' | grep -q '<strong>$P</strong>'"
+        check "страница $P открывается" test "$(code "/users/$P")" = 200
+        check "отключить $P нельзя" test "$(code "/users/$P/disable" -d "csrf=$TOKEN_CSRF")" = 303
+        check "$P остался включён" bash -c "zoo user list --all --json | jq -e '.users[] | select(.name == \"$P\") | .enabled' >/dev/null"
+        check "удалить $P нельзя" test "$(code "/users/$P/delete" -d "csrf=$TOKEN_CSRF")" = 303
+        check "$P на месте" bash -c "zoo user list --all --json | jq -e '.users[] | select(.name == \"$P\")' >/dev/null"
+    fi
 fi
 
 echo "-- выход"

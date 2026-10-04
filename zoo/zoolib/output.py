@@ -11,8 +11,13 @@ from typing import Any, Callable, Iterable, Sequence
 
 
 def _color_on(stream=None) -> bool:
+    """Цвет — только в терминал; ZOO_COLOR=1 — и в пайп (install.sh пишет вывод через tee)."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("ZOO_COLOR") == "1":
+        return True
     stream = stream or sys.stdout
-    return hasattr(stream, "isatty") and stream.isatty() and not os.environ.get("NO_COLOR")
+    return hasattr(stream, "isatty") and stream.isatty()
 
 
 _CODES = {"red": "31", "green": "32", "yellow": "33", "blue": "34", "cyan": "36", "dim": "2", "bold": "1"}

@@ -205,7 +205,7 @@ who="$(runuser -u "$HY_SVC_USER" -- "$HY_AUTH_BIN" 127.0.0.1:1 "$owner_tok" 0 2>
 
 # Клиент на самом сервере: TLS с пином + авторизация. Трафик наружу не нужен
 selfcheck() {
-    local inst="$1" tmpd sport rc=1 i
+    local inst="$1" tmpd sport rc=1
     tmpd="$(mktemp -d)"
     sport="$(rand_port)"
     proto_hysteria2_probe owner "$inst" \
@@ -213,7 +213,7 @@ selfcheck() {
         > "$tmpd/client.json"
     HYSTERIA_DISABLE_UPDATE_CHECK=1 "$HY_BIN" client -c "$tmpd/client.json" > "$tmpd/log" 2>&1 &
     local cpid=$!
-    for i in $(seq 1 10); do
+    for _ in $(seq 1 10); do
         if grep -q 'connected to server' "$tmpd/log"; then rc=0; break; fi
         kill -0 "$cpid" 2>/dev/null || break
         sleep 1

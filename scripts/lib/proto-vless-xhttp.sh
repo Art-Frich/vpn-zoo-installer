@@ -74,7 +74,7 @@ proto_vless_xhttp_public_port() {
 _xhttp_need_inbound() {
     local id
     id="$(proto_vless_xhttp_inbound_id)"
-    [ -n "$id" ] || { log_err "vless-xhttp: inbound на порту ${XHTTP_PORT:-?} не найден (фаза 04b не выполнена?)"; return 1; }
+    [ -n "$id" ] || { xui_inbound_missing vless-xhttp "inbound на порту ${XHTTP_PORT:-?} не найден (фаза 04b не выполнена?)"; return 1; }
     printf '%s\n' "$id"
 }
 

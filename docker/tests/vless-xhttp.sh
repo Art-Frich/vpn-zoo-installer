@@ -95,7 +95,12 @@ check_tunnel() {
     if small_ok; then pass "$who: $SMALL_URL → 204"; else
         fail "$who: $SMALL_URL через туннель не прошёл"; cli tail -5 /tmp/xh.log || true; return 0
     fi
-    size="$(cli curl -sS -o /dev/null -w '%{size_download}' --max-time 90 -x "$SOCKS" "$BIG_URL" 2>/dev/null || true)"
+    # вторая попытка: speed.cloudflare.com при частых прогонах изредка отвечает пустым телом
+    for _ in 1 2; do
+        size="$(cli curl -sS -o /dev/null -w '%{size_download}' --max-time 90 -x "$SOCKS" "$BIG_URL" 2>/dev/null || true)"
+        [ "${size%.*}" = "$BIG_BYTES" ] && break
+        sleep 3
+    done
     if [ "${size%.*}" = "$BIG_BYTES" ]; then pass "$who: большой ответ $size байт"; else fail "$who: большой ответ ${size:-0} байт из $BIG_BYTES"; fi
     ip="$(cli curl -sS --max-time 20 -x "$SOCKS" "$IP_URL" 2>/dev/null | sed -n 's/^ip=//p' || true)"
     if [ "$ip" = "$egress" ]; then pass "$who: IP выхода $ip = IP сервера"; else fail "$who: IP выхода «$ip», ожидался $egress"; fi

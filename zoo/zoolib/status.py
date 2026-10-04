@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import glob
 import platform
+from pathlib import Path
 from typing import Any
 
-from . import __version__, manifests, paths, system
+from . import __version__, manifests, output, paths, system, traffic
 from .config import Config
 from .users import Registry, UserError
 from .xui import XuiClient, XuiError
@@ -57,9 +58,11 @@ def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> di
 
     try:
         reg = Registry.load()
-        user_counts: dict[str, Any] = {"total": len(reg.users),
-                                       "enabled": sum(u.enabled for u in reg.users),
-                                       "registry": reg.exists}
+        visible = reg.visible()
+        user_counts: dict[str, Any] = {"total": len(visible),
+                                       "enabled": sum(u.enabled for u in visible),
+                                       "registry": reg.exists,
+                                       "system": [u.name for u in reg.users if u.system]}
     except (UserError, OSError, ValueError) as e:
         reg = None
         user_counts = {"total": 0, "enabled": 0, "registry": False, "error": str(e)}
@@ -69,7 +72,11 @@ def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> di
     for m in good:
         svc = {u: states.get(_unit(u), {}).get("active", "unknown") for u in m.services}
         listening = {p: (p, m.port) in listen for p in m.protos}
-        ok = m.enabled and all(v == "active" for v in svc.values()) and all(listening.values())
+        # awg-quick@ — oneshot: при падении amneziawg-go юнит остаётся active, а интерфейса нет
+        iface = m.raw.get("interface")
+        iface_up = None if not isinstance(iface, str) or not iface else (Path("/sys/class/net") / iface).exists()
+        ok = (m.enabled and all(v == "active" for v in svc.values()) and all(listening.values())
+              and iface_up is not False)
         if m.enabled:
             for u, st in svc.items():
                 if st != "active":
@@ -77,16 +84,28 @@ def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> di
             for p, on in listening.items():
                 if not on:
                     problems.append(f"{m.id}: никто не слушает {m.port}/{p}")
+            if iface_up is False:
+                problems.append(f"{m.id}: нет интерфейса {iface} (systemctl restart {', '.join(m.services) or iface})")
         protocols.append({
             "id": m.id, "name": m.name, "port": m.port, "layer": m.layer, "engine": m.engine,
             "services": svc, "enabled": m.enabled, "listening": listening, "ok": ok,
-            "users": sum(1 for u in reg.users if m.id in u.protocols) if reg else None,
+            "users": sum(1 for u in reg.visible() if m.id in u.protocols) if reg else None,
         })
 
     for u in BASE_UNITS:
         st = states.get(u, {})
         if st.get("load") == "loaded" and st.get("active") != "active":
             problems.append(f"сервис {u} — {st.get('active')}")
+    timer = states.get("zoo-collector.timer", {})
+    if timer.get("load") == "loaded" and timer.get("enabled") == "enabled":
+        if timer.get("active") != "active":
+            problems.append(f"zoo-collector.timer — {timer.get('active')}: трафик не собирается")
+        run = traffic.last_run()
+        if run and run["stale"]:
+            problems.append(f"коллектор трафика молчит {output.human_duration(run['age'])} "
+                            "(journalctl -u zoo-collector)")
+        for src, err in ((run or {}).get("errors") or {}).items():
+            problems.append(f"трафик, {src}: {err}")
     firewall = system.ufw_active()
     if firewall is False:
         problems.append("UFW выключен: открыты все порты (sudo ufw enable или фаза 01)")

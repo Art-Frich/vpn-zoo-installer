@@ -11,6 +11,10 @@
 #   sudo bash scripts/install.sh --reset         # очистить state (не удаляет установленное)
 #   sudo bash scripts/install.sh --force         # разрешить перезапись чужой установки (с бэкапом)
 #
+# После итога (фаза 99) — самопроверка `zoo probe --local`: работает ли каждый протокол
+# в принципе, и что делать для проверки с машины пользователя. Провал протокола установку
+# не прерывает. ZOO_SELFTEST=0 — без самопроверки.
+#
 # Флаги протоколов и параметры — через окружение, сохраняются в /etc/vpn-setup/config.env:
 #   ENABLE_XHTTP=0 ENABLE_TUIC=1 AWG_ENGINE=userspace SERVER_IP=1.2.3.4 sudo -E bash scripts/install.sh
 # Изменённый параметр перезапускает фазу-владельца (HY2_HOP=1 → 05, RU_EGRESS=block → 07).
@@ -178,6 +182,9 @@ else
     LOG_FILE="$LOG_DIR/install-$ZOO_RUN_TS.log"
     ( umask 077; : > "$LOG_FILE" )
     exec > >(tee -a "$LOG_FILE" 8>&-) 2>&1
+    # в журналах и бэкапах ключи: держим ограниченно (ZOO_KEEP_LOGS, ZOO_KEEP_BACKUPS)
+    prune_keep_newest "$LOG_DIR" 'install-*.log' "${ZOO_KEEP_LOGS:-10}" 7
+    prune_keep_newest "$BACKUP_ROOT" '*' "${ZOO_KEEP_BACKUPS:-10}" 30
     config_load
     state_migrate
     config_apply_env
@@ -239,6 +246,8 @@ skip_reason() {
     # (git pull) копия отстаёт от фаз, и 09 нужно пройти снова
     case "$phase" in
         09-*) if zoo_copy_stale; then log_info "$phase: копия zoo/scripts в ${ZOO_HOME:-/opt/vpn-zoo} устарела — обновляю" >&2; return 0; fi ;;
+        # установка до появления самопроверки TUIC или новый SINGBOX_VERSION
+        04d-*) if tuic_probe_client_stale; then log_info "$phase: нет sing-box ${SINGBOX_VERSION:-} для самопроверки TUIC — прохожу фазу" >&2; return 0; fi ;;
     esac
     # полный прогон: маршрутизация переприменяется после любой фазы протокола (новые
     # inbound, ACL Hysteria), итог печатается, если что-то менялось
@@ -259,6 +268,12 @@ zoo_copy_stale() {
         diff -rq -x __pycache__ -x '*.pyc' -x tests "$REPO_ROOT/$d" "$home/$d" >/dev/null 2>&1 || return 0
     done
     return 1
+}
+
+# sing-box для самопроверки TUIC (ставит 04d) отсутствует или не той версии
+tuic_probe_client_stale() {
+    local bin="/usr/local/lib/vpn-zoo/bin/sing-box"
+    [ "$("$bin" version 2>/dev/null | awk 'NR == 1 {print $3}')" != "${SINGBOX_VERSION#v}" ]
 }
 
 declare -A RESULT=()
@@ -365,6 +380,35 @@ if [ "$RAN" -eq 0 ]; then
     log_warn "ни одна фаза не запускалась (все пропущены). Перезапуск выполненных: --rerun"
     exit 0
 fi
+
+# Самопроверка (ARCHITECTURE §7): клиент каждого протокола поднимается на самом сервере.
+# Итог — в /var/lib/vpn-zoo/probe-local.json (админка, «Проверка») и в пакете для
+# клиентского пробника. Провал протокола подсвечивается, но установку не валит
+selftest() {
+    [ "${RESULT[99-print-creds]:-}" = "OK" ] && [ -z "$SINGLE_PHASE" ] || return 0
+    if [ "${ZOO_SELFTEST:-1}" != "1" ]; then
+        log_info "самопроверка пропущена (ZOO_SELFTEST=${ZOO_SELFTEST}); вручную: sudo zoo probe --local --summary"
+        return 0
+    fi
+    if ! command -v zoo >/dev/null; then
+        log_warn "zoo не установлен (ENABLE_ZOO=0?) — самопроверки протоколов не будет"
+        return 0
+    fi
+    local color=0 rc=0
+    [ -z "$C_RED" ] || color=1
+    log_step "самопроверка: работает ли протокол в принципе"
+    log_info "клиент каждого протокола поднимается на самом сервере (1–3 минуты)"
+    ZOO_COLOR="$color" timeout 900 zoo probe --local --summary --export "$PROBE_EXPORT_FILE" 8>&- || rc=$?
+    echo
+    case "$rc" in
+        0) log_ok "самопроверка: все протоколы работают в принципе" ;;
+        1) log_warn "самопроверка: часть протоколов НЕ работает на самом сервере (выше). Установка при этом завершена" ;;
+        *) log_warn "самопроверка не завершилась (код $rc): sudo zoo probe --local --summary" ;;
+    esac
+    return 0
+}
+PROBE_EXPORT_FILE="${PROBE_EXPORT:-$VPN_ETC/probe-export.json}"
+selftest
 
 log_step "ГОТОВО"
 log_ok "Установка завершена. Конфиг и секреты: $CONFIG_FILE"

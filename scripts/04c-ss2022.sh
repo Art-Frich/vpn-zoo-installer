@@ -105,6 +105,8 @@ proto_ss2022_user_add owner || die "не удалось добавить owner �
 # 4. Самопроверка: Xray жив, порт слушает tcp и udp
 # ------------------------------------------------------------
 
+# Xray, упавший на прошлом конфиге (порт был занят), панель сама не поднимает
+xui_xray_ensure_running 30 || die "Xray не запущен — SS-2022 не заработает"
 wait_port "$SS_PORT" tcp 40 || die "SS-2022 не слушает $SS_PORT/tcp (Xray: $(xui_xray_state), $(xui_server_status | jq -r '.xray.errorMsg'))"
 wait_port "$SS_PORT" udp 20 || die "SS-2022 не слушает $SS_PORT/udp"
 [ "$(xui_xray_state)" = "running" ] || die "Xray не запущен: $(xui_server_status | jq -r '.xray.errorMsg')"

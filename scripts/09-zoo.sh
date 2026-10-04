@@ -115,7 +115,7 @@ zoo_install_units
 systemctl try-restart zoo-web.service >/dev/null 2>&1 || true
 if systemctl is-enabled --quiet zoo-web.service 2>/dev/null; then
     wait_port "$ZOO_WEB_PORT" tcp 15 || die "zoo-web не слушает 127.0.0.1:$ZOO_WEB_PORT (journalctl -u zoo-web)"
-    log_ok "админка на 127.0.0.1:$ZOO_WEB_PORT — вход: ssh -N -L $ZOO_WEB_PORT:127.0.0.1:$ZOO_WEB_PORT root@${SERVER_IP:-СЕРВЕР}, токен: sudo zoo web --info"
+    log_ok "админка на 127.0.0.1:$ZOO_WEB_PORT — вход: ssh -N -L $ZOO_WEB_PORT:127.0.0.1:$ZOO_WEB_PORT ${SUDO_USER:-root}@${SERVER_IP:-СЕРВЕР}, токен: sudo zoo web --info"
 fi
 
 log_ok "zoo готов: zoo status, zoo user add <имя>, zoo links <имя> --qr, zoo traffic, zoo web --info"

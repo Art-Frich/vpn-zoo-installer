@@ -123,6 +123,19 @@ class StoreReportTest(unittest.TestCase):
         self.assertEqual(rep["rows"][0]["key"], "owner")  # сортировка по объёму
         self.assertNotIn("", rows)
 
+    def test_probe_user_hidden_from_user_reports(self):
+        t0 = self.now - 1200
+        self.snap([S("xray", "owner", 0, 0), S("xray", "zoo-probe", 0, 0)], t0)
+        self.snap([S("xray", "owner", 10, 90), S("xray", "zoo-probe", 5000, 2_000_000)], t0 + 300)
+        rows = {r["key"] for r in traffic.report(period="24h")["rows"]}
+        self.assertEqual(rows, {"owner"})
+        rows = {r["key"] for r in traffic.report(period="24h", include_hidden=True)["rows"]}
+        self.assertEqual(rows, {"owner", "zoo-probe"})
+        self.assertNotIn("zoo-probe", traffic.today("user"))
+        self.assertNotIn("zoo-probe", {s["key"] for s in traffic.timeseries("24h", "user")["series"]})
+        # своя страница служебного пользователя — по прямому запросу
+        self.assertEqual(traffic.report(user="zoo-probe", period="24h")["total"]["total"], 2_005_000)
+
     def test_report_by_protocol_and_user_protocols(self):
         self.fill()
         rep = traffic.report(period="24h", by="protocol")

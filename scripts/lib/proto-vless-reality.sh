@@ -22,7 +22,7 @@ _pvr_client_dir() { printf '%s/%s\n' "$ZOO_CLIENTS_DIR" "$1"; }
 _pvr_load_inbound() {
     local id
     id="$(xui_inbound_find_by_remark "$PVR_REMARK")" || return 1
-    [ -n "$id" ] || { log_err "vless-reality: inbound «$PVR_REMARK» не найден (фаза 04 не выполнена?)"; return 1; }
+    [ -n "$id" ] || { xui_inbound_missing vless-reality "inbound «$PVR_REMARK» не найден (фаза 04 не выполнена?)"; return 1; }
     PVR_INB="$(xui_inbound_get "$id")" || return 1
     PVR_INB_ID="$id"
 }

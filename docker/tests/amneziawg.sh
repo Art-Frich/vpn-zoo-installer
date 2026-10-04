@@ -138,7 +138,8 @@ if client_up owner; then
         fail "сервер: счётчики owner rx=${rx:-?} tx=${tx:-?} hs=${hs:-?}"
     fi
     tr="$(awglib proto_amneziawg_traffic)"
-    if hjq -e 'select(.user == "owner") | .down >= 2000000' <<< "$tr" >/dev/null; then pass "proto_amneziawg_traffic: $(hjq -c 'select(.user == "owner")' <<< "$tr")"; else fail "proto_amneziawg_traffic: $tr"; fi
+    # -s: строк несколько (owner, zoo-probe…); jq 1.6 с -e берёт код по последней строке
+    if hjq -s -e 'map(select(.user == "owner")) | .[0].down >= 2000000' <<< "$tr" >/dev/null; then pass "proto_amneziawg_traffic: $(hjq -c 'select(.user == "owner")' <<< "$tr")"; else fail "proto_amneziawg_traffic: $tr"; fi
 fi
 
 # ---------- пользователи ----------

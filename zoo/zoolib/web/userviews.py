@@ -66,7 +66,8 @@ def users_list(app: "App", req: "Request") -> "Response":
     seen = traffic.last_seen()
     mx = max(day.values(), default=0)
     rows = []
-    for u in reg.users:
+    shown = reg.visible()
+    for u in shown:
         toggle = post_button(f"/users/{u.name}/{'disable' if u.enabled else 'enable'}",
                              "Отключить" if u.enabled else "Включить", csrf, "btn small",
                              {"back": "/users"})
@@ -100,7 +101,7 @@ def users_list(app: "App", req: "Request") -> "Response":
                  t("p", "Латиница в нижнем регистре, цифры, «-» и «_». Пользователь получает креды во всех "
                         "отмеченных протоколах; при ошибке в одном изменения откатываются.", class_="hint"),
                  method="post", action="/users", class_="stack")
-    parts: list[Any] = [page_head("Пользователи", f"всего {len(reg.users)}, включено {sum(u.enabled for u in reg.users)}",
+    parts: list[Any] = [page_head("Пользователи", f"всего {len(shown)}, включено {sum(u.enabled for u in shown)}",
                                   t("div", t("a", "Сверить с протоколами", href="/users?verify=1", class_="btn small"),
                                     post_button("/users/sync", "Синхронизировать", csrf, "btn small",
                                                 title="Завести креды в протоколах, включённых после создания"),
@@ -111,6 +112,11 @@ def users_list(app: "App", req: "Request") -> "Response":
     parts.append(card("Список", tbl))
     if skipped:
         parts.append(t("p", "Не участвуют: " + "; ".join(f"{k} — {v}" for k, v in skipped.items()), class_="hint"))
+    system_users = [u for u in reg.users if u.system]
+    if system_users:
+        parts.append(t("p", "Служебный пользователь пробника скрыт из списка и отчётов трафика: ",
+                       join(*[t("a", u.name, href=f"/users/{u.name}") for u in system_users]),
+                       ". Его креды использует самопроверка; удалить можно только из консоли.", class_="hint"))
     return app.render(req, "Пользователи", parts, active="/users")
 
 
@@ -165,10 +171,11 @@ def user_delete_confirm(app: "App", req: "Request", name: str) -> "Response":
     if user is None:
         return app.error(req, 404, "Нет пользователя", f"Пользователя «{name}» нет.")
     csrf = req.session.csrf if req.session else ""
-    if name == users.OWNER:
-        body = card("owner не удаляется", t("p", "На owner держатся ссылки по умолчанию и пробник. Его можно "
-                                                  "отключить; удалить — только из консоли: ",
-                                             t("code", "sudo zoo user del owner --force")),
+    if name == users.OWNER or user.system:
+        why = ("На owner держатся ссылки по умолчанию. Его можно отключить" if name == users.OWNER else
+               "Это служебный пользователь пробника: его кредами идёт самопроверка. Его нельзя отключить")
+        body = card(f"{name} не удаляется", t("p", f"{why}; удалить — только из консоли: ",
+                                              t("code", f"sudo zoo user del {name} --force")),
                     t("a", "← назад", href=f"/users/{name}", class_="btn"))
         return app.render(req, "Удаление", body, active="/users")
     body = card(f"Удалить «{name}»?",
@@ -182,8 +189,9 @@ def user_delete_confirm(app: "App", req: "Request", name: str) -> "Response":
 
 
 def user_delete(app: "App", req: "Request", name: str) -> "Response":
-    if name == users.OWNER:
-        req.session.flash("bad", "owner не удаляется из админки")
+    user = users.list_users().get(name)
+    if name == users.OWNER or (user is not None and user.system):
+        req.session.flash("bad", f"{name} не удаляется из админки")
         return _redirect(f"/users/{name}")
     rep = _user_op(req, users.delete_user, name)
     app.invalidate("status")
@@ -270,6 +278,8 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
                          "Отключить" if user.enabled else "Включить", csrf, "btn")
     actions = t("div", toggle, t("a", "Удалить…", href=f"/users/{name}/delete", class_="btn danger"),
                 class_="actions")
+    if user.system:
+        actions = badge("служебный: пробник", "muted")
     info = card("Профиль", kv([
         ("статус", badge("включён", "ok") if user.enabled else badge("отключён — креды сохранены, доступ закрыт", "muted")),
         ("заметка", user.note or "—"),

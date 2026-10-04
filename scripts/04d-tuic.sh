@@ -2,12 +2,43 @@
 # 04d-tuic.sh — TUIC v5 нативным сервером 3x-ui v3.9.0 (флаг ENABLE_TUIC, по умолчанию 0, D5).
 # Случайный высокий UDP-порт (TUIC_PORT), самоподписанный сертификат в /etc/vpn-setup/tuic/
 # (SAN = IP сервера, опционально TUIC_SNI), пользователь owner.
+# Клиент TUIC для самопроверки (`zoo probe --local`): закреплённый sing-box (SINGBOX_* в
+# versions.env) в /usr/local/lib/vpn-zoo/bin — не в PATH и не сервис, только для пробника.
 
+# shellcheck disable=SC2153 # TUIC_CERT, TUIC_DIR задаёт lib/proto-tuic.sh
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/xui.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/proto-tuic.sh"
 config_load
+versions_load
+detect_arch >/dev/null
+
+TUIC_PROBE_BIN="${TUIC_PROBE_BIN:-/usr/local/lib/vpn-zoo/bin/sing-box}"
+
+# sing-box закреплённой версии для самопроверки TUIC. Сбой — не провал фазы: TUIC работает
+# и без него, пробник на сервере тогда покажет TUIC как SKIPPED
+tuic_probe_client_install() {
+    local ver="${SINGBOX_VERSION#v}" sum tarball tmpd have=""
+    [ ! -x "$TUIC_PROBE_BIN" ] || have="$("$TUIC_PROBE_BIN" version 2>/dev/null | awk 'NR == 1 {print $3}')"
+    if [ "$have" = "$ver" ]; then
+        log_info "sing-box $ver для самопроверки TUIC уже стоит: $TUIC_PROBE_BIN"
+        return 0
+    fi
+    sum="$(version_for SINGBOX_SHA256 "$ZOO_ARCH")"
+    tarball="/var/cache/vpn-zoo/sing-box-$ver-linux-$ZOO_ARCH.tar.gz"
+    # download_verified при сбое делает die — в подоболочке это только код возврата
+    ( download_verified "$SINGBOX_URL_BASE/sing-box-$ver-linux-$ZOO_ARCH.tar.gz" "$sum" "$tarball" ) || return 1
+    tmpd="$(mktemp -d)"
+    if ! tar -xzf "$tarball" -C "$tmpd" "sing-box-$ver-linux-$ZOO_ARCH/sing-box"; then
+        rm -rf "$tmpd"
+        return 1
+    fi
+    mkdir -p "$(dirname "$TUIC_PROBE_BIN")"
+    install -m 0755 "$tmpd/sing-box-$ver-linux-$ZOO_ARCH/sing-box" "$TUIC_PROBE_BIN"
+    rm -rf "$tmpd" "$tarball"
+    log_ok "sing-box $ver для самопроверки TUIC: $TUIC_PROBE_BIN"
+}
 
 [ -n "${SERVER_IP:-}" ] || die "SERVER_IP не задан (config.env)"
 xui_wait_api 60 || die "API 3x-ui не отвечает — сначала фаза 03-3xui"
@@ -15,6 +46,7 @@ xui_wait_api 60 || die "API 3x-ui не отвечает — сначала фа�
 if [ "${ENABLE_TUIC:-0}" != "1" ]; then
     TUIC_PORT="$(config_get TUIC_PORT)"
     proto_tuic_disable
+    rm -f "$TUIC_PROBE_BIN"
     log_ok "ENABLE_TUIC=$ENABLE_TUIC: TUIC выключен, порт закрыт"
     exit 0
 fi
@@ -116,6 +148,8 @@ fi
 # 4. Самопроверка
 # ------------------------------------------------------------
 
+# Xray, упавший на прошлом конфиге (state=stop), панель сама не поднимает
+xui_xray_ensure_running 30 || die "Xray не запущен — без него TUIC не передаст трафик"
 wait_port "$TUIC_PORT" udp 40 || die "TUIC не слушает $TUIC_PORT/udp: $(journalctl -u x-ui -n 200 --no-pager 2>/dev/null | grep -i tuic | tail -3)"
 listener="$(ss -Hlunp "sport = :$TUIC_PORT" | head -1)"
 [[ "$listener" == *'"x-ui"'* ]] || die "$TUIC_PORT/udp слушает не x-ui: $listener"
@@ -127,6 +161,8 @@ fi
 [ -n "$(proto_tuic_links owner)" ] || die "не удалось собрать ссылку tuic:// для owner"
 
 proto_tuic_manifest_refresh || die "не удалось записать манифест $TUIC_ID"
+
+tuic_probe_client_install || log_warn "sing-box для самопроверки TUIC не установлен — zoo probe --local покажет TUIC как SKIPPED"
 
 log_ok "TUIC v5 готов: $SERVER_IP:$TUIC_PORT/udp, ссылка owner — $ZOO_CLIENTS_DIR/owner/tuic.txt"
 log_info "сертификат самоподписанный: в ссылке allow_insecure=1, пин sha256 — в манифесте $(manifest_path "$TUIC_ID")"

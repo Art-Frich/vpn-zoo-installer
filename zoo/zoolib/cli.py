@@ -2,8 +2,7 @@
 
 Команды traffic/probe/export-probe/web/upgrade/smoke живут в своих модулях: модуль даёт
 add_arguments(parser) и cmd_<name>(args, cfg) -> int; cli.py их только подключает.
-Коды выхода: 0 — успех, 1 — ошибка или найдены проблемы, 2 — неверные аргументы,
-3 — команда ещё не реализована.
+Коды выхода: 0 — успех, 1 — ошибка или найдены проблемы, 2 — неверные аргументы.
 """
 
 from __future__ import annotations
@@ -25,7 +24,7 @@ from .config import Config, ConfigError
 from .config import load as load_config
 from .fsutil import LockTimeout
 
-EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NOT_IMPLEMENTED = 0, 1, 2, 3
+EXIT_OK, EXIT_FAIL, EXIT_USAGE = 0, 1, 2
 
 
 # ---------- status ----------
@@ -132,7 +131,7 @@ def cmd_user_enable(args: argparse.Namespace, cfg: Config) -> int:
 
 def cmd_user_disable(args: argparse.Namespace, cfg: Config) -> int:
     if args.name == users.OWNER and not args.json:
-        output.warn("owner отключается: ссылки по умолчанию и пробник перестанут работать")
+        output.warn("owner отключается: ссылки по умолчанию перестанут работать")
     return _report(users.set_enabled(args.name, False, partial=args.partial), args.json)
 
 
@@ -150,8 +149,9 @@ def cmd_user_sync(args: argparse.Namespace, cfg: Config) -> int:
 def cmd_user_list(args: argparse.Namespace, cfg: Config) -> int:
     reg = users.list_users()
     drift = users.verify() if args.verify else None
+    shown = reg.users if args.all else reg.visible()
     data: dict[str, Any] = {"registry": str(reg.path), "exists": reg.exists,
-                            "users": [u.to_dict() for u in reg.users]}
+                            "users": [u.to_dict() for u in shown]}
     if drift is not None:
         data["verify"] = drift
     if args.json:
@@ -160,8 +160,11 @@ def cmd_user_list(args: argparse.Namespace, cfg: Config) -> int:
         if not reg.exists:
             output.warn(f"реестра {reg.path} нет — он создаётся фазой 09 (или: zoo setup)")
         rows = [[u.name, "да" if u.enabled else "нет", ", ".join(u.protocols) or "—",
-                 u.created[:10], u.note] for u in reg.users]
+                 u.created[:10], u.note] for u in shown]
         print(output.table(rows, ["имя", "вкл", "протоколы", "создан", "заметка"]))
+        hidden = len(reg.users) - len(shown)
+        if hidden:
+            print(output.color(f"служебных скрыто: {hidden} (--all — показать)", "dim"))
         for pid, d in (drift or {}).items():
             if d["error"]:
                 output.warn(f"{pid}: не удалось сверить — {d['error']}")
@@ -298,10 +301,16 @@ def cmd_version(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_setup(args: argparse.Namespace, cfg: Config) -> int:
-    """Служебная: вызывает фаза 09. Реестр с owner + setup() модулей следующих этапов."""
+    """Служебная: вызывает фаза 09. Реестр с owner, служебный пользователь пробника,
+    setup() модулей трафика, пробника и админки."""
     rep = users.bootstrap(users.OWNER)
     # owner не найден в каком-то протоколе — предупреждение, а не провал установки
     _report(rep, args.json)
+    probe_rep = users.ensure_probe_user()
+    if probe_rep is not None:
+        _report(probe_rep, args.json)
+        if not probe_rep.ok:
+            output.warn(f"{users.PROBE_USER} заведён не везде: самопроверка этих протоколов пойдёт кредами owner")
     for mod in (traffic, probe_mod, web_mod):
         mod.setup(cfg)
     return EXIT_OK
@@ -348,7 +357,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--partial", action="store_true", help="не откатывать при ошибке в части протоколов")
     p = uadd("del", cmd_user_del, "удалить пользователя из всех протоколов")
     p.add_argument("name")
-    p.add_argument("--force", action="store_true", help="удалить из реестра даже при ошибках (и owner)")
+    p.add_argument("--force", action="store_true",
+                   help=f"удалить из реестра даже при ошибках (и owner, {users.PROBE_USER})")
     for verb, handler, help_ in (("disable", cmd_user_disable, "отключить (креды сохраняются)"),
                                  ("enable", cmd_user_enable, "включить обратно")):
         p = uadd(verb, handler, help_)
@@ -356,6 +366,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--partial", action="store_true", help="не откатывать при ошибке в части протоколов")
     p = uadd("list", cmd_user_list, "список пользователей")
     p.add_argument("--verify", action="store_true", help="сверить реестр с протоколами")
+    p.add_argument("--all", action="store_true", help=f"со служебными ({users.PROBE_USER})")
     p = uadd("show", cmd_user_show, "пользователь, его протоколы, ссылки и файлы")
     p.add_argument("name")
     p = uadd("sync", cmd_user_sync, "завести креды в протоколах, включённых после создания пользователя")
@@ -419,9 +430,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config() if args.command not in NO_CONFIG_COMMANDS else Config()
         return int(args.handler(args, cfg) or 0)
-    except NotImplementedError as e:
-        output.error(f"команда пока не реализована: {e}")
-        return EXIT_NOT_IMPLEMENTED
     except (users.UserError, ConfigError, LockTimeout) as e:
         output.error(str(e))
         return EXIT_FAIL

@@ -297,6 +297,9 @@ def _hysteria_version() -> str:
     return ""
 
 
+SINGBOX_PROBE_BIN = "/usr/local/lib/vpn-zoo/bin/sing-box"
+
+
 def component_versions() -> dict[str, str]:
     """Установленные версии компонентов (пусто — компонента нет)."""
     xui_bin = Path("/usr/local/x-ui/x-ui")
@@ -308,11 +311,15 @@ def component_versions() -> dict[str, str]:
             parts = _first_line([str(b), "version"]).split()
             xray = parts[1] if len(parts) > 1 else ""
             break
+    # «sing-box version 1.14.2» → 1.14.2; клиент самопроверки TUIC (фаза 04d)
+    sb_bin = Path(SINGBOX_PROBE_BIN)
+    sb = _first_line([str(sb_bin), "version"]).split()[-1:] if sb_bin.exists() else []
     return {
         "x-ui": _first_line([str(xui_bin), "-v"]) if xui_bin.exists() else "",
         "xray": xray,
         "hysteria": _hysteria_version(),
         "awg": _first_line(["awg", "--version"]) if shutil.which("awg") else "",
+        "sing-box": sb[0] if sb else "",
         "python": platform.python_version(),
         "kernel": platform.release(),
     }

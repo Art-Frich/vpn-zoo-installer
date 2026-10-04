@@ -11,22 +11,27 @@
 
 Нужен Docker (Docker Desktop на Windows и macOS). VPN на компьютере на время проверки выключите, иначе проверяться будет чужой VPN, а не ваш провайдер.
 
-**1. На сервере** — самопроверка и пакет для пробника:
+**1. На сервере** — самопроверка и пакет для пробника. `install.sh` делает это сам в конце установки: пакет с итогом самопроверки лежит в `/etc/vpn-setup/probe-export.json`. Обновить вручную:
 
 ```bash
-sudo zoo probe --local                              # результат попадёт в пакет для сравнения
-sudo zoo export-probe --out /root/probe-export.json # --user NAME — креды другого пользователя
+sudo zoo probe --local --summary --export /etc/vpn-setup/probe-export.json  # самопроверка + пакет с её итогом
+sudo zoo export-probe --out /etc/vpn-setup/probe-export.json                # только пакет; --user NAME — креды другого пользователя
 ```
 
-В пакете **ключи доступа к серверу**. Копируйте его только по `scp`, после проверки удалите и на сервере, и у себя.
+Креды в пакете — служебного пользователя `zoo-probe` (не owner): проба с вашей машины не выбивает сессию телефона владельца и не попадает в его трафик.
+
+В пакете **ключи доступа к серверу**. Копируйте его только по `scp`, после проверки удалите и на сервере, и у себя. Утёкший пакет отзывается без смены ключей owner (из каталога клона на сервере): `sudo zoo user del zoo-probe --force` (старый пакет удаляется вместе с пользователем), `sudo bash scripts/install.sh --phase 09` (новый `zoo-probe`), `sudo zoo probe --local --summary --export /etc/vpn-setup/probe-export.json` (новый пакет).
 
 **2. На своей машине** — забрать пакет и собрать образ (один раз, из клона репозитория):
 
 ```bash
+git clone https://github.com/Art-Frich/vpn-zoo-installer.git && cd vpn-zoo-installer
 mkdir probe
-scp root@СЕРВЕР:/root/probe-export.json probe/
+scp root@СЕРВЕР:/etc/vpn-setup/probe-export.json probe/probe-export.json   # PowerShell: probe\probe-export.json
 docker build -f docker/probe.Dockerfile -t zoo-probe .
 ```
+
+Нестандартный порт SSH — `scp -P ПОРТ`. Если вход root по SSH запрещён: пакет root-only (0600 в каталоге 0700), сначала скопируйте его себе на сервере — `ssh -t user@СЕРВЕР 'sudo install -m 600 -o "$USER" /etc/vpn-setup/probe-export.json ~/probe-export.json'`, затем `scp user@СЕРВЕР:probe-export.json probe/` и `ssh user@СЕРВЕР rm probe-export.json`. Образ собирается несколько минут (`amneziawg-go` и `awg` — из исходников), на x86-64 и arm64; arm64 (Apple Silicon) не проверялся.
 
 **3. Запуск:**
 
@@ -36,19 +41,19 @@ docker build -f docker/probe.Dockerfile -t zoo-probe .
 | Windows, PowerShell | `docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "${PWD}\probe:/data" zoo-probe` |
 | Windows, Git Bash | `MSYS_NO_PATHCONV=1 docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$(pwd -W)/probe:/data" zoo-probe` |
 
-Только часть протоколов: добавьте в конец `zoo-probe --proto vless-reality --proto hysteria2`.
+Только часть протоколов: добавьте после имени образа `--proto vless-reality --proto hysteria2` (аргументы с `-` уходят в `zoo probe --remote`). Клон и сборка образа — один раз; повторная проверка (например, из другой сети) — только `scp` и `docker run`; после `git pull` пересоберите образ.
 
 `--cap-add NET_ADMIN --device /dev/net/tun` нужны только для AmneziaWG: клиент поднимает интерфейс внутри контейнера. Без них AmneziaWG получит `CLIENT_ERROR`, остальные протоколы проверятся.
 
-**4. Результат** — таблица в терминале и файлы `probe/probe-report.md` и `probe/probe-report.json`. Если в пакете была самопроверка сервера, в конце будет сравнение. Удалите `probe/probe-export.json`.
+**4. Результат** — таблица в терминале и файлы `probe/probe-report.md` и `probe/probe-report.json`. Если в пакете была самопроверка сервера, в конце будет сравнение. Удалите `probe/probe-export.json`. Отчёт `probe-report.json` можно вставить на странице «Проверка» админки или скопировать на сервер (`scp probe/probe-report.json root@СЕРВЕР:`) и сравнить там: `sudo zoo probe --compare /var/lib/vpn-zoo/probe-local.json probe-report.json`.
 
 Мобильный интернет и домашний провайдер блокируют по-разному. Проверяйте из той сети, которая важна: например, раздайте интернет с телефона на ноутбук.
 
 **Без Docker** (любой Linux с клиентами в `PATH`: `xray`, `hysteria`, `sing-box`, `amneziawg-go`, `awg`; пути можно задать через `ZOO_XRAY_BIN`, `ZOO_HYSTERIA_BIN`, `ZOO_SINGBOX_BIN`, `ZOO_AWG_GO_BIN`, `ZOO_AWG_BIN`):
 
 ```bash
-sudo python3 zoo/zoo probe --remote probe-export.json --md report.md
-sudo python3 zoo/zoo probe --compare server-report.json client-report.json
+sudo python3 zoo/zoo probe --remote probe-export.json --md report.md --out report.json
+sudo python3 zoo/zoo probe --compare server-report.json report.json   # server-report.json — /var/lib/vpn-zoo/probe-local.json с сервера
 ```
 
 Root нужен только для AmneziaWG. Клиент, которого нет на машине, даёт `SKIPPED`.
@@ -82,7 +87,9 @@ Root нужен только для AmneziaWG. Клиент, которого н
 
 На сервере (`--local`) блокировок не бывает: недоступность считается `SERVER_DOWN`. Если по публичному IP не прошло, проба повторяется через `127.0.0.1` (AWG — через адрес хоста на veth), и в отчёте будет `куда: loopback` с пометкой про hairpin. Код выхода 0 — все протоколы `OK`, `SLOW` или `SKIPPED`.
 
-AWG проверяется ключами `owner`. Если телефон владельца в этот момент подключён, его сессия на несколько секунд «переедет» на пробник (роуминг WireGuard), потом вернётся сама.
+Проверка идёт кредами служебного пользователя `zoo-probe` (его заводит фаза 09, скрыт из списков и отчётов трафика по пользователям). Поэтому проба AWG не «перетягивает» сессию телефона владельца (роуминг WireGuard по ключу). Протокол, где `zoo-probe` нет, проверяется probe owner из манифеста — с пометкой в отчёте. `--user NAME` — креды другого пользователя.
+
+TUIC на сервере проверяется закреплённым sing-box из `/usr/local/lib/vpn-zoo/bin` (ставит фаза 04d вместе с TUIC). Port hopping Hysteria отдельно не проверяется: hop-порты — DNAT на внешнем интерфейсе, с самого сервера они недостижимы.
 
 ## Стенд (docker/test.sh)
 
@@ -90,7 +97,7 @@ AWG проверяется ключами `owner`. Если телефон вл�
 |---|---|
 | `../probe.Dockerfile` | образ `zoo-probe`: клиенты по `scripts/versions.env` с проверкой sha256 (Xray — из архива 3x-ui, как на сервере; hysteria; sing-box; amneziawg-go и awg собираются из исходников) и пакет `zoo` |
 | `install-clients.sh` | сборочная стадия образа: скачивание, sha256, сборка |
-| `entrypoint.sh` | `CMD` образа (`zoo-probe`): `zoo probe --remote /data/probe-export.json`, отчёт в `/data`. `ZOO_PROBE_VIA=<IP>` — маршрут к серверу через цензор |
+| `entrypoint.sh` | `ENTRYPOINT` образа (`zoo-probe`): `zoo probe --remote /data/probe-export.json`, отчёт в `/data`; аргументы с `-` — флаги пробника, иначе команда вместо него (`docker run zoo-probe sleep infinity`). `ZOO_PROBE_VIA=<IP>` — маршрут к серверу через цензор |
 | `run.sh` | `run.sh <сервер> <каталог-отчёта>`: самопроверка и экспорт на сервере, пробник напрямую и через цензор по профилям, сверка `expect.py`. Итог: `probe/expect.tsv`, `probe/<профиль>/probe-report.{json,md}`, `probe-client-<профиль>.json` |
 | `expect.py` | ожидаемые вердикты для профиля цензора (таблица в [../censor/README.md](../censor/README.md)) |
 | `mini-server.sh` | минимальный сервер без фаз 04–06 (VLESS-REALITY и SS-2022 через `lib/xui.sh`, hysteria, amneziawg-go) с манифестами — для отладки пробника |

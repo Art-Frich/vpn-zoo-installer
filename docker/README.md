@@ -16,7 +16,14 @@ docker/test.sh --distro 22.04 --phases 00-bootstrap,03-3xui --keep
 
 # флаги инсталлера
 docker/test.sh --env ENABLE_TUIC=1 --env AWG_ENGINE=userspace
+
+# полный e2e, как в приёмке: установка, самопроверка, пробник с цензором, все тесты
+docker/test.sh --mode full --tests all --distro 24.04 --name e2e1     --env ENABLE_TUIC=1 --env ENABLE_HY2_OBFS=1 --env HY2_HOP=1 --env ENABLE_WARP=1
 ```
+
+Остальные ключи: `--name NAME` (контейнер `zoo-NAME`; для параллельных прогонов — разные имена), `--timeout СЕК` (на каждый вызов `install.sh`, по умолчанию 1800), `--stop-on-fail`, `--probe-profiles` (ниже). Код выхода 0 — все фазы `PASS` или выключены флагом, все выбранные тесты `PASS`, самопроверка и пробники не `FAIL`.
+
+Не правьте `docker/*.sh` во время прогона: bash читает скрипт по ходу выполнения, и запущенный `test.sh` упадёт. На Windows/Git Bash долгий прогон иногда обрывается, когда завершается соседний процесс (код 0 без `summary.md`); надёжнее запускать его отдельным окном и с `--keep`, чтобы дотестировать оставшееся руками (`docker/tests/<тест>.sh zoo-NAME`).
 
 Ручное управление сервером:
 
@@ -68,7 +75,7 @@ docker/run-server.sh exec dev bash /repo/docker/xui-smoke.sh
 | `files/` | `/etc/vpn-setup`, state, CREDENTIALS.md, конфиги hysteria/awg/xray, БД x-ui. **Секреты тестового стенда** |
 | `meta.txt` | дистрибутив, режимы, git HEAD и число незакоммиченных файлов |
 
-Итоги фаз: `PASS`, `FAIL`, `TIMEOUT`, `NOEXEC` (код 126, нет +x), `SKIPPED` (install.sh пропустил фазу сам), `REBOOT`, `NOT_RUN`.
+Итоги фаз: `PASS`, `FAIL`, `TIMEOUT`, `NOEXEC` (код 126, нет +x), `SKIPPED` (install.sh пропустил фазу сам; «выключена (ENABLE_…=0)» провалом не считается), `REBOOT`, `NOT_RUN`. Ниже фаз в `summary.tsv` — строки `install-selftest`, `probe-local`, `probe-client`, `probe:<профиль>` и по строке на каждый тест из `--tests`.
 
 ## Тесты протоколов (`docker/tests/`)
 
@@ -86,6 +93,7 @@ docker/tests/security.sh zoo-dev         # сокеты/ufw/права/секр�
                                          # сервисы на адресе сервера за ufw недоступны (на время теста ALIAS_IP на lo)
 docker/tests/links.sh zoo-dev [USER]     # ссылки USER (owner) из манифестов, разобранные как в клиентах
                                          # (v2rayN-разбор vless/ss → Xray, tuic → sing-box, hysteria2:// — как есть)
+docker/tests/collector.sh zoo-dev        # коллектор трафика под песочницей, AWG-счётчики, скрытый zoo-probe
 
 # или сразу после установки: --tests all | список через запятую
 docker/test.sh --mode full --tests all
@@ -99,11 +107,17 @@ IP выхода берётся из `https://www.cloudflare.com/cdn-cgi/trace` (
 
 ## Пробники и цензор
 
-`test.sh` подхватывает их по мере появления:
-
-- если на сервере есть команда `zoo`, после установки выполняется `zoo probe --local --json` и результат сохраняется в `probe-local.json`;
-- если есть `docker/probe/run.sh`, он вызывается как `run.sh <контейнер-сервер> <каталог-отчёта>` и пишет результаты в каталог отчёта (см. [probe/README.md](probe/README.md));
+- `--mode full`: `install.sh` сам запускает самопроверку после 99. Строка `install-selftest` в итоге — PASS, если в журнале есть сводка «работает в принципе» и следующий шаг, а в `/etc/vpn-setup/probe-export.json` вложены её вердикты;
+- после установки `test.sh` выполняет `zoo probe --local --json` (креды служебного пользователя `zoo-probe`) и сохраняет `probe-local.json`;
+- `docker/probe/run.sh <контейнер-сервер> <каталог-отчёта>` — клиентский пробник напрямую (`direct`) и через цензора по профилям; сверка вердиктов с ожидаемыми — `probe/expect.tsv`, строки `probe:<профиль>` в итоге. Профили — `--probe-profiles direct,clean,drop-udp,ip-block,freeze-16k,rst-tls` (по умолчанию все, `none` — без пробника; `port-block` только явно). Подробно — [probe/README.md](probe/README.md);
 - цензор — [censor/README.md](censor/README.md).
+
+## Админка и коллектор трафика
+
+С `--tests all` при установленном `zoo` после тестов протоколов идут ещё два:
+
+- `web` — `zoo/tests/web_smoke.sh --users` на сервере: вход, CSP, CSRF, все страницы и полный цикл пользователя через формы (добавить во все протоколы, отключить, включить, удалить);
+- `collector` — [tests/collector.sh](tests/collector.sh): `zoo-collector.service` под своей песочницей (ProtectSystem=strict, PrivateDevices) снимает счётчики без ошибок, у каждого включённого протокола есть серия, счётчик AmneziaWG у `zoo-probe` растёт после пробы через туннель; `zoo-probe` скрыт из `zoo user list` и `zoo traffic` (виден с `--all`), удалить его без `--force` нельзя.
 
 ## Образы, сеть, метки
 

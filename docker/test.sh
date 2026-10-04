@@ -11,12 +11,15 @@
 #   --modes git    права файлов как после git clone (по умолчанию), fs — все shebang-файлы +x
 #   --keep         не удалять контейнер после прогона
 #   --tests        после установки запустить docker/tests/<id>.sh против сервера
-#                  (all — тесты протоколов, чьи манифесты есть на сервере, routing и security)
+#                  (all — тесты протоколов, чьи манифесты есть на сервере, routing, links,
+#                  security, а при установленном zoo — web (zoo/tests/web_smoke.sh --users)
+#                  и collector)
 #   --probe-profiles  профили клиентского пробника (docker/probe/run.sh), через запятую:
 #                  direct,clean,drop-udp,ip-block,freeze-16k,rst-tls (по умолчанию все); none — без него
 #
 # Итог: таблица в stdout и docker/out/<ts>/ (summary.md, summary.tsv, phases/*.log,
-# diag.txt, files/). Код выхода 0 — все выбранные фазы PASS.
+# diag.txt, files/). Код выхода 0 — фазы PASS (или выключены флагом), тесты PASS,
+# самопроверка и пробники не FAIL.
 
 set -euo pipefail
 
@@ -188,6 +191,19 @@ else
     zoo_log "install.sh: rc=$rc за $total с"
 fi
 
+# Самопроверка в конце установки (install.sh после 99): сводка «работает в принципе»,
+# следующий шаг для пользователя и пакет пробника с её итогом
+INSTALL_SELFTEST="SKIPPED"
+if [ "$MODE" = "full" ] && [ "${STATUS[99-print-creds]:-}" = "PASS" ]; then
+    if grep -q 'работает в принципе' "$log" && grep -q 'Дальше — проверка с вашей машины' "$log" \
+            && docker exec "$NAME" jq -e '.selftest.verdicts | length > 0' /etc/vpn-setup/probe-export.json >/dev/null 2>&1; then
+        INSTALL_SELFTEST="PASS"
+    else
+        INSTALL_SELFTEST="FAIL"
+    fi
+    zoo_log "самопроверка в конце install.sh: $INSTALL_SELFTEST"
+fi
+
 # ---------- диагностика ----------
 zoo_log "сбор диагностики"
 docker exec -i "$NAME" bash -s > "$OUT/diag.txt" 2>&1 <<'DIAG' || true
@@ -259,10 +275,24 @@ if [ -n "$TESTS_ARG" ]; then
         # выданные ссылки owner (не probe) импортируются клиентами и пропускают трафик
         [ -z "$have" ] || TESTS+=(links)
         TESTS+=(security)
+        # админка формами (с пользователем во всех протоколах) и коллектор трафика — после
+        # тестов протоколов: им нужен накопленный трафик
+        if docker exec "$NAME" test -x /usr/local/bin/zoo 2>/dev/null; then TESTS+=(web collector); fi
     else
         IFS=',' read -r -a TESTS <<< "$TESTS_ARG"
     fi
     for t in "${TESTS[@]}"; do
+        if [ "$t" = "web" ]; then
+            zoo_log "тест web (zoo/tests/web_smoke.sh --users)"
+            if docker exec -e ZOO_TEST_ENV=docker "$NAME" bash /repo/zoo/tests/web_smoke.sh --users \
+                    > "$OUT/tests/web.log" 2>&1; then
+                TSTATUS[$t]="PASS"
+            else
+                TSTATUS[$t]="FAIL"
+            fi
+            zoo_log "  $t: ${TSTATUS[$t]}"
+            continue
+        fi
         [ -f "$ZOO_DOCKER_DIR/tests/$t.sh" ] || { TSTATUS[$t]="MISSING"; continue; }
         zoo_log "тест $t"
         if bash "$ZOO_DOCKER_DIR/tests/$t.sh" "$NAME" > "$OUT/tests/$t.log" 2>&1; then
@@ -282,6 +312,7 @@ all_pass=1
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$phase" "${STATUS[$phase]}" "${RC[$phase]}" \
             "${DUR[$phase]}" "${WARNS[$phase]}" "${REASON[$phase]}"
     done
+    printf 'install-selftest\t%s\t-\t-\t-\t\n' "$INSTALL_SELFTEST"
     printf 'probe-local\t%s\t-\t-\t-\t\n' "$PROBE_LOCAL"
     printf 'probe-client\t%s\t-\t-\t-\t\n' "$PROBE_CLIENT"
     # по профилю цензора: PASS — все вердикты совпали с ожидаемыми
@@ -307,9 +338,15 @@ all_pass=1
     done
 } > "$OUT/summary.md"
 
-for phase in "${PHASES[@]}"; do [ "${STATUS[$phase]}" = "PASS" ] || all_pass=0; done
+# фаза, выключенная флагом (ENABLE_TUIC=0 по умолчанию), — не провал
+for phase in "${PHASES[@]}"; do
+    case "${STATUS[$phase]}:${REASON[$phase]}" in
+        PASS:*|SKIPPED:*"выключена ("*) ;;
+        *) all_pass=0 ;;
+    esac
+done
 for t in "${TESTS[@]:-}"; do [ -z "$t" ] || [ "${TSTATUS[$t]}" = "PASS" ] || all_pass=0; done
-[ "$PROBE_LOCAL" != "FAIL" ] && [ "$PROBE_CLIENT" != "FAIL" ] || all_pass=0
+[ "$PROBE_LOCAL" != "FAIL" ] && [ "$PROBE_CLIENT" != "FAIL" ] && [ "$INSTALL_SELFTEST" != "FAIL" ] || all_pass=0
 
 echo
 column -t -s $'\t' "$OUT/summary.tsv" 2>/dev/null || cat "$OUT/summary.tsv"

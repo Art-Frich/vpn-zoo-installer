@@ -270,6 +270,8 @@ def run_one(entry: dict[str, Any], st: Settings, workdir: Path) -> dict[str, Any
                     res, base["target"] = res2, "loopback"
                 else:
                     res["obs"].notes.append(f"через loopback тоже не работает ({second})")
+    if entry.get("note"):
+        res["obs"].notes.append(entry["note"])
     return {**base, **res, "duration_s": round(time.monotonic() - t0, 1)}
 
 

@@ -27,7 +27,7 @@ proto_tuic_inbound_id() {
 _tuic_ib() {
     local id
     id="$(proto_tuic_inbound_id)"
-    [ -n "$id" ] || { log_err "tuic: inbound $TUIC_REMARK не найден (фаза 04d не выполнена?)"; return 1; }
+    [ -n "$id" ] || { xui_inbound_missing tuic "inbound $TUIC_REMARK не найден (фаза 04d не выполнена?)"; return 1; }
     printf '%s\n' "$id"
 }
 

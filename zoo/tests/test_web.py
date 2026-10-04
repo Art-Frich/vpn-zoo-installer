@@ -1,4 +1,5 @@
 import http.client
+import os
 import re
 import sys
 import threading
@@ -235,8 +236,12 @@ class WebSetupTest(unittest.TestCase):
             self.assertGreaterEqual(len(cfg.get("ZOO_WEB_TOKEN")), 16)
             web_mod.setup(cfg)  # повтор ничего не меняет
             self.assertEqual(config.load().values, cfg.values)
-            info = web_mod.access_info(config.Config(values={**cfg.values, "SSH_PORTS": "2222,22"}))
-            self.assertEqual(info["tunnel"], f"ssh -N -L {port}:127.0.0.1:{port} root@10.0.0.1 -p 2222")
+            with mock.patch.dict(os.environ, {"SUDO_USER": ""}):
+                info = web_mod.access_info(config.Config(values={**cfg.values, "SSH_PORTS": "2222,22"}))
+            self.assertEqual(info["tunnel"], f"ssh -N -L {port}:127.0.0.1:{port} -p 2222 root@10.0.0.1")
+            with mock.patch.dict(os.environ, {"SUDO_USER": "admin"}):
+                info = web_mod.access_info(cfg)
+            self.assertEqual(info["tunnel"], f"ssh -N -L {port}:127.0.0.1:{port} admin@10.0.0.1")
 
     def test_refuses_public_bind(self):
         app = App(TOKEN, config.Config)
