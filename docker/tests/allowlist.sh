@@ -43,6 +43,7 @@ trap 'srv zoo allow reset >/dev/null 2>&1 || true; srv zoo user del "$U" --force
 # ---------- 1. после установки ----------
 check "реестр $REG есть, 0600" test "$(srv stat -c %a "$REG" 2>/dev/null | tr -d '\r')" = 600
 PRESET_ANDROID="$(srv jq -r '.android | join(", ")' /opt/vpn-zoo/scripts/allowlist-default.json | tr -d '\r')"
+PRESET_WINDOWS="$(srv jq -r '.windows | join(", ")' /opt/vpn-zoo/scripts/allowlist-default.json | tr -d '\r')"
 check "реестр после установки = пресет (Android)" \
     test "$(srv jq -r '.android | join(", ")' "$REG" | tr -d '\r')" = "$PRESET_ANDROID"
 check "owner: amneziawg-android.conf со списком пресета в [Interface]" \
@@ -104,7 +105,7 @@ check "каталог $U удалён" bash -c "! docker exec $SRV test -e $C/$U
 
 # ---------- 4. сброс ----------
 check "zoo allow reset" srv zoo allow reset
-check "owner: снова пресет" test "$(apps_of "$C/owner/amneziawg-android.conf")" = "com.brave.browser, org.telegram.messenger"
+check "owner: снова пресет" test "$(apps_of "$C/owner/amneziawg-android.conf")" = "$PRESET_ANDROID"
 check "zoo allow apply" srv zoo allow apply
 
 # ---------- 5. обновление со старой версии ----------
@@ -112,9 +113,9 @@ check "zoo allow apply" srv zoo allow apply
 srv rm -f "$REG" "$C/owner/v2rayn-routing.json" "$C/owner/amneziawg-android.conf" "$C/owner/amneziawg-android.png"
 check "zoo setup (как при zoo upgrade)" bash -c "docker exec $SRV zoo setup >/dev/null 2>&1"
 check "после setup: реестр 0600" test "$(srv stat -c %a "$REG" 2>/dev/null | tr -d '\r')" = 600
-check "после setup: правила v2rayN owner" test "$(v2rayn_procs "$C/owner/v2rayn-routing.json")" = "brave.exe, Telegram.exe"
+check "после setup: правила v2rayN owner" test "$(v2rayn_procs "$C/owner/v2rayn-routing.json")" = "$PRESET_WINDOWS"
 check "после setup: Android-вариант owner" \
-    test "$(apps_of "$C/owner/amneziawg-android.conf")" = "com.brave.browser, org.telegram.messenger"
+    test "$(apps_of "$C/owner/amneziawg-android.conf")" = "$PRESET_ANDROID"
 check "после setup: манифест с Android-вариантом" \
     jqe '[.files[] | select(.user == "owner" and .platform == "android")] | length == 1' \
     /etc/vpn-setup/protocols.d/amneziawg.json
