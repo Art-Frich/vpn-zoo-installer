@@ -239,6 +239,10 @@ class WebSetupTest(unittest.TestCase):
             with mock.patch.dict(os.environ, {"SUDO_USER": ""}):
                 info = web_mod.access_info(config.Config(values={**cfg.values, "SSH_PORTS": "2222,22"}))
             self.assertEqual(info["tunnel"], f"ssh -N -L {port}:127.0.0.1:{port} -p 2222 root@10.0.0.1")
+            with mock.patch.dict(os.environ, {"SUDO_USER": ""}):
+                info = web_mod.access_info(config.Config(
+                    values={**cfg.values, "SSH_PORTS": "22,30366", "SSH_LOGIN_PORT": "30366"}))
+            self.assertEqual(info["tunnel"], f"ssh -N -L {port}:127.0.0.1:{port} -p 30366 root@10.0.0.1")
             with mock.patch.dict(os.environ, {"SUDO_USER": "admin"}):
                 info = web_mod.access_info(cfg)
             self.assertEqual(info["tunnel"], f"ssh -N -L {port}:127.0.0.1:{port} admin@10.0.0.1")

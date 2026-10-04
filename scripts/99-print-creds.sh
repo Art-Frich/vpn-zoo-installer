@@ -65,7 +65,7 @@ qr() {
 m_links() { jq -r --arg u "$WHO" '[.links[]? | select(.user == $u and (.enabled != false))][] | .uri' <<< "$1"; }
 m_files() { jq -r --arg u "$WHO" '[.files[]? | select(.user == $u and (.enabled != false))][] | .path' <<< "$1"; }
 
-ssh_port="$(tr ',' '\n' <<< "${SSH_PORTS:-22}" | awk 'NF' | head -1)"
+ssh_port="$(ssh_login_port)"
 ssh_user="${SUDO_USER:-root}"
 ssh_host="$SERVER_IP"; [[ "$ssh_host" == *:* ]] && ssh_host="[$ssh_host]"
 ssh_p=""; [ "${ssh_port:-22}" = "22" ] || ssh_p=" -p $ssh_port"
@@ -153,6 +153,9 @@ echo "  2) в браузере:          $PANEL_URL"
 echo "  логин: ${PANEL_USER:-?}   пароль: ${PANEL_PASS:-?}"
 [ "${PANEL_2FA:-0}" != "1" ] || echo "  2FA включена: секрет PANEL_2FA_SECRET в $CONFIG_FILE"
 [ -z "${ZOO_WEB_PORT:-}" ] || echo "  админка zoo: http://127.0.0.1:$ZOO_WEB_PORT/ (тот же туннель), токен: ${ZOO_WEB_TOKEN:-?}"
+if [ -f "$SSH_STATE_DIR/pending.env" ]; then
+    log_warn "перенос SSH ждёт подтверждения (фаза 01b): команды выше — на текущий порт $ssh_port, после подтверждения $CRED_OUT обновится сам"
+fi
 
 echo
 printf '%b\n' "${C_BLUE}-- Клиентам --${C_RESET}"

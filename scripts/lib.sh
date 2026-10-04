@@ -238,7 +238,8 @@ config_default() {
 # в config.env до запуска фаз. Фазы читают только файл. ZOO_* (ZOO_FORCE, ZOO_SKIP_UPGRADE,
 # ZOO_NO_REBOOT, ZOO_TEST_ENV) — разовые переключатели, в файл не попадают.
 # WARP_REREGISTER и ZOO_VLESS_REPICK — разовые, поэтому WARP_* и ZOO_* сюда не входят.
-CONFIG_ENV_KEYS_RE='^(SERVER_IP|LABEL|DOMAIN|ENABLE_[A-Z0-9_]+|[A-Z0-9]+_ENGINE|RU_EGRESS|SUB_PUBLIC|PANEL_2FA|PANEL_PORT|PANEL_PATH|PANEL_USER|VLESS_[A-Z_]+|XHTTP_[A-Z_]+|SS_[A-Z_]+|TUIC_[A-Z_]+|HY2_[A-Z0-9_]+|AWG_[A-Z0-9_]+|ROUTING_ECHO_EXTRA|SSH_PORTS|AUTO_REBOOT|AUTO_REBOOT_TIME)$'
+# SSH_CONFIRM, SSH_CONFIRM_FORCE и SSH_REVERT_MIN (фаза 01b) — тоже разовые.
+CONFIG_ENV_KEYS_RE='^(SERVER_IP|LABEL|DOMAIN|ENABLE_[A-Z0-9_]+|[A-Z0-9]+_ENGINE|RU_EGRESS|SUB_PUBLIC|PANEL_2FA|PANEL_PORT|PANEL_PATH|PANEL_USER|VLESS_[A-Z_]+|XHTTP_[A-Z_]+|SS_[A-Z_]+|TUIC_[A-Z_]+|HY2_[A-Z0-9_]+|AWG_[A-Z0-9_]+|ROUTING_ECHO_EXTRA|SSH_PORTS|SSH_HARDEN|SSH_PORT|AUTO_REBOOT|AUTO_REBOOT_TIME)$'
 
 # Снимок «что задано в окружении» — делать ДО config_load
 config_capture_env() {
@@ -283,6 +284,7 @@ config_init_defaults() {
     config_default ENABLE_AWG 1
     config_default ENABLE_WARP 0
     config_default ENABLE_ZOO 1
+    config_default SSH_HARDEN 0
     config_default RU_EGRESS direct
     config_default SUB_PUBLIC 0
     config_default AWG_ENGINE auto
@@ -486,6 +488,12 @@ is_banned_port() { case " $BANNED_PORTS " in *" $1 "*) return 0 ;; esac; return 
 # установки, сохранённый SSH_PORTS устарел, и без детекта новый порт не откроется
 detect_ssh_ports() {
     local ports=() p
+    # SSH закрыт фазой 01b: порты ведёт она (SSH_PORTS). Иначе старая сессия, ещё открытая
+    # на закрытом порту (SSH_CONNECTION), снова открыла бы его в ufw
+    if [ -f "$SSH_STATE_DIR/orig.env" ] && [ -n "${SSH_PORTS:-}" ]; then
+        tr -s ', ' '\n' <<< "$SSH_PORTS" | awk '/^[0-9]+$/ && $1 >= 1 && $1 <= 65535' | sort -un
+        return 0
+    fi
     if [ -n "${SSH_PORTS:-}" ]; then
         while read -r p; do ports+=("$p"); done < <(tr -s ', ' '\n' <<< "$SSH_PORTS")
     fi
@@ -504,6 +512,18 @@ detect_ssh_ports() {
     [ "${#ports[@]}" -gt 0 ] || ports=(22)
     printf '%s\n' "${ports[@]}" | awk '/^[0-9]+$/ && $1 >= 1 && $1 <= 65535' | sort -un
 }
+
+# Порт для команд ssh/scp, которые печатают 99 и zoo. SSH_LOGIN_PORT пишет фаза 01b: до
+# подтверждения переноса это старый порт (он работает и после отката). Без 01b — первый
+# из SSH_PORTS
+ssh_login_port() {
+    local p="${SSH_LOGIN_PORT:-}"
+    [[ "$p" =~ ^[0-9]+$ ]] || p="$(tr -s ', ' '\n' <<< "${SSH_PORTS:-}" | awk '/^[0-9]+$/ {print; exit}')"
+    printf '%s\n' "${p:-22}"
+}
+
+# Состояние фазы 01b: снимки конфигурации, ожидание подтверждения
+SSH_STATE_DIR="${SSH_STATE_DIR:-/var/lib/vpn-setup/ssh}"
 
 # ============================================================
 # Бэкапы и чужие установки

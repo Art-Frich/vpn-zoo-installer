@@ -20,6 +20,7 @@
 # Изменённый параметр перезапускает фазу-владельца (HY2_HOP=1 → 05, RU_EGRESS=block → 07).
 # Протокол, выключенный флагом после установки (ENABLE_HY2=0), фаза выключает сама:
 # сервис/inbound остановлен, порт закрыт, манифест enabled=false (state=disabled).
+# SSH_HARDEN=1 — закрыть SSH (фаза 01b, два шага с автооткатом; README, «Закрыть SSH»).
 # Тестовый стенд: ZOO_TEST_ENV=docker (см. docker/README.md).
 
 set -euo pipefail
@@ -36,6 +37,7 @@ export REPO_ROOT SCRIPTS_DIR
 PHASES=(
     "00-bootstrap"
     "01-firewall"
+    "01b-ssh"
     "02-kernel"
     "03-3xui"
     "04-vless-reality"
@@ -53,6 +55,7 @@ PHASES=(
 # Фаза → флаг включения в config.env (фазы без флага включены всегда)
 phase_flag() {
     case "$1" in
+        01b-*) echo SSH_HARDEN ;;
         04-*) echo ENABLE_VLESS ;;
         04b-*) echo ENABLE_XHTTP ;;
         04c-*) echo ENABLE_SS ;;
@@ -65,9 +68,16 @@ phase_flag() {
     esac
 }
 
+# Значение флага; без ключа в config.env — умолчание (ENABLE_* — 1, SSH_HARDEN — 0)
+flag_value() {
+    local def=1
+    [ "$1" = "SSH_HARDEN" ] && def=0
+    printf '%s\n' "${!1:-$def}"
+}
+
 # Фазы, которые умеют выключать уже установленный протокол (запуск с флагом = 0)
 phase_can_disable() {
-    case "$1" in 04-*|04b-*|04c-*|04d-*|05-*|06-*|08-*) return 0 ;; esac
+    case "$1" in 01b-*|04-*|04b-*|04c-*|04d-*|05-*|06-*|08-*) return 0 ;; esac
     return 1
 }
 
@@ -75,6 +85,7 @@ phase_can_disable() {
 phase_owns_key() {
     local phase="$1" key="$2"
     case "$phase:$key" in
+        01b-*:SSH_HARDEN|01b-*:SSH_PORT) return 0 ;;
         03-*:PANEL_PORT|03-*:PANEL_PATH|03-*:PANEL_USER|03-*:PANEL_2FA|03-*:SUB_PUBLIC|03-*:DOMAIN) return 0 ;;
         04-*:VLESS_*|04b-*:XHTTP_*|04c-*:SS_*|04d-*:TUIC_*) return 0 ;;
         05-*:HY2_RU_EGRESS|06-*:AWG_RU_EGRESS) return 1 ;;
@@ -234,7 +245,7 @@ skip_reason() {
     if [ -n "$ONLY_LIST" ] && ! in_list "$phase" "$ONLY_LIST"; then echo "не в --only"; return; fi
     if [ -n "$SKIP_LIST" ] && in_list "$phase" "$SKIP_LIST"; then echo "--skip"; return; fi
     flag="$(phase_flag "$phase")"
-    if [ -n "$flag" ] && [ "${!flag:-1}" != "1" ]; then
+    if [ -n "$flag" ] && [ "$(flag_value "$flag")" != "1" ]; then
         if phase_can_disable "$phase" && [[ "$(state_get "$phase")" =~ ^(done|failed|pending)$ ]]; then
             echo "@disable"; return
         fi
@@ -323,11 +334,11 @@ run_phase() {
         exit 0
     fi
     flag="$(phase_flag "$phase")"
-    if [ -n "$flag" ] && [ "${!flag:-1}" != "1" ]; then
+    if [ -n "$flag" ] && [ "$(flag_value "$flag")" != "1" ]; then
         # фаза выключила свой протокол: при ENABLE_*=1 она снова пройдёт целиком
         state_set "$phase" disabled
         RESULT[$phase]="выключена ($flag=0)"
-        log_ok "$phase: протокол выключен"
+        log_ok "$phase: выключена ($flag=0)"
     else
         [ -n "$st" ] || mark_done "$phase"
         RESULT[$phase]="OK"
@@ -349,7 +360,7 @@ print_summary() {
 for phase in "${PHASES[@]}"; do
     reason="$(skip_reason "$phase")"
     if [ "$reason" = "@disable" ]; then
-        log_info "$phase: $(phase_flag "$phase")=0 — выключаю установленный протокол"
+        log_info "$phase: $(phase_flag "$phase")=0 — выключаю установленное фазой"
         run_phase "$phase"
         continue
     fi
@@ -412,3 +423,9 @@ selftest
 
 log_step "ГОТОВО"
 log_ok "Установка завершена. Конфиг и секреты: $CONFIG_FILE"
+
+# Перенос SSH (01b) ждёт подтверждения: инструкция — последней, таймер отката — с этого
+# момента (пока шла установка, он только откладывался)
+if [ "${RESULT[01b-ssh]:-}" = "OK" ] && [ "$SINGLE_PHASE" != "01b-ssh" ] && [ -f "$SSH_STATE_DIR/pending.env" ]; then
+    bash "$SCRIPTS_DIR/01b-ssh.sh" --remind 8>&- || log_warn "01b: не удалось напомнить о подтверждении SSH — sudo bash $SCRIPTS_DIR/01b-ssh.sh --remind"
+fi

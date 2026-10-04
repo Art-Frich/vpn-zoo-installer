@@ -13,7 +13,7 @@
 #   --tests        после установки запустить docker/tests/<id>.sh против сервера
 #                  (all — тесты протоколов, чьи манифесты есть на сервере, routing, links,
 #                  security, а при установленном zoo — web (zoo/tests/web_smoke.sh --users)
-#                  и collector)
+#                  и collector; последним — ssh-harden)
 #   --probe-profiles  профили клиентского пробника (docker/probe/run.sh), через запятую:
 #                  direct,clean,drop-udp,ip-block,freeze-16k,rst-tls (по умолчанию все); none — без него
 #
@@ -278,6 +278,8 @@ if [ -n "$TESTS_ARG" ]; then
         # админка формами (с пользователем во всех протоколах) и коллектор трафика — после
         # тестов протоколов: им нужен накопленный трафик
         if docker exec "$NAME" test -x /usr/local/bin/zoo 2>/dev/null; then TESTS+=(web collector); fi
+        # закрытие SSH (фаза 01b) — последним: меняет порт SSH, в конце возвращает исходный
+        TESTS+=(ssh-harden)
     else
         IFS=',' read -r -a TESTS <<< "$TESTS_ARG"
     fi
