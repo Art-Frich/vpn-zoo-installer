@@ -16,7 +16,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Callable
 
-from . import MIN_PYTHON, __version__, manifests, output, paths, protolib, qr, status, system, users
+from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
 from . import traffic, upgrade
 from . import probe as probe_mod
 from . import web as web_mod
@@ -229,12 +229,13 @@ def _render_links(links: list[protolib.Link], errors: dict[str, str], qr_mode: s
         if link.proto_id != current:
             current = link.proto_id
             m = by_id.get(current)
-            print(f"\n{output.color(current, 'bold')}  {m.name if m else ''}")
+            name = m.name if m else ("Приложения через VPN" if current == allowlist.V2RAYN_PROTO else "")
+            print(f"\n{output.color(current, 'bold')}  {name}")
             if m and m.notes:
                 width = min(shutil.get_terminal_size((100, 20)).columns, 100)
                 print(output.color(textwrap.fill(m.notes, width, initial_indent="  ",
                                                  subsequent_indent="  "), "dim"))
-        prefix = "файл: " if link.kind == "file" else (link.label + ": " if link.label else "")
+        prefix = link.label + ": " if link.label else ("файл: " if link.kind == "file" else "")
         print(f"  {prefix}{link.uri}")
         payload = qr_payload(link) if qr_mode else None
         if payload:
@@ -267,6 +268,95 @@ def _write_svgs(name: str, links: list[protolib.Link], out_dir: Path) -> None:
             output.ok(f"QR: {target}")
         except qr.QrError as e:
             output.warn(f"{target.name}: {e}")
+
+
+# ---------- allow ----------
+
+def _allow_user(args: argparse.Namespace) -> str | None:
+    user = getattr(args, "user", None) or None
+    allowlist.check_user(user)
+    return user
+
+
+def cmd_allow_list(args: argparse.Namespace, cfg: Config) -> int:
+    al = allowlist.Allowlist.load()
+    user = _allow_user(args)
+    data = {**al.to_dict(), "default": allowlist.defaults(),
+            "catalog": [{"key": a.key, "title": a.title, "android": a.android, "windows": a.windows,
+                         "note": a.note} for a in allowlist.CATALOG]}
+    if user:
+        data["effective"] = {"user": user, "own": al.own(user),
+                             **{p: al.effective(p, user) for p in allowlist.PLATFORMS}}
+    if args.json:
+        output.print_json(data)
+        return EXIT_OK
+    if not al.exists:
+        output.warn(f"реестра {al.path} ещё нет — действует пресет (реестр создаёт фаза 09 или первое изменение)")
+    if user:
+        print(f"{user}: {'свой список' if al.own(user) else 'общий список'}")
+    for p in allowlist.PLATFORMS:
+        print(f"\n{output.color(allowlist.PLATFORM_TITLE[p], 'bold')}")
+        for i in al.effective(p, user):
+            title = allowlist.title_of(p, i)
+            print(f"  {i}" + (output.color(f"  {title}", "dim") if title else ""))
+    if not user and al.users:
+        print(f"\n{output.color('Свои списки пользователей', 'bold')}")
+        for n, own in sorted(al.users.items()):
+            print(f"  {n}: " + "; ".join(f"{p}: {', '.join(v)}" for p, v in own.items()))
+    if args.catalog:
+        rows = [[a.key, a.title, a.android or "—", a.windows or "—", a.note] for a in allowlist.CATALOG]
+        print()
+        print(output.table(rows, ["ключ", "приложение", "Android", "Windows", "заметка"]))
+    else:
+        print(output.color("\nкаталог известных приложений: zoo allow list --catalog", "dim"))
+    return EXIT_OK
+
+
+def _allow_report(ch: allowlist.Change, as_json: bool) -> int:
+    ap = ch.applied
+    awg_failed = str(ap.get("amneziawg", "")).startswith("ошибка")
+    if as_json:
+        output.print_json(ch.to_dict())
+        return EXIT_FAIL if awg_failed else EXIT_OK
+    who = f"{ch.user}: " if ch.user else "общий список: "
+    for p, i in ch.added:
+        output.ok(f"{who}+ {i} ({p})")
+    for p, i in ch.removed:
+        output.ok(f"{who}- {i} ({p})")
+    for p, i in ch.unchanged:
+        output.info(f"{who}{i} ({p}) — без изменений")
+    output.info(who + ch.message)
+    if ap:
+        output.info(f"AmneziaWG: {ap.get('amneziawg')}; правила v2rayN: {len(ap.get('v2rayn', []))} файл(ов)")
+        if awg_failed:
+            output.warn("Android-конфиги не пересобраны: sudo zoo allow apply")
+            return EXIT_FAIL
+        output.info("пользователям — новые QR и файлы (zoo links ИМЯ --qr): старый QR работает со старым списком")
+    return EXIT_OK
+
+
+def cmd_allow_add(args: argparse.Namespace, cfg: Config) -> int:
+    return _allow_report(allowlist.change("add", args.apps, _allow_user(args), args.platform), args.json)
+
+
+def cmd_allow_del(args: argparse.Namespace, cfg: Config) -> int:
+    return _allow_report(allowlist.change("del", args.apps, _allow_user(args), args.platform), args.json)
+
+
+def cmd_allow_reset(args: argparse.Namespace, cfg: Config) -> int:
+    return _allow_report(allowlist.reset(_allow_user(args)), args.json)
+
+
+def cmd_allow_apply(args: argparse.Namespace, cfg: Config) -> int:
+    allowlist.ensure_file()
+    res = allowlist.apply(awg=not args.no_awg)
+    if args.json:
+        output.print_json(res)
+    else:
+        output.info(f"AmneziaWG: {res['amneziawg']}; правила v2rayN: {len(res['v2rayn'])} файл(ов)")
+        for n, e in res["errors"].items():
+            output.warn(f"{n}: {e}")
+    return EXIT_FAIL if res["errors"] or str(res["amneziawg"]).startswith("ошибка") else EXIT_OK
 
 
 # ---------- version / setup ----------
@@ -306,11 +396,27 @@ def cmd_setup(args: argparse.Namespace, cfg: Config) -> int:
     rep = users.bootstrap(users.OWNER)
     # owner не найден в каком-то протоколе — предупреждение, а не провал установки
     _report(rep, args.json)
+    try:
+        if allowlist.ensure_file():
+            output.info(f"приложения через VPN: {paths.allowlist_file()} (пресет; zoo allow list)")
+    except allowlist.AllowlistError as e:
+        output.warn(f"приложения через VPN: {e}")
     probe_rep = users.ensure_probe_user()
     if probe_rep is not None:
         _report(probe_rep, args.json)
         if not probe_rep.ok:
             output.warn(f"{users.PROBE_USER} заведён не везде: самопроверка этих протоколов пойдёт кредами owner")
+    # обновление (zoo upgrade перезапускает только 09): у старых пользователей появятся
+    # правила v2rayN и Android-вариант AWG, у всех — файлы нового формата
+    try:
+        res = allowlist.apply()
+        bad = dict(res["errors"])
+        if str(res["amneziawg"]).startswith("ошибка"):
+            bad["amneziawg"] = res["amneziawg"]
+        for n, e in bad.items():
+            output.warn(f"приложения через VPN: {n}: {e} (повторить: sudo zoo allow apply)")
+    except (allowlist.AllowlistError, LockTimeout, OSError) as e:
+        output.warn(f"приложения через VPN: файлы не пересобраны: {e} (sudo zoo allow apply)")
     for mod in (traffic, probe_mod, web_mod):
         mod.setup(cfg)
     return EXIT_OK
@@ -379,6 +485,34 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--invert", action="store_true", help="QR для светлого фона терминала")
     p.add_argument("--svg-dir", metavar="DIR", help="сохранить QR в SVG-файлы")
 
+    pa = sub.add_parser("allow", parents=[common], help="приложения через VPN (allowlist)",
+                        description="Приложения через VPN: только они идут в туннель (Android — "
+                                    "AmneziaWG, Windows — v2rayN), всё остальное мимо")
+    asub = pa.add_subparsers(dest="allow_command", metavar="ДЕЙСТВИЕ")
+    pa.set_defaults(handler=lambda a, c: (pa.print_help(), EXIT_USAGE)[1])
+
+    def aadd(name: str, handler: Callable, help_: str, user: bool = True) -> argparse.ArgumentParser:
+        p = asub.add_parser(name, parents=[common], help=help_, description=help_)
+        p.set_defaults(handler=handler)
+        if user:
+            p.add_argument("--user", metavar="ИМЯ", help="свой список пользователя вместо общего")
+        return p
+
+    p = aadd("list", cmd_allow_list, "текущие списки (общий и свои у пользователей)")
+    p.add_argument("--catalog", action="store_true", help="каталог известных приложений с ключами")
+    for verb, handler, help_ in (("add", cmd_allow_add, "пустить приложения через VPN"),
+                                 ("del", cmd_allow_del, "убрать приложения из VPN")):
+        p = aadd(verb, handler, help_)
+        p.add_argument("apps", nargs="+", metavar="ПРИЛОЖЕНИЕ",
+                       help="ключ каталога (brave, youtube…), пакет Android или процесс Windows (name.exe)")
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--android", dest="platform", action="store_const", const="android", help="только Android")
+        g.add_argument("--windows", dest="platform", action="store_const", const="windows", help="только Windows")
+    aadd("reset", cmd_allow_reset, "общий список — к пресету; с --user — пользователь на общий список")
+    p = aadd("apply", cmd_allow_apply, "пересобрать Android-конфиги AmneziaWG и правила v2rayN всех пользователей",
+             user=False)
+    p.add_argument("--no-awg", action="store_true", help="только правила v2rayN")
+
     p = add("traffic", traffic.cmd_traffic, "трафик по пользователям и протоколам")
     traffic.add_arguments(p)
     p = add("probe", probe_mod.cmd_probe, "проверка протоколов: --local с сервера, --remote с клиента")
@@ -430,7 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         cfg = load_config() if args.command not in NO_CONFIG_COMMANDS else Config()
         return int(args.handler(args, cfg) or 0)
-    except (users.UserError, ConfigError, LockTimeout) as e:
+    except (users.UserError, ConfigError, LockTimeout, allowlist.AllowlistError) as e:
         output.error(str(e))
         return EXIT_FAIL
     except protolib.ProtoError as e:

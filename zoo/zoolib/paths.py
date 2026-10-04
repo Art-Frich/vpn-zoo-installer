@@ -41,6 +41,16 @@ def clients_dir() -> Path:
     return _env_path("ZOO_CLIENTS_DIR", etc() / "clients")
 
 
+def allowlist_file() -> Path:
+    """Приложения через VPN (zoo allow): тот же ALLOWLIST_FILE, что в lib.sh."""
+    return _env_path("ALLOWLIST_FILE", etc() / "allowlist.json")
+
+
+def allowlist_default_file() -> Path:
+    """Пресет по умолчанию из репо (его же читает lib.sh, пока реестра нет)."""
+    return _env_path("ALLOWLIST_DEFAULT", scripts_dir() / "allowlist-default.json")
+
+
 def probe_export_file() -> Path:
     return _env_path("ZOO_PROBE_EXPORT", etc() / "probe-export.json")
 

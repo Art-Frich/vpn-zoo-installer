@@ -65,7 +65,7 @@ check "cookie сессии HttpOnly; SameSite=Strict" grep -qi '^set-cookie: zoo
 
 echo "-- страницы"
 for p in / /users "/users?verify=1" /traffic "/traffic?period=1h" "/traffic?period=7d" "/traffic?period=30d" \
-         /probe /logs /settings /users/owner "/users/owner?period=24h"; do
+         /probe /logs /settings /apps "/apps?user=owner" /users/owner "/users/owner?period=24h"; do
     c="$(code "$p")"
     if [ "$c" != 200 ]; then bad "$p → $c"; continue; fi
     if grep -q 'style=' "$TMP/body"; then bad "$p: inline style (нарушит CSP)"; continue; fi
@@ -98,6 +98,11 @@ if [ "$WITH_USERS" = 1 ]; then
     check "zoo user list видит $U" bash -c "zoo user list --json | jq -e '.users[] | select(.name == \"$U\")' >/dev/null"
     check "страница $U: ссылки и QR" bash -c "[ \"\$(curl -s -b '$JAR' '$BASE/users/$U' | grep -c 'class=\"link\"')\" -ge 1 ]"
     check "QR встроен как SVG" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q '<div class=\"qr\"><svg'"
+    check "страница $U: правила v2rayN" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q 'v2rayn-routing.json'"
+    if [ -f /etc/vpn-setup/protocols.d/amneziawg.json ]; then
+        check "страница $U: Android-вариант AmneziaWG" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q 'amneziawg-android.conf'"
+    fi
+    check "страница «Приложения» для $U" test "$(code "/apps?user=$U")" = 200
     check "отключить" test "$(code "/users/$U/disable" -d "csrf=$TOKEN_CSRF")" = 303
     check "в реестре отключён" bash -c "zoo user list --json | jq -e '.users[] | select(.name == \"$U\") | .enabled == false' >/dev/null"
     check "включить" test "$(code "/users/$U/enable" -d "csrf=$TOKEN_CSRF")" = 303

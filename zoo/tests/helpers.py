@@ -123,6 +123,7 @@ class ZooEnv:
             d.mkdir(parents=True)
         shutil.copy(REPO / "scripts" / "lib.sh", self.scripts / "lib.sh")
         shutil.copy(REPO / "scripts" / "lib" / "xui.sh", self.scripts / "lib" / "xui.sh")
+        shutil.copy(REPO / "scripts" / "allowlist-default.json", self.scripts / "allowlist-default.json")
         if (REPO / "scripts" / "versions.env").exists():
             shutil.copy(REPO / "scripts" / "versions.env", self.scripts / "versions.env")
         env = {

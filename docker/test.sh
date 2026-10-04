@@ -12,8 +12,8 @@
 #   --keep         не удалять контейнер после прогона
 #   --tests        после установки запустить docker/tests/<id>.sh против сервера
 #                  (all — тесты протоколов, чьи манифесты есть на сервере, routing, links,
-#                  security, а при установленном zoo — web (zoo/tests/web_smoke.sh --users)
-#                  и collector; последним — ssh-harden)
+#                  security, а при установленном zoo — allowlist (если есть AmneziaWG),
+#                  web (zoo/tests/web_smoke.sh --users) и collector; последним — ssh-harden)
 #   --probe-profiles  профили клиентского пробника (docker/probe/run.sh), через запятую:
 #                  direct,clean,drop-udp,ip-block,freeze-16k,rst-tls (по умолчанию все); none — без него
 #
@@ -277,7 +277,10 @@ if [ -n "$TESTS_ARG" ]; then
         TESTS+=(security)
         # админка формами (с пользователем во всех протоколах) и коллектор трафика — после
         # тестов протоколов: им нужен накопленный трафик
-        if docker exec "$NAME" test -x /usr/local/bin/zoo 2>/dev/null; then TESTS+=(web collector); fi
+        if docker exec "$NAME" test -x /usr/local/bin/zoo 2>/dev/null; then
+            grep -qx amneziawg.json <<< "$have" && TESTS+=(allowlist)
+            TESTS+=(web collector)
+        fi
         # закрытие SSH (фаза 01b) — последним: меняет порт SSH, в конце возвращает исходный
         TESTS+=(ssh-harden)
     else

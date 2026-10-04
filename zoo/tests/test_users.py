@@ -291,7 +291,8 @@ class UsersTest(unittest.TestCase):
         users.add_user("masha")
         links, _ = users.user_links("masha")
         files = [x for x in links if x.kind == "file"]
-        self.assertEqual([(x.proto_id, Path(x.uri).name) for x in files], [("amneziawg", "amneziawg.conf")])
+        self.assertEqual([(x.proto_id, Path(x.uri).name) for x in files],
+                         [("amneziawg", "amneziawg.conf"), ("allowlist", "v2rayn-routing.json")])
         self.assertTrue((self.env.etc / "clients" / "masha" / "amneziawg.key").exists())  # в выдачу не попал
         links, _ = users.user_links("masha", ["vless-reality"])
         self.assertEqual([x.kind for x in links], ["uri"])

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # 99-print-creds.sh — итог установки по манифестам /etc/vpn-setup/protocols.d/*.json:
-# ссылки и QR пользователя owner по каждому протоколу, .conf AmneziaWG, доступ к панели
-# через ssh -L, какие клиенты с чем работают.
+# ссылки и QR пользователя owner по каждому протоколу, .conf AmneziaWG (QR — Android-вариант
+# со списком приложений, D31), приложения через VPN, доступ к панели через ssh -L, какие
+# клиенты с чем работают.
 #
 #   /root/CREDENTIALS.md (0600)              то же в Markdown (путь: VPN_CREDENTIALS_OUT)
 #   /etc/vpn-setup/probe-export.json (0600)  пакет клиентского пробника (zoo export-probe:
@@ -35,6 +36,12 @@ if command -v zoo >/dev/null && [ -f "$VPN_ETC/users.json" ]; then
         log_info "пользователи zoo сверены с включёнными протоколами (zoo user sync)"
     else
         log_warn "zoo user sync завершился с ошибками — подробности: zoo user sync"
+    fi
+    # приложения через VPN (D31): реестр, Android-варианты AWG и правила v2rayN всех пользователей
+    if zoo allow apply --json >/dev/null 2>&1; then
+        log_info "приложения через VPN: файлы пользователей пересобраны (zoo allow apply)"
+    else
+        log_warn "zoo allow apply завершился с ошибками — подробности: zoo allow apply"
     fi
 fi
 
@@ -86,12 +93,18 @@ tuic|sing-box/SFA/SFI, Hiddify, Karing, NekoBox, v2rayN (ядро sing-box), mih
 
 clients_for() { awk -F'|' -v id="$1" -v col="$2" '$1 == id {print $col}' <<< "$CLIENTS"; }
 
+ALLOW_ANDROID="$(zoo_allowlist android "$WHO" 2>/dev/null || true)"
+ALLOW_WINDOWS="$(zoo_allowlist windows "$WHO" 2>/dev/null || true)"
+V2RAYN_FILE="$ZOO_CLIENTS_DIR/$WHO/v2rayn-routing.json"
+
 ADVICE=(
-    "REALITY на сервере — Xray 26.9.30: с 26.9.8 он отклоняет ClientHello без X25519MLKEM768. Клиенты на sing-box (SFA/SFI, Hiddify, NekoBox, Karing) и старые ядра Xray показывают «подключено», но трафика нет. Для VLESS/XHTTP — клиенты на ядре Xray ≥26.x."
-    "Пароль на локальный прокси: в Happ — Inbounds → режим авторизации auto, «Разрешить LAN» не включать. В v2rayNG ≥2.2.6 — выключить «Использовать Hev TUN», затем «Использовать локальный прокси». Иначе любое приложение на телефоне узнаёт IP сервера через 127.0.0.1."
-    "Сплит «РФ напрямую» и исключение российских приложений (банки, Госуслуги, MAX) из VPN — главная защита адреса сервера. Сервер дополнительно блокирует echo-сервисы «узнай свой IP» (кроме AmneziaWG)."
-    "У AmneziaWG и WG Tunnel локального прокси нет — утечки через 127.0.0.1 там не бывает."
-    "Подробно: $REPO_ROOT/docs/RISK-REDUCTION.md (разделы 4.2–4.4)."
+    "Через VPN идут только приложения из списка (zoo allow list): Android — QR amneziawg-android (AmneziaWG или WG Tunnel), Windows — правила v2rayN. Банки, Госуслуги, MAX и остальное работают мимо VPN: настраивать для них ничего не нужно."
+    "Приложения из списка лучше поставить до сканирования QR. Пакет, которого нет на телефоне, Android по коду просто пропускает (на телефоне не проверено); поставленное позже попадёт в VPN после перезапуска туннеля."
+    "Brave — из Google Play или с GitHub, не из RuStore; не делать браузером по умолчанию; поиск — не Яндекс. «Блокировать соединения без VPN» в Android не включать: RU-приложения останутся без сети."
+    "Факт VPN приложения на телефоне видят всё равно. Список прячет адрес сервера: приложения вне списка ходят напрямую и его не узнают."
+    "REALITY на сервере — Xray 26.9.30: клиенты на sing-box (SFA/SFI, Hiddify, NekoBox, Karing) показывают «подключено», но трафика нет. Для VLESS/XHTTP — клиенты на ядре Xray ≥26.x (v2rayN, v2rayNG, Happ, INCY)."
+    "Если вместо AmneziaWG — Happ или v2rayNG: режим «только выбранные приложения», пароль на локальный прокси (Happ — auto) или его выключение (v2rayNG), «Разрешить LAN» не включать. У AmneziaWG локального прокси нет, у WG Tunnel — только в режиме «Локальный прокси» (оставить режим VPN, «Блокировку» тоже не выбирать)."
+    "Пользователям: $REPO_ROOT/docs/USER-GUIDE.md (по платформам). Подробно о рисках: $REPO_ROOT/docs/RISK-REDUCTION.md, раздел 4."
 )
 
 # ------------------------------------------------------------
@@ -119,12 +132,23 @@ for m in "${M[@]}"; do
     fi
     printf '%b\n' "${C_BLUE}-- $name ($layer/$port) --${C_RESET}"
     if [ "$id" = "amneziawg" ]; then
+        awg_android=""; awg_plain=""
         while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            echo "  конфиг (AmneziaWG, WG Tunnel, AmneziaVPN ≥5.0.1.5): $f"
-            [ ! -s "${f%.conf}.png" ] || echo "  QR картинкой: ${f%.conf}.png"
-            if [ -s "$f" ]; then qr -r "$f"; fi
+            case "$f" in "") ;; *-android.conf) awg_android="$f" ;; *) awg_plain="$f" ;; esac
         done < <(m_files "$m")
+        if [ -n "$awg_android" ]; then
+            echo "  Android — AmneziaWG или WG Tunnel, через VPN только: ${ALLOW_ANDROID:-?}"
+            echo "  QR для телефона (сканировать в приложении):"
+            if [ -s "$awg_android" ]; then qr -r "$awg_android"; fi
+            echo "  файл: $awg_android"
+            [ ! -s "${awg_android%.conf}.png" ] || echo "  QR картинкой: ${awg_android%.conf}.png"
+        fi
+        if [ -n "$awg_plain" ]; then
+            echo "  компьютер, iPhone, AmneziaVPN ≥5.0.1.5 — весь трафик через VPN: $awg_plain"
+            [ ! -s "${awg_plain%.conf}.png" ] || echo "  QR картинкой: ${awg_plain%.conf}.png"
+            # без Android-варианта (пустой список) — QR общего, как раньше
+            if [ -z "$awg_android" ] && [ -s "$awg_plain" ]; then qr -r "$awg_plain"; fi
+        fi
         while IFS= read -r l; do
             [ -n "$l" ] || continue
             echo "  ключ AmneziaVPN / DefaultVPN:"
@@ -145,6 +169,13 @@ for m in "${M[@]}"; do
     no="$(clients_for "$id" 3)"
     [ -z "$no" ] || echo "  не работают: $no"
 done
+
+echo
+printf '%b\n' "${C_BLUE}-- Приложения через VPN (остальное — мимо) --${C_RESET}"
+echo "  Android (AmneziaWG, WG Tunnel): ${ALLOW_ANDROID:-—}"
+echo "  Windows (v2rayN): ${ALLOW_WINDOWS:-—}"
+[ ! -s "$V2RAYN_FILE" ] || echo "  правила для v2rayN: $V2RAYN_FILE (v2rayN → Настройки маршрутизации → Импорт правил из файла)"
+echo "  изменить: zoo allow list | add | del | reset (--user ИМЯ — свой список) или админка → «Приложения»"
 
 echo
 printf '%b\n' "${C_BLUE}-- Панель 3x-ui (только через SSH-туннель) --${C_RESET}"
@@ -188,7 +219,10 @@ md_escape() { sed 's/|/\\|/g'; }
         echo "- id: \`$id\`, движок: \`$(jq -r '.engine // "?"' <<< "$m")\`, сервис: \`$(jq -r '.service // "?"' <<< "$m")\`"
         while IFS= read -r f; do
             [ -n "$f" ] || continue
-            echo "- конфиг: \`$f\`"
+            case "$f" in
+                *-android.conf) echo "- Android (AmneziaWG, WG Tunnel), через VPN только список приложений: \`$f\`" ;;
+                *) echo "- конфиг: \`$f\`" ;;
+            esac
             [ ! -s "${f%.conf}.png" ] || echo "- QR: \`${f%.conf}.png\`"
         done < <(m_files "$m")
         links="$(m_links "$m")"
@@ -203,6 +237,17 @@ md_escape() { sed 's/|/\\|/g'; }
     done
     echo
     echo "QR в терминале: \`qrencode -t ansiutf8 'ссылка'\` или \`zoo links $WHO --qr\`."
+    echo
+    echo "## Приложения через VPN"
+    echo
+    echo "Через VPN идут только эти приложения, всё остальное (банки, Госуслуги, MAX) — напрямую (D31):"
+    echo
+    echo "- Android (QR \`amneziawg-android\` для AmneziaWG и WG Tunnel): \`${ALLOW_ANDROID:-—}\`"
+    echo "- Windows (правила v2rayN): \`${ALLOW_WINDOWS:-—}\`"
+    [ ! -s "$V2RAYN_FILE" ] || echo "- правила v2rayN: \`$V2RAYN_FILE\` → v2rayN, «Настройки маршрутизации» → «Добавить набор правил» → «Импорт правил из файла»"
+    echo "- изменить: \`sudo zoo allow list --catalog\`, \`zoo allow add youtube\`, \`zoo allow del telegram --user ИМЯ\`, \`zoo allow reset\`; или админка → «Приложения». После изменения пользователю нужен новый QR"
+    echo "- приложения из списка — поставить до включения туннеля; отсутствующий пакет Android по коду пропускает (не проверено на телефоне)"
+    echo "- инструкция для пользователей: \`$REPO_ROOT/docs/USER-GUIDE.md\`"
     echo
     echo "## Панель 3x-ui"
     echo

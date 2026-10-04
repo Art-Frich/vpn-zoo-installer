@@ -383,6 +383,32 @@ zoo_client_file_del() {
     rmdir "$d" 2>/dev/null || true
 }
 
+# Приложения через VPN (D31): реестр zoo allow, без него — пресет из репо.
+# Правит только zoo (zoolib/allowlist.py); здесь — чтение для конфигов клиентов
+ALLOWLIST_FILE="${ALLOWLIST_FILE:-$VPN_ETC/allowlist.json}"
+ALLOWLIST_DEFAULT="${ALLOWLIST_DEFAULT:-$SCRIPTS_DIR/allowlist-default.json}"
+
+# zoo_allowlist android|windows [ИМЯ] — список через «, »: свой список пользователя или
+# общий. Пусто — список пуст (вариант конфига не строится). Невалидные id отбрасываются:
+# строка уходит в .conf как есть. Якоря \A…\z: «$» в jq (Oniguruma) пропускает
+# завершающий перевод строки. Разбор тот же, что Allowlist.load в zoolib/allowlist.py
+zoo_allowlist() {
+    local plat="${1:-}" user="${2:-}" src="$ALLOWLIST_FILE" re
+    case "$plat" in
+        android) re='\A[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+\z' ;;
+        windows) re='\A[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,63}\.[eE][xX][eE]\z' ;;
+        *) log_err "zoo_allowlist: платформа android или windows"; return 1 ;;
+    esac
+    [ -s "$src" ] || src="$ALLOWLIST_DEFAULT"
+    [ -s "$src" ] || { log_err "нет ни $ALLOWLIST_FILE, ни $ALLOWLIST_DEFAULT"; return 1; }
+    jq -r --arg p "$plat" --arg u "$user" --arg re "$re" '
+        def obj: if type == "object" then . else {} end;
+        def arr: if type == "array" then . else null end;
+        (obj | .users | obj | .[$u] | obj | .[$p] | arr) // (obj | .[$p] | arr) // []
+        | map(select(type == "string" and test($re)))
+        | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end) | join(", ")' "$src"
+}
+
 # ============================================================
 # Firewall: реестр портов + ufw
 #   ports.tsv: порт/proto <TAB> комментарий <TAB> кто открыл
