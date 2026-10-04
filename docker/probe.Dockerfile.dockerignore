@@ -1,0 +1,4 @@
+# Контекст сборки пробника — корень репо; нужны только scripts/ и docker/probe/
+*
+!scripts/
+!docker/probe/

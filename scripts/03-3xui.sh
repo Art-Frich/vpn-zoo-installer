@@ -23,25 +23,38 @@ XRAY_BIN="$(xui_xray_bin)"
 # 1. Параметры панели (генерируются один раз)
 # ------------------------------------------------------------
 
-if [ -z "${PANEL_PORT:-}" ] || is_banned_port "$PANEL_PORT"; then
-    [ -n "${PANEL_PORT:-}" ] && log_info "порт панели $PANEL_PORT из запрещённого списка — меняю"
-    config_set PANEL_PORT "$(rand_port)"
+# Значение — через переменную: ошибка внутри $(...) в аргументе команды set -e не ловит,
+# и в config.env записалась бы пустая строка
+gen_once() {
+    local key="$1" val; shift
+    [ -n "${!key:-}" ] && return 0
+    val="$("$@")" || die "не удалось сгенерировать $key"
+    [ -n "$val" ] || die "пустое значение $key"
+    config_set "$key" "$val"
+}
+
+if [ -n "${PANEL_PORT:-}" ] && { ! [[ "$PANEL_PORT" =~ ^[0-9]+$ ]] || is_banned_port "$PANEL_PORT"; }; then
+    log_info "порт панели $PANEL_PORT недопустим (не число или из запрещённого списка) — меняю"
+    PANEL_PORT=""
 fi
-[ -n "${PANEL_PATH:-}" ] || config_set PANEL_PATH "$(gen_random_alnum 18)"
+gen_once PANEL_PORT rand_port
+gen_once PANEL_PATH gen_random_alnum 18
 PANEL_PATH="${PANEL_PATH#/}"; PANEL_PATH="${PANEL_PATH%/}"
-[ -n "${PANEL_USER:-}" ] || config_set PANEL_USER "$(gen_random_alnum 10)"
-[ -n "${PANEL_PASS:-}" ] || config_set PANEL_PASS "$(gen_random_alnum 24)"
+[[ "$PANEL_PATH" =~ ^[A-Za-z0-9_-]+$ ]] || die "PANEL_PATH: допустимы только A-Z a-z 0-9 _ - (получено: $PANEL_PATH)"
+gen_once PANEL_USER gen_random_alnum 10
+gen_once PANEL_PASS gen_random_alnum 24
 
 # ------------------------------------------------------------
 # 2. Чужая установка?
 # ------------------------------------------------------------
 
-# Установка первой версии этого инсталлера — тоже наша
-if ! is_owned x-ui && [ "$(state_get 03-3xui)" = "done" ] && [ -f "$XUI_ETC/x-ui.db" ]; then
-    mark_owned x-ui
-    config_set PANEL_CREDS_SET 1
+# Установки первой версии инсталлера помечает нашими state_migrate (install.sh)
+# каталог целиком: рядом с x-ui.db лежат -wal/-shm, без них копия БД неполная
+foreign_takeover=0
+if ! is_owned x-ui && { [ -e "$XUI_ETC" ] || [ -e /etc/default/x-ui ] || [ -e "$XUI_SERVICE" ]; }; then
+    foreign_takeover=1
 fi
-guard_foreign_install x-ui "$XUI_ETC/x-ui.db" /usr/local/x-ui/x-ui /etc/default/x-ui
+guard_foreign_install x-ui "$XUI_ETC" /etc/default/x-ui "$XUI_SERVICE"
 
 # ------------------------------------------------------------
 # 3. Установка/обновление бинарей
@@ -49,13 +62,24 @@ guard_foreign_install x-ui "$XUI_ETC/x-ui.db" /usr/local/x-ui/x-ui /etc/default/
 
 installed_ver="$(xui_cli_version || true)"
 fresh_bin=0
-if [ "$installed_ver" = "$WANT_VER" ] && [ -x "$XRAY_BIN" ]; then
+# Бинари чужой установки не проверены по sha256 — при перехвате (--force) ставим свои
+if [ "$installed_ver" = "$WANT_VER" ] && [ -x "$XRAY_BIN" ] && [ "$foreign_takeover" = "0" ]; then
     log_info "3x-ui $installed_ver уже установлен"
 else
+    [ "$foreign_takeover" = "1" ] && log_info "чужая установка: бинари 3x-ui заменяются проверенными (sha256)"
     [ -n "$installed_ver" ] && log_info "3x-ui $installed_ver → $WANT_VER"
     sum="$(version_for XUI_SHA256 "$ZOO_ARCH")"
     tarball="/var/cache/vpn-zoo/x-ui-${XUI_VERSION}-linux-${ZOO_ARCH}.tar.gz"
     download_verified "$XUI_URL_BASE/x-ui-linux-${ZOO_ARCH}.tar.gz" "$sum" "$tarball"
+
+    # Распаковка и проверка — до остановки работающей панели: при битом архиве
+    # старая установка остаётся нетронутой
+    tmpd="$(mktemp -d /usr/local/.x-ui-new.XXXXXX)"
+    trap 'rm -rf "$tmpd"' EXIT
+    tar -xzf "$tarball" -C "$tmpd" || die "не удалось распаковать $tarball"
+    [ -x "$tmpd/x-ui/x-ui" ] || die "в архиве нет x-ui/x-ui"
+    [ -f "$tmpd/x-ui/bin/xray-linux-$ZOO_ARCH" ] || die "в архиве нет bin/xray-linux-$ZOO_ARCH"
+    [ -f "$tmpd/x-ui/x-ui.service.debian" ] || die "в архиве нет x-ui.service.debian"
 
     if systemctl is-active --quiet x-ui 2>/dev/null; then
         systemctl stop x-ui
@@ -69,11 +93,9 @@ else
         fi
     fi
 
-    tmpd="$(mktemp -d /usr/local/.x-ui-new.XXXXXX)"
-    tar -xzf "$tarball" -C "$tmpd"
-    [ -x "$tmpd/x-ui/x-ui" ] || die "в архиве нет x-ui/x-ui"
     mv "$tmpd/x-ui" "$XUI_DIR"
-    rmdir "$tmpd"
+    rm -rf "$tmpd"
+    trap - EXIT
     chmod 755 "$XUI_DIR/x-ui" "$XRAY_BIN"
     [ -f "$XUI_DIR/bin/mtg-linux-$ZOO_ARCH" ] && chmod 755 "$XUI_DIR/bin/mtg-linux-$ZOO_ARCH"
     install -m 755 "$XUI_DIR/x-ui.sh" /usr/bin/x-ui
@@ -115,6 +137,16 @@ if [ "$fresh_bin" = "1" ]; then
 fi
 chmod 600 "$XUI_ETC"/x-ui.db* 2>/dev/null || true
 
+# Подписка по умолчанию слушает 0.0.0.0:2096 — выключаем в БД до первого старта,
+# чтобы порт не открывался даже на секунды. Окончательно проверяется через API (п. 7)
+if [ "${SUB_PUBLIC:-0}" != "1" ] && ! systemctl is-active --quiet x-ui; then
+    if xui_db_preseed subEnable false && xui_db_preseed subListen 127.0.0.1; then
+        log_info "подписка выключена в БД до старта панели"
+    else
+        log_warn "не удалось записать subEnable в БД напрямую — выключу через API после старта"
+    fi
+fi
+
 # Токен: выпускаем, если его нет. Проверка на живой панели — ниже (xui_wait_api)
 if [ -z "${XUI_API_TOKEN:-}" ]; then
     xui_token_refresh
@@ -145,8 +177,18 @@ if [ "${cur2[hasDefaultCredential]:-}" = "true" ]; then
         _xui_cli_setting -username "$PANEL_USER" -password "$PANEL_PASS" >/dev/null || die "не удалось задать логин/пароль панели"
     fi
     config_set PANEL_CREDS_SET 1
-elif [ "${PANEL_CREDS_SET:-0}" != "1" ]; then
-    log_warn "у панели уже не admin/admin и пароль задавал не этот инсталлер — PANEL_USER/PANEL_PASS в config.env могут не подходить"
+elif [ "$foreign_takeover" = "1" ] || [ "${PANEL_CREDS_SET:-0}" != "1" ]; then
+    if [ "${ZOO_FORCE:-0}" = "1" ]; then
+        # чужая установка под --force: старый пароль неизвестен, API без него не сменит
+        log_warn "--force: задаю свои логин/пароль панели через x-ui setting (пароль кратко виден в списке процессов), чужая 2FA сбрасывается"
+        xui_cli_set_credentials "$PANEL_USER" "$PANEL_PASS" || die "не удалось задать логин/пароль панели"
+        _xui_cli_setting -resetTwoFactor >/dev/null || log_warn "сброс 2FA не удался"
+        systemctl restart x-ui
+        xui_wait_api 60 || die "API 3x-ui не поднялся после смены пароля"
+        config_set PANEL_CREDS_SET 1
+    else
+        log_warn "у панели уже не admin/admin и пароль задавал не этот инсталлер — PANEL_USER/PANEL_PASS в config.env могут не подходить (задать свои: install.sh --phase 03 --force)"
+    fi
 fi
 
 # ------------------------------------------------------------
@@ -205,7 +247,7 @@ public_listen="$(ss -Hltnp 2>/dev/null | awk '/"x-ui"/ && $4 !~ /^(127\.0\.0\.1|
 if [ -n "$public_listen" ]; then
     die "x-ui слушает не только 127.0.0.1: $public_listen"
 fi
-ss -Hltn "sport = :$PANEL_PORT" | grep -q '127.0.0.1' || die "панель не слушает 127.0.0.1:$PANEL_PORT"
+[[ "$(ss -Hltn "sport = :$PANEL_PORT")" == *"127.0.0.1:$PANEL_PORT"* ]] || die "панель не слушает 127.0.0.1:$PANEL_PORT"
 
 mark_owned x-ui
 config_set XUI_INSTALLED_VERSION "$XUI_VERSION"

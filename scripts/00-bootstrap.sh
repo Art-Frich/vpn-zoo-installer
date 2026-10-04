@@ -18,7 +18,7 @@ if [ "${ZOO_SKIP_UPGRADE:-0}" = "1" ]; then
 else
     # upgrade, не dist-upgrade: новые пакеты ядра не ставим (ядро — забота 02-kernel)
     log_info "apt upgrade"
-    DEBIAN_FRONTEND=noninteractive apt-get -yq \
+    DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get -yq \
         -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" \
         -o Dpkg::Options::="--force-confdef" \
         -o Dpkg::Options::="--force-confold" \

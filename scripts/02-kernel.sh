@@ -81,13 +81,16 @@ fi
 # ------------------------------------------------------------
 
 if [ "$OS_VERSION_ID" = "22.04" ] && kernel_lt 6 7; then
-    if [ "$(state_get "$PHASE")" = "rebooting" ]; then
-        log_warn "HWE-ядро установлено, но загружено всё ещё $kernel — нужна перезагрузка: sudo reboot"
-        exit 0
-    fi
+    # AWG_NO_HWE раньше проверки «ждёт reboot»: иначе из петли не выйти, если хостер
+    # не даёт загрузить другое ядро
     if [ "${AWG_NO_HWE:-0}" = "1" ]; then
         set_hint userspace "jammy $kernel без HWE (AWG_NO_HWE=1)"
         mark_done "$PHASE"; exit 0
+    fi
+    if [ "$(state_get "$PHASE")" = "rebooting" ]; then
+        log_warn "HWE-ядро установлено, но загружено всё ещё $kernel — нужна перезагрузка: sudo reboot"
+        log_warn "если после reboot ядро не меняется (ядро задаёт хостер), запусти с AWG_NO_HWE=1 — AWG пойдёт в userspace"
+        exit 0
     fi
     log_info "jammy на ядре $kernel: ставлю linux-generic-hwe-22.04 (6.8, самый проверенный путь для DKMS amneziawg)"
     wait_for_apt
