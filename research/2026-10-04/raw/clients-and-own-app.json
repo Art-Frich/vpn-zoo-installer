@@ -1,0 +1,1359 @@
+[
+ {
+  "id": "clients",
+  "research": {
+   "stream": "clients",
+   "summary": "Принцип «через VPN только разрешённые приложения» на Android реализуем штатно. В клиентах это есть в UI: v2rayNG, Happ, INCY, AmneziaVPN, AmneziaWG/WG Tunnel, FlClash, SFA. Без ручной настройки, с сервера, allowlist сегодня приезжает в трёх местах: в заголовках INCY (бесплатно, 3x-ui v3.9.0 их уже отдаёт), в .conf AmneziaWG (ключ IncludedApplications) и в JSON-профиле sing-box (include_package, но sing-box не проходит VLESS-REALITY). У Happ push списка приложений платный (Provider ID). На iOS per-app без MDM невозможен. Клиенты на sing-box (Hiddify, Karing, NekoBox, SFA/SFI, Shadowrocket) против Xray 26.9.30 по VLESS-REALITY не работают. Allowlist закрывает утечку exit-IP, но факт VPN от RU-приложений не прячет.",
+   "findings": [
+    {
+     "id": "c1-mlkem-cores",
+     "claim": "VLESS-REALITY против Xray ≥26.9.8 проходят только ядра Xray и mihomo (нужны флаг и fp=chrome). sing-box и всё, что на нём построено, — нет.",
+     "evidence": "sing-box #4520 открыт с 11.09.2026: 1.12.25/1.14.x/1.15-alpha → «reality verification failed». Последние версии: 1.14.2 (24.09) и 1.15.0-alpha.10 (03.10), фикса в заметках нет. Karing #1952 закрыт, но в заметках 1.2.26.2906 (30.09) фикса нет. mihomo #3193 закрыт как not planned: по умолчанию support-x25519mlkem768=false, ML-KEM даёт только chrome. Shadowrocket 2.2.92 по сторонней сводке тоже не проходит. 📄 issues",
+     "sources": [
+      "https://github.com/SagerNet/sing-box/issues/4520",
+      "https://github.com/KaringX/karing/issues/1952",
+      "https://github.com/MetaCubeX/mihomo/issues/3193",
+      "https://gist.github.com/Piska-Kiska/faf0f8fca9953ac86af69f60491658e1"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c2-hiddify",
+     "claim": "Hiddify в рекомендации не включаем: релизов нет 7 месяцев, а VLESS-REALITY против 26.9.30 под вопросом.",
+     "evidence": "Последняя версия — v4.1.1 от 05.03.2026. Issue #2350 (24.09) просит Xray 26.7/26.9, ответа нет. По нашей матрице Hiddify — форк sing-box 1.13 (VLESS-REALITY ❌, пин Hy2 игнорируется). Сторонняя сводка от 26.09 пишет iOS 4.0 «Xray, ML-KEM yes», то есть данные расходятся. Hy2, SS-2022 и TUIC работать должны. 🟡",
+     "sources": [
+      "https://github.com/hiddify/hiddify-app/releases",
+      "https://github.com/hiddify/hiddify-app/issues/2350"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c3-incy-free-perapp",
+     "claim": "INCY — единственный массовый Xray-клиент, которому сервер бесплатно задаёт allowlist приложений на Android.",
+     "evidence": "docs.incy.cc/app-management: per-app-proxy-*, hide-url, fragmentation-* и noises-* работают для любых подписок, премиум нужен только для banner-*. 3x-ui v3.9.0 (internal/sub/incy.go) уже отдаёт Per-App-Proxy-Enable, Per-App-Proxy-Mode=proxy|bypass и Per-App-Proxy-List. Ядро Xray (iOS 2.6.2 от 21.09). Есть в Play и в RU App Store. Минусы: open-core и Firebase Crashlytics. Что фикс локального SOCKS в INCY закрыт, известно только со слов третьих лиц. Баг 3x-ui #6273: INCY получает Happ-routing.",
+     "sources": [
+      "https://docs.incy.cc/app-management/",
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.9.0/internal/sub/incy.go",
+      "https://github.com/MHSanaei/3x-ui/issues/6273"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c4-happ-headers",
+     "claim": "Happ: allowlist в UI бесплатный, но прислать его с сервера можно только с Provider ID. Бесплатно сервер может прислать авторизацию локального прокси.",
+     "evidence": "В 3x-ui happ.go Socks-Auth-Mode и Http-Auth-Mode помечены «standard headers (no ProviderID)». Per-App-Proxy-Mode/List (off|on|bypass), hide-settings, autoconnect, exclude-routes и sniffing — только с Provider ID. С Provider ID клиент раз в сутки шлёт на check.happ-proxy.com HWID, ОС и хэш домена. Android 4.6.1 stable (30.09), 4.7.0 pre (02.10), Xray 26.9.9. С 4.4.0 TUN идёт через hev-socks5-tunnel, поэтому локальный SOCKS есть всегда. Исходники закрыты, из RU App Store приложение убрано.",
+     "sources": [
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.9.0/internal/sub/happ.go",
+      "https://happ.mintlify.app/technical-docs/app-management",
+      "https://docs.happ-proxy.com/getting-started/provider-id.md",
+      "https://github.com/Happ-proxy/happ-android/releases"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c5-happ-vuln-status",
+     "claim": "«Happ уязвим» — это уже история плюс одно условие: дыру закрыли, но защита работает только при правильных настройках.",
+     "evidence": "Xray API с HandlerService без авторизации убрали весной 2026 (kod.ru 11.04). Авторизация inbound на Android появилась в 3.20.1, но по умолчанию выключена. Её включает заголовок Socks-Auth-Mode от 3x-ui (subHappLocalProxyAuth + subHappAutoDetect). При «Allow LAN» Happ сам снимает пароль. Остаётся вектор, общий для всех клиентов: исключённое приложение может привязать сокет к tun0. 🟡",
+     "sources": [
+      "https://kod.ru/vpn-happ-problems",
+      "https://gist.github.com/Piska-Kiska/faf0f8fca9953ac86af69f60491658e1"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c6-v2rayng",
+     "claim": "v2rayNG — лучший открытый Xray-клиент для Android: allowlist штатный, локальный прокси можно выключить совсем. Но настраивать всё руками.",
+     "evidence": "Строки master: «General: checked apps use the proxy, and unchecked apps connect directly» — это и есть allowlist, отдельно есть Bypass Mode. Ещё там есть «Enable local proxy» (PR #5548, влит 26.04.2026) и «Use Hev TUN; otherwise xray-core». Версии: 2.3.10 (01.10, Xray 26.9.30), стабильная 2.2.6. Распространяется только APK с GitHub, в Play и F-Droid нет. Allowlist сервером не задаётся: подписка + install-config deeplink + custom JSON.",
+     "sources": [
+      "https://raw.githubusercontent.com/2dust/v2rayNG/master/V2rayNG/app/src/main/res/values/strings.xml",
+      "https://github.com/2dust/v2rayNG/pull/5548",
+      "https://github.com/2dust/v2rayNG/releases"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c7-awg-included-apps",
+     "claim": "Самый надёжный вариант, который не испортит даже ленивый пользователь: AmneziaWG .conf с IncludedApplications. Allowlist зашит прямо в QR-код, локального SOCKS нет.",
+     "evidence": "Парсер amneziawg-android (Interface.java) принимает IncludedApplications и ExcludedApplications, одновременно задать оба нельзя (BadConfigException). Значит, инсталлер может выдать .conf/QR с `IncludedApplications = com.brave.browser, org.telegram.messenger, …`. Учтён ли ключ при импорте в WG Tunnel 5.7.5 (26.09) — ❓. У AmneziaVPN 5.0.3.0 в UI есть режим «Только приложения из списка через VPN»; известный баг: туннель с app-split молча умирает после Doze (#3255). 📄",
+     "sources": [
+      "https://raw.githubusercontent.com/amnezia-vpn/amneziawg-android/master/tunnel/src/main/java/org/amnezia/awg/config/Interface.java",
+      "https://docs.amnezia.org/documentation/instructions/vpn-split-tunneling/",
+      "https://github.com/amnezia-vpn/amnezia-client/issues/3255"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c8-singbox-include-package",
+     "claim": "sing-box SFA: allowlist и отсутствие локального прокси целиком задаются удалённым JSON-профилем. Но работают только Hy2, SS-2022 и TUIC.",
+     "evidence": "Документация tun inbound: include_package/exclude_package — только Android, нужен auto_route. Если в JSON нет mixed и clash_api, слушающего порта на loopback нет. Пин Hy2 задаётся только через SPKI в JSON, и мы этот JSON генерируем сами. Импорт: `sing-box://import-remote-profile?url=…`. Ограничение: VLESS-REALITY и XHTTP ❌ (#4520). Применяет ли SFA include_package из удалённого профиля к VpnService — ❓, проверить.",
+     "sources": [
+      "https://sing-box.sagernet.org/configuration/inbound/tun/",
+      "https://github.com/SagerNet/sing-box/issues/4520"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c9-allowlist-limits",
+     "claim": "Allowlist закрывает утечку exit-IP через маршрутизацию. Факт VPN он не скрывает и привязку к tun0 не блокирует.",
+     "evidence": "Amnezia #2457 (Android 14): исключённое приложение без root делает `curl --interface tun0` и получает IP сервера. В штатном Android это не исправлено. Защита есть только в клиенте: getConnectionOwnerUid + сброс чужих пакетов (Amnezia PR #3199, открыт, по умолчанию выключен). tun0, getAllNetworks/TRANSPORT_VPN и список VPN-пакетов (queryIntentServices) видны всем. Рабочий профиль от этого не спасает (GrapheneOS #7511).",
+     "sources": [
+      "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+      "https://github.com/amnezia-vpn/amnezia-client/pull/3199",
+      "https://rks.global/ru/research/vpn-detection/"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c10-ios-no-perapp",
+     "claim": "На iOS allowlist по приложениям для обычного пользователя невозможен. Остаётся только сплит по доменам и IP.",
+     "evidence": "Apple Platform Deployment: per-app VPN на iOS/iPadOS требует, чтобы приложением управлял device management service (MDM). Поэтому у Happ, INCY, Streisand и Shadowrocket на iOS есть только правила маршрутизации. В RU App Store на 26.09 остаются INCY и Karing (Karing не проходит REALITY). Happ, Streisand, V2Box и OneXray доступны через иностранный Apple ID. Детект VPN на iOS слабее.",
+     "sources": [
+      "https://support.apple.com/guide/deployment/vpn-overview-depae3d361d0/web",
+      "https://gist.github.com/Piska-Kiska/faf0f8fca9953ac86af69f60491658e1"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "c11-windows-process",
+     "claim": "На Windows allowlist делается правилами маршрутизации по процессам. Xray v26 это умеет.",
+     "evidence": "В правиле маршрутизации Xray появилось поле `process` (имя .exe, путь или папка; Windows/Linux/macOS/Android). Схема: TUN, правило process:[brave.exe, Telegram.exe] → proxy, final → direct. Подходят v2rayN 7.25.4 (Xray 26.9.30, открытый) и Happ Desktop 4.3.0. В mihomo (Clash Verge Rev) то же самое делается через PROCESS-NAME. Есть ли в UI v2rayN поле process для ядра Xray — ❓.",
+     "sources": [
+      "https://xtls.github.io/en/config/routing.html",
+      "https://github.com/2dust/v2rayN/releases/tag/7.25.4"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c12-brave",
+     "claim": "Отдельный браузер под VPN оправдан. Но RU-сайты в нём всё равно пойдут через туннель, если внутри нет сплита RU→direct.",
+     "evidence": "В Brave для Android есть «WebRTC IP Handling Policy» → «Disable non-proxied UDP» (Shields & privacy), пакет com.brave.browser. Если браузер целиком в туннеле, RU-сайты в нём видят exit-IP. Нужны routing geosite:ru → direct (Happ/INCY через заголовок, v2rayNG — пресет) или правило «RU только в обычном браузере», плюс серверный block geoip:ru для подстраховки. P3A и прочую телеметрию Brave выключить. Есть ли Brave в RU Play — ❓.",
+     "sources": [
+      "https://anonymiz.com/blog/fix-webrtc-leaks-brave-ip-handling-policy",
+      "https://mullvad.net/en/help/webrtc"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c13-other-android",
+     "claim": "Остальные Android-клиенты против нашего сервера — вторичные или нерабочие.",
+     "evidence": "NekoBox 1.4.2 (09.02.2026) — sing-box, заброшен. Версию в Play с 05.2024 контролирует третья сторона. Husi 2.2.0 (03.10) — sing-box, про ML-KEM ничего (❓). Exclave 0.17.57-beta.0 (25.09) перевёл REALITY на реализацию из Go-TLS, вероятно проходит (❓). v2RayTun 5.25.82 (27.09) — Xray, бесплатные заголовки routing и update-always, push per-app нет. FlClash 0.8.99 (03.10) — mihomo, access control только в UI. OneXray 26.9.5 (28.09) — открытый Flutter, Xray 26.7.28, native TUN.",
+     "sources": [
+      "https://github.com/xchacha20-poly1305/husi/releases",
+      "https://github.com/dyhkwong/Exclave/releases",
+      "https://github.com/chen08209/FlClash/releases",
+      "https://github.com/OneXray/OneXray/releases"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c14-own-client",
+     "claim": "Свой Android-клиент «для нас» реален как форк v2rayNG (Kotlin, GPL-3.0) или OneXray (Flutter, GPL-3.0, Android+iOS). Скрыть VPN от RU-приложений не сможет и он.",
+     "evidence": "Что можно заложить: зашитый URL подписки, allowlist пакетов с сервера (VpnService.Builder.addAllowedApplication), Xray native TUN без SOCKS (в v2rayNG такая опция уже есть), сброс пакетов чужих UID (как PR #3199), RU → direct, отсутствие телеметрии, автообновление APK со своего сервера. Чего нельзя: прятать tun0 и TRANSPORT_VPN, VpnService intent-filter обязателен. Готового публичного аналога нет, потому что массовые клиенты рассчитаны на любые конфиги, а провайдеры делают то же через платные white-label (Happ Provider ID, INCY Premium). Это вывод, а не измерение.",
+     "sources": [
+      "https://github.com/2dust/v2rayNG",
+      "https://github.com/OneXray/OneXray",
+      "https://github.com/amnezia-vpn/amnezia-client/pull/3199"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "c15-preconfig-matrix",
+     "claim": "Что сервер может задать без участия пользователя (бесплатно).",
+     "evidence": "INCY: allowlist, hide-url, fragment/noise, DoH-резолв. Happ: title, interval, routing, Socks/Http-Auth-Mode. v2RayTun: routing, update-always, network-filter. AWG .conf: IncludedApplications. sing-box JSON: include_package, без локальных портов. v2rayNG: только подписка или custom JSON, per-app не задаётся. Amnezia vpn://: передаётся ли в нём app-split — ❓. Внимание: JSON-подписка 3x-ui кладёт SOCKS noauth на 10808, её не включать.",
+     "sources": [
+      "https://docs.incy.cc/app-management/",
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.9.0/internal/sub/happ.go",
+      "https://docs.v2raytun.com/overview/supported-headers"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "recommendation": "Android (основной): INCY. Сервер через 3x-ui присылает allowlist (`Per-App-Proxy-Enable=1`, `Mode=proxy`, `List=com.brave.browser,org.telegram.messenger,…`) и routing RU→direct. Перед выбором проверить руками локальный SOCKS INCY. Запасной VLESS-клиент: Happ с Socks-Auth-Mode, allowlist включить в UI по инструкции со скриншотами. Резерв «без настроек»: AWG .conf/QR с IncludedApplications (AmneziaWG). Для гиков: v2rayNG без локального прокси. iOS: INCY (RU App Store) со сплитом по доменам, per-app там невозможен. Windows: v2rayN или Happ Desktop + правило process. Отдельный браузер Brave с WebRTC=Disable non-proxied UDP. Свой клиент — фаза 2: форк v2rayNG с allowlist, без SOCKS, с UID-guard. Не обещать, что он скроет факт VPN.",
+   "open_questions": [
+    "Слушает ли INCY Android (Play, текущая версия) порт на loopback без пароля? Проверить через RKNHardering",
+    "Проходит ли Hiddify 4.1.1 (Android/iOS) VLESS-REALITY против Xray 26.9.30? Источники расходятся",
+    "Учитывают ли WG Tunnel 5.7.5 и AmneziaVPN 5.0.3.0 при импорте ключ IncludedApplications из .conf?",
+    "Применяет ли SFA tun.include_package из удалённого профиля?",
+    "Работает ли трафик в v2rayNG 2.3.10, если выключить Enable local proxy и использовать Xray TUN (а не hev)?",
+    "Какая версия Xray в AmneziaVPN 5.0.3.0 и проходит ли она ML-KEM?",
+    "Exclave 0.17.57-beta и Husi 2.2.0 против REALITY 26.9.30 — нужен тест",
+    "Доступен ли Brave в Google Play и RuStore из РФ?",
+    "Передаёт ли формат Amnezia vpn:// настройки app-split?"
+   ]
+  },
+  "verify": {
+   "verdicts": [
+    {
+     "id": "c1-mlkem-cores",
+     "verdict": "corrected",
+     "corrected": "VLESS-REALITY против Xray ≥26.9.8 проходят Xray-клиенты и mihomo (флаг support-x25519mlkem768 + fp=chrome). 3x-ui v3.9.0 сама добавляет этот флаг в vless:// и Clash-подписку. Клиенты на sing-box не проходят.",
+     "evidence": "sing-box #4520 открыт, мейнтейнеры молчат; 19.09 на 1.14.1 и 1.15-a6 снова fail. Karing #1952 закрыт 16.09 с ответом «Whoever caused the compatibility issue is responsible», то есть фикса нет. mihomo #3193: not planned. 3x-ui PR #6712 влит 02.10 и вошёл в v3.9.0.",
+     "sources": [
+      "https://github.com/SagerNet/sing-box/issues/4520",
+      "https://github.com/KaringX/karing/issues/1952",
+      "https://github.com/MHSanaei/3x-ui/pull/6712"
+     ]
+    },
+    {
+     "id": "c2-hiddify",
+     "verdict": "corrected",
+     "corrected": "Стабильная v4.1.1 вышла 05.03.2026, но разработка активна: коммиты 03–04.10, CI-сборка «draft» от 04.10. Ядро — hiddify-sing-box 1.13 с metacubex/utls v1.8.7, так что VLESS-REALITY почти наверняка ❌. Не рекомендуем, пока новый релиз не проверен.",
+     "evidence": "GitHub API: releases (draft 2026-10-04, v4.1.1 2026-03-05). В go.mod hiddify-core и hiddify-sing-box xray-core закомментирован. #2350 открыт, 0 комментариев.",
+     "sources": [
+      "https://github.com/hiddify/hiddify-app/releases",
+      "https://github.com/hiddify/hiddify-core/blob/main/go.mod",
+      "https://github.com/hiddify/hiddify-app/issues/2350"
+     ]
+    },
+    {
+     "id": "c3-incy-free-perapp",
+     "verdict": "corrected",
+     "corrected": "Бесплатные заголовки подтверждены (per-app — только Android, banner — только премиум). Поправка: INCY не open-core. Мобильный клиент закрыт, в репо incy-platforms только бинарники. Пакет Play — llc.itdev.incy. Crashlytics в мобильных сборках подтверждён. 3x-ui #6273 закрыт как not_planned.",
+     "evidence": "docs.incy.cc: per-app «только Android», banner-* «только премиум». incy.go v3.9.0 отдаёт Per-App-Proxy-Enable/Mode(bypass|proxy)/List. README INCY-DEV: «Mobile builds include Firebase Crashlytics». iOS 2.6.2 вышла 21.09, есть в RU App Store.",
+     "sources": [
+      "https://docs.incy.cc/app-management/",
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.9.0/internal/sub/incy.go",
+      "https://github.com/INCY-DEV/incy-platforms",
+      "https://github.com/MHSanaei/3x-ui/issues/6273"
+     ]
+    },
+    {
+     "id": "c4-happ-headers",
+     "verdict": "corrected",
+     "corrected": "Подтверждено: Socks/Http-Auth-Mode работают без Provider ID, Per-App-Proxy-Mode/List — только с ним. Поправка: Xray 26.9.9 есть только в pre-release 4.7.0. В заметках стабильной 4.6.1 версия ядра не указана, последнее явное упоминание — 26.6.27 в 3.26.x. «Локальный SOCKS всегда» не доказано: в 3.20.0 добавлен Xray Tun, а в 4.4.0 переход на hev.",
+     "evidence": "Комментарий в happ.go v3.9.0: «local SOCKS/HTTP inbounds default to no auth… standard headers (no ProviderID)». Releases happ-android: 4.7.0 pre от 02.10 «Xray core 26.9.9», 4.4.0 «Migration to hev-socks5-tunnel». HWID/check.happ-proxy.com не проверял.",
+     "sources": [
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.9.0/internal/sub/happ.go",
+      "https://github.com/Happ-proxy/happ-android/releases"
+     ]
+    },
+    {
+     "id": "c5-happ-vuln-status",
+     "verdict": "corrected",
+     "corrected": "Auth для inbound появился в 3.18.0 (17.04.2026), а в 3.20.1 (04.05) по умолчанию стал «disable». В 3.20.0 добавлен «block bind to interface tun», то есть у Happ есть заявленная защита от привязки к tun0 (нужен тест). По kod.ru HandlerService удалили в Happ 4.7.2, похоже это нумерация iOS. Незакрытым там остаётся локальный SOCKS.",
+     "evidence": "Release notes happ-android 3.18.0/3.20.0/3.20.1; статья kod.ru от 11.04.2026.",
+     "sources": [
+      "https://github.com/Happ-proxy/happ-android/releases",
+      "https://kod.ru/vpn-happ-problems"
+     ]
+    },
+    {
+     "id": "c6-v2rayng",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено с уточнением: 2.3.10 (01.10, Xray v26.9.30) — pre-release, последняя стабильная 2.2.6 (05.07.2026). В README указан только GitHub, страницы Play (com.v2ray.ang) и F-Droid отдают 404.",
+     "evidence": "strings.xml master: summary_pref_per_app_proxy, «Enable local proxy», «Use Hev TUN… otherwise xray-core». PR #5548 влит 26.04.2026. GitHub API releases/latest = 2.2.6.",
+     "sources": [
+      "https://raw.githubusercontent.com/2dust/v2rayNG/master/V2rayNG/app/src/main/res/values/strings.xml",
+      "https://github.com/2dust/v2rayNG/pull/5548",
+      "https://github.com/2dust/v2rayNG/releases"
+     ]
+    },
+    {
+     "id": "c7-awg-included-apps",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено. Открытый вопрос закрыт: WG Tunnel 5.7.5 при импорте берёт IncludedApplications из конфига (SplitTunnelViewModel → interface.allIncludedApps). Issue #3255 открыт 03.10.2026 на AmneziaVPN 5.0.3.0 / Android 14.",
+     "evidence": "Interface.java: case includedapplications/excludedapplications; оба ключа сразу → BadConfigException. В wgtunnel/android@5.7.5 Config.parseQuickString + allIncludedApps.",
+     "sources": [
+      "https://raw.githubusercontent.com/amnezia-vpn/amneziawg-android/master/tunnel/src/main/java/org/amnezia/awg/config/Interface.java",
+      "https://github.com/wgtunnel/android/blob/5.7.5/app/src/main/java/com/zaneschepke/wireguardautotunnel/viewmodel/SplitTunnelViewModel.kt",
+      "https://github.com/amnezia-vpn/amnezia-client/issues/3255"
+     ]
+    },
+    {
+     "id": "c8-singbox-include-package",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено, ❓ снят: SFA при auto_route передаёт options.includePackage в VpnService.Builder.addAllowedApplication. Оговорка: в SFA есть настройка Settings.allowBypass (builder.allowBypass), её надо держать выключенной. VLESS-REALITY по-прежнему ❌.",
+     "evidence": "sing-box-for-android VPNService.kt, стр. 86–165: if (options.autoRoute) {… includePackage → addAllowedApplication}; стр. 70: if (Settings.allowBypass). В доках tun указано, что include_package работает только на Android и требует auto_route.",
+     "sources": [
+      "https://github.com/SagerNet/sing-box-for-android/blob/main/app/src/main/java/io/nekohasekai/sfa/bg/VPNService.kt",
+      "https://sing-box.sagernet.org/configuration/inbound/tun/"
+     ]
+    },
+    {
+     "id": "c9-allowlist-limits",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено. Уточнения: PR #3199 открыт с 22.09.2026, по умолчанию off и только для AWG/WG. Happ 3.20.0 заявляет «block bind to interface tun», значит, клиентская защита есть не только у Amnezia. Для просмотра установленных VPN-пакетов на Android 11+ достаточно объявить <queries>, разрешение не нужно.",
+     "evidence": "Amnezia #2457 открыт: Android 14, Termux, curl --interface tun0, root не нужен. PR #3199: getConnectionOwnerUid, drop, default off.",
+     "sources": [
+      "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+      "https://github.com/amnezia-vpn/amnezia-client/pull/3199",
+      "https://github.com/Happ-proxy/happ-android/releases"
+     ]
+    },
+    {
+     "id": "c10-ios-no-perapp",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено. Поиск в RU App Store: INCY 2.6.2 (21.09) и Karing 1.2.25.2802 есть. Официального Happ нет, зато есть клоны с «Happ» в названии (com.rafik.hubb, com.spktechltd.happdns и др.).",
+     "evidence": "Apple: «To use per-app VPN in iOS, iPadOS… a device management service needs to manage the app». Данные App Store взяты из iTunes lookup/search с country=ru.",
+     "sources": [
+      "https://support.apple.com/guide/deployment/vpn-overview-depae3d361d0/web",
+      "https://apps.apple.com/ru/app/incy/id6756943388"
+     ]
+    },
+    {
+     "id": "c11-windows-process",
+     "verdict": "corrected",
+     "corrected": "Поле process в Xray по докам поддерживает только Windows и Linux. На Android нужен вызов RegisterAndroidProcessFinder(), macOS не упомянут. ❓ снят: v2rayN 7.25.4 (30.09, Xray v26.9.30) передаёт process пользовательских правил в routing Xray и поднимает Xray TUN inbound (xray_tun).",
+     "evidence": "xtls.github.io routing: «Only supports Windows and Linux». v2rayN 7.25.4: V2rayRoutingService.cs (userRule.process) и V2rayInboundService.cs (tunInbound).",
+     "sources": [
+      "https://xtls.github.io/en/config/routing.html",
+      "https://github.com/2dust/v2rayN/blob/7.25.4/v2rayN/ServiceLib/Services/CoreConfig/V2ray/V2rayRoutingService.cs",
+      "https://github.com/2dust/v2rayN/releases/tag/7.25.4"
+     ]
+    },
+    {
+     "id": "c12-brave",
+     "verdict": "corrected",
+     "corrected": "По сути верно. ❓ снят: Brave есть в RuStore (Brave Software), но там старая 1.68.133 от 04.08.2024, ставить оттуда нельзя. Брать из Google Play (страница отвечает 200) или APK из GitHub brave/brave-browser. Настройку WebRTC на Android подтверждают только вторичные источники.",
+     "evidence": "JSON-LD на rustore.ru/catalog/app/com.brave.browser: softwareVersion 1.68.133, dateModified 2024-08-04, author Brave Software.",
+     "sources": [
+      "https://www.rustore.ru/catalog/app/com.brave.browser",
+      "https://mullvad.net/en/help/webrtc",
+      "https://anonymiz.com/blog/fix-webrtc-leaks-brave-ip-handling-policy"
+     ]
+    },
+    {
+     "id": "c13-other-android",
+     "verdict": "corrected",
+     "corrected": "Даты NekoBox 1.4.2 (09.02), Husi v2.2.0 (03.10), FlClash v0.8.99 (03.10) и OneXray v26.9.5 (28.09, GPL-3.0) подтверждены. Поправки: у Exclave последняя 0.17.57-beta.1 (29.09). REALITY там на Go-TLS и по умолчанию больше не имитирует браузер, это fingerprint-риск. FlClash (mihomo) с 3x-ui v3.9.0 получает ML-KEM-флаг из подписки. Xray 26.7.28 в OneXray не проверял.",
+     "evidence": "Данные GitHub API releases; release notes Exclave 0.17.57-beta.0.",
+     "sources": [
+      "https://github.com/dyhkwong/Exclave/releases",
+      "https://github.com/chen08209/FlClash/releases",
+      "https://github.com/OneXray/OneXray/releases",
+      "https://github.com/xchacha20-poly1305/husi/releases"
+     ]
+    },
+    {
+     "id": "c14-own-client",
+     "verdict": "confirmed",
+     "corrected": "Технически верно. У v2rayNG и OneXray лицензия GPL-3.0 подтверждена. Получателям APK нужно давать исходники, даже в узком кругу. Скрыть VPN-сервис нельзя: он объявляется с intent-filter android.net.VpnService. «Почему нет аналога» — это вывод, а не факт.",
+     "evidence": "GitHub API license: gpl-3.0 у обоих репозиториев. В v2rayNG уже есть «Enable local proxy» off и Xray TUN. Механизм UID-guard взят из PR #3199.",
+     "sources": [
+      "https://github.com/2dust/v2rayNG",
+      "https://github.com/OneXray/OneXray",
+      "https://github.com/amnezia-vpn/amnezia-client/pull/3199"
+     ]
+    },
+    {
+     "id": "c15-preconfig-matrix",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено. Дополнение: Clash/mihomo-подписка 3x-ui v3.9.0 сама включает ML-KEM. По докам Happ routing-enable не требует Provider ID. У v2RayTun ровно 8 заголовков, per-app среди них нет. JSON-подписку 3x-ui (SOCKS noauth на 10808) не проверял.",
+     "evidence": "docs.v2raytun.com: profile-title, subscription-userinfo, profile-update-interval, routing, announce, announce-url, update-always, network-filter. В incy.go есть Server-Address-Resolve-*.",
+     "sources": [
+      "https://docs.v2raytun.com/overview/supported-headers",
+      "https://happ.mintlify.app/technical-docs/app-management",
+      "https://raw.githubusercontent.com/MHSanaei/3x-ui/v3.9.0/internal/sub/incy.go"
+     ]
+    }
+   ],
+   "missed": [
+    "Xray v26.9.8/9.9/9.30 вышли как pre-release; стабильная (releases/latest) — v26.3.27 от 27.03.2026. На сервере стоит pre-release ядро. Если откатиться до 26.7.28, sing-box-клиенты снова заработают (A/B в Karing #1952).",
+    "3x-ui v3.9.0 (PR #6712) добавляет support-x25519mlkem768=true в vless:// и Clash-подписку. Поэтому mihomo-клиенты (FlClash, Clash Meta, Clash Verge Rev) — рабочая бесплатная альтернатива, и allowlist там тоже в UI.",
+    "Happ 3.20.0 (30.04.2026): «Add block bind to interface tun». Это заявленная защита от вектора curl --interface tun0, надо проверить тестом в Termux.",
+    "RU App Store: официального Happ нет, есть клоны с «Happ» в названии. Пользователей надо предупредить.",
+    "Brave в RuStore устарел (1.68.133, 2024-08-04). Ставить из Play или с GitHub brave/brave-browser.",
+    "SFA: Settings.allowBypass → builder.allowBypass() даёт приложениям обходить VPN, держать выключенным. Если ставить такую же опцию в своём клиенте, allowlist ослабевает.",
+    "Подтверждено, что WG Tunnel 5.7.5 и SFA применяют allowlist из конфига или профиля (ответы на open questions 3–4).",
+    "GPL-3.0: если раздавать форк v2rayNG/OneXray даже узкому кругу, нужно отдавать исходники.",
+    "Exclave 0.17.57: REALITY на Go-TLS без мимикрии под браузер по умолчанию. Даже если пройдёт ML-KEM, отпечаток будет нетипичным."
+   ]
+  }
+ },
+ {
+  "id": "android-mechanics",
+  "research": {
+   "stream": "android-mechanics",
+   "summary": "Для приложения вне туннеля режим allowlist (addAllowedApplication) и blocklist (addDisallowedApplication) на Android 11–17 выглядят одинаково. Его основная сеть чистая, но TRANSPORT_VPN всё равно читается через getAllNetworks и setIncludeOtherUidNetworks, tun0 видно через NetworkInterface, VPN-клиент — через пакетные запросы. Польза allowlist в безопасном умолчании: всё незнакомое, новое и предустановленное идёт мимо туннеля, адрес сервера не утекает через echo, бэкенды и STUN. Allowlist не закрывает три канала: SOCKS на loopback, привязку к tun0 и excludeRoute в LinkProperties. Их закрывает клиент: обработка TUN внутри процесса, проверка getConnectionOwnerUid, отказ от excludeRoute. Скрыть сам факт VPN без root приложение не может.",
+   "findings": [
+    {
+     "id": "M1",
+     "claim": "Семантика allowlist по AOSP: если addAllowedApplication вызван хотя бы раз, через VPN идут только перечисленные приложения. Остальные «use networking as if the VPN wasn't running». Смешивать с addDisallowedApplication нельзя (UnsupportedOperationException). Пакет должен быть установлен в момент вызова, иначе NameNotFoundException. Следствие: новые, неизвестные и предустановленные приложения по умолчанию остаются вне туннеля.",
+     "evidence": "Javadoc в VpnService.java (frameworks/base, main) для addAllowedApplication и addDisallowedApplication. Клиент должен пропускать неустановленные пакеты из пресета, иначе establish упадёт. [факт, код]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/VpnService.java"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M2",
+     "claim": "Приложение вне туннеля всё равно видит VPN-сеть. Его активная сеть идёт без TRANSPORT_VPN, но getAllNetworks() отдаёт все сети без фильтра по UID. NetworkRequest.Builder.setIncludeOtherUidNetworks(true) тоже матчит сети, «that do not apply to the calling UID». getNetworkCapabilities показывает TRANSPORT_VPN. Скрыты только uids (то есть сам allowlist), sessionId и underlying networks.",
+     "evidence": "ConnectivityService.java: getAllNetworks() перебирает mNetworkForNetId, проверяет только ACCESS_NETWORK_STATE. networkCapabilitiesRestrictedForCallerPermissions вызывает setUids(null). VpnTransportInfo скрывает sessionId (REDACT_FOR_NETWORK_SETTINGS). Javadoc NetworkRequest.setIncludeOtherUidNetworks. [факт, код]",
+     "sources": [
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/service/src/com/android/server/ConnectivityService.java",
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/framework/src/android/net/NetworkRequest.java"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M3",
+     "claim": "LinkProperties VPN-сети ничем не скрыты: любое приложение с ACCESS_NETWORK_STATE читает имя интерфейса, адреса, DNS и маршруты. excludeRoute() — это маршрут RTN_THROW, и он тоже попадает в getRoutes(). Если клиент исключает IP сервера маршрутом, адрес сервера виден всем приложениям. В режиме allowlist сам VPN-клиент и так вне туннеля, поэтому исключать маршрут к серверу не нужно.",
+     "evidence": "linkPropertiesRestrictedForCallerPermissions скрывает только CaptivePortal-поля. VpnService.Builder.excludeRoute вызывает addRoute(prefix, RTN_THROW). RKNHardering читает LinkProperties.routes и DNS. Какие массовые клиенты используют excludeRoute для адреса сервера, не проверено. [факт, код; применимость к клиентам — гипотеза]",
+     "sources": [
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/service/src/com/android/server/ConnectivityService.java",
+      "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M4",
+     "claim": "tun0 видно всем: Android 11 (targetSdk 30+) закрыл MAC-адрес, bind на NETLINK_ROUTE и RTM_GETLINK, но интерфейсы с IP по-прежнему видны, а у tun0 IP есть. RKS: 13 из 30 RU-приложений находят tun0, даже когда их исключили из VPN. По документации /proc/net закрыт для всех приложений с Android 10, но RKNHardering всё ещё читает /proc/net/route и if_inet6 через JNI. Реальная доступность не проверена.",
+     "evidence": "developer.android.com/identity/user-data-ids («only network interfaces with an IP address are visible»). Android 10 privacy changes: «apps cannot access /proc/net». RKS Global, обновление 16.04.2026. [факт: доки и RKS; /proc/net — противоречие, не проверено]",
+     "sources": [
+      "https://developer.android.com/identity/user-data-ids",
+      "https://developer.android.com/about/versions/10/privacy/changes",
+      "https://rks.global/ru/research/vpn-detection/"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M5",
+     "claim": "Список VPN-клиентов allowlist не скрывает. VPN-сервис обязан требовать BIND_VPN_SERVICE, и приложения с <queries> на android.net.VpnService или с QUERY_ALL_PACKAGES его находят. По RKS: Самокат и Мегамаркет вызывают queryIntentServices(\"android.net.VpnService\"). WB, 2ГИС, МТС, Ozon, Мегамаркет, RuStore и ОК получают список VPN-клиентов. Avito объявляет в <queries> больше 200 пакетов. RU-приложения из RuStore политика Play по QUERY_ALL_PACKAGES не ограничивает.",
+     "evidence": "Vpn.java establish(): resolveService и проверка permission == BIND_VPN_SERVICE. RKS Global (апрель 2026, обновление 16.04). [факт: код и статический анализ]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/connectivity/Vpn.java",
+      "https://rks.global/ru/research/vpn-detection/"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M6",
+     "claim": "Гипотеза для своего клиента. establish() ищет сервис по явному компоненту (setClassName), поэтому intent-filter с action VpnService, возможно, не обязателен. Тогда клиент не найдут через queryIntentServices(action). Цена: проверка поддержки always-on ищет именно по action, так что always-on будет недоступен. Приложения с QUERY_ALL_PACKAGES всё равно увидят сервис с BIND_VPN_SERVICE. Случайное имя пакета обходит каталоги известных VPN-приложений (VpnAppCatalog в RKNHardering).",
+     "evidence": "Vpn.java: в establish() стоит intent.setClassName(mPackage, config.user) и resolveService. Проверка always-on (около строки 834) делает queryIntentServicesAsUser по action. На устройстве не проверено. [гипотеза по коду]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/connectivity/Vpn.java",
+      "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md"
+     ],
+     "confidence": "low"
+    },
+    {
+     "id": "M7",
+     "claim": "В профилях видимость пакетов асимметрична. Приложение основного профиля через LauncherApps видит приложения рабочего профиля (Shelter, Island), а приложение рабочего профиля основной профиль не видит. Значит, RU-приложения нужно ставить в рабочий профиль, а VPN-клиент в рабочем профиле RU-приложения основного профиля найдут. Private Space скрыт: нужны ACCESS_HIDDEN_PROFILES и роль HOME, но проверка зависит от флага. Сама Google предупреждает, что приложения в Private Space можно обнаружить.",
+     "evidence": "LauncherAppsService.canAccessProfile: если вызывающий — профиль, доступ запрещён (return false); для скрытого профиля нужен canAccessHiddenProfile (флаг enableLauncherAppsHiddenProfileChecks). Javadoc LauncherApps.getProfiles. Справка Google: «Private space apps bypass VPN on the device»; «Other apps … can detect the usage of private space and the apps within it». [факт: код и справка]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/pm/LauncherAppsService.java",
+      "https://support.google.com/android/answer/15341885?hl=en",
+      "https://bayton.org/android/what-is-android-15-private-space/"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "M8",
+     "claim": "Флаг VPN и tun0 основного профиля видны и из рабочего профиля, и из Private Space: getAllNetworks не фильтрует, сетевое пространство одно на всё устройство. Профиль скрывает только список пакетов (M7), но не факт VPN.",
+     "evidence": "Воспроизведено в GrapheneOS #7511 (30.03 и 07.04.2026). Разработчик в #5225: скрывать «not currently intended». Совпадает с кодом из M2. [факт]",
+     "sources": [
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/7511",
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/5225"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M9",
+     "claim": "Loopback: внутри одного профиля любое приложение, в туннеле оно или нет, достучится до SOCKS/HTTP на 127.0.0.1, и allowlist тут ни при чём. Android 17 запрещает межпрофильный loopback для всех приложений независимо от targetSdk, а внутри профиля всё по-прежнему. Разрешение ACCESS_LOCAL_NETWORK на loopback не распространяется. Полностью закрывает этот канал только обработка TUN внутри процесса клиента, без слушающего порта.",
+     "evidence": "Android 17 behavior changes (all apps): «cross-profile loopback traffic is no longer permitted by default… within the same profile is not affected». Стабильный Android 17 вышел 16.06.2026. PoC runetfreedom per-app-split-bypass-poc, Habr 1020080. [факт]",
+     "sources": [
+      "https://developer.android.com/about/versions/17/behavior-changes-all",
+      "https://developer.android.com/work/versions/android-17",
+      "https://github.com/runetfreedom/per-app-split-bypass-poc"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M10",
+     "claim": "Обход через tun0: исключённое приложение вызвало curl --interface tun0 и получило адрес сервера (AmneziaVPN 4.8.14.5, Android 14). Штатный Network.bindSocket к VPN-сети netd запрещает (EPERM для UID вне диапазона), но привязка сокета к интерфейсу в тесте сработала. Фикс — проверка getConnectionOwnerUid на каждое новое соединение. Для UID вне VPN Android возвращает INVALID_UID, такие пакеты отбрасываются до шифрования.",
+     "evidence": "netd NetworkController::checkUserNetworkAccessLocked: для виртуальной сети return appliesToUser ? 0 : -EPERM. Javadoc ConnectivityManager.getConnectionOwnerUid: вызывать может только активный VpnService. Amnezia #2457; PR #3199 (StrictSplitTunnelGuard) на 22.09.2026 не влит. Что другие клиенты уязвимы так же — вывод, не тест. [факт для Amnezia; обобщение — гипотеза]",
+     "sources": [
+      "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+      "https://github.com/amnezia-vpn/amnezia-client/pull/3199",
+      "https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/NetworkController.cpp",
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/framework/src/android/net/ConnectivityManager.java"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "M11",
+     "claim": "«Блокировать соединения без VPN» несовместимо с per-app сплитом в любом режиме: исключённые приложения теряют сеть. Lockdown блокирует все UID, кроме VPN-пакета и lockdownAllowlist, а lockdownAllowlist задаётся только через DPC (setAlwaysOnVpnPackage), в настройках его нет. В пресете allowlist lockdown не включать: иначе RU-приложения останутся без интернета.",
+     "evidence": "Vpn.java setVpnForcedLocked: exempt = mLockdownAllowlist плюс mPackage, остальным UID ставится блокировка. Mullvad: исключённые приложения «will not work if you have enabled Block connections without VPN». [факт]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/connectivity/Vpn.java",
+      "https://mullvad.net/en/help/split-tunneling-with-the-mullvad-app"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M12",
+     "claim": "Allowlist защищает адрес сервера от echo-сервисов и бэкендов RU-приложений (MAX: api.oneme.ru, ipify и др.), от STUN в их звонках, а также от забытых, новых и предустановленных приложений и SDK: всё это по умолчанию идёт напрямую. Не закрывает: факт VPN (M2–M5), loopback (M9), tun0 (M10), excludeRoute (M3) и баг Android 16 QPR1 с UDP мимо VPN (там утекает реальный IP).",
+     "evidence": "Вывод из M1 и таблицы RISK-REDUCTION §3. Для blocklist RKS 16.04 и Habr 1020080 показывают ту же картину. Баг UDP: Mullvad, 12.05.2026. [факт по механике; эффект против блокировки MAX публично не проверен]",
+     "sources": [
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md",
+      "https://mullvad.net/en/blog/2026/5/12/any-app-on-recent-android-versions-can-leak-certain-traffic"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M13",
+     "claim": "Разрешённое приложение может стать каналом утечки. Если Brave браузер по умолчанию, через него открываются ссылки и Custom Tabs из RU-приложений (SMS банка, 3DS, Госуслуги). Это трафик UID Brave, он идёт в туннель, и RU-сайт видит адрес сервера. Поэтому Brave не делать браузером по умолчанию, а внутри туннеля оставить маршрутизацию «РФ напрямую».",
+     "evidence": "Custom Tabs работают в процессе браузера-провайдера, а VPN выбирает маршрут по UID (M1). Логический вывод, тестов нет. [гипотеза, механизм]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/VpnService.java"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "M14",
+     "claim": "Блокировать трекинг RU-приложений через тот же VPN не получится. На устройстве одновременно активен только один VPN, так что RethinkDNS или AdGuard рядом с прокси-клиентом не запустить. В режиме allowlist VPN-клиент не видит пакетов исключённых приложений. Если завести RU-приложения в туннель с выходом напрямую, их активная сеть получит TRANSPORT_VPN, и детект станет сильнее. Без root остаются системный Private DNS с блок-листом, ограничение фоновых данных и заморозка через Shizuku (Anubis).",
+     "evidence": "Javadoc VpnService: «There can be only one VPN connection running at the same time». Механика из M1 и M2. Anubis: Habr 1023352. [факт по механике]",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/VpnService.java",
+      "https://habr.com/ru/articles/1023352/"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "M15",
+     "claim": "Отпечаток клиента: имя tunN назначает система, но адреса TUN, MTU, DNS, маршруты и флаг bypassable (allowBypass) видны всем приложениям. Типовые настройки клиента по умолчанию его выдают. Свой клиент должен рандомизировать адрес и MTU, не вызывать allowBypass и не ставить DNS 127.x (RKNHardering такой DNS ищет).",
+     "evidence": "Vpn.java jniCreate создаёт интерфейс сам. В VpnTransportInfo поле bypassable не скрыто. RKNHardering проверяет loopback-DNS и аномалии в маршрутах. Что RU-приложения снимают такой отпечаток, не найдено. [факт по API; использование не доказано]",
+     "sources": [
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/framework/src/android/net/VpnTransportInfo.java",
+      "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md"
+     ],
+     "confidence": "low"
+    },
+    {
+     "id": "M16",
+     "claim": "Сноска: без второго устройства или роутера факт VPN скрывают только root и LSPosed (Hide My Applist и подмена NetworkCapabilities). Банки детектят root, массовой аудитории это не подходит.",
+     "evidence": "Habr 1024890, 18.04.2026. RISK-REDUCTION §4.1h. [факт]",
+     "sources": [
+      "https://habr.com/ru/articles/1024890/"
+     ],
+     "confidence": "high"
+    }
+   ],
+   "recommendation": "1) В пресете по умолчанию — allowlist: Brave (не браузер по умолчанию), Telegram, YouTube и т.п.; «РФ напрямую» остаётся и внутри туннеля. «Блокировать без VPN» не включать. 2) Требования к своему клиенту: TUN внутри процесса без слушающего порта на loopback; проверка getConnectionOwnerUid с отбросом INVALID_UID; без excludeRoute к серверу и без allowBypass; случайные адрес и MTU TUN; неустановленные пакеты из пресета пропускать. 3) RU-приложения ставить в рабочий профиль (Shelter): так закрываются список пакетов и, на Android 17, межпрофильный loopback. 4) Честно писать в инструкциях: без root факт VPN не скрыть, нужен второй телефон или роутер.",
+   "open_questions": [
+    "Работает ли VPN-клиент, установленный в самом Private Space (Google пишет только, что VPN устройства его не покрывает)? С какой версии включён флаг enableLauncherAppsHiddenProfileChecks?",
+    "Обход через tun0 (SO_BINDTODEVICE): проверить на Happ, v2rayNG и Hiddify на Android 15–17. Это общая уязвимость всех клиентов?",
+    "Принимает ли establish() VPN-сервис без intent-filter (M6)? Нужен тест на устройстве.",
+    "Какие массовые клиенты используют excludeRoute или вычитание маршрута для адреса сервера (утечка через LinkProperties)?",
+    "Читается ли /proc/net/route и if_inet6 при targetSdk 34+ (документация говорит одно, RKNHardering — другое)?",
+    "Какую сеть проверяет MAX: активную или getAllNetworks? От этого зависит, спасает ли исключение из VPN от блокировки."
+   ]
+  },
+  "verify": {
+   "verdicts": [
+    {
+     "id": "M1",
+     "verdict": "confirmed",
+     "corrected": "",
+     "evidence": "VpnService.java (main), строки 797–852: «will use networking as if the VPN wasn't running»; UnsupportedOperationException при смешивании; verifyApp → NameNotFoundException для неустановленного пакета.",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/VpnService.java"
+     ]
+    },
+    {
+     "id": "M2",
+     "verdict": "confirmed",
+     "corrected": "Дополнительно редактируются SSID, ownerUid, administratorUids и allowedUids. getAllNetworks() помечен deprecated с API 31, но работает. setIncludeOtherUidNetworks появился в API 31.",
+     "evidence": "ConnectivityService.getAllNetworks (стр. 2650): только enforceAccessPermission, обходит mNetworkForNetId. networkCapabilitiesRestrictedForCallerPermissions: setUids(null), setSSID(null), redactUnderlyingNetworks. NetworkRequest.setIncludeOtherUidNetworks(true) вызывает setUids(null).",
+     "sources": [
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/service/src/com/android/server/ConnectivityService.java",
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/framework/src/android/net/NetworkRequest.java"
+     ]
+    },
+    {
+     "id": "M3",
+     "verdict": "corrected",
+     "corrected": "Суть верна, но есть уточнение. excludeRoute есть только с API 33. LinkProperties.getRoutes() отдаёт THROW-маршруты лишь вызывающим с targetSdk ≥33 (compat change EXCLUDED_ROUTES), остальным только unicast. На практике это почти все приложения из магазинов.",
+     "evidence": "LinkProperties.java getRoutes(): при isChangeEnabled(EXCLUDED_ROUTES) возвращает все маршруты, иначе getUnicastRoutes(). linkPropertiesRestrictedForCallerPermissions чистит только CaptivePortal-поля. VpnService.excludeRoute → addRoute(prefix, RTN_THROW).",
+     "sources": [
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/framework/src/android/net/LinkProperties.java",
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/service/src/com/android/server/ConnectivityService.java"
+     ]
+    },
+    {
+     "id": "M4",
+     "verdict": "corrected",
+     "corrected": "Противоречие про /proc/net снимается: в AOSP sepolicy (main) у untrusted_app_all нет чтения proc_net при любом targetSdk. JNI-чтение /proc/net/route и if_inet6 в RKNHardering на совместимых прошивках, скорее всего, падает; это fallback, а не рабочий канал. Цифра RKS 13/30 — статический анализ кода, а не замер на устройстве.",
+     "evidence": "sepolicy private/app.te: r_dir_file({appdomain … -untrusted_app_all}, proc_net_type); правил proc_net в untrusted_app_25/27 нет. Документация Android 10: «apps cannot access /proc/net». user-data-ids: «only network interfaces with an IP address are visible». RKS: «13 из 30… даже у приложений, исключённых из туннеля».",
+     "sources": [
+      "https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/main/private/app.te",
+      "https://developer.android.com/about/versions/10/privacy/changes",
+      "https://developer.android.com/identity/user-data-ids",
+      "https://rks.global/ru/research/vpn-detection/"
+     ]
+    },
+    {
+     "id": "M5",
+     "verdict": "confirmed",
+     "corrected": "",
+     "evidence": "Vpn.java establish (стр. 1743–1748): resolveService и SecurityException, если нет BIND_VPN_SERVICE. RKS: Самокат и MegaMarket получают список VPN-приложений; WB, 2ГИС, МТС, Ozon, Мегамаркет, RuStore и ОК — полный список VPN-клиентов; у Avito в <queries> больше 200 пакетов (апрель 2026).",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/connectivity/Vpn.java",
+      "https://rks.global/ru/research/vpn-detection/"
+     ]
+    },
+    {
+     "id": "M6",
+     "verdict": "unverifiable",
+     "corrected": "Код гипотезе не противоречит. Intent в establish содержит и action, и явный компонент; resolveService вызывается с clearCallingIdentity (system). Правило Android 13 о совпадении явных intent с фильтром на системного отправителя не распространяется. bindServiceAsUser идёт от UID самого приложения. Нужен тест на устройстве.",
+     "evidence": "Vpn.java: стр. 1732–1733 Intent(SERVICE_INTERFACE).setClassName(...); isAlwaysOnPackageSupported (стр. 834–837) использует queryIntentServicesAsUser по action и setPackage, поэтому без фильтра always-on недоступен.",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/connectivity/Vpn.java",
+      "https://developer.android.com/guide/components/intents-filters"
+     ]
+    },
+    {
+     "id": "M7",
+     "verdict": "confirmed",
+     "corrected": "",
+     "evidence": "LauncherAppsService.canAccessProfile (стр. 499–525): если вызывающий — профиль, return false; для скрытого профиля нужен canAccessHiddenProfile, но только при флаге enableLauncherAppsHiddenProfileChecks. Справка Google: «Private space apps bypass VPN»; другие приложения «can detect the usage of private space and the apps within it».",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/pm/LauncherAppsService.java",
+      "https://support.google.com/android/answer/15341885?hl=en"
+     ]
+    },
+    {
+     "id": "M8",
+     "verdict": "confirmed",
+     "corrected": "Уточнение по источникам: #7511 открыт 30.03.2026 и закрыт как дубликат #5225 (открыт 08.04.2025). Цитату «not currently intended to be hidden» написал thestinger 12.04.2025: без отдельных network namespace для профилей скрыть невозможно. Воспроизведение от 07.04.2026 — комментарий в #5225 (TRANSPORT_VPN и LinkProperties видны из второго профиля).",
+     "evidence": "Комментарии GitHub API: #5225 thestinger 2025-04-12, cherepavel 2026-04-07; #7511 the-nexi 2026-03-30 (воспроизведено для Shelter и Private Space).",
+     "sources": [
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/5225",
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/7511"
+     ]
+    },
+    {
+     "id": "M9",
+     "verdict": "corrected",
+     "corrected": "Факты про Android 17 верны. «Закрывает только TUN внутри процесса» — слишком сильно: SOCKS с обязательной авторизацией и случайными данными на устройство плюс случайный порт закрывают сканирование почти так же (рекомендация runetfreedom; у v2rayNG есть такие опции, но issue #5549: с Hev TUN они ломают связь). Официальная страница local-network-permission про loopback прямо не пишет.",
+     "evidence": "Android 17 behavior-changes-all: «cross-profile loopback traffic is no longer permitted by default… regardless of… API level». Стабильный релиз 16.06.2026. Habr 1020080 (07.04.2026): уязвимы Happ, v2RayTun, V2BOX, v2rayNG, Hiddify, Exclave, Npv Tunnel, NekoBox.",
+     "sources": [
+      "https://developer.android.com/about/versions/17/behavior-changes-all",
+      "https://github.com/runetfreedom/per-app-split-bypass-poc",
+      "https://habr.com/ru/articles/1020080/",
+      "https://github.com/2dust/v2rayNG/issues/5549"
+     ]
+    },
+    {
+     "id": "M10",
+     "verdict": "confirmed",
+     "corrected": "Уточнение: getConnectionOwnerUid (API 29+) возвращает INVALID_UID и для чужих UID, и когда соединение не найдено. Строгий отброс может рвать легитимные короткие UDP-потоки (гонка), это надо тестировать. Тест в #2457 делался через Termux curl --interface tun0 (Samsung A33, Android 14).",
+     "evidence": "NetworkController.cpp: isVirtual → appliesToUser ? 0 : -EPERM. ConnectivityService.getConnectionOwnerUid: INVALID_UID, если VPN для UID не принадлежит вызывающему. #2457 открыт 09.04.2026; PR #3199 от 22.09.2026 открыт и зависит от amneziawg-go#199 и amneziawg-android#104.",
+     "sources": [
+      "https://android.googlesource.com/platform/system/netd/+/refs/heads/main/server/NetworkController.cpp",
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/service/src/com/android/server/ConnectivityService.java",
+      "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+      "https://github.com/amnezia-vpn/amnezia-client/pull/3199"
+     ]
+    },
+    {
+     "id": "M11",
+     "verdict": "confirmed",
+     "corrected": "",
+     "evidence": "Vpn.java setVpnForcedLocked (стр. 2075+): exemptedPackages = mLockdownAllowlist + mPackage, остальные диапазоны UID блокируются. mLockdownAllowlist задаётся вместе с always-on через DPC API. У Mullvad то же предупреждение.",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/services/core/java/com/android/server/connectivity/Vpn.java",
+      "https://mullvad.net/en/help/split-tunneling-with-the-mullvad-app"
+     ]
+    },
+    {
+     "id": "M12",
+     "verdict": "corrected",
+     "corrected": "Механика верна. Про баг: Mullvad пишет «Android 16», без привязки к QPR1. Механизм — ConnectivityManager.registerQuicConnectionClosePayload. Google закрыл баг как Won't Fix (Infeasible); «Блокировать без VPN» не помогает. Утекает реальный IP разрешённых приложений, а не адрес сервера.",
+     "evidence": "Блог Mullvad 12.05.2026.",
+     "sources": [
+      "https://mullvad.net/en/blog/2026/5/12/any-app-on-recent-android-versions-can-leak-certain-traffic",
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md"
+     ]
+    },
+    {
+     "id": "M13",
+     "verdict": "confirmed",
+     "corrected": "Механизм верен как вывод: Custom Tabs и открытые ссылки рендерятся процессом браузера, а VPN маршрутизирует по UID (M1). Тестов нет. WebView внутри RU-приложения остаётся под его UID, то есть идёт мимо туннеля.",
+     "evidence": "VpnService: маршрутизация по пакету (addAllowedApplication). Custom Tabs открывают страницу в приложении браузера. Прямой проверки нет.",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/VpnService.java",
+      "https://developer.chrome.com/docs/android/custom-tabs"
+     ]
+    },
+    {
+     "id": "M14",
+     "verdict": "confirmed",
+     "corrected": "",
+     "evidence": "Javadoc VpnService, стр. 77: «There can be only one VPN connection running at the same time». Habr 1023352 (14.04.2026): Anubis через Shizuku выполняет pm disable-user, группы «Без VPN», «Только VPN», «Запуск с VPN».",
+     "sources": [
+      "https://android.googlesource.com/platform/frameworks/base/+/refs/heads/main/core/java/android/net/VpnService.java",
+      "https://habr.com/ru/articles/1023352/",
+      "https://github.com/sogonov/anubis"
+     ]
+    },
+    {
+     "id": "M15",
+     "verdict": "corrected",
+     "corrected": "VpnTransportInfo — @SystemApi, но флаг bypassable всё равно виден через публичный NetworkCapabilities.toString() (с Android 14). MTU, адреса и DNS видны через LinkProperties. Что RU-приложения это используют, не доказано. RKNHardering проверяет DNS 127.x/::1 только в LinkProperties активной сети, поэтому для приложения вне туннеля эта проверка не срабатывает.",
+     "evidence": "VpnTransportInfo.java: @SystemApi(PRIVILEGED_APPS); toString() печатает bypassable; makeCopy скрывает только sessionId. README RKNHardering §4.5: getLinkProperties(activeNetwork).dnsServers.",
+     "sources": [
+      "https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/heads/main/framework/src/android/net/VpnTransportInfo.java",
+      "https://github.com/xtclovver/RKNHardering/blob/main/docs/README.en.md"
+     ]
+    },
+    {
+     "id": "M16",
+     "verdict": "confirmed",
+     "corrected": "",
+     "evidence": "Habr 1024890 (18.04.2026): LSPosed/Vector (root), Hide My Applist, NoVPNDetect Enhanced (подмена флага VPN и скрытие tun0), PortGuard (Magisk).",
+     "sources": [
+      "https://habr.com/ru/articles/1024890/"
+     ]
+    }
+   ],
+   "missed": [
+    "Открытый вопрос про /proc/net решается кодом: в AOSP sepolicy (private/app.te) у untrusted_app_all нет чтения proc_net. Канал /proc/net/route и if_inet6 для обычных приложений закрыт; исключения возможны только на нестандартных OEM-прошивках.",
+    "getConnectionOwnerUid возвращает INVALID_UID и для ненайденных соединений (гонка с короткими UDP). Строгий отброс в своём клиенте надо тестировать на DNS и QUIC, иначе пользователи получат случайные обрывы.",
+    "VPN действует в пределах одного пользователя. RU-приложения в рабочем профиле или Private Space не покрываются VPN основного профиля. Для allowlist это плюс, но флаг VPN основного профиля из них всё равно виден (M8).",
+    "Без root трекинг RU-приложений можно резать per-app переключателем сети: разрешение Network в GrapheneOS, у части OEM — запрет сети для отдельного приложения. Поток это не проверял.",
+    "Рекомендации по локальному SOCKS: авторизация со случайными данными на устройство и случайный порт (runetfreedom; v2rayNG — опции, Amnezia PR #2453). Это частичная мера, если TUN в процессе недоступен.",
+    "Флаг bypassable виден через NetworkCapabilities.toString() (Android 14+), даже если клиент не вызывает allowBypass. Значение false — норма; отпечатком служат MTU, адреса и DNS.",
+    "Мелочь по версиям: excludeRoute, LinkProperties с THROW-маршрутами и setIncludeOtherUidNetworks зависят от API 31–33. На Android 12 и ниже часть каналов выглядит иначе."
+   ]
+  }
+ },
+ {
+  "id": "browser",
+  "research": {
+   "stream": "browser",
+   "summary": "Brave в РФ не заблокирован РКН. Блокировку ставит сама Brave Software по санкциям: Rewards и VPN выключены, у Leo нет связи с RU-IP, установщик Windows не качает с RU-IP (единичный отчёт). Пока браузер ходит через VPN, это не мешает. Актуальные версии на 04.10.2026: Brave 1.96.61 (02.10), Cromite 153 (15.09), IronFox 157.0.0.1 (04.10), Mullvad Browser и Tor Browser 15.0.24. Главный вывод по Android: системная настройка «Блокировать без VPN» несовместима со списком разрешённых приложений. Сеть потеряют все приложения, которых нет в списке, то есть RU-приложения. Fail-closed для одного браузера системными средствами Android не получить. Его можно заложить в своём клиенте или задать прокси в самом браузере. На десктопе Brave настраивается заранее через политики.",
+   "findings": [
+    {
+     "id": "b1",
+     "claim": "Brave в РФ не заблокирован, но сам Brave режет часть сервисов для RU",
+     "evidence": "Сообщений о блокировке Brave Роскомнадзором нет. Brave #52983 (19.02.2026, Windows 1.83): обновление не скачивается с RU-IP, скачали через VPN. #53979 (26.03.2026, Android 1.90.48 и десктоп 1.90.65): Leo отвечает «Failed to connect» только с RU-IP. #43465: VPN и Rewards выключены при регионе или языке устройства из санкционной страны. Если весь трафик Brave идёт через VPN, это не мешает. Отчёты единичные, подтверждения от Brave нет.",
+     "sources": [
+      "https://github.com/brave/brave-browser/issues/52983",
+      "https://github.com/brave/brave-browser/issues/53979",
+      "https://github.com/brave/brave-browser/issues/43465"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "b2",
+     "claim": "Актуальные версии и каналы установки Brave",
+     "evidence": "Стабильная версия Brave v1.96.61 (Chromium 154) вышла 02.10.2026. В релизе на GitHub есть APK: Bravearm64Universal.apk и BraveMono*.apk. Ещё есть F-Droid-репозиторий Brave, Google Play и APKMirror. Что Brave открывается в Google Play из РФ, я не проверял. Надёжный путь: APK с GitHub (проверено через API) или установка через Play.",
+     "sources": [
+      "https://github.com/brave/brave-browser/releases/tag/v1.96.61",
+      "https://support.brave.app/hc/en-us/articles/360025390311-How-do-I-download-and-install-Brave"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b3",
+     "claim": "Android: «Блокировать без VPN» несовместима с принципом «через VPN только разрешённые»",
+     "evidence": "Документация Android: когда трафик вне VPN заблокирован, приложения вне allowed/disallowed списков теряют сеть. Mullvad: исключённые приложения не работают при включённой «Block connections without VPN». Значит, с этой настройкой RU-приложения останутся без сети. Системный fail-closed только для браузера невозможен. Сделать его можно двумя способами. (1) Свой клиент не снимает VpnService при падении ядра, и трафик разрешённых приложений уходит в пустой tun. (2) Прокси задаётся в самом браузере.",
+     "sources": [
+      "https://developer.android.com/develop/connectivity/vpn",
+      "https://mullvad.net/en/help/split-tunneling-with-the-mullvad-app"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b4",
+     "claim": "Режим «разрешённые приложения» в Android работает так, как нужно владельцу",
+     "evidence": "Документация Android: если allowed-список не пуст, через VPN идут только приложения из него. Остальные работают так, будто VPN нет. Списки задаются до подключения и только для установленных приложений, а после изменения нужно переподключиться. v2rayNG (master от 01.10.2026, CoreVpnService.kt) умеет и addAllowedApplication, и addDisallowedApplication, allowBypass не вызывает. Браузер внутри VPN не может привязаться к сети в обход tun. В нашем клиенте нужно пересобирать список, когда ставится новое приложение.",
+     "sources": [
+      "https://developer.android.com/develop/connectivity/vpn",
+      "https://github.com/2dust/v2rayNG/blob/master/V2rayNG/app/src/main/java/com/v2ray/ang/service/CoreVpnService.kt"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b5",
+     "claim": "WebRTC: в Brave защита по умолчанию из Chromium, политику Brave меняет только в Tor-окне",
+     "evidence": "В исходниках brave-core kWebRTCIPHandlingPolicy принудительно ставится в disable_non_proxied_udp только в tor_profile_manager.cc. В обычном профиле остаётся default из Chromium: локальные адреса скрыты через mDNS, через STUN виден публичный IP. В режиме TUN на Android это IP выхода, такой же, какой сайты и так видят, то есть утечки нет. Риск появляется на десктопе в режиме системного прокси: там UDP идёт мимо прокси. Поэтому через политику нужно ставить WebRtcIPHandling=disable_non_proxied_udp.",
+     "sources": [
+      "https://github.com/brave/brave-core/blob/master/browser/tor/tor_profile_manager.cc",
+      "https://github.com/brave/brave-browser/issues/11373"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b6",
+     "claim": "При регионе RU поиск в Brave по умолчанию Яндекс, подсказки уходят на suggest.yandex.ru",
+     "evidence": "brave-core, тест brave_template_url_prepopulate_data_unittest.cc: CheckForCountry('R','U', PREPOPULATED_ENGINE_ID_YANDEX). Тот же Яндекс стоит для AM, AZ, BY, KG, KZ, MD, TJ. Шаблоны: yandex.ru/search/?clid=… и suggest.yandex.ru. Каждый набранный символ уходит в Яндекс, а при сплите «РФ напрямую» ещё и с домашнего IP. В инструкции и в политике DefaultSearchProvider нужно ставить Brave Search, DuckDuckGo или Startpage.",
+     "sources": [
+      "https://github.com/brave/brave-core/blob/master/chromium_src/components/search_engines/brave_template_url_prepopulate_data_unittest.cc"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b7",
+     "claim": "Риски Brave: телеметрия и навязанные функции. Неприятно, но управляемо",
+     "evidence": "P3A и stats ping включены по умолчанию, их можно отключить. Есть Wallet, Rewards (в RU недоступны), Leo AI, News и Talk. В 2023 году на Windows Brave ставил службы Brave VPN без согласия пользователя. Службы были в режиме Manual, Brave обещал это изменить. На Android платный Brave VPN тоже работает через VpnService и вытеснил бы наш клиент, но для RU-локали он выключен (#43465). Синхронизация включается только вручную.",
+     "sources": [
+      "https://www.ghacks.net/2023/10/18/brave-is-installing-vpn-services-without-user-consent/",
+      "https://github.com/brave/brave-browser/issues/43465"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "b8",
+     "claim": "Десктоп: Brave можно полностью настроить заранее через политики, на Android нельзя",
+     "evidence": "В brave-core есть политики BraveRewardsDisabled, BraveWalletDisabled, BraveVPNDisabled, BraveAIChatEnabled, BraveNewsDisabled, BraveTalkDisabled, BraveP3AEnabled, BraveStatsPingEnabled, BraveWebDiscoveryEnabled, TorDisabled, IPFSEnabled. Кроме них работают политики Chromium: ProxySettings, WebRtcIPHandling, DefaultSearchProvider*, DnsOverHttpsMode. Достаточно одного .reg-файла. На Android политики Chromium задаются только через EMM/managed config, обычному пользователю это не подходит.",
+     "sources": [
+      "https://github.com/brave/brave-core/tree/master/components/policy",
+      "https://gpedit.tplant.com.au/en-us/policy/brave/WebRtcIPHandling/"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b9",
+     "claim": "Fail-closed на десктопе: прокси в самом браузере",
+     "evidence": "Если задать ProxySettings fixed_servers socks5://127.0.0.1:PORT (Brave и Chromium, политика или --proxy-server) или прокси в Firefox/Mullvad (policies.json Proxy, UseProxyForDNS), то при выключенном клиенте браузер покажет ошибку, а не пойдёт напрямую. Минус: Chromium не умеет SOCKS5 с паролем, а открытый локальный порт виден любой локальной программе. Так IP сервера утёк на Android (Habr 1020080). На десктопе риск ниже, но он есть.",
+     "sources": [
+      "https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md",
+      "https://habr.com/ru/articles/1020080/"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "b10",
+     "claim": "Cromite: самые строгие настройки по умолчанию и прокси на Android, но для массового пользователя не подходит",
+     "evidence": "FEATURES.md: WebRTC выключен по умолчанию, локальные IP не раскрываются, есть защита от отпечатков (canvas, audio, media), нет Google Component Updates, есть chrome://proxy (прокси на Android, то есть fail-closed) и автообновление на Android. Последний релиз v153.0.8010.37 (15.09.2026) отстаёт от Brave на одну версию Chromium. Нет в Play, только GitHub и F-Droid-репозиторий. Авторы сами пишут, что браузер не для стран с ограничениями свобод.",
+     "sources": [
+      "https://github.com/uazo/cromite",
+      "https://github.com/uazo/cromite/blob/master/docs/FEATURES.md"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b11",
+     "claim": "Firefox и IronFox на Android",
+     "evidence": "В релизном Firefox для Android нет about:config: прокси и тонкие настройки WebRTC там недоступны (это мне известно без проверки). Fail-closed в нём невозможен. IronFox (наследник Mull) v157.0.0.1 вышел 04.10.2026. Он скрывает локальные IP в WebRTC и даёт about:config, где можно задать network.proxy.* (fail-closed). Ставится через F-Droid-репозиторий, Accrescent, Obtainium или GitLab. Это вариант для продвинутых, для лентяев он сложен.",
+     "sources": [
+      "https://gitlab.com/ironfox-oss/IronFox",
+      "https://fdroid.ironfoxoss.org/fdroid/repo"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "b12",
+     "claim": "Mullvad Browser и Tor Browser не подходят на роль основного браузера через VPN",
+     "evidence": "Mullvad Browser 15.0.24 (30.09.2026, Firefox 140.17 ESR) есть только для Windows, macOS и Linux, версии для Android нет. По умолчанию он всегда в приватном режиме и выходит из аккаунтов при закрытии, для ленивых это неудобно. Tor Browser 15.0.24 идёт через Tor, а не через наш VPN. В РФ ему нужны мосты (obfs4 режется с 12.2025). Вдобавок медленно и много капч. Его можно советовать как запасной вариант, но не как основной.",
+     "sources": [
+      "https://github.com/mullvad/mullvad-browser/releases/tag/15.0.24",
+      "https://dist.torproject.org/torbrowser/15.0.24/"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b13",
+     "claim": "Сплит «РФ напрямую» нужен и внутри браузера, который ходит через VPN",
+     "evidence": "Если браузер в allowlist откроет RU-сайт (yandex, банк, госуслуги) через туннель, этот сайт увидит адрес выхода. Это та же утечка, от которой мы защищаемся. Поэтому geosite:category-ru и geoip:ru → direct в клиенте нужно оставить. Пользователю проще так: «синий» Brave только для VPN, а для RU-сайтов обычный Chrome или Яндекс вне VPN.",
+     "sources": [
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md",
+      "D:/dev/vpn-zoo-installer/research/2026-10-04/vpn-success-and-leaks_04-10-26.md"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "b14",
+     "claim": "Сайт из браузера не может узнать о VPN-приложениях на телефоне",
+     "evidence": "Из браузера сайт видит IP, WebRTC-кандидатов, часовой пояс и язык, но не список приложений и не tun0. На этом построен вариант (g) в RISK-REDUCTION. Опасность для браузера внутри VPN сводится к несовпадениям: часовой пояс и язык RU при иностранном IP. Это признак VPN для сайта, но не утечка адреса сервера.",
+     "sources": [
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md"
+     ],
+     "confidence": "medium"
+    }
+   ],
+   "recommendation": "Основной браузер «только через VPN» для всех: Brave (Android 1.96.61, APK с GitHub или Play; на десктопе тоже). Причины: привычный интерфейс как у Chrome, встроенная блокировка рекламы и трекеров, защита от отпечатков по умолчанию, русская локализация. В инструкции (или .reg-файлом на десктопе) обязательно: (1) сменить поиск с Яндекса на Brave Search или DDG; (2) отключить P3A, stats ping, Leo, Wallet, Rewards, News, Talk и VPN; (3) на десктопе выставить WebRtcIPHandling=disable_non_proxied_udp; (4) не включать синхронизацию. Для RU-сайтов оставить второй браузер вне VPN. На Android fail-closed закладывать в своём клиенте: держать tun поднятым при падении ядра, а «Блокировать без VPN» не включать, потому что она ломает allowlist. Продвинутым можно предложить Cromite или IronFox с прокси внутри браузера. Mullvad и Tor Browser только как запасные варианты.",
+   "open_questions": [
+    "Доступен ли Brave в Google Play из РФ на 10.2026 и обновляется ли он оттуда? Это не проверено, нужна проверка на живом RU-устройстве.",
+    "Что делают Happ и v2rayNG при падении ядра: снимают VpnService (браузер из allowlist пойдёт напрямую) или держат tun? Нужно проверить, а для своего клиента это требование к разработке.",
+    "Есть ли в Happ или v2rayN на десктопе маршрутизация в TUN по имени процесса и как она сочетается с требованием ML-KEM для REALITY? Это альтернатива прокси в браузере.",
+    "Можно ли включить пароль на локальном прокси (HTTP с Basic-auth) так, чтобы Chromium/Cromite к нему подключались? Тогда fail-closed через прокси перестанет открывать локальный порт для других приложений.",
+    "Исправлена ли установка служб Brave VPN на Windows без согласия (обещали в 2023)? Нужно проверить на актуальном установщике."
+   ]
+  },
+  "verify": {
+   "verdicts": [
+    {
+     "id": "b1",
+     "verdict": "corrected",
+     "corrected": "Ограничения для RU с разными причинами. VPN и Rewards Brave выключает сам при RU-языке или регионе устройства (#43465, закрыт). Leo с RU-IP не подключается (#53979, открыт, без ответа Brave). Сбой обновления на Windows Brave на себя не берёт: сотрудники пишут, что RU-IP не блокируют (diracdeltas, 23.02.2026), а в обсуждении винят фильтрацию CloudFront (updates-cdn) на стороне РФ. Офлайн-установщики есть в GitHub Releases. Блокировку Brave Роскомнадзором ничто не подтверждает, но и не опровергает.",
+     "evidence": "В #52983 (1.83, 19.02.2026) ответы atuchin-m: «we don't block downloading updates, I suspect it's filtering on your provider side». И diracdeltas: «we do not do any blocking of browser updates from RU on our side». У автора #53979 Rewards и Sync работают, не работает только Leo.",
+     "sources": [
+      "https://github.com/brave/brave-browser/issues/52983",
+      "https://github.com/brave/brave-browser/issues/53979",
+      "https://github.com/brave/brave-browser/issues/43465"
+     ]
+    },
+    {
+     "id": "b2",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: v1.96.61 (Chromium 154.0.8037.98) вышла 02.10.2026, не prerelease. APK в релизе: Bravearm64Universal, BraveMonoarm/arm64/x64/x86, у каждого .sha256 и .asc. Важно: APK с GitHub сам не обновляется. Ленивым нужен Play или Obtainium. Существование F-Droid-репозитория Brave я не проверял.",
+     "evidence": "Проверил GitHub API: releases/tags/v1.96.61, published_at 2026-10-02T12:12Z, список assets.",
+     "sources": [
+      "https://github.com/brave/brave-browser/releases/tag/v1.96.61"
+     ]
+    },
+    {
+     "id": "b3",
+     "verdict": "corrected",
+     "corrected": "Для основного профиля с обычным пользователем верно: при lockdown приложения вне VPN теряют сеть. Тезис «системно fail-closed для одного браузера невозможен» неверен. VPN и always-on в Android работают отдельно для каждого пользователя и профиля. Если поставить клиент и браузер в рабочий профиль (Shelter/Island или профиль, созданный нашим клиентом) и включить там always-on + lockdown, fail-closed будет только для профиля, а RU-приложения в основном профиле останутся без VPN. Кроме того, владелец профиля или устройства через DPM.setAlwaysOnVpnPackage(…, lockdownAllowlist) (API 29) может задать исключения из lockdown.",
+     "evidence": "Документация Android: «When non-VPN traffic is blocked, apps that aren't in an allowed list or in a disallowed list lose their network connection». Справочник DevicePolicyManager: lockdownAllowlist, «Packages that will be able to access the network directly when VPN is in lockdown mode»; SecurityException, если вызывает не device/profile owner. Оговорка: флаг VPN и tun0 видны между профилями (RISK-REDUCTION, строка e, GrapheneOS #7511).",
+     "sources": [
+      "https://developer.android.com/develop/connectivity/vpn",
+      "https://developer.android.com/reference/android/app/admin/DevicePolicyManager",
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md"
+     ]
+    },
+    {
+     "id": "b4",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: документация дословно совпадает (allowed list и reconnect при изменении списка). В CoreVpnService.kt v2rayNG (последний коммит 01.10.2026) configurePerAppProxy вызывает addAllowedApplication или addDisallowedApplication в зависимости от PREF_BYPASS_APPS, а allowBypass нигде не вызывается. Дополнение: если ядро не стартует, startService вызывает stopAllService, то есть tun снимается и приложения из allowlist идут напрямую (fail-open). Это частично закрывает открытый вопрос 2.",
+     "evidence": "grep по CoreVpnService.kt: строки 266–293 (configurePerAppProxy) и 112–116 («Failed to start core loop» → stopAllService()). Документация: «If the list includes one or more apps, then only the apps in the list use the VPN».",
+     "sources": [
+      "https://developer.android.com/develop/connectivity/vpn",
+      "https://github.com/2dust/v2rayNG/blob/master/V2rayNG/app/src/main/java/com/v2ray/ang/service/CoreVpnService.kt"
+     ]
+    },
+    {
+     "id": "b5",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: kWebRTCIPHandlingPolicy=DisableNonProxiedUdp задаётся только в tor_profile_manager.cc (строки 278–279). Уточнения. (1) В Brave на Android политика WebRTC меняется вручную в настройках, см. brave_pref_service_bridge.cc. (2) При сплите «РФ напрямую» сайт может указать STUN-сервер с RU-IP и получить домашний IP. Адрес сервера при этом не утекает, но браузер деанонимизируется. (3) #11373 о том, что настройка на десктопе откатывалась (2020), а не о значениях по умолчанию.",
+     "evidence": "Поиск по brave-core: kWebRTCIPHandlingPolicy встречается только в tor_profile_manager.cc, brave_pref_service_bridge.cc (UI на Android), brave_prefs_util.cc (UI настроек) и тесте. В обычном профиле значение по умолчанию никто не задаёт.",
+     "sources": [
+      "https://github.com/brave/brave-core/blob/master/browser/tor/tor_profile_manager.cc",
+      "https://github.com/brave/brave-core/blob/master/browser/android/preferences/brave_pref_service_bridge.cc"
+     ]
+    },
+    {
+     "id": "b6",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: в unittest есть CheckForCountry('R','U', PREPOPULATED_ENGINE_ID_YANDEX), а также AM, AZ, BY, KG, KZ, MD, TJ, TM, UZ. В brave_prepopulated_engines.cc brave_yandex: yandex.ru/search/?clid=2423859 на Android/iOS и 2353835 на десктопе, подсказки идут на suggest.yandex.ru/suggest-ff.cgi.",
+     "evidence": "Строки 344–389 unittest и 202–214 brave_prepopulated_engines.cc (master).",
+     "sources": [
+      "https://github.com/brave/brave-core/blob/master/chromium_src/components/search_engines/brave_template_url_prepopulate_data_unittest.cc",
+      "https://github.com/brave/brave-core/blob/master/components/search_engines/brave_prepopulated_engines.cc"
+     ]
+    },
+    {
+     "id": "b7",
+     "verdict": "confirmed",
+     "corrected": "В целом верно. Службы Brave VPN на Windows без согласия: ghacks, 18.10.2023 (тип запуска Manual). VPN и Rewards выключены для RU-локали (#43465). Исправлено ли это в актуальном установщике, я не проверял. Что синхронизация только opt-in, тоже не проверял, хотя это согласуется с дизайном Brave Sync.",
+     "evidence": "#43465: заголовок о выключении VPN и Rewards при OFAC-регионе или языке. Политики BraveP3AEnabled и BraveStatsPingEnabled есть в brave_simple_policy_map.h.",
+     "sources": [
+      "https://www.ghacks.net/2023/10/18/brave-is-installing-vpn-services-without-user-consent/",
+      "https://github.com/brave/brave-browser/issues/43465"
+     ]
+    },
+    {
+     "id": "b8",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: все названные политики есть в brave_simple_policy_map.h. Там же есть BraveReduceLanguageEnabled, BraveGlobalPrivacyControlEnabled, BraveLocalAIEnabled, BravePlaylistEnabled, BraveWaybackMachineEnabled, EmailAliasesEnabled, BraveSyncUrl. Ключ IPFSEnabled ещё в карте, но смысла в нём почти нет: поддержку IPFS из Brave убрали. Что на Android политики задаются только через managed config/EMM, я не проверял. Зато WebRTC на Android настраивается вручную в UI.",
+     "evidence": "Выборка policy::key::k* из brave-core/master/browser/policy/brave_simple_policy_map.h.",
+     "sources": [
+      "https://github.com/brave/brave-core/blob/master/browser/policy/brave_simple_policy_map.h"
+     ]
+    },
+    {
+     "id": "b9",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено. Chromium proxy.md: «No authentication methods are supported for SOCKSv5 in Chrome». HTTP-прокси поддерживает обычную HTTP-аутентификацию (Basic и другие), но пароль запрашивается диалогом, через ProxySettings его заранее не задать. Это ответ на открытый вопрос 4: технически возможно, без участия пользователя нельзя (только через расширение).",
+     "evidence": "proxy.md, строки 120 (HTTP proxy auth) и 195 (SOCKSv5 без auth).",
+     "sources": [
+      "https://chromium.googlesource.com/chromium/src/+/HEAD/net/docs/proxy.md",
+      "https://habr.com/ru/articles/1020080/"
+     ]
+    },
+    {
+     "id": "b10",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено. FEATURES.md: «Disable WebRTC by default», «Do not expose local IP addresses with webRTC», защита от отпечатков canvas, media и audio, «Disable Google Component Updates», «Proxy configuration page (chrome://proxy)», «(ANDROID) Browser auto updater». Последний релиз v153.0.8010.37, 15.09.2026. README: «not to be considered useful for journalists and people living in countries with freedom limitations». F-Droid-репозиторий: cromite.org/fdroid/repo.",
+     "evidence": "Проверил raw FEATURES.md и README.md (master) и GitHub API releases/latest.",
+     "sources": [
+      "https://github.com/uazo/cromite/blob/master/docs/FEATURES.md",
+      "https://github.com/uazo/cromite"
+     ]
+    },
+    {
+     "id": "b11",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: IronFox v157.0.0.1 вышел 04.10.2026 05:04 UTC (до него v157.0 от 30.09). Firefox stable 157.0, следующий релиз 09.10. Каналы установки по README: Accrescent, F-Droid-репозиторий fdroid.ironfoxoss.org и Obtainium. Это форк Mull. Что в релизном Firefox для Android нет about:config, известно давно, но этот пункт я сейчас не перепроверял.",
+     "evidence": "GitLab API releases IronFox, product-details.mozilla.org firefox_versions.json, README (ветка dev).",
+     "sources": [
+      "https://gitlab.com/ironfox-oss/IronFox",
+      "https://product-details.mozilla.org/1.0/firefox_versions.json"
+     ]
+    },
+    {
+     "id": "b12",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено: Mullvad Browser 15.0.24 вышел 30.09.2026 на Firefox 140.17.0esr, сборки только для Linux, macOS и Windows. Tor Browser 15.0.24 лежит на dist.torproject.org. Тезис «obfs4 режется с 12.2025» я не проверял. Примечание: FIREFOX_ESR_NEXT уже 153.4.0esr, так что скоро ветка 16.x перейдёт на ESR 153.",
+     "evidence": "GitHub API: mullvad-browser releases/tags/15.0.24 (тело релиза и assets). Листинг dist.torproject.org.",
+     "sources": [
+      "https://github.com/mullvad/mullvad-browser/releases/tag/15.0.24",
+      "https://dist.torproject.org/torbrowser/15.0.24/"
+     ]
+    },
+    {
+     "id": "b13",
+     "verdict": "confirmed",
+     "corrected": "Подтверждено документацией репо: сплит geosite:category-ru и geoip:ru → direct, флаг RU_EGRESS. Компромисс: любой сайт в «VPN-браузере» может загрузить ресурс с RU-IP, в том числе STUN, и узнать домашний IP пользователя. Адрес сервера не утекает, но анонимность браузера пропадает. Это нужно описать в инструкции.",
+     "evidence": "RISK-REDUCTION.md, строки 134 и 164.",
+     "sources": [
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md"
+     ]
+    },
+    {
+     "id": "b14",
+     "verdict": "confirmed",
+     "corrected": "В основном верно: Web API не отдаёт список пакетов и интерфейсов. Оговорка: страница может обращаться к 127.0.0.1 (fetch, WebSocket, тайминги) и искать локальные порты клиента. Brave (разрешение localhost) и Chrome (Local Network Access) это ограничивают, но с какой версии, я не проверял. Протокол SOCKS через fetch страница не использует, так что получить IP выхода таким путём не выйдет.",
+     "evidence": "Вывод сделан по строке g в RISK-REDUCTION и общей модели Web API. Защиту localhost в Brave и Chrome по актуальным версиям я не проверял.",
+     "sources": [
+      "D:/dev/vpn-zoo-installer/docs/RISK-REDUCTION.md"
+     ]
+    }
+   ],
+   "missed": [
+    "Рабочий профиль наоборот: VPN-клиент и Brave в профиле с always-on + lockdown дают fail-closed только для браузера, при этом RU-приложения в основном профиле работают без VPN и не видят пакет клиента. Свой клиент может сам создать профиль (как Shelter) и стать его profile owner, тогда ему доступен DPM lockdownAllowlist (API 29). Оговорка: tun0 и флаг VPN видны между профилями, loopback общий (GrapheneOS #7511).",
+    "v2rayNG при сбое старта ядра закрывает tun (stopAllService), и приложения из allowlist выходят напрямую (fail-open). Свой клиент должен в таком случае держать tun и сбрасывать трафик.",
+    "APK с GitHub не обновляется. Для ленивых пользователей автообновление нужно закладывать (Play, Obtainium или F-Droid-репозиторий), иначе браузер устареет.",
+    "Обновления Brave на десктопе с RU-IP могут не скачиваться из-за фильтрации CloudFront. Обновление должно идти через VPN, или нужен офлайн-установщик с GitHub.",
+    "Несовпадение языка и часового пояса: в Brave есть политика BraveReduceLanguageEnabled. Её стоит включить в .reg-файл вместе с BraveGlobalPrivacyControlEnabled.",
+    "DNS в режиме системного прокси на десктопе: нужны DnsOverHttpsMode и прокси для DNS, иначе DNS-запросы браузера уходят провайдеру."
+   ]
+  }
+ },
+ {
+  "id": "own-client",
+  "research": {
+   "stream": "own-client",
+   "summary": "Свой Android-клиент «для нас» сделать реально, и смысл в нём есть. Главная экономия: ядро Xray умеет TUN по fd из VpnService, поэтому локальный SOCKS не нужен вовсе. В Xray уже есть VLESS-REALITY с ML-KEM, XHTTP, SS-2022 и Hy2. AWG придётся добавлять отдельно. Allowlist в Android встроен (addAllowedApplication), но он несовместим с системным «Блокировать без VPN», поэтому kill-switch надо делать внутри приложения. Факт VPN (tun0, TRANSPORT_VPN в списке сетей, сам VPN-пакет) на Android без root не спрятать никаким клиентом. Публичного аналога со всеми нашими протоколами и allowlist по умолчанию я не нашёл. Ближе всех Happ (через Provider ID), RethinkDNS, InviZible и Amnezia.",
+   "findings": [
+    {
+     "id": "F1",
+     "claim": "Allowlist — штатный механизм Android: VpnService.Builder.addAllowedApplication. Через VPN идут только перечисленные пакеты, все остальные (в том числе RU) — в обычную сеть. С addDisallowedApplication он взаимоисключающий.",
+     "evidence": "📄 AOSP API VpnService.Builder. v2rayNG (bypass=false — «только выбранные»), FlClash и CMFA (whitelist) это уже умеют, но включается вручную на каждом устройстве. Свой клиент может поставить allowlist по умолчанию и раздавать пресеты.",
+     "sources": [
+      "https://developer.android.com/reference/android/net/VpnService.Builder",
+      "https://deepwiki.com/2dust/v2rayNG/7.5-per-app-proxy-configuration"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F2",
+     "claim": "Allowlist несовместим с системным «Блокировать подключения без VPN»: lockdown отрезает от сети всё, что не идёт через туннель, то есть все RU-приложения. Значит, kill-switch приходится делать внутри приложения, и у него есть дыра: если сервис упал или ещё не стартовал, разрешённые приложения на короткое время уходят напрямую.",
+     "evidence": "📄 Mullvad (Android): при «Block connections without VPN» приложения, исключённые из туннеля, остаются без интернета. Обычный Always-on без lockdown перезапускает сервис после краша и перезагрузки, но окно не закрывает. Полностью закрыть его можно только через lockdown в рабочем профиле (F11).",
+     "sources": [
+      "https://mullvad.net/en/help/split-tunneling-with-the-mullvad-app",
+      "https://mullvad.net/en/help/using-mullvad-vpn-on-android"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F3",
+     "claim": "Что без root не спрячет ни один клиент, включая наш: интерфейс tun0 (NetworkInterface), VPN-сеть в getAllNetworks() и сам факт установки VPN-приложения (queryIntentServices по android.net.VpnService). Allowlist убирает другое: у RU-приложений activeNetwork без TRANSPORT_VPN, а echo-запросы показывают домашний IP вместо IP выхода.",
+     "evidence": "🟡 Наш research §3.2 и §4 (RKS: 13 из 30 приложений перечисляют интерфейсы; WB, Ozon, RuStore и др. собирают список VPN-клиентов). Уникальное имя пакета спасает только от списков по именам. От запроса по intent-фильтру не спасает: VpnService обязан его объявлять.",
+     "sources": [
+      "D:\\dev\\vpn-zoo-installer\\research\\2026-10-04\\vpn-success-and-leaks_04-10-26.md",
+      "https://rks.global/ru/research/vpn-detection/",
+      "https://developer.android.com/reference/android/net/VpnService"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F4",
+     "claim": "Обход split tunneling привязкой сокета к tun0 (curl --interface tun0) касается любого VpnService-клиента. В своём клиенте это лечится правилом: соединение с неизвестным владельцем (UID) или с UID не из allowlist блокировать.",
+     "evidence": "📄 Amnezia #2457 открыт: исключённое приложение через tun0 узнаёт IP сервера. Там же предложен фикс через getConnectionOwnerUid. В Xray на Android можно подключить поиск владельца соединения через RegisterAndroidProcessFinder (правило process). По сообщениям, для сокета, привязанного к интерфейсу, getConnectionOwnerUid владельца не находит (UID = -1), и правило «неизвестный UID → block» такие соединения отрежет. Это 🟡: работает ли это в режиме allowlist, надо проверить.",
+     "sources": [
+      "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+      "https://xtls.github.io/en/config/routing.html"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F5",
+     "claim": "Xray-core в одиночку закрывает 4 протокола из 5 и обходится без loopback-прокси: VLESS-REALITY (ML-KEM), XHTTP, SS-2022, Hy2 (outbound с v26.1.23: udphop, Salamander) и встроенный TUN, который берёт fd из VpnService через xray.tun.fd. Нет AWG и TUIC.",
+     "evidence": "📄 README Xray proxy/tun: Android, «Set the environment variable xray.tun.fd». Ограничение: из ICMP поддержан только echo. Hy2 outbound — в релизе v26.1.23. libXray (MIT, gomobile, API 21+) предупреждает: «Use only one Go runtime per process». Значит, amneziawg-go нужно собирать в тот же Go-модуль или выносить в отдельный процесс.",
+     "sources": [
+      "https://github.com/XTLS/Xray-core/blob/main/proxy/tun/README.md",
+      "https://newreleases.io/project/github/XTLS/Xray-core/release/v26.1.23",
+      "https://github.com/XTLS/libXray"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F6",
+     "claim": "Альтернатива — одно ядро mihomo: оно покрывает все 5 протоколов, включая AWG 3.x и TUIC. Минус в том, что это переписанная реализация, которая отстаёт от Xray. Для нашего сервера на Xray эталонное ядро надёжнее.",
+     "evidence": "📄 mihomo v1.19.32 (30.09.2026): AWG 3.0/3.1, XHTTP (с 1.19.22), REALITY ML-KEM (нужен support-x25519mlkem768), TUIC, Hy2. Готовые Android-основы под GPL-3.0: CMFA v2.11.35 (30.09, Kotlin) и FlClash (Flutter). В них mixed-port и external-controller нужно выключить принудительно. Пример риска: Xray v26.9.8 сломал всех, у кого нет ML-KEM.",
+     "sources": [
+      "https://github.com/MetaCubeX/mihomo/releases",
+      "https://github.com/MetaCubeX/ClashMetaForAndroid/releases",
+      "https://github.com/chen08209/FlClash"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F7",
+     "claim": "Какую основу брать. Лучшая база — SaeedDev94/Xray: MIT, Kotlin, маленький проект. v2rayNG годится условно. Hiddify, NekoBox, Husi, Karing и SFA не подходят: на sing-box не работает наш REALITY, а у Hiddify ещё и лицензия ограничивает. Amnezia — Qt/C++, форк тяжёлый.",
+     "evidence": "📄 SaeedDev94/Xray 12.7.0 (02.10.2026, F-Droid): MIT, Android 8+, оболочка над Xray-core с hev-socks5-tunnel. v2rayNG (GPL-3.0) тоже построен на hev-socks5-tunnel, то есть с SOCKS на localhost, а пароль на SOCKS ломает HEV TUN (наш research). Hiddify под «Extended GPLv3»: без согласия нельзя коммерчески, нельзя похожие имена и UI. Матрица §6.1: клиенты на sing-box и Hiddify 4.1.1 на VLESS-REALITY не работают.",
+     "sources": [
+      "https://f-droid.org/packages/io.github.saeeddev94.xray/",
+      "https://github.com/2dust/v2rayNG",
+      "https://raw.githubusercontent.com/hiddify/hiddify-app/main/LICENSE.md"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F8",
+     "claim": "Happ можно преднастроить с сервера, включая allowlist: заголовки per-app-proxy-mode on/off/bypass и per-app-proxy-list (только Android), плюс hide-settings и autoconnect. Но per-app, судя по всему, требует премиального Provider ID, а Provider ID раз в сутки отправляет HWID на check.happ-proxy.com.",
+     "evidence": "📄 Описание параметров — на странице «Расширенный функционал» в docs.happ-proxy.com. Мой разбор страницы и наш прошлый research (s-happ-headers: per-app-proxy входит в премиум) противоречат друг другу → 🟡, проверить руками. Ещё минусы: Happ закрытый, xray API без авторизации был открыт до 4.7.2. 3x-ui отдаёт Happ-заголовки только при subHappAutoDetect=true.",
+     "sources": [
+      "https://docs.happ-proxy.com/ru/getting-started/premium-functionality",
+      "https://docs.happ-proxy.com/getting-started/provider-id.md",
+      "https://kod.ru/vpn-happ-problems"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F9",
+     "claim": "Прямого публичного аналога нет. RethinkDNS — файрвол и DNS-блоклисты с WireGuard по приложениям. InviZible Pro — Tor и DNSCrypt с файрволом. Amnezia — своя экосистема без Hy2 и XHTTP. Happ с Provider ID — коммерческий white-label. Allowlist по умолчанию нигде не стоит.",
+     "evidence": "📄 RethinkDNS: Apache-2.0, в Advanced Mode WG можно выбрать приложения. InviZible Pro: GPL-3.0, 7.5.0 (21.07.2026). Почему публичные клиенты так не делают (это мой вывод, не факт): клиент общего назначения не знает, какие приложения у пользователя. «Работает всё сразу» — главный критерий качества, а allowlist ломает незнакомые приложения и рождает обращения в поддержку. В закрытом кругу с известным списком приложений этот довод не работает.",
+     "sources": [
+      "https://docs.rethinkdns.com/proxy/wireguard/",
+      "https://github.com/Gedsh/InviZible",
+      "https://apt.izzysoft.de/fdroid/index/apk/pan.alexander.tordnscrypt"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F10",
+     "claim": "Продвинутый режим: наш клиент становится владельцем рабочего профиля, как Shelter или Island. В профиль клонируются разрешённые приложения, VPN там работает в Always-on с lockdown. Это настоящий kill-switch, и RU-приложения в основном профиле не видят ни наш пакет, ни VPN API. tun0 по-прежнему виден.",
+     "evidence": "📄 DevicePolicyManager.setAlwaysOnVpnPackage(…, lockdownEnabled, lockdownAllowlist), API 29+, для владельца устройства или профиля. Наш research §4: Island/Shelter прячет VpnService-API и список пакетов, но не tun0. Видна ли VPN рабочего профиля из личного — 🟡, не проверено (GrapheneOS #7511 описывает обратное направление). Минусы: на устройстве только один рабочий профиль, у части производителей (MIUI) он работает с причудами, и это сложнее для «ленивых».",
+     "sources": [
+      "https://developer.android.com/reference/android/app/admin/DevicePolicyManager",
+      "https://developer.android.com/work/versions/android-10",
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/7511"
+     ],
+     "confidence": "low"
+    },
+    {
+     "id": "F11",
+     "claim": "Распространение. RuStore исключён. Основной канал — APK по ссылке с нашего сервера плюс зеркало в GitHub Releases. Самообновление без вопросов к пользователю возможно. Верификация разработчиков Google с 30.09.2026 действует только в BR, ID, SG и TH. Глобально — с 2027, и тогда на неверифицированное APK ляжет «advanced flow» с ожиданием 24 ч.",
+     "evidence": "📄 USER_ACTION_NOT_REQUIRED работает, если приложение обновляет само себя, имеет REQUEST_INSTALL_PACKAGES и UPDATE_PACKAGES_WITHOUT_USER_ACTION, а targetSdk ≥29/30. Обновление поверх возможно только с тем же ключом подписи: это и есть пиннинг подписи. Для узкого круга подойдёт бесплатный аккаунт Google с ограниченным распространением (до 20 устройств), но он привязывает пакет к личности. Установка через ADB от верификации освобождена. RuStore удаляет VPN-приложения для обхода блокировок и сам детектит VPN.",
+     "sources": [
+      "https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams",
+      "https://android-developers.googleblog.com/2026/03/android-developer-verification-rolling-out-to-all-developers.html",
+      "https://www.androidauthority.com/google-android-advanced-flow-sideloading-rollout-begins-3700073/",
+      "https://kod.ru/rustore-vpn"
+     ],
+     "confidence": "high"
+    },
+    {
+     "id": "F12",
+     "claim": "Лицензии и закон. При закрытой раздаче GPL обязывает только к одному: отдать исходники тем, кто получил APK. Основы под MIT и Apache (SaeedDev94/Xray, libXray, amneziawg-android) никаких обязательств не накладывают. Отдельного закона против самописного клиента для личного круга я не нашёл. Риски — реклама средств обхода и публичное распространение.",
+     "evidence": "📄 Лицензии: amneziawg-android — Apache-2.0, libXray — MIT, v2rayNG, InviZible и mihomo — GPL-3.0. КоАП 14.3 ч.18 (реклама обхода: физлица 50–80 тыс. ₽) и 276-ФЗ касаются владельцев VPN-сервисов (наш research §3.3). Это 🟡 и не юридическая консультация. Практический вывод: не публиковать, не продвигать, хранить репозиторий приватно.",
+     "sources": [
+      "https://github.com/amnezia-vpn/amneziawg-android",
+      "https://github.com/XTLS/libXray",
+      "D:\\dev\\vpn-zoo-installer\\research\\2026-10-04\\vpn-success-and-leaks_04-10-26.md"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F13",
+     "claim": "MVP «zoo-client» (Android 8+). Ядро — libXray с Xray TUN по fd, без единого inbound на localhost. Протоколы: Reality, XHTTP, SS-2022 и Hy2 с pinSHA256. Конфиг импортируется через zoo:// или QR, JSON подписан Ed25519, ключ зашит в APK. Allowlist по умолчанию и пресеты: браузер Brave, мессенджеры, YouTube, ИИ. Прочие правила ниже.",
+     "evidence": "Дизайн; основан на F1–F5. Дальше: DNS разрешённых приложений идёт через туннель, ads и category-ip-geo-detect → block, geoip:ru → block. Неизвестный UID → block (F4). Failover между outbound'ами — через balancer и observatory Xray. Kill-switch — tun держится поднятым. Телеметрии нет, логи только локальные. Обновления — APK с нашего сервера и проверка подписи. AWG — фаза 2: amneziawg-go в той же Go-сборке, переключение перезапуском движка. TUIC не нужен.",
+     "sources": [
+      "https://github.com/XTLS/Xray-core/blob/main/proxy/tun/README.md",
+      "https://github.com/runetfreedom/russia-v2ray-rules-dat"
+     ],
+     "confidence": "medium"
+    },
+    {
+     "id": "F14",
+     "claim": "Оценка трудоёмкости (моя). A: Happ или v2rayNG с настройкой на сервере — 2–5 дней. B: форк SaeedDev94/Xray с allowlist, импортом и пресетами — 3–6 недель для одного разработчика (Kotlin плюс немного Go/gomobile). C: свой клиент на libXray и amneziawg-go — MVP за 8–12 недель, до прод-качества 3–4 месяца. iOS вне рамок.",
+     "evidence": "Не источник, а экспертная оценка. Сопровождение: 2–4 ч в неделю на сборки под новые релизы Xray плюс срочные пересборки. Xray выходит часто: v26.9.8 → v26.9.30 за месяц, и случай с ML-KEM сломал клиентов. Для iOS нужен Apple Developer и Network Extension, а в РФ это недоступно (наш research §6).",
+     "sources": [
+      "https://github.com/XTLS/Xray-core/releases",
+      "https://github.com/2dust/v2rayNG/releases"
+     ],
+     "confidence": "low"
+    }
+   ],
+   "recommendation": "Делать по этапам.\n1) Сейчас, на существующих клиентах: инструкция для v2rayNG в режиме «только выбранные» с Brave и мессенджерами. Руками проверить, работают ли заголовки per-app в Happ без премиума.\n2) Свой клиент собрать форком SaeedDev94/Xray (MIT), а не v2rayNG и не Hiddify. Убрать SOCKS, перейти на Xray TUN, сделать allowlist и пресеты по умолчанию, подписанный импорт zoo://, failover, блок неизвестного UID, самообновление. AWG — вторым этапом.\n3) Режим рабочего профиля — эксперимент. Честно предупредить пользователей: факт VPN (tun0) на Android скрыть нельзя.",
+   "open_questions": [
+    "Работают ли в Happ per-app-proxy-mode и per-app-proxy-list без премиального Provider ID? Источники противоречат друг другу.",
+    "Проходит ли обход через tun0 (Amnezia #2457) в режиме allowlist, и отрезает ли его правило Xray «неизвестный UID → block»?",
+    "Насколько стабилен встроенный TUN Xray на Android по сравнению с hev-socks5-tunnel (скорость, батарея, IPv6, DNS)?",
+    "Видна ли VPN рабочего профиля (TRANSPORT_VPN, getAllNetworks) приложениям личного профиля на стоке, One UI и MIUI?",
+    "Когда верификация разработчиков Google дойдёт до РФ? Нужен ли нам аккаунт с ограниченным распространением на 20 устройств?"
+   ]
+  },
+  "verify": {
+   "verdicts": [
+    {
+     "id": "F1",
+     "verdict": "confirmed",
+     "corrected": "Верно. Есть нюанс для пресетов: addAllowedApplication принимает только пакет, который уже установлен, иначе бросает NameNotFoundException. Приложение, поставленное после подключения, в туннель не попадёт, пока туннель не пересобрать. Клиенту нужно слушать PACKAGE_ADDED и переподнимать VPN.",
+     "evidence": "Документация VpnService.Builder: «only applications added through this method (and no others) are allowed access… un-added applications will use networking as if the VPN wasn't running». Сочетание с addDisallowedApplication даёт UnsupportedOperationException. Пакет должен быть установлен. Режим bypass=false в v2rayNG сверял только по deepwiki, не по коду.",
+     "sources": [
+      "https://developer.android.com/reference/android/net/VpnService.Builder"
+     ]
+    },
+    {
+     "id": "F2",
+     "verdict": "corrected",
+     "corrected": "Несовместимость с пользовательским lockdown подтверждена. Но вывод «закрыть дыру можно только рабочим профилем» неверен. С API 29 владелец устройства или профиля может вызвать DPM.setAlwaysOnVpnPackage(admin, pkg, true, lockdownAllowlist): lockdown включён, а пакеты из списка (RU-приложения) ходят напрямую. Цена: список задаётся явно и сам не обновляется, а Device Owner ставится через ADB на устройство без аккаунтов, то есть почти всегда после сброса.",
+     "evidence": "Mullvad: «excluded apps will not work if you have enabled Block connections without VPN». Документация DPM: lockdownAllowlist — «apps that should be able to access the network directly», «System apps can always bypass VPN», «the system doesn't update the allowlist when packages are installed».",
+     "sources": [
+      "https://mullvad.net/en/help/split-tunneling-with-the-mullvad-app",
+      "https://developer.android.com/reference/android/app/admin/DevicePolicyManager"
+     ]
+    },
+    {
+     "id": "F3",
+     "verdict": "confirmed",
+     "corrected": "Верно. Уточнение: на Android 11+ для queryIntentServices по android.net.VpnService достаточно объявить <queries> с этим action, QUERY_ALL_PACKAGES не нужен. Поэтому уникальное имя пакета не спасает. По данным RKS, список VPN-клиентов собирают 7 приложений: WB, 2ГИС, МТС, Ozon, МегаМаркет, RuStore, ОК.",
+     "evidence": "RKS: протестировано 30 приложений, 13 сканируют интерфейсы, 7 перечисляют VPN-клиенты через queryIntentServices(\"android.net.VpnService\"); обновление от 16.04. Документация VpnService: сервис обязан объявлять intent-filter android.net.VpnService.",
+     "sources": [
+      "https://rks.global/ru/research/vpn-detection/",
+      "https://developer.android.com/reference/android/net/VpnService"
+     ]
+    },
+    {
+     "id": "F4",
+     "verdict": "corrected",
+     "corrected": "В #2457 фикс через getConnectionOwnerUid не предлагается. Автор ссылается на PR #2453 (фикс SOCKS) и просит авторизацию на tun0. Само решение при этом обосновано документацией. getConnectionOwnerUid (API 29+) возвращает UID только для соединений туннеля этого VPN, иначе INVALID_UID. Xray Docs: process на Android работает после RegisterAndroidProcessFinder. Сработает ли это для allowlist — не проверено.",
+     "evidence": "#2457 открыт 09.04.2026: AmneziaVPN 4.8.14.5, Android 14, комментариев нет. Документация ConnectivityManager: «uid if… associated with the calling VPN app's VpnService tunnel or INVALID_UID». Про libXray (поиск): на API 30+ использует getConnectionOwnerUid, на старых версиях парсит /proc/net.",
+     "sources": [
+      "https://github.com/amnezia-vpn/amnezia-client/issues/2457",
+      "https://developer.android.com/reference/android/net/ConnectivityManager",
+      "https://xtls.github.io/en/config/routing.html"
+     ]
+    },
+    {
+     "id": "F5",
+     "verdict": "confirmed",
+     "corrected": "Верно. Уточнения: в libXray метод SetTunFd удалён, xray.tun.fd пишут в корневой объект env конфига перед runXray. Встроенный TUN Xray на Android глючит: в v2rayNG #5181 (17.01.2026) описаны петля и отказ sniffing, на Hev TUN всё работает. Для MVP это риск.",
+     "evidence": "README proxy/tun: «Set the environment variable xray.tun.fd (or XRAY_TUN_FD)», из ICMP поддержан только Echo, и ответы генерируются локально. Релиз v26.1.23 (23.01.2026): Hysteria outbound (v2, udphop), Salamander, TUN для Android. libXray: MIT, API 21, «Use only one Go runtime per process».",
+     "sources": [
+      "https://github.com/XTLS/Xray-core/blob/main/proxy/tun/README.md",
+      "https://github.com/XTLS/Xray-core/releases/tag/v26.1.23",
+      "https://github.com/XTLS/libXray",
+      "https://github.com/2dust/v2rayNG/issues/5181"
+     ]
+    },
+    {
+     "id": "F6",
+     "verdict": "confirmed",
+     "corrected": "В целом верно. mihomo v1.19.32 вышел 30.09.2026. AWG 3.0 и 3.1 появились в v1.19.30, ML-KEM для REALITY — в v1.19.31. CMFA v2.11.35 — 30.09. FlClash под GPL-3.0. «XHTTP с 1.19.22» и точное имя опции ML-KEM я не проверил.",
+     "evidence": "Страницы релизов mihomo и CMFA, README FlClash.",
+     "sources": [
+      "https://github.com/MetaCubeX/mihomo/releases",
+      "https://github.com/MetaCubeX/ClashMetaForAndroid/releases",
+      "https://github.com/chen08209/FlClash"
+     ]
+    },
+    {
+     "id": "F7",
+     "verdict": "corrected",
+     "corrected": "SaeedDev94/Xray подтверждён: 12.7.0 (02.10.2026), MIT, Android 8+, Xray 26.9.30, hev-socks5-tunnel 2.18.0. Про v2rayNG неточно: с 2.0.0 в нём есть режим «Xray Core TUN» помимо Hev TUN, то есть можно обойтись без SOCKS на localhost. Последняя версия — 2.3.10 (01.10.2026, Xray 26.9.30). Лицензия Hiddify ещё жёстче: форк обязан быть публичным на GitHub, а приватный репозиторий запрещён.",
+     "evidence": "F-Droid io.github.saeeddev94.xray. v2rayNG #5181 сравнивает Xray Core TUN и Hev TUN. LICENSE.md Hiddify: «You must publish your source code on GitHub as a fork… keep it up-to-date».",
+     "sources": [
+      "https://f-droid.org/packages/io.github.saeeddev94.xray/",
+      "https://github.com/2dust/v2rayNG/releases",
+      "https://github.com/2dust/v2rayNG/issues/5181",
+      "https://raw.githubusercontent.com/hiddify/hiddify-app/main/LICENSE.md"
+     ]
+    },
+    {
+     "id": "F8",
+     "verdict": "corrected",
+     "corrected": "Противоречие решается так. Per-app-proxy-mode/list и autoconnect требуют Provider ID: docs.happ.info прямо это пишет. Премиальный статус документация явно требует только для serverDescription. Платный ли сам Provider ID, официальные страницы не говорят; наш research упоминает тариф по числу HWID, это 🟡. Раз в сутки уходит GET на check.happ-proxy.com/provider?id=… с HWID, ОС и хэшем домена — подтверждено.",
+     "evidence": "app-management: «The Provider ID parameter is required!» для per-app и autoconnect. В premium-functionality «Доступно только при наличии премиум ProviderID» стоит только у описания сервера. kod.ru: Xray API закрыт в 4.7.2 (11.04.2026), открытый локальный SOCKS5 остаётся.",
+     "sources": [
+      "https://docs.happ.info/main/dev-docs/app-management",
+      "https://docs.happ-proxy.com/ru/getting-started/provider-id",
+      "https://docs.happ-proxy.com/ru/getting-started/premium-functionality",
+      "https://kod.ru/vpn-happ-problems"
+     ]
+    },
+    {
+     "id": "F9",
+     "verdict": "corrected",
+     "corrected": "Мелкие поправки. Стабильный InviZible Pro v7.5.0 датирован 12.07 по GitHub, а не 21.07; IzzyOnDroid отдаёт бету 2.7.3 (19.08.2026). RethinkDNS подтверждён: Advanced Mode → Select Apps. «Allowlist по умолчанию нигде нет» — неточно: Happ даёт провайдеру выставить per-app-proxy-mode=on заголовком, то есть allowlist по умолчанию, но только с Provider ID.",
+     "evidence": "Релизы Gedsh/InviZible, страница IzzyOnDroid, документация RethinkDNS по WireGuard, Happ app-management.",
+     "sources": [
+      "https://github.com/Gedsh/InviZible/releases",
+      "https://apt.izzysoft.de/fdroid/index/apk/pan.alexander.tordnscrypt",
+      "https://docs.rethinkdns.com/proxy/wireguard/",
+      "https://docs.happ.info/main/dev-docs/app-management"
+     ]
+    },
+    {
+     "id": "F10",
+     "verdict": "corrected",
+     "corrected": "API указаны верно: setAlwaysOnVpnPackage с lockdownAllowlist, API 29. Но тезис «RU-приложения в основном профиле не видят VPN» вероятно ложен. В GrapheneOS #5225 (открыт) приложение из Private Space детектит VPN владельца, #7511 говорит о том же для рабочего профиля, проблема апстримная. Обратное направление не проверено, но tun0 виден в любом случае. Профиль скрывает список пакетов, а не факт VPN.",
+     "evidence": "GrapheneOS #5225 (08.04.2025, open, upstream): «a sneaky app can detect VPN is on in another profile». #7511 (30.03.2026) закрыт как дубликат: TRANSPORT_VPN виден из рабочего профиля.",
+     "sources": [
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/5225",
+      "https://github.com/GrapheneOS/os-issue-tracker/issues/7511",
+      "https://developer.android.com/reference/android/app/admin/DevicePolicyManager"
+     ]
+    },
+    {
+     "id": "F11",
+     "verdict": "corrected",
+     "corrected": "Обновление без подтверждения работает только на Android 12+ (API 31). Требования к targetSdk растут: 29 на A12, 30 на A13, 31 на A14, 33 на A15, 34 на A16, 35 на A17. На Android 8–11 подтверждение нужно всегда. Аккаунт с ограниченным распространением бесплатный, нужен только email без паспорта. Advanced flow: перезагрузка, 24 ч ожидания, потом разрешение на 7 дней или навсегда. kod.ru/rustore-vpn — про собственный VPN RuStore, а не про удаление VPN-приложений.",
+     "evidence": "SessionParams.setRequireUserAction: таблица targetSdk по версиям, условия «updating itself» и UPDATE_PACKAGES_WITHOUT_USER_ACTION. Блог Google: BR, ID, SG, TH с 30.09.2026, глобально в 2027, ADB освобождён, до 20 устройств. Android Authority: шаги advanced flow.",
+     "sources": [
+      "https://developer.android.com/reference/android/content/pm/PackageInstaller.SessionParams",
+      "https://android-developers.googleblog.com/2026/03/android-developer-verification-rolling-out-to-all-developers.html",
+      "https://www.androidauthority.com/google-android-advanced-flow-sideloading-rollout-begins-3700073/",
+      "https://kod.ru/rustore-vpn"
+     ]
+    },
+    {
+     "id": "F12",
+     "verdict": "confirmed",
+     "corrected": "Лицензии подтверждены: amneziawg-android — Apache-2.0, libXray — MIT, SaeedDev94/Xray — MIT, v2rayNG и mihomo — GPL-3.0, InviZible — GPL-3.0+. Дополнения: geo-данные runetfreedom под GPL-3.0, а Hiddify требует публичный форк. Юридическую часть (КоАП 14.3 ч.18) я не перепроверял, это 🟡.",
+     "evidence": "README и LICENSE репозиториев. runetfreedom: GPL-3.0, обновление каждые 6 ч.",
+     "sources": [
+      "https://github.com/amnezia-vpn/amneziawg-android",
+      "https://github.com/XTLS/libXray",
+      "https://github.com/runetfreedom/russia-v2ray-rules-dat"
+     ]
+    },
+    {
+     "id": "F13",
+     "verdict": "unverifiable",
+     "corrected": "Это дизайн, не факт. Технически исправить: fd передаётся через env в конфиге, а не через SetTunFd. Добавить в MVP пересборку allowlist при установке пакетов. Встроенный TUN Xray перед ставкой на него проверить на петли и sniffing (#5181), запасной вариант — Hev TUN с авторизацией. Категории geosite есть в runetfreedom: ru-blocked, category-ads-all и стандартные из v2fly.",
+     "evidence": "README libXray, v2rayNG #5181, README runetfreedom.",
+     "sources": [
+      "https://github.com/XTLS/libXray",
+      "https://github.com/2dust/v2rayNG/issues/5181",
+      "https://github.com/runetfreedom/russia-v2ray-rules-dat"
+     ]
+    },
+    {
+     "id": "F14",
+     "verdict": "unverifiable",
+     "corrected": "Экспертная оценка, первоисточника нет. Факт о темпе релизов уточнён: v26.9.8 и v26.9.9 вышли в один день, 08.09.2026 (у v26.9.8 нет своих заметок, она ссылается на v26.9.9), v26.9.30 — 30.09.2026. На GitHub все релизы Xray помечены как pre-release.",
+     "evidence": "GitHub API, releases XTLS/Xray-core: published_at и флаг prerelease=true.",
+     "sources": [
+      "https://github.com/XTLS/Xray-core/releases"
+     ]
+    }
+   ],
+   "missed": [
+    "Быстрый путь без своего клиента: в v2rayNG ≥2.0.0 есть режим Xray Core TUN, без локального SOCKS. Вместе с режимом «только выбранные» это может закрыть утечку через SOCKS уже сейчас, но нужен тест из-за бага #5181.",
+    "Kill-switch с allowlist доступен без рабочего профиля: Device Owner + lockdownAllowlist (DPM, API 29). Минусы: provisioning через ADB или сброс, список не обновляется сам, системные приложения всегда идут в обход.",
+    "Allowlist принимает только установленные пакеты. Пресет «Brave + мессенджеры» должен пропускать отсутствующие приложения и пересобирать туннель при PACKAGE_ADDED. Happ это умеет.",
+    "Межпрофильная видимость VPN (GrapheneOS #5225, #7511): рабочий профиль и Private Space не скрывают факт VPN, только список пакетов.",
+    "Happ: per-app и autoconnect требуют Provider ID. Значит, преднастройка allowlist в Happ = телеметрия HWID на check.happ-proxy.com. Это аргумент за свой клиент или v2rayNG.",
+    "Brave как VPN-браузер: стоит отдельно проверить настройки WebRTC IP handling, телеметрию P3A и встроенный Brave VPN, который в РФ не нужен. Я этого не проверял."
+   ]
+  }
+ }
+]

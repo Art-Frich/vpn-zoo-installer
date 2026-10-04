@@ -27,3 +27,10 @@ docker/out/
 # Python
 __pycache__/
 *.pyc
+
+# Claude Code: личные настройки
+.claude/settings.local.json
+CLAUDE.local.md
+
+# Пакет клиентского пробника с ключами (README: scp в probe/)
+/probe/
