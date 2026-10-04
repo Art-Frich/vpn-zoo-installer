@@ -31,8 +31,8 @@ SECURITY_HEADERS = [
     ("Cross-Origin-Resource-Policy", "same-origin"),
     ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
 ]
-NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/traffic", "Трафик"), ("/probe", "Проверка"),
-       ("/logs", "Журнал"), ("/settings", "Настройки")]
+NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/traffic", "Трафик"),
+       ("/probe", "Проверка"), ("/logs", "Журнал"), ("/settings", "Настройки")]
 
 
 @dataclass
@@ -70,7 +70,7 @@ def text(body: str, status: int = 200, content_type: str = "text/plain; charset=
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import allowviews, userviews, views  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token)
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -92,6 +92,8 @@ class App:
             ("GET", rf"/users/{name}/delete", userviews.user_delete_confirm, True),
             ("POST", rf"/users/{name}/delete", userviews.user_delete, True),
             ("GET", rf"/users/{name}/file/(?P<idx>\d+)", userviews.user_file, True),
+            ("GET", r"/apps", allowviews.apps_page, True),
+            ("POST", r"/apps", allowviews.apps_post, True),
             ("GET", r"/traffic", views.traffic_page, True),
             ("GET", r"/probe", views.probe_page, True),
             ("POST", r"/probe/run", views.probe_run, True),

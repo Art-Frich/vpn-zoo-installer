@@ -263,6 +263,8 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
             return rep
         reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system))
         reg.save()
+        if not system:
+            _write_allowlist_files(name)
         rep.ok = not failed
         rep.message = "пользователь создан" if rep.ok else "создан частично, без: " + ", ".join(failed)
         return rep
@@ -302,6 +304,8 @@ def delete_user(name: str, force: bool = False) -> OpReport:
             return rep
         reg.remove(name)
         reg.save()
+        from . import allowlist
+        allowlist.forget_user(name)
         _cleanup_client_dir(name)
         rep.ok = not left
         rep.message = "пользователь удалён" if rep.ok else "удалён из реестра (--force), ошибки: " + ", ".join(left)
@@ -482,6 +486,15 @@ def _drop_probe_export(name: str) -> bool:
         return False
 
 
+def _write_allowlist_files(name: str) -> None:
+    """Правила v2rayN нового пользователя (D31); сбой не мешает созданию пользователя."""
+    from . import allowlist
+    try:
+        allowlist.write_user_files(name)
+    except (allowlist.AllowlistError, OSError):
+        pass
+
+
 def _cleanup_client_dir(name: str) -> None:
     """Каталог клиентских файлов удаляем, только если модули протоколов его уже опустошили."""
     d = paths.clients_dir() / name
@@ -520,12 +533,17 @@ def user_links(name: str, protocols: list[str] | None = None) -> tuple[list[prot
 
     Каталог clients/<name>/ не сканируется: там и секреты модулей (ключи, пароли).
     Модуль не ответил → ссылки и файлы из манифеста (если есть). Без реестра —
-    протоколы, в манифестах которых есть этот пользователь.
+    протоколы, в манифестах которых есть этот пользователь. Без фильтра protocols (или с
+    allowlist в нём) в конце — правила v2rayN пользователя (proto_id allowlist).
     Возвращает (ссылки, {id: ошибка}).
     """
+    from . import allowlist
+    protocols_arg = protocols
     by_id = {m.id: m for m in manifests.load_all()[0]}
     libs = set(protolib.list_libs())
     user = Registry.load().get(name)
+    if protocols is not None:
+        protocols = [p for p in protocols if p != allowlist.V2RAYN_PROTO]
     if protocols is None:
         if user:
             protocols = list(user.protocols)
@@ -548,4 +566,6 @@ def user_links(name: str, protocols: list[str] | None = None) -> tuple[list[prot
         result += fallback
         if not fallback:
             errors[pid] = err
+    if protocols_arg is None or allowlist.V2RAYN_PROTO in protocols_arg:
+        result += allowlist.links_for(name)
     return result, errors

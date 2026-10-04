@@ -1,0 +1,4 @@
+{
+  "android": ["com.brave.browser", "org.telegram.messenger"],
+  "windows": ["brave.exe", "Telegram.exe"]
+}

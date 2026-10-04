@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import manifests, paths, protolib, qr, traffic, users
+from .. import allowlist, manifests, paths, protolib, qr, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
 from . import charts
@@ -236,19 +236,21 @@ def qr_markup(payload: str | None) -> Markup:
     return t("div", svg, class_="qr") if svg else t("p", "QR: неожиданный формат qrencode", class_="muted small")
 
 
-# выдаются только клиентские конфиги (AWG .conf); прочее в clients/<name>/ — секреты модулей
+# выдаются только клиентские конфиги (AWG .conf) и правила v2rayN; прочее в clients/<name>/ —
+# секреты модулей
 CLIENT_FILE_SUFFIXES = {".conf"}
+CLIENT_FILE_NAMES = {allowlist.V2RAYN_FILE}
 
 
 def _file_ok(path: str, name: str) -> Path | None:
-    """Файл для выдачи — только clients/<name>/*.conf самого пользователя. config.env, ключи
-    и чужие каталоги не отдаются, даже если модуль по ошибке вернёт такой путь."""
+    """Файл для выдачи — только clients/<name>/*.conf и правила v2rayN самого пользователя.
+    config.env, ключи и чужие каталоги не отдаются, даже если модуль по ошибке вернёт такой путь."""
     try:
         real = Path(path).resolve()
         real.relative_to((paths.clients_dir() / name).resolve())
     except (ValueError, OSError):
         return None
-    if real.suffix not in CLIENT_FILE_SUFFIXES:
+    if real.suffix not in CLIENT_FILE_SUFFIXES and real.name not in CLIENT_FILE_NAMES:
         return None
     return real if real.is_file() else None
 
@@ -280,8 +282,14 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
                 class_="actions")
     if user.system:
         actions = badge("служебный: пробник", "muted")
+    try:
+        own = allowlist.Allowlist.load().own(name)
+    except allowlist.AllowlistError:
+        own = False
     info = card("Профиль", kv([
         ("статус", badge("включён", "ok") if user.enabled else badge("отключён — креды сохранены, доступ закрыт", "muted")),
+        ("через VPN", t("a", "свой список приложений" if own else "общий список приложений",
+                        href=f"/apps?user={name}")),
         ("заметка", user.note or "—"),
         ("создан", user.created.replace("T", " ").rstrip("Z") or "—"),
         ("протоколы", t("div", [t("span", p, class_="chip") for p in user.protocols] or "—", class_="chips")),
@@ -307,25 +315,31 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     blocks = []
     for i, link in enumerate(links):
         m = by_id.get(link.proto_id)
-        title = (m.name if m else link.proto_id) + (f" · {link.label}" if link.label else "")
+        v2rayn = link.proto_id == allowlist.V2RAYN_PROTO
+        base = m.name if m else ("Приложения через VPN" if v2rayn else link.proto_id)
+        title = base + (f" · {link.label}" if link.label else "")
         uri_id = f"uri-{i}"
         if link.kind == "file":
             fname = Path(link.uri).name
             main = t("div", t("span", fname, class_="mono small"),
                      t("a", "Скачать", href=f"/users/{name}/file/{i}", class_="btn small primary"),
                      class_="link-uri")
-            qr_label = "QR-код файла (импорт в AmneziaVPN / AmneziaWG)"
+            qr_label = ("QR-код для AmneziaWG / WG Tunnel на Android" if fname.endswith("-android.conf")
+                        else "QR-код файла (импорт в AmneziaWG, AmneziaVPN)")
         else:
             main = t("div", t("input", type="text", id=uri_id, value=link.uri, readonly=True, data_select=True,
                               aria_label=f"Ссылка {title}"),
                      t("button", "Копировать", type="button", class_="btn small", data_copy=uri_id),
                      class_="link-uri")
             qr_label = "QR-код"
+        extra = (t("p", "v2rayN → «Настройки» → «Настройки маршрутизации» → «Добавить набор правил» → "
+                        "«Импорт правил из файла». Подробно — docs/USER-GUIDE.md, раздел про Windows.",
+                   class_="hint") if v2rayn else
+                 t("details", t("summary", qr_label), qr_markup(_payload(link, name))))
         blocks.append(t("div",
                         t("div", t("h3", title), t("span", link.proto_id, class_="chip"), class_="link-head"),
                         t("div", m.notes, class_="notes") if m and m.notes and _first_of(links, i) else None,
-                        main,
-                        t("details", t("summary", qr_label), qr_markup(_payload(link, name))),
+                        main, extra,
                         class_="link"))
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
     links_card = card("Ссылки и QR", err_list,
@@ -354,7 +368,7 @@ def user_file(app: "App", req: "Request", name: str, idx: str) -> "Response":
     if f is None:
         return app.error(req, 404, "Нет файла", "Файл не найден или лежит вне каталога клиента.")
     data = f.read_bytes()
-    fname = f"{name}-{links[i].proto_id}{f.suffix}"
+    fname = f"{name}-{f.name}"
     return Response(200, data, "application/octet-stream",
                     headers=[("Content-Disposition", f'attachment; filename="{fname}"')])
 

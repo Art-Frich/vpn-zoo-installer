@@ -154,12 +154,15 @@ _awg_endpoint() {
     case "$SERVER_IP" in *:*) printf '[%s]:%s\n' "$SERVER_IP" "$AWG_PORT" ;; *) printf '%s:%s\n' "$SERVER_IP" "$AWG_PORT" ;; esac
 }
 
-# Клиентский .conf пользователя
+# Клиентский .conf пользователя. Второй аргумент — список пакетов Android: вариант для
+# AmneziaWG/WG Tunnel на Android, через туннель идут только эти приложения (D31). В общий
+# .conf ключ не кладём: awg-quick (Linux, пробник) и клиенты iOS/десктопа его не знают
 _awg_client_conf() {
-    local d
+    local d apps="${2:-}"
     d="$(_awg_udir "$1")"
     printf '[Interface]\nPrivateKey = %s\nAddress = %s/32\nDNS = %s\nMTU = %s\n' \
         "$(cat "$d/amneziawg.key")" "$(cat "$d/amneziawg.ip")" "${AWG_DNS:-1.1.1.1, 1.0.0.1}" "${AWG_MTU:-1280}"
+    [ -z "$apps" ] || printf 'IncludedApplications = %s\n' "$apps"
     _awg_obf_lines
     printf '\n[Peer]\nPublicKey = %s\nPresharedKey = %s\nEndpoint = %s\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = %s\n' \
         "$AWG_SERVER_PUB" "$(cat "$d/amneziawg.psk")" "$(_awg_endpoint)" "${AWG_KEEPALIVE:-25}"
@@ -218,11 +221,23 @@ print("vpn://" + base64.urlsafe_b64encode(blob).decode().rstrip("="))
 PY
 }
 
-# Пересобрать файлы пользователя для выдачи: .conf, vpn://, QR (.png) текста .conf
+# Пересобрать файлы пользователя для выдачи: .conf, vpn://, QR (.png) текста .conf и
+# Android-вариант amneziawg-android.{conf,png} со списком приложений (zoo allow)
 _awg_user_files() {
-    local d uri
+    local d uri apps
     d="$(_awg_udir "$1")"
     _awg_client_conf "$1" | _awg_ufile "$1" amneziawg.conf
+    if apps="$(zoo_allowlist android "$1")" && [ -n "$apps" ]; then
+        _awg_client_conf "$1" "$apps" | _awg_ufile "$1" amneziawg-android.conf
+        if command -v qrencode >/dev/null; then
+            ( umask 077; qrencode -t png -o "$d/amneziawg-android.png" -r "$d/amneziawg-android.conf" ) \
+                || log_warn "amneziawg: QR Android-варианта для $1 не создан"
+        fi
+    else
+        # пустой IncludedApplications = все приложения в туннеле: такой вариант не выдаём
+        log_warn "amneziawg: список приложений Android для $1 пуст — Android-вариант не создан (zoo allow list)"
+        rm -f "$d/amneziawg-android.conf" "$d/amneziawg-android.png"
+    fi
     if uri="$(_awg_vpn_uri "$1")" && [ -n "$uri" ]; then
         printf '%s\n' "$uri" | _awg_ufile "$1" amneziawg.vpnuri
     else
@@ -261,7 +276,7 @@ _awg_user_del() {
     _awg_ctx || return 1
     _awg_has_user "$name" || { log_err "amneziawg: пользователя $name нет"; return 1; }
     d="$(_awg_udir "$name")"
-    rm -f "$d"/amneziawg.*
+    rm -f "$d"/amneziawg.* "$d"/amneziawg-android.*
     rmdir "$d" 2>/dev/null || true
     _awg_render_server || return 1
     _awg_apply || return 1
@@ -307,14 +322,21 @@ proto_amneziawg_user_list() {
     done
 }
 
-# Ссылка vpn:// (AmneziaVPN) и путь к .conf (AmneziaWG, WG Tunnel, QR)
+AWG_LABEL_ANDROID="Android: через VPN только выбранные приложения"
+AWG_LABEL_PLAIN="Компьютер, iPhone: весь трафик через VPN"
+
+# Ссылка vpn:// (AmneziaVPN) и пути к .conf строками «метка<TAB>путь», Android-вариант первым
 proto_amneziawg_links() {
     local d
     _awg_has_user "${1:-}" || { log_err "amneziawg: пользователя ${1:-} нет"; return 1; }
     d="$(_awg_udir "$1")"
-    [ -s "$d/amneziawg.conf" ] || { _awg_ctx && _awg_user_files "$1"; } || return 1
+    if [ ! -s "$d/amneziawg.conf" ] \
+        || { [ ! -s "$d/amneziawg-android.conf" ] && [ -n "$(zoo_allowlist android "$1")" ]; }; then
+        { _awg_ctx && _awg_user_files "$1"; } || return 1
+    fi
     [ ! -s "$d/amneziawg.vpnuri" ] || cat "$d/amneziawg.vpnuri"
-    printf '%s\n' "$d/amneziawg.conf"
+    [ ! -s "$d/amneziawg-android.conf" ] || printf '%s\t%s\n' "$AWG_LABEL_ANDROID" "$d/amneziawg-android.conf"
+    printf '%s\t%s\n' "$AWG_LABEL_PLAIN" "$d/amneziawg.conf"
 }
 
 # probe для манифеста: {kind:"awg", user, conf (полный клиентский .conf), endpoint, ...}
@@ -356,8 +378,11 @@ _awg_manifest_refresh() {
         if _awg_user_on "$u"; then en=true; else en=false; fi
         [ ! -s "$d/amneziawg.vpnuri" ] || links="$(jq -c --arg u "$u" --arg uri "$(cat "$d/amneziawg.vpnuri")" \
             --argjson en "$en" '. + [{user:$u, uri:$uri, enabled:$en}]' <<< "$links")"
-        files="$(jq -c --arg u "$u" --arg p "$d/amneziawg.conf" --argjson en "$en" \
-            '. + [{user:$u, path:$p, enabled:$en}]' <<< "$files")"
+        [ ! -s "$d/amneziawg-android.conf" ] || files="$(jq -c --arg u "$u" --arg p "$d/amneziawg-android.conf" \
+            --argjson en "$en" --arg l "$AWG_LABEL_ANDROID" \
+            '. + [{user:$u, path:$p, enabled:$en, label:$l, platform:"android"}]' <<< "$files")"
+        files="$(jq -c --arg u "$u" --arg p "$d/amneziawg.conf" --argjson en "$en" --arg l "$AWG_LABEL_PLAIN" \
+            '. + [{user:$u, path:$p, enabled:$en, label:$l}]' <<< "$files")"
         [ -n "$probe_user" ] || ! _awg_user_on "$u" || probe_user="$u"
     done
     if _awg_has_user owner && _awg_user_on owner; then probe_user=owner; fi
@@ -370,6 +395,7 @@ _awg_manifest_refresh() {
         name="AmneziaWG 2.0"
         notes="Клиенты AWG 2.0+: AmneziaVPN (vpn:// или .conf с 5.0.1.5), AmneziaWG ≥2.0, WG Tunnel ≥4.2.0, mihomo ≥1.19.14. UDP: там, где режут UDP, не работает — нужен TCP-протокол."
     fi
+    notes="$notes Android: amneziawg-android.conf и его QR — через VPN только приложения из списка (zoo allow list). Приложение из списка, которого нет на телефоне, Android по коду пропускает; свой список — zoo allow … --user ИМЯ."
     # фактический движок: при kernel без модуля (DKMS сломался) awg-quick берёт amneziawg-go
     active="${AWG_ENGINE_ACTIVE:-userspace}"
     if pgrep -f "amneziawg-go $AWG_IFACE\$" >/dev/null 2>&1; then active=userspace; fi

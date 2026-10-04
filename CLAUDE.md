@@ -9,6 +9,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 | `docs/ARCHITECTURE.md` | контракт разработки: фазы, ключи config.env и их фазы-владельцы, манифест, пользователи, zoo, пробник, стенд, правила кода |
 | `docs/DECISIONS.md` | решения D1–D30 с «почему» и «как поменять». Новое решение без владельца → новая строка D31… |
 | `docs/RISK-REDUCTION.md` | детект VPN, утечки IP, MAX/банки, пошаговые настройки клиентов, §7 поправки к исследованиям |
+| `docs/USER-GUIDE.md` | инструкция для пользователей VPN (по-русски, простым языком): allowlist, клиенты по платформам, Brave, банки/MAX |
 | `docs/PROBE-SURFACE.md` | что видит активный сканер снаружи (порты, баннеры, неотличимость REALITY) |
 | `research/README.md` | индекс исследований по датам; срезы не переписываются, поправки — в RISK-REDUCTION §7 |
 | `scripts/versions.env` | закреплённые версии и sha256 всего скачиваемого (D1). Только присваивания |
@@ -44,9 +45,10 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 - `scripts/lib/proto-<id>.sh` — модуль протокола: `proto_<id>_user_add|user_del|user_enable|user_list|links|probe|manifest_refresh|traffic|disable`. stdout — только данные, логи в stderr. Контракт описан в `zoo/zoolib/protolib.py`; zoo зовёт эти функции из копии в `/opt/vpn-zoo`.
 - Манифест `/etc/vpn-setup/protocols.d/<id>.json`: `id, layer, port, engine, service, enabled, users_backend, links[], files[], probe{kind: xray|hysteria|awg|sing-box}` (ARCHITECTURE §4). Пробник строит клиента только из `probe`.
 - Пользователи: `/etc/vpn-setup/users.json` — источник правды; `owner` создаётся при установке; `zoo-probe` — скрытый служебный (D26).
+- Приложения через VPN (D31): `/etc/vpn-setup/allowlist.json` (пишет только `zoolib/allowlist.py`, `zoo allow`), пресет `scripts/allowlist-default.json`, bash читает `zoo_allowlist` (lib.sh). Из него — `clients/<имя>/amneziawg-android.conf` (`IncludedApplications`, общий `.conf` без ключа) и `v2rayn-routing.json`.
 - Серверные файлы: `/etc/vpn-setup/config.env` (0600, секреты), `clients/<имя>/`, `/var/lib/vpn-zoo/`, `/var/log/vpn-zoo/install-*.log` и `/var/backups/vpn-setup/` (содержат ключи, ротация D29).
 
-**zoo** (`zoo/zoo` → `zoo/zoolib/`): `cli.py` (argparse), `config.py`, `manifests.py`, `users.py`, `protolib.py` (мост в bash), `xui.py`, `traffic.py` (SQLite), `status.py`, `upgrade.py` (`zoo upgrade/smoke`), `probe/` (`engine.py`, `clients.py`, `verdicts.py`, `report.py`), `web/` (сервер, auth, CSRF/CSP, views). Юниты — `zoo/systemd/`. Тесты — `zoo/tests/` (unittest) + `zoo/tests/web_smoke.sh`.
+**zoo** (`zoo/zoo` → `zoo/zoolib/`): `cli.py` (argparse), `config.py`, `manifests.py`, `users.py`, `allowlist.py` (zoo allow), `protolib.py` (мост в bash), `xui.py`, `traffic.py` (SQLite), `status.py`, `upgrade.py` (`zoo upgrade/smoke`), `probe/` (`engine.py`, `clients.py`, `verdicts.py`, `report.py`), `web/` (сервер, auth, CSRF/CSP, views). Юниты — `zoo/systemd/`. Тесты — `zoo/tests/` (unittest) + `zoo/tests/web_smoke.sh`.
 
 **Стенд** (`docker/`): `server.Dockerfile` (Ubuntu + systemd PID 1), `run-server.sh` (up/sync/install/shell/exec/down), `test.sh` (e2e), `tests/<id>.sh` (трафик настоящими клиентами, links, routing, security, collector, ssh-harden), `probe/` (образ `zoo-probe`, ожидаемые вердикты — `expect.py`), `censor/` (эмулятор ТСПУ: clean, drop-udp, ip-block, freeze-16k, rst-tls), `lint.sh` (shellcheck). Отчёты — `docker/out/<ts>/` (в .gitignore, внутри секреты стенда).
 
@@ -114,7 +116,7 @@ bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
 - Не проверено: боевой VPS через российского провайдера и настоящий ТСПУ; модуль ядра AmneziaWG (DKMS) и цикл HWE→reboot; arm64; хостер без hairpin; `SSH_HARDEN` на облачных образах с чужими drop-in и файрволом хостера.
 - Клиентские приложения (Happ, v2rayN/NG, Hiddify, AmneziaVPN, mihomo…) — ссылки проверены разбором ядрами, не импортом на устройстве.
 - Не прогонялись: `XHTTP_PLACEMENT=fallback`, `AWG_PROFILE=v3`, смена `PANEL_*`, `ENABLE_ZOO=0`, `SUB_PUBLIC=1` (фазы подписки нет).
-- Открытые продуктовые темы: allowlist приложений вместо «исключить RU» и Brave под VPN (`research/2026-10-04/clients-and-allowlist_04-10-26.md`), свой Android-клиент (`own-android-client_04-10-26.md`) — решения за владельцем.
+- Allowlist (D31) сделан по `research/2026-10-04/clients-and-allowlist_04-10-26.md`, но на телефоне не проверен: импорт `IncludedApplications` в AmneziaWG/WG Tunnel, поведение при неустановленном пакете (по коду AOSP пакет пропускается, туннель поднимается), правила `process` в v2rayN на Windows (и с выключенной Legacy Protect). Открыто: публичная подписка (заголовки INCY), свой Android-клиент (`own-android-client_04-10-26.md`) — решения за владельцем.
 
 ## Владелец: как работать
 

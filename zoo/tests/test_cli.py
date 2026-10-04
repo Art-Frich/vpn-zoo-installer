@@ -95,9 +95,9 @@ class CliUsersTest(unittest.TestCase):
         self.assertIn("тест", out)
         code, out, _ = run_cli("links", "masha", "--json")
         data = json.loads(out)
-        self.assertEqual({x["proto"] for x in data["links"]}, {"vless-reality", "amneziawg"})
+        self.assertEqual({x["proto"] for x in data["links"]}, {"vless-reality", "amneziawg", "allowlist"})
         files = [x["uri"] for x in data["links"] if x["kind"] == "file"]
-        self.assertEqual(len(files), 1)
+        self.assertEqual(len(files), 2)  # .conf AWG и правила v2rayN
         self.assertTrue(files[0].endswith("amneziawg.conf"))
         code, out, _ = run_cli("links", "masha")
         self.assertIn("файл: ", out)
