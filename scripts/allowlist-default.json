@@ -1,4 +1,17 @@
 {
-  "android": ["com.brave.browser", "org.telegram.messenger"],
-  "windows": ["brave.exe", "Telegram.exe"]
+  "android": [
+    "com.brave.browser",
+    "org.telegram.messenger",
+    "org.telegram.messenger.web",
+    "org.thunderdog.challegram",
+    "com.google.android.youtube",
+    "com.instagram.android",
+    "com.whatsapp",
+    "com.twitter.android",
+    "com.discord",
+    "org.thoughtcrime.securesms",
+    "com.openai.chatgpt",
+    "com.anthropic.claude"
+  ],
+  "windows": ["brave.exe", "Telegram.exe", "Discord.exe", "Signal.exe", "ChatGPT.exe", "claude.exe"]
 }

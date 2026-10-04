@@ -42,10 +42,11 @@ trap 'srv zoo allow reset >/dev/null 2>&1 || true; srv zoo user del "$U" --force
 
 # ---------- 1. после установки ----------
 check "реестр $REG есть, 0600" test "$(srv stat -c %a "$REG" 2>/dev/null | tr -d '\r')" = 600
-check "пресет: Android = Brave, Telegram" \
-    test "$(srv jq -r '.android | join(", ")' "$REG" | tr -d '\r')" = "com.brave.browser, org.telegram.messenger"
-check "owner: amneziawg-android.conf со списком в [Interface]" \
-    test "$(apps_of "$C/owner/amneziawg-android.conf")" = "com.brave.browser, org.telegram.messenger"
+PRESET_ANDROID="$(srv jq -r '.android | join(", ")' /opt/vpn-zoo/scripts/allowlist-default.json | tr -d '\r')"
+check "реестр после установки = пресет (Android)" \
+    test "$(srv jq -r '.android | join(", ")' "$REG" | tr -d '\r')" = "$PRESET_ANDROID"
+check "owner: amneziawg-android.conf со списком пресета в [Interface]" \
+    test "$(apps_of "$C/owner/amneziawg-android.conf")" = "$PRESET_ANDROID"
 check "owner: QR Android-варианта (.png)" srv test -s "$C/owner/amneziawg-android.png"
 check "owner: в общем amneziawg.conf ключа нет" no_key "$C/owner/amneziawg.conf"
 check "Android-вариант отличается от общего только строкой IncludedApplications" \
@@ -55,6 +56,11 @@ check "манифест: файл Android-варианта с меткой" \
     /etc/vpn-setup/protocols.d/amneziawg.json
 check "probe манифеста — общий .conf (без IncludedApplications)" \
     bash -c "! docker exec $SRV jq -r .probe.conf /etc/vpn-setup/protocols.d/amneziawg.json | grep -q IncludedApplications"
+# дальше — от известной базы Brave + Telegram, независимо от пресета
+check "база: оставить Brave + Telegram" \
+    srv zoo allow del telegram-web telegram-x youtube instagram whatsapp x discord signal chatgpt claude
+check "база: Android = Brave, Telegram" \
+    test "$(apps_of "$C/owner/amneziawg-android.conf")" = "com.brave.browser, org.telegram.messenger"
 check "правила v2rayN owner: brave.exe, Telegram.exe → proxy" \
     test "$(v2rayn_procs "$C/owner/v2rayn-routing.json")" = "brave.exe, Telegram.exe"
 check "правила v2rayN: последнее правило — всё остальное напрямую" \
