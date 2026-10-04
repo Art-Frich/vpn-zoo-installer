@@ -9,6 +9,7 @@ upgrade); юнит zoo-web.service ставит фаза 09.
 from __future__ import annotations
 
 import argparse
+import os
 import random
 from typing import Any
 
@@ -58,7 +59,10 @@ def access_info(cfg: Config) -> dict[str, Any]:
     port = cfg.get("ZOO_WEB_PORT") or "PORT"
     ip = cfg.get("SERVER_IP") or "SERVER_IP"
     ssh_port = (cfg.get("SSH_PORTS") or "22").replace(",", " ").split()[0]
-    ssh = f"root@{ip}" + (f" -p {ssh_port}" if ssh_port != "22" else "")
+    # под sudo — тот, кто вошёл по SSH (при PermitRootLogin no root@ не пустит), как в фазе 99
+    who = os.environ.get("SUDO_USER") or "root"
+    host = f"[{ip}]" if ":" in ip else ip
+    ssh = (f"-p {ssh_port} " if ssh_port != "22" else "") + f"{who}@{host}"
     return {"port": port, "url": f"http://127.0.0.1:{port}/", "ssh": ssh,
             "tunnel": f"ssh -N -L {port}:127.0.0.1:{port} {ssh}", "token": cfg.get("ZOO_WEB_TOKEN")}
 

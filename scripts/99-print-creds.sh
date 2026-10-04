@@ -4,8 +4,8 @@
 # через ssh -L, какие клиенты с чем работают.
 #
 #   /root/CREDENTIALS.md (0600)              то же в Markdown (путь: VPN_CREDENTIALS_OUT)
-#   /etc/vpn-setup/probe-export.json (0600)  probe всех протоколов для owner + IP сервера:
-#                                            вход клиентского пробника (zoo probe, docker/probe)
+#   /etc/vpn-setup/probe-export.json (0600)  пакет клиентского пробника (zoo export-probe:
+#                                            креды zoo-probe, IP сервера, итог самопроверки)
 # Секреты печатаются в терминал. ZOO_CREDS_NO_QR=1 — без QR.
 
 # shellcheck disable=SC2153 # PANEL_* приходят из config.env (config_load)
@@ -91,7 +91,7 @@ ADVICE=(
     "Пароль на локальный прокси: в Happ — Inbounds → режим авторизации auto, «Разрешить LAN» не включать. В v2rayNG ≥2.2.6 — выключить «Использовать Hev TUN», затем «Использовать локальный прокси». Иначе любое приложение на телефоне узнаёт IP сервера через 127.0.0.1."
     "Сплит «РФ напрямую» и исключение российских приложений (банки, Госуслуги, MAX) из VPN — главная защита адреса сервера. Сервер дополнительно блокирует echo-сервисы «узнай свой IP» (кроме AmneziaWG)."
     "У AmneziaWG и WG Tunnel локального прокси нет — утечки через 127.0.0.1 там не бывает."
-    "Подробно: docs/RISK-REDUCTION.md (разделы 4.2–4.4)."
+    "Подробно: $REPO_ROOT/docs/RISK-REDUCTION.md (разделы 4.2–4.4)."
 )
 
 # ------------------------------------------------------------
@@ -236,6 +236,26 @@ md_escape() { sed 's/|/\\|/g'; }
     echo "|---|---|---|"
     [ ! -f "$PORTS_FILE" ] || awk -F'\t' 'NF >= 2 {printf "| %s | %s | %s |\n", $1, $2, ($4 == "" ? "allow" : $4)}' "$PORTS_FILE"
     echo
+    echo "## Проверка протоколов"
+    echo
+    echo "- с самого сервера, «работает в принципе»: \`sudo zoo probe --local --summary\` (её же печатает install.sh в конце)"
+    echo "- с вашей машины, «блокирует ли провайдер»: пакет \`$PROBE_EXPORT\` (ключи служебного пользователя zoo-probe и итог самопроверки) → контейнер zoo-probe, см. docker/probe/README.md:"
+    echo
+    echo '```sh'
+    echo "git clone https://github.com/Art-Frich/vpn-zoo-installer.git && cd vpn-zoo-installer"
+    echo "mkdir probe && scp${ssh_p:+ -P $ssh_port} root@$ssh_host:$PROBE_EXPORT probe/probe-export.json"
+    echo "docker build -f docker/probe.Dockerfile -t zoo-probe ."
+    echo "docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v \"\$PWD/probe:/data\" zoo-probe"
+    echo '```'
+    echo
+    echo "Windows PowerShell: в \`docker run\` — \`-v \"\${PWD}\probe:/data\"\`. Вход root по SSH запрещён — README, «Если вход root по SSH запрещён»."
+    echo
+    echo "## Пользователи и админка"
+    echo
+    echo "- новый пользователь во всех протоколах: \`sudo zoo user add ИМЯ --note \"кто\"\`, его ссылки и QR: \`sudo zoo links ИМЯ --qr\`"
+    echo "- админка: \`sudo zoo web --info\` (туннель, адрес, токен); трафик: \`sudo zoo traffic\`; состояние: \`sudo zoo status\`"
+    echo "- клон репозитория на сервере: \`$REPO_ROOT\` (не удалять: из него \`zoo upgrade\` и \`scripts/install.sh\`)"
+    echo
     echo "## Файлы на сервере"
     echo
     echo "- конфиг и секреты: \`$CONFIG_FILE\`"
@@ -251,13 +271,18 @@ mv -f "$CRED_OUT.tmp.$$" "$CRED_OUT"
 # 3. probe-export.json
 # ------------------------------------------------------------
 
-printf '%s\n' "${M[@]}" | jq -s --arg ip "$SERVER_IP" --arg lbl "${LABEL:-vpn}" --arg ts "$(date -Iseconds)" '{
-    version: 1, generated: $ts, server_ip: $ip, label: $lbl,
-    protocols: [.[] | select(.probe != null and .probe != {})
-        | {id, name, layer, port, engine, enabled: (.enabled != false), probe}]}' > "$PROBE_EXPORT.tmp.$$"
-chmod 600 "$PROBE_EXPORT.tmp.$$"
-mv -f "$PROBE_EXPORT.tmp.$$" "$PROBE_EXPORT"
-n="$(jq '.protocols | length' "$PROBE_EXPORT")"
+# Через zoo — креды служебного пользователя zoo-probe и итог последней самопроверки
+# (install.sh после 99 перезапишет пакет свежей самопроверкой); без zoo — probe owner
+# из манифестов
+if ! { command -v zoo >/dev/null && zoo export-probe --quiet --out "$PROBE_EXPORT" 2>/dev/null; }; then
+    printf '%s\n' "${M[@]}" | jq -s --arg ip "$SERVER_IP" --arg lbl "${LABEL:-vpn}" --arg ts "$(date -Iseconds)" '{
+        version: 1, generated: $ts, server_ip: $ip, label: $lbl,
+        protocols: [.[] | select(.probe != null and .probe != {})
+            | {id, name, layer, port, engine, enabled: (.enabled != false), probe}]}' > "$PROBE_EXPORT.tmp.$$"
+    chmod 600 "$PROBE_EXPORT.tmp.$$"
+    mv -f "$PROBE_EXPORT.tmp.$$" "$PROBE_EXPORT"
+fi
+n="$(jq '[.protocols[] | select(.probe != null)] | length' "$PROBE_EXPORT")"
 [ "$n" -gt 0 ] || log_warn "ни в одном манифесте нет probe — пробнику нечего проверять"
 
 log_ok "CREDENTIALS.md: $CRED_OUT (0600)"

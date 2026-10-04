@@ -13,6 +13,9 @@
     остальные       proto_<id>_traffic (AmneziaWG: `awg show dump`)
     host            байты интерфейса маршрута по умолчанию (принято/отправлено сервером)
 
+Служебный пользователь пробника (users.PROBE_USER) собирается как все, но в отчётах по
+пользователям его нет (include_hidden=True — показать); в итогах протоколов он учтён.
+
 Сброс счётчика (рестарт сервиса, сброс в панели, новый peer) распознаётся по уменьшению
 значения или смене «эпохи» источника (PID сервиса, ifindex, boot_id): приращением тогда
 считается текущее значение. Первое снятие нового протокола только запоминает базу.
@@ -31,7 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import manifests, output, paths, protolib, system
+from . import manifests, output, paths, protolib, system, users
 from .config import Config
 from .fsutil import LockTimeout, file_lock
 from .xui import XuiClient, XuiError
@@ -503,12 +506,21 @@ def _con() -> sqlite3.Connection | None:
         return None
 
 
+def _hidden_sql(include_hidden: bool) -> tuple[str, list[str]]:
+    """Условие «без служебных пользователей» для запросов по пользователям."""
+    names = [] if include_hidden else sorted(users.hidden_names())
+    if not names:
+        return "", []
+    return f"user NOT IN ({', '.join('?' * len(names))})", names
+
+
 def proto_title(proto: str) -> str:
     return SPECIAL_TITLES.get(proto, proto)
 
 
 def report(cfg: Config | None = None, user: str | None = None, period: str = "24h",
-           proto: str | None = None, by: str | None = None, now: float | None = None) -> dict[str, Any]:
+           proto: str | None = None, by: str | None = None, now: float | None = None,
+           include_hidden: bool = False) -> dict[str, Any]:
     """Сводка за период.
 
     by="user" — по пользователям (сумма по их протоколам); by="protocol" — по протоколам:
@@ -534,6 +546,10 @@ def report(cfg: Config | None = None, user: str | None = None, period: str = "24
         where.append("user = ''")
     else:
         where.append("user != ''")
+        cond, names = _hidden_sql(include_hidden)
+        if cond:
+            where.append(cond)
+            args += names
     if proto:
         where.append("proto = ?")
         args.append(proto)
@@ -582,6 +598,10 @@ def timeseries(period: str = "24h", group: str = "protocol", user: str | None = 
             where.append("user = ''")
         else:
             where.append("user != ''")
+            cond, names = _hidden_sql(False)
+            if cond:
+                where.append(cond)
+                args += names
     col = "user" if group == "user" else "proto"
     try:
         rows = con.execute(f"SELECT ts, {col} AS key, up, down FROM traffic WHERE {' AND '.join(where)}",
@@ -618,9 +638,14 @@ def today(group: str = "protocol", now: float | None = None) -> dict[str, int]:
         return {}
     col = "user" if group == "user" else "proto"
     cond = "user != ''" if group == "user" else "user = ''"
+    args: list[Any] = [RES_1D, align(now, RES_1D)]
+    hidden, names = _hidden_sql(False)
+    if group == "user" and hidden:
+        cond += f" AND {hidden}"
+        args += names
     try:
         rows = con.execute(f"SELECT {col} AS key, SUM(up + down) AS t FROM traffic WHERE res = ? AND ts = ? "
-                           f"AND {cond} GROUP BY {col}", (RES_1D, align(now, RES_1D))).fetchall()
+                           f"AND {cond} GROUP BY {col}", args).fetchall()
     finally:
         con.close()
     return {r["key"]: int(r["t"] or 0) for r in rows}
@@ -632,8 +657,9 @@ def last_seen() -> dict[str, int]:
     if con is None:
         return {}
     try:
+        hidden, names = _hidden_sql(False)
         rows = con.execute("SELECT user, MAX(seen) AS seen FROM counters WHERE user != '' AND seen IS NOT NULL "
-                           "GROUP BY user").fetchall()
+                           + (f"AND {hidden} " if hidden else "") + "GROUP BY user", names).fetchall()
     finally:
         con.close()
     return {r["user"]: int(r["seen"]) for r in rows}
@@ -667,6 +693,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                                                                "а для одного пользователя — protocol)")
     p.add_argument("--proto", help="только этот протокол")
     p.add_argument("--collect", action="store_true", help="снять счётчики (запускает zoo-collector.timer)")
+    p.add_argument("--all", action="store_true", help=f"со служебным пользователем пробника ({users.PROBE_USER})")
 
 
 def _fmt_ts(ts: int) -> str:
@@ -689,7 +716,7 @@ def cmd_traffic(args: argparse.Namespace, cfg: Config) -> int:
         # ошибка одного источника не валит таймер: остальные серии записаны
         return 0
     try:
-        data = report(cfg, args.user, args.period, args.proto, args.by)
+        data = report(cfg, args.user, args.period, args.proto, args.by, include_hidden=args.all)
     except ValueError as e:
         output.error(str(e))
         return 2

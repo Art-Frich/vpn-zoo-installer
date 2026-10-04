@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import probe as probe_mod
-from .. import status, system, traffic, upgrade
+from .. import paths, status, system, traffic, upgrade
 from ..output import human_bytes, human_duration
 from . import charts, logs
 from .html import Markup, badge, card, csrf_input, join, kv, post_button, t, table
@@ -90,8 +90,11 @@ def collect_alerts(st: dict[str, Any]) -> list[tuple[str, Any]]:
     out: list[tuple[str, Any]] = []
     for p in st["problems"]:
         out.append(("warn" if p.startswith("сертификат") else "bad", p))
+    # таймер коллектора, его задержки и ошибки источников уже в problems (status.collect)
     for unit in status.ZOO_UNITS:
         s = st["services"].get(unit, {})
+        if unit == "zoo-collector.timer":
+            continue
         if s.get("load") == "loaded" and s.get("enabled") == "enabled" and s.get("active") != "active":
             out.append(("bad", f"{unit} — {s.get('active')}"))
     if REBOOT_FLAG.exists():
@@ -102,14 +105,9 @@ def collect_alerts(st: dict[str, Any]) -> list[tuple[str, Any]]:
         except OSError:
             pass
         out.append(("warn", f"Нужна перезагрузка сервера{pkgs}"))
-    run = traffic.last_run()
-    if run is None:
-        out.append(("warn", "Трафик ещё не собирался (zoo-collector.timer)"))
-    else:
-        if run["stale"]:
-            out.append(("warn", f"Коллектор трафика молчит {human_duration(run['age'])}"))
-        for src, err in run["errors"].items():
-            out.append(("warn", f"Трафик, {src}: {err}"))
+    if traffic.last_run() is None:
+        out.append(("warn", "Трафик ещё не собирался: zoo-collector.timer снимает счётчики раз в 5 минут, "
+                            "первое снятие — в течение 5 минут после установки"))
     return out
 
 
@@ -322,9 +320,10 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
                         "работает ли протокол в принципе (1–3 минуты).", class_="hint"),
                  *local_body, extra=post_button("/probe/run", "Запустить", csrf, "btn primary small"))
     cmp_body: list[Any] = [
-        t("p", "Отчёт клиентского пробника: контейнер zoo-probe или ",
-          t("code", "zoo probe --remote probe.json --out report.json"), " на машине пользователя. Пакет для него: ",
-          t("code", "sudo zoo export-probe --out probe.json"), " (в пакете ключи — передавайте по scp и удалите после).",
+        t("p", "Отчёт клиентского пробника — файл ", t("code", "probe/probe-report.json"),
+          " после запуска контейнера zoo-probe на машине пользователя (README, «Блокирует ли ваш провайдер»). "
+          "Пакет для пробника: ", t("code", str(paths.probe_export_file())),
+          " (его создаёт самопроверка; в нём ключи — передавайте по scp и удалите после).",
           class_="hint"),
         t("form", csrf_input(csrf),
           t("div", t("label", "JSON-отчёт клиента", for_="report"),

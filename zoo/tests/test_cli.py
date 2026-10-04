@@ -79,6 +79,17 @@ class CliUsersTest(unittest.TestCase):
         data = json.loads(out)
         self.assertEqual([u["name"] for u in data["users"]], ["owner", "masha"])
         self.assertEqual(data["verify"]["amneziawg"]["missing"], [])
+        self.assertEqual(data["verify"]["amneziawg"]["extra"], [])
+        # служебный пользователь пробника заведён фазой 09 (setup), но скрыт
+        code, out, _ = run_cli("user", "list", "--all", "--json")
+        self.assertIn({"name": "zoo-probe", "system": True},
+                      [{"name": u["name"], "system": u.get("system")} for u in json.loads(out)["users"]])
+        self.assertEqual(self.env.proto_users("amneziawg").get("zoo-probe"), "true")
+        code, _, err = run_cli("user", "del", "zoo-probe")
+        self.assertEqual(code, 1)
+        self.assertIn("служебный", err)
+        code, _, err = run_cli("user", "add", "zoo-probe")
+        self.assertEqual(code, 1)
         code, out, _ = run_cli("user", "list")
         self.assertIn("masha", out)
         self.assertIn("тест", out)
@@ -149,6 +160,30 @@ class StatusTest(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
                 cli._render_status(data)
             self.assertIn("vless-reality", out.getvalue())
+
+
+class StatusExtraTest(unittest.TestCase):
+    def test_stale_collector_and_missing_interface(self):
+        units = {u: {"load": "loaded", "active": "active", "sub": "running", "enabled": "enabled"}
+                 for u in ("x-ui.service", "fail2ban.service", "awg-quick@awg-nope.service",
+                           "zoo-collector.timer")}
+        ss = system.parse_ss("udp UNCONN 0 0 0.0.0.0:51820 0.0.0.0:* users:((\"amneziawg-go\",pid=1,fd=3))\n")
+        run = {"ts": 0, "age": 7200, "stale": True, "errors": {"amneziawg": "awg: нет доступа"}}
+        with ZooEnv() as env, \
+                mock.patch.object(system, "listening_sockets", return_value=ss), \
+                mock.patch.object(system, "ufw_active", return_value=True), \
+                mock.patch.object(system, "unit_states", side_effect=lambda us: {u: units.get(u, {
+                    "load": "not-found", "active": "inactive"}) for u in us}), \
+                mock.patch.object(system, "component_versions", return_value={}), \
+                mock.patch("zoolib.traffic.last_run", return_value=run):
+            env.add_manifest("amneziawg", layer="udp", port=51820, service="awg-quick@awg-nope",
+                             interface="awg-nope")
+            data = status.collect(config.load(), cpu_interval=0, with_xui=False)
+            problems = "\n".join(data["problems"])
+            self.assertIn("нет интерфейса awg-nope", problems)
+            self.assertIn("коллектор трафика молчит", problems)
+            self.assertIn("трафик, amneziawg: awg: нет доступа", problems)
+            self.assertFalse(data["protocols"][0]["ok"])
 
 
 class OutputTest(unittest.TestCase):

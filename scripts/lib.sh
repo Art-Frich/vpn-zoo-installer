@@ -530,6 +530,21 @@ backup_path() {
     printf '%s\n' "$d"
 }
 
+# prune_keep_newest DIR GLOB KEEP DAYS — в журналах установки и бэкапах лежат ключи и пароли:
+# оставить KEEP самых новых записей DIR/GLOB, из остальных удалить те, что старше DAYS дней
+prune_keep_newest() {
+    local dir="$1" glob="$2" keep="$3" days="$4" n=0 p
+    [ -d "$dir" ] || return 0
+    [[ "$keep" =~ ^[0-9]+$ && "$days" =~ ^[0-9]+$ ]] || { log_warn "prune: KEEP и DAYS — числа"; return 0; }
+    while IFS= read -r p; do
+        n=$((n + 1))
+        [ "$n" -gt "$keep" ] || continue
+        [ -n "$(find "$p" -maxdepth 0 -mtime +"$days" 2>/dev/null)" ] || continue
+        rm -rf -- "$p"
+        log_info "удалён старый $(basename "$p") ($dir: хранятся $keep последних, старше $days дн. удаляются)"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name "$glob" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | cut -f2-)
+}
+
 # Пометить компонент как «наш» (после успешной установки фазой)
 mark_owned() {
     ( umask 077; mkdir -p "$OWNED_DIR" )

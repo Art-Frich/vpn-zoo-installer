@@ -34,6 +34,16 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(m.protos, ["tcp", "udp"])
         self.assertEqual(m.services, ["x-ui", "other.service"])
 
+    def test_disabled_links_hidden(self):
+        m = manifests.from_dict(manifest("a", links=[
+            {"user": "masha", "uri": "vless://m@1.2.3.4:443", "enabled": False},
+            {"user": "owner", "uri": "vless://o@1.2.3.4:443", "enabled": True}],
+            files=[{"user": "masha", "path": "/x/masha.conf", "enabled": False}]))
+        self.assertEqual(m.links_for("masha"), [])
+        self.assertEqual(m.files_for("masha"), [])
+        self.assertEqual(m.links_for("masha", enabled_only=False), ["vless://m@1.2.3.4:443"])
+        self.assertEqual(m.links_for("owner"), ["vless://o@1.2.3.4:443"])
+
     def test_users_backend(self):
         self.assertTrue(manifests.from_dict(manifest("a")).has_users)
         self.assertFalse(manifests.from_dict(manifest("a", users_backend="none")).has_users)

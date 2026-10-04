@@ -239,6 +239,44 @@ class BundleTest(unittest.TestCase):
         self.assertEqual((meta["server_ip"], meta["label"], meta["selftest"]), ("1.2.3.4", "vpn", None))
 
 
+class SummaryTest(unittest.TestCase):
+    def test_install_summary_and_next_steps(self):
+        import contextlib
+        import io
+        rep = {"mode": "local", "server_ip": "1.2.3.4", "user": "zoo-probe", "results": [
+            {"id": "vless-reality", "port": 443, "layer": "tcp", "verdict": "OK", "speed_mbps": 90.0},
+            {"id": "tuic", "port": 3, "layer": "udp", "verdict": "SERVER_DOWN", "reason": "порт закрыт"},
+            {"id": "amneziawg", "port": 5, "layer": "udp", "verdict": "SKIPPED", "reason": "нет клиента"}]}
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            report.render_summary(rep)
+            report.render_next_steps(rep, "/etc/vpn-setup/probe-export.json", ssh_port="2222")
+        text = out.getvalue()
+        self.assertIn("работает в принципе", text)
+        self.assertIn("Работает в принципе: 1 из 3.", text)
+        self.assertIn("НЕТ", text)
+        self.assertIn("scp -P 2222 root@1.2.3.4:/etc/vpn-setup/probe-export.json", text)
+        self.assertIn("docker run --rm --cap-add NET_ADMIN", text)
+        self.assertIn("git clone https://github.com/Art-Frich/vpn-zoo-installer.git", text)
+        self.assertIn('-v "${PWD}\probe:/data"', text)
+        self.assertIn("tuic: НЕ РАБОТАЕТ на самом сервере (SERVER_DOWN) — порт закрыт", err.getvalue())
+        self.assertIn("amneziawg: не проверено (SKIPPED)", err.getvalue())
+
+    def test_repo_url_for_hint(self):
+        from unittest import mock
+        from zoolib import probe, upgrade
+        cases = {
+            "https://user:tok@github.com/Owner/vpn-zoo-installer.git": "https://github.com/Owner/vpn-zoo-installer.git",
+            "git@github.com:Owner/vpn-zoo-installer.git": "https://github.com/Owner/vpn-zoo-installer.git",
+            "/tmp/zoo.bundle": probe.DEFAULT_REPO_URL,
+        }
+        for origin, want in cases.items():
+            with mock.patch.object(upgrade, "repo_dir", return_value=Path("/opt/vpn-zoo-src")),                     mock.patch.object(upgrade, "_git", return_value=(0, origin)):
+                self.assertEqual(probe._repo_url(), want, origin)
+        with mock.patch.object(upgrade, "repo_dir", return_value=None):
+            self.assertEqual(probe._repo_url(), probe.DEFAULT_REPO_URL)
+
+
 # ---------- HTTP через SOCKS5 ----------
 
 class _Handler(BaseHTTPRequestHandler):
@@ -558,8 +596,10 @@ class ProbeCliTest(unittest.TestCase):
             self.assertEqual(got["hysteria2"]["probe"]["outbound"]["user"], "masha")
             # инстанс модуля: proto_hysteria2_probe masha obfs
             self.assertIn("hysteria2 probe masha obfs", env.calls())
-            self.assertIsNone(got["ss2022"]["probe"])
-            self.assertIn("искусственная ошибка", got["ss2022"]["skip_reason"])
+            # модуль не дал probe masha — проба кредами owner из манифеста, с пометкой
+            self.assertEqual(got["ss2022"]["probe"]["user"], "owner")
+            self.assertIn("искусственная ошибка", got["ss2022"]["note"])
+            self.assertIn("кредами owner", got["ss2022"]["note"])
             # owner — прямо из манифеста, без вызова модуля
             calls = len(env.calls())
             collect_entries("owner")

@@ -3,7 +3,7 @@
 # проверяются по sha256; zoo — из этого же репо. Инструкция: docker/probe/README.md.
 #
 # Сборка (контекст — корень репо): docker build -f docker/probe.Dockerfile -t zoo-probe .
-# Запуск: docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$PWD/probe:/data" zoo-probe
+# Запуск: docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$PWD/probe:/data" zoo-probe [--proto ID]
 ARG UBUNTU=24.04
 
 FROM ubuntu:${UBUNTU} AS clients
@@ -32,4 +32,5 @@ RUN chmod 755 /usr/local/bin/zoo-probe /opt/vpn-zoo/zoo/zoo \
 
 LABEL zoo.role="probe"
 WORKDIR /data
-CMD ["zoo-probe"]
+# аргументы docker run после имени образа: «--…» — флаги пробника, иначе — команда вместо него
+ENTRYPOINT ["zoo-probe"]

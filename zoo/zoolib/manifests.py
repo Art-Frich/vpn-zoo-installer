@@ -56,11 +56,15 @@ class Manifest:
     def has_users(self) -> bool:
         return self.users_backend != "none"
 
-    def links_for(self, user: str) -> list[str]:
-        return [str(x.get("uri", "")) for x in self.links if x.get("user") == user and x.get("uri")]
+    def links_for(self, user: str, enabled_only: bool = True) -> list[str]:
+        """Ссылки пользователя; запись с enabled=false (пользователь отключён) — только при
+        enabled_only=False (проверка «есть ли пользователь в протоколе»)."""
+        return [str(x.get("uri", "")) for x in self.links if x.get("user") == user and x.get("uri")
+                and (not enabled_only or x.get("enabled") is not False)]
 
-    def files_for(self, user: str) -> list[str]:
-        return [str(x.get("path", "")) for x in self.files if x.get("user") == user and x.get("path")]
+    def files_for(self, user: str, enabled_only: bool = True) -> list[str]:
+        return [str(x.get("path", "")) for x in self.files if x.get("user") == user and x.get("path")
+                and (not enabled_only or x.get("enabled") is not False)]
 
     def to_dict(self) -> dict[str, Any]:
         return dict(self.raw)

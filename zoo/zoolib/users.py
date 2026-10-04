@@ -6,6 +6,11 @@
 Операции расходятся по всем включённым протоколам с пользователями через protolib.
 При ошибке в одном протоколе изменения в остальных откатываются (partial=True — оставить
 то, что получилось, и записать в реестр только успешные протоколы).
+
+Служебный пользователь zoo-probe (system=true) — креды пробника: `zoo probe --local` и
+`zoo export-probe` проверяют протоколы им, а не owner. Так проба не выбивает сессию
+AmneziaWG у телефона владельца (роуминг WireGuard) и не попадает в трафик owner.
+Он скрыт из списков и отчётов трафика, не удаляется и не отключается без --force.
 """
 
 from __future__ import annotations
@@ -21,6 +26,9 @@ from .fsutil import atomic_write_json, file_lock, read_json
 
 SCHEMA = 1
 OWNER = "owner"
+PROBE_USER = "zoo-probe"
+SYSTEM_USERS = frozenset({PROBE_USER})
+PROBE_NOTE = "служебный: пробник (zoo probe --local, export-probe)"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 
@@ -48,6 +56,7 @@ class User:
     enabled: bool = True
     note: str = ""
     protocols: list[str] = field(default_factory=list)
+    system: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "User":
@@ -57,11 +66,15 @@ class User:
             enabled=bool(d.get("enabled", True)),
             note=str(d.get("note", "")),
             protocols=[str(x) for x in d.get("protocols", [])],
+            system=bool(d.get("system", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "created": self.created, "enabled": self.enabled,
-                "note": self.note, "protocols": list(self.protocols)}
+        d = {"name": self.name, "created": self.created, "enabled": self.enabled,
+             "note": self.note, "protocols": list(self.protocols)}
+        if self.system:
+            d["system"] = True
+        return d
 
 
 class Registry:
@@ -98,6 +111,10 @@ class Registry:
 
     def names(self) -> list[str]:
         return [u.name for u in self.users]
+
+    def visible(self) -> list[User]:
+        """Пользователи без служебных (их не показывают списки и отчёты)."""
+        return [u for u in self.users if not u.system]
 
 
 @dataclass
@@ -201,8 +218,10 @@ def _load_registry() -> Registry:
 
 
 def add_user(name: str, note: str = "", only: list[str] | None = None,
-             partial: bool = False) -> OpReport:
+             partial: bool = False, system: bool = False) -> OpReport:
     validate_name(name)
+    if name in SYSTEM_USERS and not system:
+        raise UserError(f"имя «{name}» зарезервировано за служебным пользователем пробника")
     with _lock():
         reg = _load_registry()
         if reg.get(name):
@@ -242,7 +261,7 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
             rep.ok = False
             rep.message = "пользователь не создан ни в одном протоколе"
             return rep
-        reg.users.append(User(name, now_iso(), True, note, ok_ids))
+        reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system))
         reg.save()
         rep.ok = not failed
         rep.message = "пользователь создан" if rep.ok else "создан частично, без: " + ", ".join(failed)
@@ -254,7 +273,11 @@ def delete_user(name: str, force: bool = False) -> OpReport:
         reg = _load_registry()
         user = reg.require(name)
         if name == OWNER and not force:
-            raise UserError("owner нельзя удалить: на нём ссылки по умолчанию и пробник (--force, если очень нужно)")
+            raise UserError("owner нельзя удалить: на нём ссылки по умолчанию (--force, если очень нужно)")
+        if user.system and not force:
+            raise UserError(f"{name} — служебный пользователь пробника, его креды нужны zoo probe и "
+                            f"export-probe. Удалить: zoo user del {name} --force (пробник перейдёт на owner; "
+                            "завести заново: sudo bash scripts/install.sh --phase 09 из каталога клона)")
         rep = OpReport("del", name)
         left: list[str] = []
         for pid in user.protocols:
@@ -282,6 +305,10 @@ def delete_user(name: str, force: bool = False) -> OpReport:
         _cleanup_client_dir(name)
         rep.ok = not left
         rep.message = "пользователь удалён" if rep.ok else "удалён из реестра (--force), ошибки: " + ", ".join(left)
+        if _drop_probe_export(name):
+            rep.message += (f"; пакет пробника {paths.probe_export_file()} с его ключами удалён "
+                            "(новый: sudo zoo probe --local --summary --export "
+                            f"{paths.probe_export_file()})")
         return rep
 
 
@@ -290,6 +317,9 @@ def set_enabled(name: str, enabled: bool, partial: bool = False) -> OpReport:
     with _lock():
         reg = _load_registry()
         user = reg.require(name)
+        if user.system and not enabled:
+            raise UserError(f"{name} — служебный пользователь пробника, его не отключают: "
+                            "без него самопроверка перейдёт на креды owner")
         rep = OpReport(action, name)
         done: list[str] = []
         failed: list[str] = []
@@ -371,6 +401,38 @@ def bootstrap(owner: str = OWNER) -> OpReport:
         return rep
 
 
+def ensure_probe_user() -> OpReport | None:
+    """Завести служебного пользователя пробника во всех протоколах (фаза 09 / zoo setup).
+    Уже есть — None: новые протоколы ему добавит `zoo user sync` (фаза 99). Ошибка в
+    части протоколов не мешает остальным (partial)."""
+    reg = Registry.load()
+    if reg.get(PROBE_USER):
+        return None
+    try:
+        return add_user(PROBE_USER, note=PROBE_NOTE, partial=True, system=True)
+    except UserError as e:
+        return OpReport("add", PROBE_USER, ok=False, message=str(e))
+
+
+def probe_user() -> str:
+    """Чьими кредами проверять протоколы: zoo-probe, если он заведён и включён, иначе owner."""
+    try:
+        u = Registry.load().get(PROBE_USER)
+    except (UserError, OSError, ValueError):
+        return OWNER
+    return PROBE_USER if u and u.enabled and u.protocols else OWNER
+
+
+def hidden_names() -> set[str]:
+    """Имена, скрытые из списков и отчётов: служебные пользователи реестра (и zoo-probe всегда)."""
+    names = set(SYSTEM_USERS)
+    try:
+        names |= {u.name for u in Registry.load().users if u.system}
+    except (UserError, OSError, ValueError):
+        pass
+    return names
+
+
 def _bootstrap_into(reg: Registry, owner: str) -> OpReport:
     rep = OpReport("bootstrap", owner)
     user = reg.get(owner)
@@ -385,7 +447,7 @@ def _bootstrap_into(reg: Registry, owner: str) -> OpReport:
             continue
         present = _present(pid, owner)
         if present is None:
-            present = bool(by_id[pid].links_for(owner) or by_id[pid].files_for(owner))
+            present = bool(by_id[pid].links_for(owner, False) or by_id[pid].files_for(owner, False))
         if present:
             user.protocols.append(pid)
             rep.steps.append(Step(pid, "adopt", True))
@@ -405,6 +467,19 @@ def _rollback(rep: OpReport, pids: list[str], undo) -> None:
         except protolib.ProtoError as e:
             rep.steps.append(Step(pid, "rollback", False, _err(e)))
     rep.rolled_back = True
+
+
+def _drop_probe_export(name: str) -> bool:
+    """Пакет клиентского пробника с ключами удалённого пользователя бесполезен и вводит в
+    заблуждение (пробник у пользователя получит HANDSHAKE_FAIL везде) — удаляем его."""
+    f = paths.probe_export_file()
+    try:
+        if read_json(f).get("user") != name:
+            return False
+        f.unlink()
+        return True
+    except (OSError, ValueError, AttributeError):
+        return False
 
 
 def _cleanup_client_dir(name: str) -> None:
@@ -455,7 +530,7 @@ def user_links(name: str, protocols: list[str] | None = None) -> tuple[list[prot
         if user:
             protocols = list(user.protocols)
         else:
-            protocols = [m.id for m in by_id.values() if m.links_for(name) or m.files_for(name)]
+            protocols = [m.id for m in by_id.values() if m.links_for(name, False) or m.files_for(name, False)]
             # второй инстанс модуля (hysteria2-obfs): его ссылки отдаёт сам модуль
             protocols = [p for p in protocols
                          if not (p in by_id and p not in libs and shared_module(by_id[p], libs) in protocols)]

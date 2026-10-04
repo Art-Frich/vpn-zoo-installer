@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import socket
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -68,7 +70,9 @@ def _probe_via_module(m: manifests.Manifest, user: str, libs: set[str]) -> dict[
 
 
 def collect_entries(user: str = users.OWNER, only: list[str] | None = None) -> list[dict[str, Any]]:
-    """Записи протоколов сервера: probe из манифеста (если он для этого пользователя) или от модуля."""
+    """Записи протоколов сервера: probe из манифеста (если он для этого пользователя) или от модуля.
+    Модуль не отдал probe пользователя (его нет в протоколе), а в манифесте есть probe
+    owner — проба идёт им, с пометкой в записи."""
     good, _bad = manifests.load_all()
     libs = set(protolib.list_libs())
     entries = []
@@ -83,7 +87,12 @@ def collect_entries(user: str = users.OWNER, only: list[str] | None = None) -> l
             try:
                 entry["probe"] = _probe_via_module(m, user, libs)
             except protolib.ProtoError as e:
-                entry["skip_reason"] = f"probe для {user} не получен: {e.short()}"
+                if probe:
+                    entry["probe"] = probe
+                    entry["note"] = (f"кредами {probe.get('user', users.OWNER)}: probe для {user} "
+                                     f"не получен ({e.short()})")
+                else:
+                    entry["skip_reason"] = f"probe для {user} не получен: {e.short()}"
         elif probe:
             entry["probe"] = probe
         entries.append(entry)
@@ -119,7 +128,8 @@ def _save_selftest(rep: dict[str, Any], partial: bool) -> None:
         output.warn(f"не сохранил итог самопроверки в {selftest_file()}: {e}")
 
 
-def export_bundle(cfg: Config, user: str = users.OWNER, only: list[str] | None = None) -> dict[str, Any]:
+def export_bundle(cfg: Config, user: str | None = None, only: list[str] | None = None) -> dict[str, Any]:
+    user = user or users.probe_user()
     entries = collect_entries(user, only)
     return {
         "schema": 1, "type": EXPORT_TYPE, "generated": _now(), "zoo": __version__,
@@ -172,10 +182,11 @@ def make_report(mode: str, results: list[dict[str, Any]], st: engine.Settings, *
     }
 
 
-def run_local(cfg: Config, protocols: list[str] | None = None, user: str = users.OWNER,
+def run_local(cfg: Config, protocols: list[str] | None = None, user: str | None = None,
               st: engine.Settings | None = None) -> dict[str, Any]:
     st = st or engine.Settings()
     st.mode = "local"
+    user = user or users.probe_user()
     entries = collect_entries(user, protocols)
     server_ip = cfg.get("SERVER_IP") or None
     results = engine.run(entries, st, server_ip=server_ip)
@@ -215,7 +226,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     mode.add_argument("--compare", nargs=2, metavar=("LOCAL", "REMOTE"),
                       help="сравнить отчёты сервера и клиента (JSON)")
     p.add_argument("--proto", action="append", help="только этот протокол (можно несколько раз)")
-    p.add_argument("--user", default=users.OWNER, help="чьими кредами проверять (--local)")
+    p.add_argument("--user", help=f"чьими кредами проверять (--local; по умолчанию {users.PROBE_USER}, "
+                                  "без него — owner)")
     p.add_argument("--timeout", type=float, default=10.0, help="таймаут рукопожатия и малого запроса, с")
     p.add_argument("--stall", type=float, default=8.0, help="застой большого запроса, с")
     p.add_argument("--large-bytes", type=int, default=2_000_000, help="объём большого запроса, байт")
@@ -227,11 +239,16 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out", metavar="FILE", help="записать отчёт JSON")
     p.add_argument("--md", metavar="FILE", help="записать отчёт Markdown")
     p.add_argument("--quiet", action="store_true", help="без хода проверки в stderr")
+    p.add_argument("--summary", action="store_true",
+                   help="--local: короткая сводка «работает в принципе» и что делать дальше (так печатает install.sh)")
+    p.add_argument("--export", metavar="FILE",
+                   help="--local: после проверки записать пакет export-probe с её итогом в FILE")
 
 
 def add_export_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out", metavar="PATH", help="куда записать пакет (по умолчанию stdout)")
-    p.add_argument("--user", default=users.OWNER, help="чьи креды положить в пакет")
+    p.add_argument("--user", help=f"чьи креды положить в пакет (по умолчанию {users.PROBE_USER}, без него — owner)")
+    p.add_argument("--quiet", action="store_true", help="без предупреждений (для install.sh)")
     p.add_argument("--proto", action="append", help="только этот протокол (можно несколько раз)")
 
 
@@ -283,14 +300,50 @@ def cmd_probe(args: argparse.Namespace, cfg: Config) -> int:
         atomic_write_json(Path(args.out), rep, 0o644)
     if args.md:
         atomic_write_text(Path(args.md), report_mod.markdown(rep), 0o644)
+    bundle_path = None
+    if args.export and not args.remote:
+        bundle = export_bundle(cfg, rep.get("user"))
+        if any(e.get("probe") for e in bundle["protocols"]):
+            atomic_write_text(Path(args.export), json.dumps(bundle, ensure_ascii=False, indent=2) + "\n", 0o600)
+            bundle_path = args.export
     if args.json:
         output.print_json(rep)
+    elif args.summary and not args.remote:
+        report_mod.render_summary(rep)
+        report_mod.render_next_steps(rep, bundle_path, ssh_port=_ssh_port(cfg), repo_url=_repo_url())
     else:
         report_mod.render(rep)
     if not rep["results"]:
         output.warn("нет протоколов для проверки" + ("" if args.remote else " (манифесты protocols.d пусты?)"))
         return 1
     return 0 if all_working(rep) else 1
+
+
+DEFAULT_REPO_URL = "https://github.com/Art-Frich/vpn-zoo-installer.git"
+
+
+def _repo_url() -> str:
+    """Что клонировать на машине пользователя: origin рабочей копии сервера (https, без логина и
+    токена в адресе; git@host:path → https://host/path), иначе адрес проекта."""
+    from .. import upgrade  # upgrade импортирует probe — только здесь
+    repo = upgrade.repo_dir()
+    if not repo:
+        return DEFAULT_REPO_URL
+    rc, url = upgrade._git(repo, "remote", "get-url", "origin", timeout=5)
+    if rc != 0 or not url:
+        return DEFAULT_REPO_URL
+    m = re.match(r"^[\w.-]+@([\w.-]+):(?!/)(.+)$", url)
+    if m:
+        return f"https://{m.group(1)}/{m.group(2)}"
+    u = urllib.parse.urlsplit(url)
+    if u.scheme in ("https", "http") and u.hostname:
+        return urllib.parse.urlunsplit((u.scheme, u.hostname + (f":{u.port}" if u.port else ""), u.path, "", ""))
+    return DEFAULT_REPO_URL
+
+
+def _ssh_port(cfg: Config) -> str:
+    ports = [p.strip() for p in (cfg.get("SSH_PORTS") or "").replace(",", " ").split() if p.strip()]
+    return ports[0] if ports else "22"
 
 
 def cmd_export_probe(args: argparse.Namespace, cfg: Config) -> int:

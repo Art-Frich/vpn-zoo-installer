@@ -83,6 +83,83 @@ def render(report: dict[str, Any]) -> None:
         render_compare(report["compare"])
 
 
+def _principle(verdict: str) -> tuple[str, str]:
+    """Ответ «работает в принципе?» по вердикту самопроверки → (текст, цвет)."""
+    if verdict == verdicts.OK:
+        return "да", "green"
+    if verdict == verdicts.SLOW:
+        return "да, медленно", "yellow"
+    if verdict in verdicts.NOT_TESTED:
+        return "не проверено", "yellow"
+    return "НЕТ", "red"
+
+
+def render_summary(report: dict[str, Any]) -> None:
+    """Короткая сводка самопроверки для конца установки: работает ли протокол в принципе."""
+    results = report.get("results", [])
+    print(f"Самопроверка с самого сервера {report.get('server_ip') or '?'} (креды {report.get('user') or '?'}): "
+          "работает ли протокол в принципе, без блокировок провайдера")
+    print()
+    rows = []
+    for r in results:
+        text, color = _principle(r["verdict"])
+        speed = f"{r['speed_mbps']:.0f} Мбит/с" if r.get("speed_mbps") is not None else ""
+        rows.append([r["id"], f"{r.get('port') or '?'}/{r.get('layer') or '?'}", output.color(text, color),
+                     _verdict(r["verdict"]), speed])
+    if rows:
+        print(output.table(rows, ["протокол", "порт", "работает в принципе", "итог", "скорость"]))
+    else:
+        print("Протоколов для проверки нет.")
+    bad = [r for r in results if r["verdict"] not in verdicts.WORKING and r["verdict"] not in verdicts.NOT_TESTED]
+    skipped = [r for r in results if r["verdict"] in verdicts.NOT_TESTED]
+    good = len(results) - len(bad) - len(skipped)
+    print()
+    print(f"Работает в принципе: {good} из {len(results)}.")
+    for r in bad:
+        why = "; ".join(([r["reason"]] if r.get("reason") else []) + (r.get("notes") or []))
+        output.warn(output.color(f"{r['id']}: НЕ РАБОТАЕТ на самом сервере ({r['verdict']})", "red")
+                    + (f" — {why}" if why else ""))
+    for r in skipped:
+        why = r.get("reason") or "; ".join(r.get("notes") or [])
+        output.info(f"{r['id']}: не проверено ({r['verdict']})" + (f" — {why}" if why else ""))
+    if bad:
+        output.info("подробности: sudo zoo probe --local --proto " + " --proto ".join(r["id"] for r in bad)
+                    + "; журналы: sudo zoo status, journalctl -u x-ui / hysteria-server / awg-quick@awg0")
+
+
+def render_next_steps(report: dict[str, Any], bundle: str | None, ssh_port: str = "22",
+                      repo_url: str = "https://github.com/Art-Frich/vpn-zoo-installer.git") -> None:
+    """Что делать дальше: проверка с машины пользователя (блокирует ли его провайдер)."""
+    host = report.get("server_ip") or "СЕРВЕР"
+    host_s = f"[{host}]" if ":" in host else host
+    scp_p = "" if ssh_port in ("", "22") else f"-P {ssh_port} "
+    src = bundle or "/etc/vpn-setup/probe-export.json"
+    print()
+    print("Дальше — проверка с вашей машины: блокирует ли протоколы ваш провайдер.")
+    if not bundle:
+        print(f"  0. На сервере: sudo zoo export-probe --out {src}")
+    print(f"  1. Пакет для пробника: {src} (в нём ключи доступа и итог этой самопроверки).")
+    print("  2. На своём компьютере (VPN выключен; нужны Docker, git, scp), один раз:")
+    print(f"       git clone {repo_url}")
+    print("       cd vpn-zoo-installer")
+    print("       mkdir probe")
+    print("       docker build -f docker/probe.Dockerfile -t zoo-probe .")
+    print("     Перед каждой проверкой:")
+    print(f"       scp {scp_p}root@{host_s}:{src} probe/probe-export.json")
+    print('       docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$PWD/probe:/data" zoo-probe')
+    print('     Windows PowerShell: то же, но -v "${PWD}\\probe:/data". Вход root по SSH запрещён —')
+    print("     README, «Если вход root по SSH запрещён».")
+    print("     Без Docker (Linux с клиентами xray, hysteria, sing-box, amneziawg-go, awg):")
+    print("       sudo python3 zoo/zoo probe --remote probe/probe-export.json --md probe/probe-report.md \\")
+    print("            --out probe/probe-report.json")
+    print("  3. Итог — в конце вывода пробника и в probe/probe-report.md: таблица «сервер ↔ у вас» —")
+    print("     «работает у вас», «работает в принципе, блокируется у вас (тип)» или «не работает на самом")
+    print("     сервере». probe/probe-report.json можно вставить на странице «Проверка» админки.")
+    print("  4. После проверки удалите probe/probe-export.json (в нём ключи). На сервере пакет можно")
+    print(f"     удалить: sudo rm {src} (новый создаст sudo zoo probe --local --summary --export {src}).")
+    print("  Подробно: README, раздел «Блокирует ли ваш провайдер», и docker/probe/README.md.")
+
+
 def render_compare(rows: list[dict[str, Any]]) -> None:
     print("Сравнение с самопроверкой сервера:")
     table = [[r["id"], r["server"] or "—", r["client"] or "—", r["verdict"]] for r in rows]

@@ -29,7 +29,7 @@ from .config import Config
 
 # префикс ключа versions.env → фаза, которая ставит компонент
 VERSION_PHASES = (("XUI_", "03-3xui"), ("HY2_", "05-hysteria2"), ("AWG_", "06-amneziawg"),
-                  ("GO_", "06-amneziawg"), ("GEO_", "07-routing"))
+                  ("GO_", "06-amneziawg"), ("GEO_", "07-routing"), ("SINGBOX_", "04d-tuic"))
 PHASE_ORDER = ("03-3xui", "04-vless-reality", "04b-vless-xhttp", "04c-ss2022", "04d-tuic",
                "05-hysteria2", "06-amneziawg", "07-routing", "08-warp", "09-zoo", "99-print-creds")
 
@@ -97,13 +97,11 @@ def smoke(cfg: Config, with_probe: bool = True, probe_timeout: float = 10.0) -> 
         try:
             st_ = probe_mod.engine.Settings(timeout=probe_timeout)
             st_.progress = None
-            rep = probe_mod.run_local(cfg, None, "owner", st_)
+            rep = probe_mod.run_local(cfg, None, None, st_)
             probe_res = rep.get("results", [])
             ok, detail = probe_summary(probe_res)
             checks.append(_check("zoo probe --local", ok if probe_res else None, detail if probe_res else
                                  "нет протоколов с probe"))
-        except NotImplementedError:
-            checks.append(_check("zoo probe --local", None, "пробник ещё не реализован"))
         except Exception as e:  # пробник не должен ронять smoke
             checks.append(_check("zoo probe --local", False, f"ошибка пробника: {e}"))
     ok = all(c["ok"] is not False for c in checks)
@@ -204,6 +202,11 @@ def components(installed: dict[str, str], pinned: dict[str, str]) -> dict[str, d
                                   "outdated": None if not tools or not tools_pin else _norm(tools) != _norm(tools_pin)}
     out["amneziawg-go"] = {"installed": "", "pinned": pinned.get("AWG_GO_REF", ""), "outdated": None,
                            "phase": "06-amneziawg"}
+    # sing-box на сервере — только клиент самопроверки TUIC (фаза 04d при ENABLE_TUIC=1)
+    sb, sb_pin = installed.get("sing-box", ""), pinned.get("SINGBOX_VERSION", "")
+    if sb:
+        out["sing-box"] = {"installed": sb, "pinned": sb_pin, "phase": "04d-tuic",
+                           "outdated": None if not sb_pin else _norm(sb) != _norm(sb_pin)}
     return out
 
 

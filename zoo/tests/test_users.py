@@ -42,6 +42,55 @@ class UsersTest(unittest.TestCase):
         users.bootstrap()
         self.assertIn("hysteria2", self.registry()["owner"]["protocols"])
 
+    # ---------- служебный пользователь пробника ----------
+
+    def test_probe_user_lifecycle(self):
+        self.assertEqual(users.probe_user(), "owner")
+        rep = users.ensure_probe_user()
+        self.assertTrue(rep.ok, rep.to_dict())
+        reg = self.registry()
+        self.assertTrue(reg["zoo-probe"]["system"])
+        self.assertEqual(sorted(reg["zoo-probe"]["protocols"]), sorted(PROTOS))
+        for pid in PROTOS:
+            self.assertEqual(self.env.proto_users(pid).get("zoo-probe"), "true")
+        self.assertIsNone(users.ensure_probe_user())  # уже есть
+        self.assertEqual(users.probe_user(), "zoo-probe")
+        self.assertEqual([u.name for u in users.list_users().visible()], ["owner"])
+        self.assertIn("zoo-probe", users.hidden_names())
+        with self.assertRaises(users.UserError):
+            users.add_user("zoo-probe")
+        with self.assertRaises(users.UserError):
+            users.set_enabled("zoo-probe", False)
+        with self.assertRaises(users.UserError) as cm:
+            users.delete_user("zoo-probe")
+        self.assertIn("--force", str(cm.exception))
+        self.assertTrue(users.delete_user("zoo-probe", force=True).ok)
+        self.assertEqual(users.probe_user(), "owner")
+
+    def test_probe_user_delete_drops_its_bundle(self):
+        users.ensure_probe_user()
+        bundle = self.env.etc / "probe-export.json"
+        bundle.write_text('{"type": "zoo-probe-export", "user": "zoo-probe"}', encoding="utf-8")
+        rep = users.delete_user("zoo-probe", force=True)
+        self.assertTrue(rep.ok)
+        self.assertFalse(bundle.exists())
+        self.assertIn("пакет пробника", rep.message)
+        # пакет с кредами другого пользователя не трогаем
+        users.add_user("masha")
+        bundle.write_text('{"type": "zoo-probe-export", "user": "owner"}', encoding="utf-8")
+        users.delete_user("masha")
+        self.assertTrue(bundle.exists())
+
+    def test_probe_user_partial(self):
+        self.env.fail("hysteria2:user_add")
+        rep = users.ensure_probe_user()
+        self.assertFalse(rep.ok)
+        self.assertEqual(sorted(self.registry()["zoo-probe"]["protocols"]), ["amneziawg", "vless-reality"])
+        # протокол починили — sync доводит служебного пользователя, как и остальных
+        self.env.fail()
+        users.sync_users()
+        self.assertIn("hysteria2", self.registry()["zoo-probe"]["protocols"])
+
     # ---------- add ----------
 
     def test_add_fans_out(self):

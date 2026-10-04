@@ -208,6 +208,35 @@ xui_panel_version() { xui_get server/status | jq -r '.panelVersion'; }
 # Перезапуск Xray (применить изменения сразу; иначе панель применит в течение 30 с)
 xui_xray_restart() { xui_api POST server/restartXrayService >/dev/null; }
 
+# xui_xray_ensure_running [СЕК] — Xray не running (упал на прошлом конфиге: занятый порт,
+# неверный inbound) — перезапустить и ждать running до СЕК секунд. Панель сама его не
+# поднимает, и проверка фазы падала до следующего запуска
+xui_xray_ensure_running() {
+    local secs="${1:-30}" st
+    st="$(xui_xray_state 2>/dev/null || true)"
+    [ "$st" = "running" ] && return 0
+    log_warn "Xray: state=${st:-?} — перезапускаю"
+    xui_xray_restart || return 1
+    for _ in $(seq 1 "$secs"); do
+        sleep 1
+        [ "$(xui_xray_state 2>/dev/null || true)" = "running" ] && return 0
+    done
+    log_err "Xray не запустился за ${secs} с: $(xui_server_status 2>/dev/null | jq -r '.xray.errorMsg // empty')"
+    return 1
+}
+
+# xui_inbound_missing ПРОТОКОЛ ТЕКСТ — ошибка «inbound не найден»; если API панели не
+# отвечает, дело в панели, а не в невыполненной фазе — так и сообщаем
+xui_inbound_missing() {
+    local code
+    code="$(xui_http_code server/status)"
+    if [ "$code" != "200" ]; then
+        log_err "$1: панель 3x-ui недоступна (HTTP ${code:-000}) — systemctl status x-ui"
+    else
+        log_err "$1: $2"
+    fi
+}
+
 # ---------- inbounds ----------
 # Тело inbounds/add: settings/streamSettings/sniffing можно передавать объектами.
 # В ответе list/get они тоже объекты. Клиенты из settings.clients попадают в таблицы

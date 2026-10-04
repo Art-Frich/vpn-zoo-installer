@@ -25,7 +25,7 @@ proto_ss2022_inbound_id() {
 _ss2022_ib() {
     local id
     id="$(proto_ss2022_inbound_id)"
-    [ -n "$id" ] || { log_err "ss2022: inbound $SS2022_REMARK не найден (фаза 04c не выполнена?)"; return 1; }
+    [ -n "$id" ] || { xui_inbound_missing ss2022 "inbound $SS2022_REMARK не найден (фаза 04c не выполнена?)"; return 1; }
     printf '%s\n' "$id"
 }
 

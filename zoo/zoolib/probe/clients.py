@@ -37,7 +37,9 @@ from .endpoints import split_hostport
 
 BIN_ENV = {"xray": "ZOO_XRAY_BIN", "hysteria": "ZOO_HYSTERIA_BIN", "sing-box": "ZOO_SINGBOX_BIN",
            "amneziawg-go": "ZOO_AWG_GO_BIN", "awg": "ZOO_AWG_BIN"}
-BIN_DIRS = ("/opt/zoo-probe/bin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin")
+# /usr/local/lib/vpn-zoo/bin — клиенты только для самопроверки сервера (sing-box для TUIC, фаза 04d)
+BIN_DIRS = ("/opt/zoo-probe/bin", "/usr/local/bin", "/usr/local/sbin", "/usr/bin", "/usr/sbin",
+            "/usr/local/lib/vpn-zoo/bin")
 AWG_SOCK_DIR = "/var/run/amneziawg"
 # ключи wg-quick, которых не понимает `awg setconf`
 WG_QUICK_KEYS = {"address", "dns", "mtu", "table", "preup", "postup", "predown", "postdown", "saveconfig"}
