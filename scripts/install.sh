@@ -113,7 +113,8 @@ resolve_phase() {
 }
 
 if [ -n "$SINGLE_PHASE" ]; then
-    SINGLE_PHASE="$(resolve_phase "$SINGLE_PHASE")" || die "--phase: нет такой фазы: $SINGLE_PHASE (см. PHASES в install.sh)"
+    resolved="$(resolve_phase "$SINGLE_PHASE")" || die "--phase: нет такой фазы: $SINGLE_PHASE (см. PHASES в install.sh)"
+    SINGLE_PHASE="$resolved"
 fi
 
 # ============================================================
@@ -142,9 +143,9 @@ else
     chmod 700 "$VPN_ETC" "$LOG_DIR"
     LOG_FILE="$LOG_DIR/install-$ZOO_RUN_TS.log"
     ( umask 077; : > "$LOG_FILE" )
-    exec > >(tee -a "$LOG_FILE") 2>&1
-    state_init
+    exec > >(tee -a "$LOG_FILE" 8>&-) 2>&1
     config_load
+    state_migrate
     config_apply_env
     config_init_defaults
     config_load
@@ -205,8 +206,10 @@ run_phase() {
     log_step "фаза $phase"
     RAN=$((RAN + 1))
     set +e
-    # bash явно: после git clone на Windows бит +x может потеряться
-    ZOO_PHASE="$phase" bash "$script"
+    # bash явно: после git clone на Windows бит +x может потеряться.
+    # 8>&- — фаза не наследует fd блокировки: запущенный ею фоновый процесс иначе
+    # держал бы /run/vpn-setup.lock и следующий install.sh считал бы себя занятым
+    ZOO_PHASE="$phase" bash "$script" 8>&-
     rc=$?
     set -e
     if [ "$rc" -ne 0 ]; then

@@ -28,16 +28,16 @@ config_set SSH_PORTS "$(IFS=,; echo "${ssh_ports[*]}")"
 # 3. UFW: без reset — чужие правила на живой системе сохраняются
 # ------------------------------------------------------------
 
-ufw default deny incoming >/dev/null
-ufw default allow outgoing >/dev/null
-
+# Сначала правила SSH, потом default deny: на уже активном UFW с default allow
+# обратный порядок сразу отрезал бы текущую SSH-сессию
+# Старое правило allow 22/tcp удалять не нужно: ufw limit на тот же порт заменяет его
+# на месте («Rule updated»), без окна, когда SSH не разрешён
 for p in "${ssh_ports[@]}"; do
-    # старая версия ставила allow 22/tcp: allow стоит раньше limit и отменяет его
-    if ufw show added 2>/dev/null | grep -qx "ufw allow ${p}/tcp comment 'SSH'"; then
-        ufw --force delete allow "${p}/tcp" >/dev/null
-    fi
     fw_allow "$p/tcp" "SSH" limit
 done
+
+ufw default deny incoming >/dev/null
+ufw default allow outgoing >/dev/null
 
 # Наследие старой версии: панель 3x-ui наружу (2053/PANEL_PORT) больше не открываем
 legacy_rules="$(ufw show added 2>/dev/null | grep -E "comment '3x-ui panel'" || true)"
@@ -57,7 +57,7 @@ for p in "${ssh_ports[@]}"; do
     grep -qE "ufw limit ${p}/tcp" <<< "$added" || die "правило SSH ${p}/tcp не добавилось — UFW не включаю"
 done
 
-if ufw status | grep -q '^Status: active'; then
+if _fw_ufw_active; then
     ufw reload >/dev/null
     log_ok "UFW уже был включён — правила обновлены"
 else
