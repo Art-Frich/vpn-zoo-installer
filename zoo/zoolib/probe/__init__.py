@@ -138,9 +138,31 @@ def export_bundle(cfg: Config, user: str | None = None, only: list[str] | None =
     entries = collect_entries(user, only)
     return {
         "schema": 1, "type": EXPORT_TYPE, "generated": _now(), "zoo": __version__,
-        "server_ip": cfg.get("SERVER_IP"), "label": cfg.get("LABEL"), "user": user,
-        "protocols": entries, "selftest": load_selftest(),
+        "server_ip": cfg.get("SERVER_IP"), "server_ips": server_addresses(), "label": cfg.get("LABEL"),
+        "user": user, "protocols": entries, "selftest": load_selftest(),
     }
+
+
+def server_addresses() -> list[str]:
+    """Глобальные адреса сервера (IPv4 и IPv6): Xray выходит и с IPv6, это тоже «с сервера»."""
+    import ipaddress
+    import subprocess
+    try:
+        out = subprocess.run(["ip", "-o", "addr", "show", "scope", "global"], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    addrs = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 4 and parts[2] in ("inet", "inet6"):
+            ip = parts[3].split("/")[0]
+            try:
+                if ipaddress.ip_address(ip).is_global:
+                    addrs.append(ip)
+            except ValueError:
+                pass
+    return addrs
 
 
 # ---------- пакет экспорта (в т. ч. от фазы 99) ----------
@@ -169,7 +191,9 @@ def load_bundle(data: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     st = meta.get("selftest")
     if isinstance(st, dict) and "results" in st:
         st = {"generated": st.get("generated"), "verdicts": {r["id"]: r["verdict"] for r in st["results"]}}
+    ips = meta.get("server_ips")
     info = {"server_ip": meta.get("server_ip") or meta.get("server") or meta.get("SERVER_IP"),
+            "server_ips": [str(a) for a in ips if isinstance(a, str)] if isinstance(ips, list) else [],
             "label": meta.get("label") or meta.get("LABEL"), "user": meta.get("user"),
             "generated": meta.get("generated"), "selftest": st if isinstance(st, dict) else None}
     return sorted(entries, key=lambda e: e["id"]), info
@@ -196,7 +220,7 @@ def run_local(cfg: Config, protocols: list[str] | None = None, user: str | None 
     user = user or users.probe_user()
     entries = collect_entries(user, protocols)
     server_ip = cfg.get("SERVER_IP") or None
-    results = engine.run(entries, st, server_ip=server_ip)
+    results = engine.run(entries, st, server_ip=server_ip, server_ips=server_addresses())
     rep = make_report("local", results, st, server_ip=server_ip, label=cfg.get("LABEL"), user=user,
                       context=ctx_mod.build(st.tag, st.device))
     _save_selftest(rep, partial=bool(protocols))
@@ -218,10 +242,11 @@ def run_remote(export: Any, protocols: list[str] | None = None,
     selftest = (meta.get("selftest") or {}).get("verdicts") or None
     direct = ctx_mod.direct_context(st.ip_urls, st.lookup)
     my_ip = direct["ip"]
+    intercepted = engine.tcp_intercepted(meta["server_ip"])
     results = engine.run(entries, st, server_ip=meta["server_ip"], selftest=selftest, my_ip=my_ip,
-                         context=everything if protocols else None)
+                         context=everything if protocols else None, server_ips=meta.get("server_ips"))
     rep = make_report("remote", results, st, server_ip=meta["server_ip"], label=meta.get("label"),
-                      user=meta.get("user"), direct_ip=my_ip,
+                      user=meta.get("user"), direct_ip=my_ip, tcp_intercepted=intercepted,
                       context=ctx_mod.build(st.tag, st.device, direct, ctx_mod.net_hint()),
                       selftest_generated=(meta.get("selftest") or {}).get("generated"))
     if selftest:

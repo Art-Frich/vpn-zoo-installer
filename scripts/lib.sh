@@ -629,10 +629,13 @@ download_verified() {
         return 0
     fi
     mkdir -p "$(dirname "$dest")"
-    tmp="$(mktemp "${dest}.part.XXXXXX")"
-    if ! retry 3 curl -fsSL --connect-timeout 15 --max-time 600 -o "$tmp" "$url"; then
-        rm -f "$tmp"
-        die "не удалось скачать $url"
+    # Постоянный .part: докачка (-C -) и между попытками, и между запусками install.sh
+    # (параллельный запуск исключён блокировкой). Вместо общего таймаута — обрыв, только
+    # если скорость ниже 10 КБ/с дольше минуты: медленный CDN GitHub (~130 КБ/с) дотягивает.
+    tmp="${dest}.part"
+    if ! retry 5 curl -fsSL --connect-timeout 15 --speed-limit 10240 --speed-time 60 -C - -o "$tmp" "$url"; then
+        die "не удалось скачать $url (докачано $(( $(stat -c %s "$tmp" 2>/dev/null || echo 0) / 1048576 )) МБ — повторный запуск продолжит).
+    Можно скачать вручную на другой машине и положить в $dest (sha256 $sum)"
     fi
     actual="$(sha256sum "$tmp" | awk '{print $1}')"
     if [ "$actual" != "$sum" ]; then

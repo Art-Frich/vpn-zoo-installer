@@ -177,6 +177,23 @@ class EndpointTest(unittest.TestCase):
         self.assertNotIn("hop", endpoints.with_host(HY, "127.0.0.1"))
 
 
+class InterceptAndEgressTest(unittest.TestCase):
+    def test_tcp_intercepted(self):
+        with mock.patch.object(engine, "tcp_check", return_value=("ok", 1.0)):
+            self.assertTrue(engine.tcp_intercepted("1.2.3.4"))
+        with mock.patch.object(engine, "tcp_check", return_value=("timeout", None)):
+            self.assertFalse(engine.tcp_intercepted("1.2.3.4"))
+        self.assertFalse(engine.tcp_intercepted(None))
+
+    def test_bundle_server_ips(self):
+        from zoolib.probe import load_bundle
+        _, meta = load_bundle({"server_ip": "1.2.3.4", "server_ips": ["1.2.3.4", "2001:db8::2", 5],
+                               "protocols": [{"id": "vless-reality", "probe": VLESS}]})
+        self.assertEqual(meta["server_ips"], ["1.2.3.4", "2001:db8::2"])
+        _, old = load_bundle({"server_ip": "1.2.3.4", "protocols": [{"id": "vless-reality", "probe": VLESS}]})
+        self.assertEqual(old["server_ips"], [], "старый пакет без server_ips читается")
+
+
 class TcpContextTest(unittest.TestCase):
     """--proto amneziawg: молчащий UDP без TCP-соседей в прогоне — проверить TCP из пакета."""
 
