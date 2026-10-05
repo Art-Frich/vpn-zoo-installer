@@ -74,6 +74,8 @@ def render(report: dict[str, Any]) -> None:
           + (f", ваш IP {report['direct_ip']}" if report.get("direct_ip") else ""))
     if context_line(report):
         print(f"Условия: {context_line(report)}")
+    if report.get("tcp_intercepted"):
+        print(INTERCEPT_WARNING)
     print()
     results = report.get("results", [])
     # расширенные метрики (задержка p50/p90, джиттер, отдача) — колонки только если они есть в отчёте
@@ -214,6 +216,11 @@ def _md(s: Any) -> str:
     return str(s if s is not None else "—").replace("|", "\\|").replace("\n", " ")
 
 
+INTERCEPT_WARNING = ("⚠ TCP перехватывает локальный VPN/TUN на этой машине: закрытый порт сервера «открылся» "
+                     "мгновенно. Проверка доступности портов недостоверна, блокировки провайдера этот прогон "
+                     "не показывает — выключите VPN или исключите адрес сервера из туннеля.")
+
+
 def markdown(report: dict[str, Any]) -> str:
     local = report.get("mode") == "local"
     lines = [f"# Проба VPN-зоопарка — {'сервер' if local else 'клиент'}", "",
@@ -222,6 +229,8 @@ def markdown(report: dict[str, Any]) -> str:
              f"- пользователь: {report.get('user') or '?'}"]
     if report.get("direct_ip"):
         lines.append(f"- ваш IP (без VPN): {report['direct_ip']}")
+    if report.get("tcp_intercepted"):
+        lines.append(f"- {INTERCEPT_WARNING}")
     if context_line(report):
         lines.append(f"- условия: {context_line(report)}")
     results = report.get("results", [])

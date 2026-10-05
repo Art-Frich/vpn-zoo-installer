@@ -331,11 +331,26 @@ def _tcp_context(raw: list[dict[str, Any]], context: list[dict[str, Any]], st: S
             tcp_by_host[ep.host] = tcp_by_host.get(ep.host, False) or status in ("ok", "refused")
 
 
+INTERCEPT_PORT = 9   # discard: на сервере за UFW закрыт — настоящий путь даёт таймаут, а не соединение
+
+
+def tcp_intercepted(server_ip: str | None, timeout: float = 2.0) -> bool:
+    """Локальный VPN/TUN (sing-box, Hiddify…) сам принимает любое TCP-соединение: тогда закрытый
+    порт сервера «открывается» мгновенно, и проверка доступности портов ничего не значит."""
+    if not server_ip:
+        return False
+    status, _ = tcp_check(server_ip, INTERCEPT_PORT, timeout)
+    return status == "ok"
+
+
 def run(entries: list[dict[str, Any]], st: Settings, server_ip: str | None = None,
         selftest: dict[str, str] | None = None, my_ip: str | None = None,
-        context: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        context: list[dict[str, Any]] | None = None,
+        server_ips: list[str] | None = None) -> list[dict[str, Any]]:
     """Прогон по всем протоколам и классификация. selftest — {id: вердикт серверной самопроверки};
-    context — все протоколы пакета (до фильтра --proto), для TCP-контекста молчащего UDP."""
+    context — все протоколы пакета (до фильтра --proto), для TCP-контекста молчащего UDP;
+    server_ips — все адреса сервера (IPv4 и IPv6): выход с любого из них — «с сервера»."""
+    own = {a for a in (server_ips or []) if a} | ({server_ip} if server_ip else set())
     workdir = Path(tempfile.mkdtemp(prefix="zoo-probe-"))
     try:
         raw = []
@@ -360,7 +375,7 @@ def run(entries: list[dict[str, Any]], st: Settings, server_ip: str | None = Non
         notes = list(obs.notes)
         ip = r.get("egress_ip")
         if ip:
-            if server_ip and ip == server_ip:
+            if ip in own:
                 r["egress"] = "server"
             elif my_ip and ip == my_ip:
                 r["egress"] = "direct"
