@@ -32,7 +32,7 @@ SECURITY_HEADERS = [
     ("Cross-Origin-Resource-Policy", "same-origin"),
     ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
 ]
-NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/clients", "Клиенты"), ("/traffic", "Трафик"),
+NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", "Группы"), ("/apps", "Приложения"), ("/clients", "Клиенты"), ("/traffic", "Трафик"),
        ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
 MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
@@ -89,7 +89,7 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import allowviews, clientviews, journalviews, protoviews, userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import allowviews, clientviews, groupviews, journalviews, protoviews, userviews, views  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -98,6 +98,7 @@ class App:
         self._cache_lock = threading.Lock()
         self.seen_jobs: set[str] | None = None  # завершённые задачи вкл/выкл, о которых кэш статуса уже знает
         name = r"(?P<name>[a-z0-9][a-z0-9_-]{0,31})"
+        gid = r"(?P<gid>[a-z0-9][a-z0-9_-]{0,31})"
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., Response], bool]] = []
         for method, pattern, handler, need_auth in [
             ("GET", r"/login", self.login_page, False),
@@ -113,6 +114,15 @@ class App:
             ("POST", rf"/users/{name}/delete", userviews.user_delete, True),
             ("GET", rf"/users/{name}/file/(?P<fname>[A-Za-z0-9._-]{{1,64}})", userviews.user_file, True),
             ("GET", rf"/users/{name}/qr/(?P<idx>\d+)", userviews.user_qr, True),
+            ("GET", r"/connect/new", groupviews.connect_page, True),
+            ("POST", r"/connect/new", groupviews.connect_post, True),
+            ("GET", r"/connect/done", groupviews.connect_done, True),
+            ("GET", r"/groups", groupviews.groups_list, True),
+            ("GET", rf"/groups/{gid}", groupviews.group_get, True),
+            ("POST", rf"/groups/{gid}", groupviews.group_save, True),
+            ("POST", rf"/groups/{gid}/members", groupviews.group_members, True),
+            ("POST", rf"/groups/{gid}/move", groupviews.group_move, True),
+            ("POST", rf"/groups/{gid}/delete", groupviews.group_delete, True),
             ("GET", r"/apps", allowviews.apps_page, True),
             ("POST", r"/apps", allowviews.apps_post, True),
             ("GET", r"/clients", clientviews.clients_page, True),

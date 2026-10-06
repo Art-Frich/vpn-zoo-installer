@@ -288,6 +288,28 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .checks label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
 .hint { color: var(--muted); font-size: .82rem; }
 
+/* мастер «Новое подключение» и группы */
+.stepper { display: flex; flex-wrap: wrap; gap: 6px 18px; list-style: none; padding: 0; margin: 0 0 14px; color: var(--muted); font-size: .9rem; }
+.stepper li { display: inline-flex; align-items: center; gap: 6px; }
+.stepper .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--border); font-size: .8rem; }
+.stepper li.cur { color: var(--text); font-weight: 600; }
+.stepper li.cur .n { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.stepper li.done .n { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
+.opts { display: grid; gap: 8px; }
+.opt, .opt-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--surface); cursor: pointer; }
+.opt:has(input:checked), .opt-row:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.opt input, .opt-row input { margin-top: 3px; flex: none; }
+.opt-body { display: grid; gap: 4px; min-width: 0; }
+.opt-title { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.opt-row { align-items: center; margin-bottom: 8px; }
+fieldset.plat { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
+fieldset.plat legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
+.wiz-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.wiz-nav .btn.primary { order: 2; }
+.wiz-nav .btn:not(.primary) { order: 1; }
+
 /* приложения через VPN: переключатели и панель сохранения */
 table.apps td, table.apps th { padding-left: 6px; padding-right: 6px; }
 table.apps td.num, table.apps th.num { width: 76px; text-align: center; }
@@ -440,7 +462,9 @@ JS = r"""
     if (msg && !window.confirm(msg)) { ev.preventDefault(); return; }
     if (f.hasAttribute('data-swap')) {
       ev.preventDefault();
-      go(f.getAttribute('action') || location.pathname, { method: 'POST', body: new URLSearchParams(new FormData(f)) });
+      var fd = new FormData(f);
+      if (ev.submitter && ev.submitter.name) fd.append(ev.submitter.name, ev.submitter.value);  // «Далее» / «Назад» мастера
+      go(f.getAttribute('action') || location.pathname, { method: 'POST', body: new URLSearchParams(fd) });
     } else if (f.hasAttribute('data-get')) {
       // поиск: форма GET превращается в адрес со всем состоянием, пустые поля в него не попадают
       ev.preventDefault();

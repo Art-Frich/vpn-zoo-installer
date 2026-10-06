@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
-from . import clients, journal, protoctl, storage, traffic, upgrade
+from . import clients, groups, journal, protoctl, storage, traffic, upgrade
 from . import probe as probe_mod
 from . import web as web_mod
 from .config import Config, ConfigError
@@ -114,7 +114,7 @@ def _report(rep: users.OpReport, as_json: bool) -> int:
 
 
 def cmd_user_add(args: argparse.Namespace, cfg: Config) -> int:
-    rep = users.add_user(args.name, note=args.note or "", only=args.proto, partial=args.partial)
+    rep = users.add_user(args.name, note=args.note or "", only=args.proto, partial=args.partial, group=args.group)
     code = _report(rep, args.json)
     if rep.ok and not args.json:
         output.info(f"ссылки: zoo links {args.name} --qr")
@@ -159,9 +159,11 @@ def cmd_user_list(args: argparse.Namespace, cfg: Config) -> int:
     else:
         if not reg.exists:
             output.warn(f"реестра {reg.path} нет — он создаётся фазой 09 (или: zoo setup)")
-        rows = [[u.name, "да" if u.enabled else "нет", ", ".join(u.protocols) or "—",
+        gs = groups.Groups.load()
+        rows = [[u.name, "да" if u.enabled else "нет", (gs.get(u.group).name if gs.get(u.group) else "—"),
+                 ", ".join(u.protocols) + (" (свой набор)" if u.custom else "") if u.protocols else "—",
                  u.created[:10], u.note] for u in shown]
-        print(output.table(rows, ["имя", "вкл", "протоколы", "создан", "заметка"]))
+        print(output.table(rows, ["имя", "вкл", "группа", "протоколы", "создан", "заметка"]))
         hidden = len(reg.users) - len(shown)
         if hidden:
             print(output.color(f"служебных скрыто: {hidden} (--all — показать)", "dim"))
@@ -187,7 +189,10 @@ def cmd_user_show(args: argparse.Namespace, cfg: Config) -> int:
     print(f"{user.name}  {'включён' if user.enabled else 'ОТКЛЮЧЁН'}  создан {user.created}")
     if user.note:
         print(f"заметка: {user.note}")
-    print(f"протоколы: {', '.join(user.protocols) or '—'}")
+    print(f"протоколы: {', '.join(user.protocols) or '—'}" + (" (свой набор)" if user.custom else ""))
+    grp = groups.Groups.load().get(user.group)
+    if grp:
+        print(f"группа: {grp.name} ({grp.id})")
     _render_links(links, errors, qr_mode=None)
     return EXIT_OK
 
@@ -401,6 +406,10 @@ def cmd_setup(args: argparse.Namespace, cfg: Config) -> int:
             output.info(f"приложения через VPN: {paths.allowlist_file()} (пресет; zoo allow list)")
     except allowlist.AllowlistError as e:
         output.warn(f"приложения через VPN: {e}")
+    try:
+        groups.ensure()
+    except (users.UserError, LockTimeout, OSError) as e:
+        output.warn(f"группы: {e} (повторить: zoo group list)")
     probe_rep = users.ensure_probe_user()
     if probe_rep is not None:
         _report(probe_rep, args.json)
@@ -468,7 +477,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = uadd("add", cmd_user_add, "добавить пользователя во все включённые протоколы")
     p.add_argument("name")
     p.add_argument("--note", help="заметка (кто это)")
-    p.add_argument("--proto", action="append", help="только этот протокол (можно несколько раз)")
+    p.add_argument("--group", metavar="ГРУППА", help="id или название группы (по умолчанию «Основная»)")
+    p.add_argument("--proto", action="append", help="только этот протокол (можно несколько раз; набор станет «своим»)")
     p.add_argument("--partial", action="store_true", help="не откатывать при ошибке в части протоколов")
     p = uadd("del", cmd_user_del, "удалить пользователя из всех протоколов")
     p.add_argument("name")
@@ -521,6 +531,42 @@ def build_parser() -> argparse.ArgumentParser:
     p = aadd("apply", cmd_allow_apply, "пересобрать Android-конфиги AmneziaWG и правила v2rayN всех пользователей",
              user=False)
     p.add_argument("--no-awg", action="store_true", help="только правила v2rayN")
+
+    pg = sub.add_parser("group", parents=[common], help="группы пользователей: протоколы, клиенты, приложения",
+                        description="Группы: у участников общие протоколы, клиенты и список приложений через VPN")
+    gsub = pg.add_subparsers(dest="group_command", metavar="ДЕЙСТВИЕ")
+    pg.set_defaults(handler=lambda a, c: (pg.print_help(), EXIT_USAGE)[1])
+
+    def gadd(name: str, handler: Callable, help_: str) -> argparse.ArgumentParser:
+        p = gsub.add_parser(name, parents=[common], help=help_, description=help_)
+        p.set_defaults(handler=handler)
+        return p
+
+    def group_options(p: argparse.ArgumentParser) -> None:
+        g = p.add_mutually_exclusive_group()
+        g.add_argument("--proto", action="append", metavar="ID", help="протокол группы (можно несколько раз; первый — основной)")
+        g.add_argument("--all-protocols", action="store_true", help="все включённые протоколы")
+        p.add_argument("--client", action="append", metavar="ПЛАТФОРМА=КЛИЕНТ",
+                       help="клиент платформы из каталога (android=happ; zoo clients)")
+        p.add_argument("--allow", action="append", metavar="ПРИЛОЖЕНИЕ",
+                       help="свой список приложений группы (ключ каталога, пакет, процесс); не указанная "
+                            "платформа остаётся как есть")
+
+    gadd("list", groups.cmd_group_list, "группы и их участники")
+    p = gadd("add", groups.cmd_group_add, "создать группу")
+    p.add_argument("name", metavar="НАЗВАНИЕ")
+    group_options(p)
+    p = gadd("set", groups.cmd_group_set, "изменить группу и применить к участникам")
+    p.add_argument("group", metavar="ГРУППА", help="id или название")
+    p.add_argument("--name", help="новое название")
+    group_options(p)
+    p.add_argument("--no-client", action="append", metavar="ПЛАТФОРМА", help="убрать клиента платформы")
+    p.add_argument("--allow-common", action="store_true", help="вернуть группу на общий список приложений")
+    p = gadd("move", groups.cmd_group_move, "перевести пользователя в группу (или вернуть ему настройки группы)")
+    p.add_argument("user", metavar="ИМЯ")
+    p.add_argument("group", metavar="ГРУППА")
+    p = gadd("rm", groups.cmd_group_rm, "удалить пустую группу")
+    p.add_argument("group", metavar="ГРУППА")
 
     p = add("traffic", traffic.cmd_traffic, "трафик по пользователям и протоколам")
     traffic.add_arguments(p)

@@ -7,7 +7,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 | Файл | Что |
 |---|---|
 | `docs/ARCHITECTURE.md` | контракт разработки: фазы, ключи config.env и их фазы-владельцы, манифест, пользователи, zoo, пробник, стенд, правила кода |
-| `docs/DECISIONS.md` | решения D1–D30 с «почему» и «как поменять». Новое решение без владельца → новая строка D31… |
+| `docs/DECISIONS.md` | решения D1–D43 с «почему» и «как поменять». Новое решение без владельца → новая строка D44… |
 | `docs/RISK-REDUCTION.md` | детект VPN, утечки IP, MAX/банки, пошаговые настройки клиентов, §7 поправки к исследованиям |
 | `docs/USER-GUIDE.md` | инструкция для пользователей VPN (по-русски, простым языком): allowlist, клиенты по платформам, Brave, банки/MAX |
 | `docs/PROBE-SURFACE.md` | что видит активный сканер снаружи (порты, баннеры, неотличимость REALITY) |
@@ -46,6 +46,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 - `scripts/lib/proto-<id>.sh` — модуль протокола: `proto_<id>_user_add|user_del|user_enable|user_list|links|probe|manifest_refresh|traffic|disable`. stdout — только данные, логи в stderr. Контракт описан в `zoo/zoolib/protolib.py`; zoo зовёт эти функции из копии в `/opt/vpn-zoo`.
 - Манифест `/etc/vpn-setup/protocols.d/<id>.json`: `id, layer, port, engine, service, enabled, users_backend, links[], files[], probe{kind: xray|hysteria|awg|sing-box}` (ARCHITECTURE §4). Пробник строит клиента только из `probe`.
 - Пользователи: `/etc/vpn-setup/users.json` — источник правды; `owner` создаётся при установке; `zoo-probe` — скрытый служебный (D26).
+- Группы (D43): `/etc/vpn-setup/groups.json` (пишет `zoolib/groups.py`, `zoo group`, мастер `/connect/new` и `/groups` в админке): протоколы, клиенты по платформам, список приложений; у пользователя `group`/`custom` в users.json; список группы зеркалится в allowlist.json (`groups`/`members`), `zoo_allowlist` читает порядок свой → группа → общий.
 - Приложения через VPN (D31): `/etc/vpn-setup/allowlist.json` (пишет только `zoolib/allowlist.py`, `zoo allow`), пресет `scripts/allowlist-default.json`, bash читает `zoo_allowlist` (lib.sh). Из него — `clients/<имя>/amneziawg-android.conf` (`IncludedApplications`, общий `.conf` без ключа) и `v2rayn-routing.json`.
 - Серверные файлы: `/etc/vpn-setup/config.env` (0600, секреты), `clients/<имя>/`, `/var/lib/vpn-zoo/`, `/var/log/vpn-zoo/install-*.log` и `/var/backups/vpn-setup/` (содержат ключи, ротация D29).
 

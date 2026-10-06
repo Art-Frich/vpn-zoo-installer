@@ -1,7 +1,9 @@
 """Пользователи зоопарка (ARCHITECTURE §5).
 
 Реестр /etc/vpn-setup/users.json — источник правды zoo:
-    {"schema": 1, "users": [{"name", "created", "enabled", "note", "protocols": [id, ...]}]}
+    {"schema": 1, "users": [{"name", "created", "enabled", "note", "protocols": [id, ...],
+                             "group": id, "custom": true}]}
+group — id группы (groups.json); custom — набор протоколов задан вручную, группа его не трогает.
 
 Операции расходятся по всем включённым протоколам с пользователями через protolib.
 При ошибке в одном протоколе изменения в остальных откатываются (partial=True — оставить
@@ -58,6 +60,8 @@ class User:
     note: str = ""
     protocols: list[str] = field(default_factory=list)
     system: bool = False
+    group: str = ""
+    custom: bool = False
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "User":
@@ -68,6 +72,8 @@ class User:
             note=str(d.get("note", "")),
             protocols=[str(x) for x in d.get("protocols", [])],
             system=bool(d.get("system", False)),
+            group=str(d.get("group") or ""),
+            custom=bool(d.get("custom", False)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,6 +81,10 @@ class User:
              "note": self.note, "protocols": list(self.protocols)}
         if self.system:
             d["system"] = True
+        if self.group:
+            d["group"] = self.group
+        if self.custom:
+            d["custom"] = True
         return d
 
 
@@ -224,7 +234,9 @@ def _load_registry() -> Registry:
 
 
 def add_user(name: str, note: str = "", only: list[str] | None = None,
-             partial: bool = False, system: bool = False) -> OpReport:
+             partial: bool = False, system: bool = False, group: str | None = None) -> OpReport:
+    """group: id или имя группы; None — «Основная», если она есть. Протоколы — группы, если
+    only не задан; свой only делает набор «своим» (группа его не трогает)."""
     validate_name(name)
     if name in SYSTEM_USERS and not system:
         raise UserError(f"имя «{name}» зарезервировано за служебным пользователем пробника")
@@ -232,6 +244,21 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
         reg = _load_registry()
         if reg.get(name):
             raise UserError(f"пользователь «{name}» уже есть")
+        grp, custom = None, False
+        if not system:
+            from . import groups
+            gs = groups.Groups.load()
+            grp = gs.require(group) if group else (gs.get(groups.MAIN_ID) if group is None else None)
+            if grp is not None:
+                if only:
+                    custom = True
+                else:
+                    managed_all, _ = managed_protocols()
+                    want = grp.resolve(managed_all)
+                    if not want:
+                        raise UserError(f"в группе «{grp.name}» нет включённых протоколов")
+                    only = None if set(want) >= set(managed_all) else want
+                groups.refresh_mirror(extra={name: grp.id})
         targets, skipped = managed_protocols(only)
         if not targets:
             raise UserError("нет протоколов, куда можно добавить пользователя: "
@@ -259,15 +286,18 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
         if failed and not partial:
             _rollback(rep, added, lambda pid: protolib.user_del(pid, name))
             _cleanup_client_dir(name)
+            _drop_mirror(grp)
             rep.ok = False
             rep.message = "пользователь не создан: ошибка в " + ", ".join(failed)
             return rep
         ok_ids = [s.proto_id for s in rep.steps if s.ok and s.action in ("add", "adopt")]
         if not ok_ids:
+            _drop_mirror(grp)
             rep.ok = False
             rep.message = "пользователь не создан ни в одном протоколе"
             return rep
-        reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system))
+        reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system,
+                              group=grp.id if grp else "", custom=custom))
         reg.save()
         if not system:
             _write_allowlist_files(name)
@@ -357,13 +387,44 @@ def set_enabled(name: str, enabled: bool, partial: bool = False) -> OpReport:
         return rep
 
 
+def _attach(rep: OpReport, user: User, pid: str) -> bool:
+    """Завести пользователя в протоколе (или признать уже заведённого) и записать в user.protocols.
+    Отключённый остаётся отключённым и в новом протоколе. False — не удалось (шаги в rep)."""
+    adopted = False
+    try:
+        if _present(pid, user.name):
+            adopted = True
+            rep.steps.append(Step(pid, "adopt", True, "уже был в протоколе"))
+        else:
+            protolib.user_add(pid, user.name)
+            rep.steps.append(Step(pid, "add", True))
+    except protolib.ProtoError as e:
+        rep.steps.append(Step(pid, "add", False, _err(e)))
+        return False
+    if not user.enabled:
+        try:
+            protolib.user_enable(pid, user.name, False)
+            rep.steps.append(Step(pid, "disable", True))
+        except protolib.ProtoError as e:
+            rep.steps.append(Step(pid, "disable", False, _err(e)))
+            # отключённый пользователь не должен получить доступ через новый протокол
+            if not adopted:
+                _rollback(rep, [pid], lambda p: protolib.user_del(p, user.name))
+                return False
+    user.protocols.append(pid)
+    return True
+
+
 def sync_users(names: list[str] | None = None) -> list[OpReport]:
     """Довести пользователей до текущего набора протоколов: завести креды в новых
-    протоколах (например, включили TUIC после установки), забыть удалённые."""
+    протоколах (например, включили TUIC после установки), забыть удалённые. Участнику группы
+    (без «своего» набора) — только протоколы группы."""
+    from . import groups
     with _lock():
         reg = _load_registry()
         targets, _ = managed_protocols()
         known = {m.id for m in manifests.load_all()[0]}
+        gs = groups.Groups.load()
         reports = []
         for user in reg.users:
             if names and user.name not in names:
@@ -372,34 +433,54 @@ def sync_users(names: list[str] | None = None) -> list[OpReport]:
             for pid in [p for p in user.protocols if p not in known]:
                 user.protocols.remove(pid)
                 rep.steps.append(Step(pid, "forget", True, "манифеста больше нет"))
-            for pid in [p for p in targets if p not in user.protocols]:
-                adopted = False
-                try:
-                    if _present(pid, user.name):
-                        adopted = True
-                        rep.steps.append(Step(pid, "adopt", True, "уже был в протоколе"))
-                    else:
-                        protolib.user_add(pid, user.name)
-                        rep.steps.append(Step(pid, "add", True))
-                except protolib.ProtoError as e:
-                    rep.steps.append(Step(pid, "add", False, _err(e)))
-                    continue
-                if not user.enabled:
-                    try:
-                        protolib.user_enable(pid, user.name, False)
-                        rep.steps.append(Step(pid, "disable", True))
-                    except protolib.ProtoError as e:
-                        rep.steps.append(Step(pid, "disable", False, _err(e)))
-                        # отключённый пользователь не должен получить доступ через новый протокол
-                        if not adopted:
-                            _rollback(rep, [pid], lambda p: protolib.user_del(p, user.name))
-                            continue
-                user.protocols.append(pid)
+            grp = gs.get(user.group) if user.group and not user.custom else None
+            for pid in [p for p in (grp.resolve(targets) if grp else targets) if p not in user.protocols]:
+                _attach(rep, user, pid)
             rep.ok = not rep.failed
             rep.message = "без изменений" if not rep.steps else ("готово" if rep.ok else "есть ошибки")
             reports.append(rep)
         reg.save()
         return reports
+
+
+def apply_protocols(wanted: dict[str, list[str]]) -> list[OpReport]:
+    """Привести протоколы пользователей к списку: недостающие завести, лишние (из включённых) убрать.
+    {имя: [id протоколов]}; ошибка в одном протоколе не откатывает остальные (partial)."""
+    with _lock():
+        return _apply_protocols(_load_registry(), wanted)
+
+
+def _apply_protocols(reg: Registry, wanted: dict[str, list[str]]) -> list[OpReport]:
+    """То же под уже взятой блокировкой; реестр сохраняется здесь."""
+    targets, _ = managed_protocols()
+    reports = []
+    for name, want_raw in wanted.items():
+        user = reg.require(name)
+        want = [p for p in want_raw if p in targets]
+        rep = OpReport("group", name)
+        if not want:
+            rep.ok = False
+            rep.message = "нет ни одного включённого протокола из списка"
+            reports.append(rep)
+            continue
+        for pid in [p for p in want if p not in user.protocols]:
+            _attach(rep, user, pid)
+        for pid in [p for p in user.protocols if p in targets and p not in want]:
+            try:
+                protolib.user_del(pid, name)
+                rep.steps.append(Step(pid, "del", True))
+                user.protocols.remove(pid)
+            except protolib.ProtoError as e:
+                if _present(pid, name) is False:
+                    rep.steps.append(Step(pid, "del", True, "уже отсутствовал"))
+                    user.protocols.remove(pid)
+                else:
+                    rep.steps.append(Step(pid, "del", False, _err(e)))
+        rep.ok = not rep.failed
+        rep.message = "без изменений" if not rep.steps else ("готово" if rep.ok else "есть ошибки")
+        reports.append(rep)
+    reg.save()
+    return reports
 
 
 def bootstrap(owner: str = OWNER) -> OpReport:
@@ -490,6 +571,13 @@ def _drop_probe_export(name: str) -> bool:
         return True
     except (OSError, ValueError, AttributeError):
         return False
+
+
+def _drop_mirror(grp: Any) -> None:
+    """Пользователь не создан: убрать его из зеркала групп (оно писалось до модулей протоколов)."""
+    if grp is not None:
+        from . import groups
+        groups.refresh_mirror()
 
 
 def _write_allowlist_files(name: str) -> None:

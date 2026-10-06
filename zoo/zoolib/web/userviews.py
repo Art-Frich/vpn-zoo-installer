@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import allowlist, clients, manifests, paths, protolib, qr, traffic, users
+from .. import allowlist, clients, groups, manifests, paths, protolib, qr, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
 from ..probe import rank
@@ -61,6 +61,33 @@ def _user_op(req: "Request", fn, *args, **kw) -> users.OpReport | None:
     return rep
 
 
+def _group_cell(gs: groups.Groups, u: users.User) -> Markup | str:
+    g = gs.get(u.group)
+    if g is None:
+        return t("span", "—", class_="muted")
+    return t("a", g.name, href=f"/groups/{g.id}", class_="nowrap")
+
+
+def _group_link(user: users.User) -> Markup | str:
+    try:
+        g = groups.Groups.load().get(user.group)
+    except groups.GroupError:
+        g = None
+    if g is None:
+        return "—"
+    return t("span", t("a", g.name, href=f"/groups/{g.id}"),
+             t("span", " · свой набор протоколов", class_="muted small") if user.custom else None)
+
+
+def _group_clients(user: users.User) -> dict[str, str]:
+    """Клиенты группы пользователя по платформам (для «Что отправить»)."""
+    try:
+        g = groups.Groups.load().get(user.group)
+    except groups.GroupError:
+        return {}
+    return dict(g.clients) if g else {}
+
+
 def _disable_confirm(name: str) -> str:
     return f"Отключить {name}? Ссылки сохранятся, но подключиться он не сможет."
 
@@ -87,6 +114,10 @@ def _proto_chip(u: users.User, managed: list[str]) -> Markup:
 def users_list(app: "App", req: "Request") -> "Response":
     csrf = req.session.csrf if req.session else ""
     reg = users.list_users()
+    try:
+        gs = groups.ensure()
+    except (users.UserError, LockTimeout, OSError):
+        gs = groups.Groups(paths.groups_file())
     managed, skipped = users.managed_protocols()
     day = {r["key"]: r["total"] for r in traffic.report(period="24h", by="user")["rows"]}
     month = {r["key"]: r["total"] for r in traffic.report(period="30d", by="user")["rows"]}
@@ -102,14 +133,15 @@ def users_list(app: "App", req: "Request") -> "Response":
             t("span", t("a", t("strong", u.name), href=f"/users/{u.name}"), " " if not u.enabled else None,
               badge("откл.", "muted") if not u.enabled else None,
               t("span", u.note, class_="sub") if u.note else None),
+            _group_cell(gs, u),
             _proto_chip(u, managed),
             human_bytes(day.get(u.name, 0)), charts.bar(day.get(u.name, 0), mx),
             human_bytes(month.get(u.name, 0)), t("span", ago(seen.get(u.name)), class_="nowrap"),
             toggle,
         ])
         row_cls.append(None if u.enabled else "off")
-    tbl = table(["пользователь", "протоколы", "24 ч", "", "30 дней", "активность", ""], rows,
-                num=[2, 4], empty="пользователей нет", stack=True, row_cls=row_cls)
+    tbl = table(["пользователь", "группа", "протоколы", "24 ч", "", "30 дней", "активность", ""], rows,
+                num=[3, 5], empty="пользователей нет", stack=True, row_cls=row_cls)
     if not reg.exists:
         tbl = join(alert_list([("warn", "Реестра users.json ещё нет: он создастся при первом изменении "
                                          "(или фазой 09).")]), tbl)
@@ -125,12 +157,18 @@ def users_list(app: "App", req: "Request") -> "Response":
                    t("div", t("label", "Заметка", for_="note"),
                      t("input", type="text", name="note", id="note", maxlength="200", placeholder="кто это"),
                      class_="field grow"),
+                   t("div", t("label", "Группа", for_="group"),
+                     t("select", [t("option", g.name, value=g.id, selected=g.id == groups.MAIN_ID) for g in gs.groups],
+                       name="group", id="group", title="Протоколы и приложения — как у группы"), class_="field")
+                   if gs.groups else None,
                    t("button", "Добавить", type="submit", class_="btn primary"), class_="form-row"),
                  t("div", t("span", "Протоколы:", class_="label"), t("div", protos, class_="checks"), class_="field")
                  if protos else alert_list([("warn", "Нет протоколов, куда можно добавить пользователя.")]),
                  method="post", action="/users", class_="stack", data_swap=True)
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
-    head_actions = t("div", t("a", "Сверить", href="/users?verify=1", class_="btn small", data_swap=True,
+    head_actions = t("div", t("a", "Новое подключение", href="/connect/new", class_="btn small primary", data_swap=True,
+                              title="Группа, клиенты, люди и пакеты раздачи за четыре шага"),
+                     t("a", "Сверить", href="/users?verify=1", class_="btn small", data_swap=True,
                               title="Сверить реестр с тем, что есть в протоколах"),
                      post_button("/users/sync", "Синхронизировать", csrf, "btn small",
                                  title="Завести креды в протоколах, включённых после создания") if missing else None,
@@ -174,7 +212,7 @@ def user_add(app: "App", req: "Request") -> "Response":
     if chosen and only == []:
         req.session.flash("bad", "Не выбран ни один протокол")
         return _redirect("/users")
-    rep = _user_op(req, users.add_user, name, note=note, only=only)
+    rep = _user_op(req, users.add_user, name, note=note, only=only, group=req.form.get("group") or None)
     app.invalidate("status")
     app.invalidate_links(name)
     return _redirect(f"/users/{name}" if rep and rep.ok else "/users")
@@ -319,6 +357,7 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     info = card("Профиль", kv([
         ("статус", badge("включён", "ok") if user.enabled else
          t("span", "отключён", class_="badge muted", title="креды сохранены, доступ закрыт")),
+        ("группа", _group_link(user)),
         ("через VPN", t("a", "свой список приложений" if own else "общий список приложений",
                         href=f"/apps?user={name}")),
         ("заметка", user.note or "—"),
@@ -347,7 +386,8 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     links_card = card("Подключение", err_list, quick_start(links, name),
                       connect_tiles(links, manifests.load_all()[0], name) or t("p", "Ссылок нет.", class_="muted"),
                       help="Ссылки и QR — ключи доступа: показывайте только самому пользователю.")
-    body = [page_head(name, user.note or None, actions), links_card, clientviews.handoff_card(links),
+    body = [page_head(name, user.note or None, actions), links_card,
+            clientviews.handoff_card(links, _group_clients(user)),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
 

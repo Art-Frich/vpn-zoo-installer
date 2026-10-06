@@ -43,6 +43,7 @@ SOURCES: dict[str, Callable[[], list[Path]]] = {
     "manifests": lambda: [paths.manifest_dir()],
     "config": lambda: [paths.config_file()],
     "allowlist": lambda: [paths.allowlist_file()],
+    "groups": lambda: [paths.groups_file()],
     "logs": lambda: [logs.log_dir()],
 }
 JOURNALD_BUCKET = 30  # journald пишет постоянно: логи подтягиваются не чаще раза в 30 с
@@ -51,8 +52,10 @@ JOURNALD_BUCKET = 30  # journald пишет постоянно: логи под�
 # обновляется и без изменений данных; 0 — нет). Последняя строка — всё прочее.
 PAGES: list[tuple[re.Pattern[str], tuple[str, ...], int]] = [(re.compile(p), s, w) for p, s, w in [
     (r"/", ("traffic", "journal", "probe", "selftest", "users", "manifests", "config"), 10),  # CPU, память
-    (r"/users", ("users", "clients", "manifests", "traffic"), 60),
-    (r"/users/[^/]+(/.*)?", ("users", "clients", "manifests", "traffic", "allowlist", "probe"), 60),
+    (r"/users", ("users", "groups", "clients", "manifests", "traffic"), 60),
+    (r"/users/[^/]+(/.*)?", ("users", "groups", "clients", "manifests", "traffic", "allowlist", "probe"), 60),
+    (r"/groups(/[^/]+)?", ("groups", "users", "allowlist", "manifests", "clients", "probe"), 60),
+    (r"/connect/.*", ("groups", "users", "allowlist", "manifests", "clients", "probe"), 60),
     (r"/apps", ("allowlist", "users"), 0),
     (r"/traffic", ("traffic", "manifests", "users"), 0),
     (r"/probe", ("probe", "selftest", "manifests", "config"), 60),
