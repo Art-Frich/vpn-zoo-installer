@@ -543,38 +543,6 @@ def log_sources(app: "App") -> tuple[list[tuple[str, str, str]], dict[str, dict[
     return out, states
 
 
-def logs_page(app: "App", req: "Request") -> "Response":
-    sources, states = log_sources(app)
-    keys = {k for _, k, _ in sources}
-    failed = [k for g, k, label in sources if g == "Сервисы" and states.get(label, {}).get("active") == "failed"]
-    src = req.query.get("src") or (failed[0] if failed else sources[0][1] if sources else "")
-    try:
-        lines = max(50, min(2000, int(req.query.get("lines", "300"))))
-    except ValueError:
-        lines = 300
-    nav: list[Any] = []
-    group = None
-    for g, k, label in sources:
-        if g != group:
-            nav.append(t("li", g, class_="group"))
-            group = g
-        nav.append(t("li", t("a", label, href=f"/logs?src={k}&lines={lines}", class_="active" if k == src else None,
-                             title=label, data_swap=True)))
-    if src in keys:
-        kind, _, name = src.partition(":")
-        raw = logs.tail_file(logs.log_dir() / name, lines) if kind == "file" else logs.journal(name, lines)
-        content = t("pre", logs.sanitize(raw, app.cfg()) or "пусто", class_="log")
-        title = name
-    else:
-        content, title = empty("Выберите лог слева" if sources else "Логов нет"), ""
-    sizes = t("nav", [t("a", str(n), href=f"/logs?src={src}&lines={n}", class_="active" if n == lines else None)
-                      for n in (100, 300, 1000)], class_="seg", aria_label="Строк")
-    body = [page_head("Логи", None, sizes),
-            t("div", card("Источники", t("ul", nav, class_="list")),
-              card(title or "Лог", content, help="Последние строки; ключи, пароли и ссылки скрыты."), class_="side")]
-    return app.render(req, "Логи", body, active="/logs")
-
-
 # ---------- настройки ----------
 
 def restartable_units(app: "App") -> list[str]:

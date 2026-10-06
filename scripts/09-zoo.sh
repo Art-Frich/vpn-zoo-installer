@@ -16,10 +16,10 @@
 # Юниты: все zoo/systemd/*.service|*.timer|*.path копируются в /etc/systemd/system, включаются
 # и запускаются те, что перечислены в zoo/systemd/enable.list (zoo-collector.timer —
 # трафик каждые 5 минут, zoo-live.timer/.path — метрики протоколов, zoo-job.path — вкл/выкл
-# протокола из админки, zoo-web.service — админка, zoo-clients.timer — версии клиентских
+# протокола из админки, zoo-logs.path — очистка journald из админки, zoo-web.service — админка, zoo-clients.timer — версии клиентских
 # приложений из GitHub раз в сутки). Повторный запуск (--phase 09)
 # обновляет копию и юниты и перезапускает админку.
-#   /var/lib/vpn-zoo/jobs, live-req            заявки админки (файлы); исполняют zoo-job / zoo-live-req
+#   /var/lib/vpn-zoo/jobs, live-req, logs-req  заявки админки (файлы); исполняют zoo-job / zoo-live-req / zoo-logs
 
 set -euo pipefail
 
