@@ -65,6 +65,33 @@ class CatalogTest(unittest.TestCase):
         self.assertNotIn("Hiddify", cat.names_for("vless-reality"))
         self.assertIn("AmneziaWG", cat.names_for("amneziawg"))
 
+    def test_hiddify_unverified_and_not_recommended(self):
+        # исследование 04.10.2026: у Hiddify Hy2/SS/TUIC — ❓; без проверки не рекомендуем и в выбор не берём
+        cat = catalog()
+        h = cat.client("hiddify")
+        for pid in ("ss2022", "hysteria2", "tuic"):
+            self.assertEqual(h["protocols"][pid]["s"], "unk", pid)
+            self.assertIn("не проверено", h["protocols"][pid]["note"], pid)
+        for plat, by_proto in cat.raw["recommended"].items():
+            self.assertNotIn("hiddify", by_proto.values(), plat)
+        for plat in ("windows", "macos", "linux"):
+            self.assertNotIn("tuic", cat.raw["recommended"][plat], "проверенного клиента TUIC на десктопе нет")
+
+    def test_per_app_steps_are_per_platform(self):
+        cat = catalog()
+        for c in cat.clients:
+            self.assertIsNone(cat.per_app_steps(c, "ios"), f"{c['id']}: на iOS приложения через VPN невозможны")
+        av = cat.client("amneziavpn")
+        self.assertIsNone(cat.per_app_steps(av, "windows"), "на Windows у AmneziaVPN только исключение приложений")
+        self.assertIn("только приложения из списка", cat.per_app_steps(av, "android"))
+        self.assertIn("Brave", cat.per_app_steps(cat.client("happ"), "android"))
+
+    def test_store_flag(self):
+        cat = catalog()
+        self.assertTrue(cat.no_ru_store(cat.client("happ"), "ios"))
+        self.assertFalse(cat.no_ru_store(cat.client("happ"), "android"))
+        self.assertFalse(cat.no_ru_store(cat.client("incy"), "ios"))
+
     def test_validate_rejects_broken(self):
         base = json.loads(clients.CATALOG_FILE.read_text(encoding="utf-8"))
 
@@ -81,6 +108,14 @@ class CatalogTest(unittest.TestCase):
         broken(lambda r: r["clients"][0].update({"repo": "no slash"}))
         broken(lambda r: r["clients"].append(copy.deepcopy(r["clients"][0])))
         broken(lambda r: r.pop("check"))
+
+        def happ(r):
+            return next(c for c in r["clients"] if c["id"] == "happ")
+
+        broken(lambda r: happ(r).update({"per_app_steps": "строка вместо словаря"}))
+        broken(lambda r: happ(r).update({"per_app_steps": {"ios": "нельзя"}}))
+        broken(lambda r: happ(r).update({"per_app_steps": {"windows": "у клиента нет такой платформы"}}))
+        broken(lambda r: happ(r).update({"no_ru_store": ["windows"]}))
         clients.validate(base)
 
     def test_load_reports_unreadable(self):
@@ -270,7 +305,7 @@ class ClientsPageTest(AppTestBase):
     def test_matrix_marks(self):
         _, body = self.c.get("/clients")
         self.assertRegex(body, r'class="badge bad" title="не работает: [^"]*X25519MLKEM768')
-        self.assertIn('class="badge warn" title="с оговоркой: игнорирует пин', body)
+        self.assertIn('class="badge muted" title="не проверено: не проверено (04.10.2026)', body)
 
     def test_broken_catalog_does_not_break_page(self):
         with mock.patch.object(clients, "load", side_effect=clients.ClientsError("clients.json: нет ключа")):
@@ -302,6 +337,56 @@ class PackTest(unittest.TestCase):
         self.assertIn("github.com/amnezia-vpn/amneziawg-android", p.steps[0], "проверенные ссылки — раньше")
         self.assertIn("Brave", p.steps[-1])
         self.assertIn("2ip.ru", p.steps[-1], "у AWG echo-правила нет: адрес сервера виден")
+
+    def gpack(self, plat, links, prefer, order=None):
+        return clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, plat, links, [], prefer, order)
+
+    def test_group_client_and_primary_protocol_win(self):
+        hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
+        links = [VLESS, hy2, AWG_ANDROID]
+        # у группы v2rayNG и основной протокол Hysteria2: не рекомендованный Happ и не AWG первым
+        p = self.gpack("android", links, {"android": "v2rayng"}, ["hysteria2", "vless-reality"])
+        self.assertEqual((p.client["id"], p.proto), ("v2rayng", "hysteria2"))
+        p = self.gpack("android", links, {"android": "v2rayng"}, ["vless-reality", "hysteria2"])
+        self.assertEqual((p.client["id"], p.proto), ("v2rayng", "vless-reality"))
+        # клиент группы не умеет первый протокол группы — берём первый, который умеет
+        p = self.gpack("android", links, {"android": "wgtunnel"}, ["vless-reality", "amneziawg"])
+        self.assertEqual((p.client["id"], p.proto, p.method), ("wgtunnel", "amneziawg", "qr"))
+        # группа «все включённые»: порядок раздачи каталога, но клиент — группы
+        p = self.gpack("android", links, {"android": "v2rayng"}, None)
+        self.assertEqual((p.client["id"], p.proto), ("v2rayng", "vless-reality"))
+        # без клиентов группы — как раньше
+        self.assertEqual(self.gpack("android", links, {}, ["hysteria2"]).client["id"], "amneziawg")
+
+    def test_group_without_client_for_platform_gets_no_pack(self):
+        self.assertIsNone(self.gpack("windows", [VLESS], {"android": "happ"}), "«Не нужен» для Windows")
+        self.assertIsNone(self.gpack("android", [VLESS], {"android": ""}))
+        self.assertIsNone(self.gpack("android", [VLESS], {"android": "ghost"}))
+        self.assertIsNone(self.gpack("android", [VLESS], {"android": "happ"}, ["amneziawg"]), "Happ не умеет AWG")
+        self.assertIsNone(self.gpack("android", [AWG_ANDROID], {"android": "happ"}, ["vless-reality"]),
+                          "нет ссылки протокола — нечего отправлять")
+
+    def test_per_app_step_only_where_client_can(self):
+        # iPhone: приложений через VPN нет, браузер любой
+        p = self.gpack("ios", [VLESS], {"ios": "incy"}, ["vless-reality"])
+        self.assertNotIn("Приложения через VPN", " ".join(p.steps))
+        self.assertIn("любом браузере", p.steps[-1])
+        # Windows у AmneziaVPN — только исключение приложений: шага «только из списка» нет
+        w = self.gpack("windows", [AWG_COMMON, AWG_KEY], {"windows": "amneziavpn"}, ["amneziawg"])
+        self.assertEqual(w.client["id"], "amneziavpn")
+        self.assertNotIn("только приложения из списка", " ".join(w.steps))
+        self.assertIn("любом браузере", w.steps[-1])
+        a = self.gpack("android", [AWG_KEY], {"android": "amneziavpn"}, ["amneziawg"])
+        self.assertIn("только приложения из списка", " ".join(a.steps))
+        self.assertIn("Brave", a.steps[-1])
+
+    def test_foreign_apple_id_warning(self):
+        p = self.gpack("ios", [VLESS], {"ios": "happ"}, ["vless-reality"])
+        self.assertEqual(p.client["id"], "happ")
+        self.assertIn("Apple ID другой страны", p.message)
+        self.assertNotIn("Приложения через VPN", p.message, "на iPhone их нет")
+        self.assertNotIn("Apple ID", self.gpack("ios", [VLESS], {"ios": "incy"}, ["vless-reality"]).message)
+        self.assertNotIn("Apple ID", self.gpack("android", [VLESS], {"android": "happ"}, ["vless-reality"]).message)
 
     def test_android_without_awg_uses_happ(self):
         p = self.pack("android", [VLESS])

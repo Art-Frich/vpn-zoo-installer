@@ -64,6 +64,14 @@ class Catalog:
         cid = self.raw["recommended"].get(platform, {}).get(proto)
         return self.client(cid) if cid else None
 
+    def no_ru_store(self, client: dict[str, Any], platform: str) -> bool:
+        """Клиента нет в российском магазине платформы: нужен аккаунт другой страны."""
+        return platform in client.get("no_ru_store", [])
+
+    def per_app_steps(self, client: dict[str, Any], platform: str) -> str | None:
+        """Шаг «приложения через VPN» для платформы; нет шага — на ней клиент так не умеет."""
+        return (client.get("per_app_steps") or {}).get(platform)
+
     def real_protocols(self) -> list[str]:
         return [p for p, d in self.protocols.items() if not d.get("pseudo")]
 
@@ -102,6 +110,12 @@ def validate(raw: Any) -> None:
         for pid, st in c["protocols"].items():
             need(pid in protos and st.get("s") in STATUSES, f"{cid}: протокол {pid} {st}")
         need(set(c.get("import", {})) <= set(IMPORT_METHODS), f"{cid}: import")
+        steps = c.get("per_app_steps", {})
+        need(isinstance(steps, dict) and set(steps) <= set(c["platforms"]) - {"ios"}
+             and all(isinstance(v, str) and v for v in steps.values()),
+             f"{cid}: per_app_steps — словарь платформа → текст, без iOS и только для платформ клиента")
+        no_ru = c.get("no_ru_store", [])
+        need(isinstance(no_ru, list) and set(no_ru) <= set(c["platforms"]), f"{cid}: no_ru_store")
         v = c.get("verified") or {}
         need(bool(DATE_RE.fullmatch(str(v.get("date", "")))) and isinstance(v.get("device"), bool),
              f"{cid}: verified")
