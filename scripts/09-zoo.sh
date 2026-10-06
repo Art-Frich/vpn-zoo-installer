@@ -14,7 +14,8 @@
 #
 # Юниты: все zoo/systemd/*.service|*.timer копируются в /etc/systemd/system, включаются
 # и запускаются те, что перечислены в zoo/systemd/enable.list (zoo-collector.timer —
-# трафик каждые 5 минут, zoo-web.service — админка). Повторный запуск (--phase 09)
+# трафик каждые 5 минут, zoo-web.service — админка, zoo-clients.timer — версии клиентских
+# приложений из GitHub раз в сутки). Повторный запуск (--phase 09)
 # обновляет копию и юниты и перезапускает админку.
 
 set -euo pipefail

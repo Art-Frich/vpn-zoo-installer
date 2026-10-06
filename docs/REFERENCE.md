@@ -259,6 +259,7 @@ ssh -t -L ПОРТ:127.0.0.1:ПОРТ root@СЕРВЕР sudo zoo web --link   # 
 | `zoo history add FILE... [--tag] [--device]` / `list` / `export` | история проб: записать отчёт, журнал, выгрузка для `history/` |
 | `zoo export-probe --out FILE [--user ИМЯ]` | пакет для клиентского пробника |
 | `zoo smoke [--no-probe]` | быстрая проверка здоровья (сервисы, порты, API, UFW, коллектор, самопроверка) |
+| `zoo clients [--check-upstream]` | каталог клиентских приложений (`zoo/data/clients.json`) и их последние версии; `--check-upstream` спрашивает GitHub (10 с на запрос, без токена) и пишет кэш, раз в сутки это делает `zoo-clients.timer` |
 | `zoo upgrade [--fetch] [--pull] [--apply] [--phase ФАЗА]` | обновление закреплённых версий (ниже) |
 | `zoo version [--all]` | версия zoo; `--all` — версии компонентов и пины |
 | `zoo web [--info] [--link] [--new-token]` | веб-админка (как сервис её держит `zoo-web.service`) |
