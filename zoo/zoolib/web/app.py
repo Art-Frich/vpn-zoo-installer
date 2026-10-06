@@ -89,7 +89,7 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import allowviews, clientviews, groupviews, journalviews, protoviews, userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import allowviews, clientviews, groupviews, journalviews, probeviews, protoviews, userviews, views  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -130,6 +130,7 @@ class App:
             ("GET", r"/probe", views.probe_page, True),
             ("POST", r"/probe/run", views.probe_run, True),
             ("POST", r"/probe/compare", views.probe_compare, True),
+            ("POST", r"/probe/history/(?P<rid>\d{1,9})/delete", probeviews.run_delete, True),
             ("GET", r"/journal", journalviews.journal_page, True),
             ("GET", r"/logs", views.logs_page, True),
             ("GET", r"/settings", views.settings_page, True),

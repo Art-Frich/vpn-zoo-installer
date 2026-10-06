@@ -215,6 +215,23 @@ details.more > summary { margin-top: 12px; }
 details.more[open] > summary { margin-bottom: 10px; }
 .top-inner .brand { flex: none; }
 
+/* общий компонент таблиц (web/table.py) */
+table.dt tr[data-href], table.dt tr[data-row] { cursor: pointer; }
+table.dt th a.sortlink { color: inherit; text-decoration: none; }
+table.dt th a.sortlink:hover { color: var(--accent); }
+table.dt th[aria-sort] a.sortlink { color: var(--text); }
+table.dt th[aria-sort="ascending"] a.sortlink::after { content: " ▲"; font-size: .7em; }
+table.dt th[aria-sort="descending"] a.sortlink::after { content: " ▼"; font-size: .7em; }
+button.exp { font: inherit; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 6px 0 0;
+  display: inline-block; }
+button.exp::before { content: "▸"; }
+button.exp[aria-expanded="true"] { color: var(--accent); transform: rotate(90deg); }
+tr.det td { background: var(--surface-2); }
+tr.det dl.kv { margin: 0 0 6px; }
+.sec-kv { display: none; }
+p.count { display: flex; flex-wrap: wrap; gap: 2px 14px; margin: 6px 0; }
+.exports a { margin-right: 8px; }
+
 /* значки */
 .badge { display: inline-block; font-size: .78rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
   white-space: nowrap; line-height: 1.5; }
@@ -417,6 +434,8 @@ footer { max-width: 1200px; margin: 0 auto; padding: 0 16px 24px; color: var(--m
   main { padding-top: 14px; }
   .card { padding: 13px; }
   th, td { padding: 7px 8px; }
+  table.dt .sec { display: none; }
+  .sec-kv { display: grid; }
   table.stack thead { display: none; }
   table.stack, table.stack tbody { display: block; }
   table.stack tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--border); }
@@ -622,15 +641,35 @@ JS = r"""
       .then(function (r) { if (!r.ok || !isHtml(r)) throw new Error('more'); return r.text(); })
       .then(function (html) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
-        var fresh = doc.querySelector('[data-more-box]');
+        var fresh = box.id ? doc.getElementById(box.id) : doc.querySelector('[data-more-box]');
         var body = box.querySelector('tbody'), add = fresh && fresh.querySelectorAll('tbody tr');
         if (!body || !add || !add.length) throw new Error('more');
         add.forEach(function (tr) { body.appendChild(document.importNode(tr, true)); });
         var next = fresh.querySelector('a[data-more]');
         if (next) { more.href = next.href; more.classList.remove('busy'); } else { more.closest('p').remove(); }
+        var cnt = box.querySelector('[data-count]'), fcnt = fresh.querySelector('[data-count]');
+        if (cnt && fcnt) cnt.textContent = fcnt.textContent;
         box.setAttribute('data-expanded', '');
       })
       .catch(function () { location.href = more.href; });
+  });
+  // строка таблицы (web/table.py): с адресом (data-href) — переход, без него — раскрыть подробности
+  document.addEventListener('click', function (ev) {
+    var tr = ev.target.closest && ev.target.closest('table.dt tr[data-href], table.dt tr[data-row]');
+    if (!tr || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    var btn = ev.target.closest('button.exp');
+    if (!btn && ev.target.closest('a, button, input, select, textarea, label, summary, form')) return;
+    if (!btn && window.getSelection && String(window.getSelection())) return;
+    var to = tr.getAttribute('data-href');
+    if (to) {
+      if (dirty() && !window.confirm('Изменения не сохранены. Уйти без сохранения?')) return;
+      go(to);
+      return;
+    }
+    var det = tr.nextElementSibling, b = tr.querySelector('button.exp');
+    if (!det || !det.classList.contains('det')) return;
+    det.hidden = !det.hidden;
+    if (b) b.setAttribute('aria-expanded', det.hidden ? 'false' : 'true');
   });
   document.addEventListener('click', function (ev) {
     var a = ev.target.closest('nav.seg a, a[data-swap]');
@@ -777,7 +816,7 @@ JS = r"""
     if (document.hidden) return true;
     var a = document.activeElement, main = document.querySelector('main');
     if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
-    if (!main || main.querySelector('details[open], [data-expanded]') || document.querySelector('dialog[open]')) return true;
+    if (!main || main.querySelector('details[open], [data-expanded], tr.det:not([hidden])') || document.querySelector('dialog[open]')) return true;
     if (/[?&]verify=/.test(location.search)) return true;  // сверка зовёт модули протоколов: не по таймеру
     return dirty() || typed(main);
   }

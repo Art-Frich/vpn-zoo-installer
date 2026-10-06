@@ -262,6 +262,36 @@ def list_reports(con: sqlite3.Connection, limit: int = 30, since: int | None = N
     return [dict(r) for r in con.execute(sql + " ORDER BY r.ts DESC, r.id DESC LIMIT ?", args + [limit])]
 
 
+def report_detail(con: sqlite3.Connection, rid: int) -> dict[str, Any] | None:
+    """Один прогон целиком: контекст и по строке на протокол (вердикт, числа, IP выхода из сырого отчёта).
+    IP выхода — приватное поле: только для владельца в админке, в выгрузках — по явному запросу."""
+    row = con.execute("SELECT id, ts, mode, source, server, tag, device, country, asn, isp, net, zoo, raw "
+                      "FROM reports WHERE id = ?", (rid,)).fetchone()
+    if row is None:
+        return None
+    out = {k: row[k] for k in row.keys() if k != "raw"}
+    try:
+        raw = {r["id"]: r for r in json.loads(row["raw"]).get("results", []) if isinstance(r, dict)}
+    except (ValueError, AttributeError):
+        raw = {}
+    results = []
+    for x in con.execute("SELECT proto, verdict, latency_ms, p90_ms, jitter_ms, loss_pct, rtt_ms, down_mbps, up_mbps "
+                         "FROM results WHERE report_id = ? ORDER BY proto", (rid,)):
+        r = dict(x)
+        ip = (raw.get(r["proto"]) or {}).get("egress_ip")
+        r["egress_ip"] = ip if isinstance(ip, str) and len(ip) <= 45 else None
+        results.append(r)
+    out["results"] = results
+    return out
+
+
+def delete_report(con: sqlite3.Connection, rid: int) -> bool:
+    """Удалить прогон (results — каскадом). → был ли такой."""
+    cur = con.execute("DELETE FROM reports WHERE id = ?", (rid,))
+    con.commit()
+    return cur.rowcount > 0
+
+
 def raw_reports(con: sqlite3.Connection, since: int | None = None) -> Iterable[dict[str, Any]]:
     sql = "SELECT raw FROM reports" + (" WHERE ts >= ?" if since is not None else "") + " ORDER BY ts, id"
     for row in con.execute(sql, [since] if since is not None else []):
