@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import output, paths, system
-from .fsutil import LockTimeout, atomic_write_json, file_lock
+from .fsutil import LockTimeout, UnsafePath, atomic_write_json, check_real_dirs, file_lock, read_text_nofollow
 
 JOURNALD_DIRS = ("/var/log/journal", "/run/log/journal")
 INSTALL_RE = re.compile(r"^install-[A-Za-z0-9._-]{1,100}\.log\Z")
@@ -140,7 +140,7 @@ def clean_files(names: list[str] | None = None, older_days: int | None = None, k
 
 def _read(path: Path) -> dict[str, Any] | None:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text_nofollow(path))   # заявку кладёт админка: ссылку на чужой файл не читаем
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -239,12 +239,19 @@ def _run_one(req: Path) -> None:
     _prune()
 
 
+def _check_dirs() -> None:
+    check_real_dirs(paths.state_dir(), req_dir(), state_dir())
+
+
 def run_queue() -> int:
-    """Выполнить заявки по порядку; уже работающий исполнитель — выйти (он дочитает очередь)."""
-    req_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    """Выполнить заявки по порядку; уже работающий исполнитель — выйти (он дочитает очередь).
+    Это root в каталоге, куда пишет админка: каталог заявок — ссылка → отказ, ничего не трогаем."""
     try:
-        with file_lock(req_dir() / "runner.lock", timeout=0):
+        _check_dirs()
+        req_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+        with file_lock(req_dir() / "runner.lock", timeout=0, nofollow=True):
             for _ in range(10):
+                _check_dirs()
                 reqs = sorted((f for f in req_dir().glob("*.json") if ID_RE.match(f.stem)),
                               key=lambda f: f.stat().st_mtime)
                 if not reqs:
@@ -252,6 +259,12 @@ def run_queue() -> int:
                 _run_one(reqs[0])
     except LockTimeout:
         pass
+    except UnsafePath as e:
+        output.error(str(e))
+        return 1
+    except OSError as e:
+        output.error(f"заявки на очистку журнала не выполнены: {e.strerror or e}")
+        return 1
     return 0
 
 

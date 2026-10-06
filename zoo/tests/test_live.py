@@ -619,6 +619,48 @@ class RunnerTest(ProtoEnvTest):
         self.assertEqual(list(d.glob("*.json")), [], "заявки убраны")
         self.assertEqual(config.load().get("ENABLE_TUIC"), "")
 
+    def symlink(self, link, target):
+        try:
+            Path(link).symlink_to(target, target_is_directory=Path(target).is_dir())
+        except (OSError, NotImplementedError):
+            self.skipTest("нет символьных ссылок")
+
+    def test_symlinked_job_dirs_are_refused_by_the_root_runner(self):
+        victim = self.env.root / "victim"
+        victim.mkdir()
+        jid = "a" * 32
+        req = json.dumps({"id": jid, "proto": "tuic", "action": "disable"})
+        (victim / f"{jid}.json").write_text(req, encoding="utf-8")
+        self.symlink(protoctl.jobs_dir(), victim)          # jobs -> чужой каталог
+        self.assertEqual(protoctl.run_queue(), 1)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(sorted(p.name for p in victim.iterdir()), [f"{jid}.json"], "в чужой каталог ничего не писали")
+        protoctl.jobs_dir().unlink()
+        protoctl.jobs_dir().mkdir()
+        (protoctl.jobs_dir() / f"{jid}.json").write_text(req, encoding="utf-8")
+        self.symlink(protoctl.state_dir(), victim)         # jobs/state -> чужой каталог
+        self.assertEqual(protoctl.run_queue(), 1)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual(sorted(p.name for p in victim.iterdir()), [f"{jid}.json"])
+        protoctl.state_dir().unlink()
+        # заявка-ссылка: читается как повреждённая, цель не читается и не трогается
+        target = self.env.root / "secret.json"
+        target.write_text(req, encoding="utf-8")
+        (protoctl.jobs_dir() / f"{jid}.json").unlink()
+        self.symlink(protoctl.jobs_dir() / f"{jid}.json", target)
+        self.assertEqual(protoctl.run_queue(), 0)
+        self.assertEqual(self.calls(), [], "по заявке-ссылке ничего не запускается")
+        self.assertEqual(protoctl.get_state(jid)["status"], "fail")
+        self.assertTrue(target.exists())
+        # журнал задачи — ссылка: исполнитель не пишет через неё
+        (protoctl.jobs_dir() / f"{jid}.json").unlink(missing_ok=True)
+        jid2 = protoctl.submit("tuic", "disable")
+        protoctl.state_dir().mkdir(exist_ok=True)
+        before = target.read_bytes()
+        self.symlink(protoctl.state_dir() / f"{jid2}.log", target)
+        protoctl.run_queue()
+        self.assertEqual(target.read_bytes(), before, "через ссылку журнал не писался")
+
     def test_phase_comes_from_manifest_not_from_request(self):
         d = protoctl.jobs_dir()
         d.mkdir(parents=True)

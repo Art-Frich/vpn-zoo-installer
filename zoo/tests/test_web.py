@@ -1028,7 +1028,7 @@ class ConnectPageTest(AppTestBase):
     def test_stamp_is_skipped_where_response_is_not_a_page(self):
         self.c.post("/users", {"name": "masha"})
         _, body = self.c.get("/users/masha")
-        qr = re.search(r'data-src="(/users/masha/qr/\d+)"', body).group(1)
+        qr = re.search(r'data-src="(/users/masha/qr/\d+\?p=[0-9a-f]{8})"', body).group(1)
         file = re.search(r'href="(/users/masha/file/[\w.-]+)"', body).group(1)
         real = stamp_mod.compute
         with mock.patch("zoolib.web.stamp.compute", side_effect=real) as comp:
@@ -1050,7 +1050,7 @@ class ConnectPageTest(AppTestBase):
 
     def test_qr_route_needs_session_and_has_no_style(self):
         _, body = self.c.get("/users/masha")
-        url = re.search(r'data-src="(/users/masha/qr/\d+)"', body).group(1)
+        url = re.search(r'data-src="(/users/masha/qr/\d+\?p=[0-9a-f]{8})"', body).group(1)
         anon = Client(self.app)
         resp, _ = anon.get(url)
         self.assertEqual(resp.status, 303)
@@ -1066,6 +1066,26 @@ class ConnectPageTest(AppTestBase):
         self.assertIn("vless://masha@", svg.call_args[0][0])
         for bad in ("/users/masha/qr/999", "/users/nobody/qr/0"):
             self.assertEqual(self.c.get(bad)[0].status, 404, bad)
+
+    def test_qr_url_carries_link_tag_and_shifted_list_is_404(self):
+        from zoolib.web import userviews
+        _, body = self.c.get("/users/masha")
+        url = re.search(r'data-src="(/users/masha/qr/\d+\?p=[0-9a-f]{8})"', body).group(1)
+        base, tag = url.split("?p=")
+        idx = int(base.rsplit("/", 1)[1])
+        links, errs = userviews._cached_links(self.app, "masha")
+        self.assertEqual(links[idx].tag, tag)
+        self.assertEqual(len({ln.tag for ln in links}), len(links), "метки разных ссылок различаются")
+        with mock.patch("zoolib.qr.svg", return_value=SAMPLE_QR):
+            self.assertEqual(self.c.get(url)[0].status, 200)
+            self.assertEqual(self.c.get(base)[0].status, 404, "без метки не отдаём")
+            self.assertEqual(self.c.get(base + "?p=00000000")[0].status, 404)
+            self.assertEqual(self.c.get(base + "?p=" + tag.upper())[0].status, 404)
+            # между показом страницы и запросом картинки список ссылок поменялся: тот же номер — уже другая ссылка
+            with mock.patch.object(userviews, "_cached_links", return_value=(links[::-1], errs)):
+                self.assertEqual(self.c.get(url)[0].status, 404, "чужой QR не отдаётся")
+                new = links[::-1]
+                self.assertEqual(self.c.get(f"{base.rsplit('/', 1)[0]}/{len(new) - 1 - idx}?p={tag}")[0].status, 200)
 
     def test_qr_cache_cleared_with_links(self):
         from zoolib import qr

@@ -4,6 +4,7 @@ zoo/data/clients.json и кэш версий; в сеть страницы не 
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -26,6 +27,8 @@ SEND_WARN = ("Ссылки и QR — ключи доступа: не отпра�
              "со сквозным шифрованием.")
 FOREIGN_STORE = "В российском App Store его нет: нужен Apple ID другой страны, подделки с похожим названием не ставьте."
 NAME_TOKEN = "{name}"
+MISMATCH = "текст группы не подходит этому человеку — показан свой"
+STALE = "набор клиентов изменился — проверьте текст"
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
@@ -357,13 +360,21 @@ def synth_links(protos: list[str]) -> list[protolib.Link]:
     return out + [protolib.Link(allowlist.V2RAYN_FILE, "", allowlist.V2RAYN_PROTO, "file")]
 
 
+def pack_sig(pack: "Pack | None") -> str:
+    """Подпись набора: какие клиенты и за какие протоколы отвечают. Версии не входят: текст от них не «устаревает»."""
+    if pack is None:
+        return "-"
+    raw = ";".join(f"{s.client['id']}:{','.join(i.proto for i in s.items)}" for s in pack.sections)
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
 @dataclass
 class Ctx:
     """Всё, что нужно блокам «Подключить» и текстам групп; грузится один раз на страницу."""
     cat: clients.Catalog
     cache: dict[str, Any]
     mans: list[Any]
-    texts: dict[tuple[str, str], str | None] = field(default_factory=dict)
+    packs: dict[tuple[str, str], "Pack | None"] = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> "Ctx | None":
@@ -377,14 +388,21 @@ class Ctx:
     def managed(self) -> list[str]:
         return users.managed_protocols()[0]
 
+    def group_pack(self, g: groups.Group, plat: str) -> "Pack | None":
+        key = (g.id, plat)
+        if key not in self.packs:
+            prefer, order = group_prefs(g)
+            self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.resolve(self.managed)), self.mans,
+                                         prefer, order)
+        return self.packs[key]
+
+    def group_sig(self, g: groups.Group, plat: str) -> str:
+        return pack_sig(self.group_pack(g, plat))
+
     def default_text(self, g: groups.Group, plat: str) -> str | None:
         """Текст по умолчанию: набор клиентов группы по всем её протоколам. None — для платформы пакета нет."""
-        key = (g.id, plat)
-        if key not in self.texts:
-            prefer, order = group_prefs(g)
-            pack = build_pack(self.cat, self.cache, plat, synth_links(g.resolve(self.managed)), self.mans, prefer, order)
-            self.texts[key] = pack.message if pack else None
-        return self.texts[key]
+        pack = self.group_pack(g, plat)
+        return pack.message if pack else None
 
     def text(self, g: groups.Group, plat: str) -> str | None:
         """Текст группы для платформы: свой или по умолчанию."""
@@ -398,6 +416,7 @@ class Key:
     """Что передать человеку по одному протоколу его приложением: QR, ссылка, файл."""
     title: str
     qr: int | None = None
+    qr_tag: str = ""
     uri: str | None = None
     file: str | None = None
 
@@ -410,6 +429,7 @@ def _keys(sec: Section, platform: str, links: list[protolib.Link]) -> list[Key]:
         k = Key(it.tile)
         if "qr" in imp:
             k.qr = pick_link(it.proto, c, platform, links, "qr")
+            k.qr_tag = links[k.qr].tag if k.qr is not None else ""
         if "link" in imp and (i := pick_link(it.proto, c, platform, links, "link")) is not None:
             k.uri = links[i].uri
         if "file" in imp and (i := pick_link(it.proto, c, platform, links, "file")) is not None:
@@ -424,7 +444,7 @@ def _keys(sec: Section, platform: str, links: list[protolib.Link]) -> list[Key]:
 def _key_html(k: Key, name: str, kid: str) -> Markup:
     parts: list[Any] = [t("div", k.title, class_="key-name")]
     if k.qr is not None:
-        parts.append(t("img", class_="qr", src=f"/users/{name}/qr/{k.qr}", loading="lazy", width=160, height=160,
+        parts.append(t("img", class_="qr", src=f"/users/{name}/qr/{k.qr}?p={k.qr_tag}", loading="lazy", width=160, height=160,
                        alt=f"QR: {k.title}"))
     if k.uri:
         parts.append(t("div", t("input", type="text", id=kid, value=k.uri, readonly=True, data_select=True,
@@ -459,11 +479,15 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
         pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order)
         if pack is None:
             continue
-        text = ((ctx.text(g, plat) if g else None) or pack.message).replace(NAME_TOKEN, name)
+        group_text = ctx.text(g, plat) if g else None
+        own = bool(g and group_text and pack_sig(pack) != ctx.group_sig(g, plat))
+        # у человека свои протоколы или другие приложения, чем в наборе группы: текст группы про другое
+        text = ((None if own else group_text) or pack.message).replace(NAME_TOKEN, name)
         mid = f"msg-{uid}{plat}"
         keys = [_keys(s, plat, links) for s in pack.sections]
         apps = [_app_html(s, k, plat, name, ctx.cat, uid) for s, k in zip(pack.sections, keys)]
         msg = t("div",
+                alert_list([("warn", MISMATCH)]) if own else None,
                 t("label", "Текст сообщения — можно править", for_=mid),
                 t("textarea", text, id=mid, rows=str(min(16, text.count("\n") + 3)), spellcheck="false"),
                 t("div",

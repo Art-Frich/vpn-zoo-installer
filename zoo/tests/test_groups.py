@@ -527,7 +527,8 @@ class ModelTest(GroupsBase):
         self.assertNotIn("messages", self.groups_json()["groups"][-1], "пустых текстов в файле нет")
         groups.set_message(g.id, "android", "{name}, привет\n\n")
         self.assertEqual(groups.Groups.load().get(g.id).messages, {"android": "{name}, привет"})
-        self.assertEqual(groups.Groups.load().get(g.id).to_dict()["messages"], {"android": "{name}, привет"})
+        self.assertEqual(groups.Groups.load().get(g.id).to_dict()["messages"],
+                         {"android": {"text": "{name}, привет", "sig": None}})
         groups.update(g.id, name="Семья 2", protocols=["vless-reality", "hysteria2"], clients={"android": ["happ"]})
         self.assertEqual(groups.Groups.load().get(g.id).messages, {"android": "{name}, привет"}, "update текст не трогает")
         groups.set_message(g.id, "android", None)
@@ -543,6 +544,30 @@ class ModelTest(GroupsBase):
         data["groups"][-1]["messages"] = {"android": 5, "ios": "  ok  ", "windows": "   "}
         paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
         self.assertEqual(groups.Groups.load().get(g.id).messages, {"ios": "ok"})
+
+    def test_message_signature_roundtrip_and_legacy_strings(self):
+        users.bootstrap()
+        g = groups.create("Семья", ["vless-reality"], {"android": ["happ"]})
+        groups.set_message(g.id, "android", "привет", "abc123")
+        self.assertEqual(self.groups_json()["groups"][-1]["messages"], {"android": {"text": "привет", "sig": "abc123"}})
+        self.assertEqual(groups.Groups.load().get(g.id).msg_sigs, {"android": "abc123"})
+        groups.update(g.id, name="Семья 2")
+        self.assertEqual(groups.Groups.load().get(g.id).msg_sigs, {"android": "abc123"}, "update подпись не трогает")
+        groups.set_message(g.id, "android", "привет 2")
+        self.assertEqual(groups.Groups.load().get(g.id).msg_sigs, {}, "без подписи — старая не остаётся")
+        groups.set_message(g.id, "android", "привет 3", "zzz")
+        groups.set_message(g.id, "android", None)
+        self.assertEqual(groups.Groups.load().get(g.id).msg_sigs, {})
+        data = self.groups_json()
+        data["groups"][-1]["messages"] = {"android": "старый формат", "ios": {"text": "новый", "sig": "q"},
+                                          "windows": {"text": "  ", "sig": "x"}, "linux": {"sig": "x"}}
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        got = groups.Groups.load().get(g.id)
+        self.assertEqual(got.messages, {"android": "старый формат", "ios": "новый"})
+        self.assertEqual(got.msg_sigs, {"ios": "q"}, "у строки подписи нет")
+        groups.Groups.load().save()
+        self.assertEqual(self.groups_json()["groups"][-1]["messages"],
+                         {"android": {"text": "старый формат", "sig": None}, "ios": {"text": "новый", "sig": "q"}})
 
     def test_default_client_follows_first_handoff_protocol(self):
         cat = clients.load()

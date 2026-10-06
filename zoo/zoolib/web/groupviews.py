@@ -662,7 +662,9 @@ def _messages_card(g: groups.Group, ctx: clientviews.Ctx, csrf: str, open_plat: 
             continue
         mine = g.messages.get(plat)
         body = mine or default
+        stale = bool(mine and g.msg_sigs.get(plat) and g.msg_sigs[plat] != ctx.group_sig(g, plat))
         form = t("form", csrf_input(csrf), t("input", type="hidden", name="platform", value=plat),
+                 alert_list([("warn", clientviews.STALE)]) if stale else None,
                  t("textarea", body, name="text", rows=str(min(16, len(body.splitlines()) + 2)),
                    maxlength=str(groups.MESSAGE_MAX), spellcheck="false", class_="msg-edit",
                    aria_label=f"Текст для {title}"),
@@ -670,7 +672,8 @@ def _messages_card(g: groups.Group, ctx: clientviews.Ctx, csrf: str, open_plat: 
                    t("button", "Вернуть по умолчанию", type="submit", name="reset", value="1", class_="btn small")
                    if mine else None, class_="actions"),
                  method="post", action=f"/groups/{g.id}/message", class_="stack", data_swap=True)
-        items.append(t("details", t("summary", title, " ", badge("свой текст", "info") if mine else None), form,
+        items.append(t("details", t("summary", title, " ", badge("свой текст", "info") if mine else None,
+                                     *([" ", badge("проверьте", "warn")] if stale else [])), form,
                        open=plat == open_plat or None, class_="more"))
     if not items:
         return None
@@ -767,7 +770,7 @@ def group_message(app: "App", req: "Request", gid: str) -> "Response":
         ctx = clientviews.Ctx.load()
         if text and ctx is not None and text == ctx.default_text(g, plat):
             text = None  # совпал с умолчанием — не замораживаем версии приложений в файле
-        groups.set_message(g.id, plat, text)
+        groups.set_message(g.id, plat, text, ctx.group_sig(g, plat) if ctx is not None else None)
     except CATCH as e:
         req.session.flash("bad", _err(e))
         return _redirect(back)

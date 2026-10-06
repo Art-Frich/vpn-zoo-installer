@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 import unittest
@@ -74,7 +75,8 @@ class FakeJournal:
             elif a == "-o":
                 i += 1
             i += 1
-        rows = [e for e in self.entries if not units or e.get("UNIT") in units or e.get("_SYSTEMD_UNIT") in units]
+        match = ("UNIT", "_SYSTEMD_UNIT", "OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT", "_SYSTEMD_SLICE")
+        rows = [e for e in self.entries if not units or any(e.get(k) in units for k in match)]
         ts = lambda e: int(e["__REALTIME_TIMESTAMP"])  # noqa: E731
         if since is not None:
             rows = [e for e in rows if ts(e) >= since]
@@ -171,6 +173,35 @@ class FileReadTest(unittest.TestCase):
         fwd = logread.lines_from(p, int(win.newer), 1000)
         self.assertEqual([line.text for line in fwd.lines], lines[len(lines) - len(fwd.lines):])
         self.assertIsNone(fwd.newer)
+
+    def test_offsets_inside_a_line_snap_to_its_start(self):
+        lines = ["первая", f"token={SECRET}x", "█▀▀▀▀▀█ ▄▄ █▀▀▀▀▀█", "последняя"]
+        p = self.dir / "s.log"
+        write_lines(p, lines)
+        raw = p.read_bytes()
+        starts = [0]
+        for part in raw.split(b"\n")[:-1]:
+            starts.append(starts[-1] + len(part) + 1)
+        mid = starts[1] + 10
+        ch = logread.lines_from(p, mid, 10)
+        self.assertEqual([x.text for x in ch.lines], lines[1:])
+        self.assertEqual(ch.lines[0].tok, str(starts[1]))
+        self.assertEqual(ch.older, str(starts[1]))
+        ch = logread.lines_before(p, mid, 10)
+        self.assertEqual([x.text for x in ch.lines], lines[:1])
+        self.assertEqual(ch.newer, str(starts[1]))
+        ch = logread.lines_before(p, starts[2] + 3, 10)
+        self.assertEqual([x.text for x in ch.lines], lines[:2])
+        win = logread.file_around(p, starts[2] + 4, 4)
+        self.assertIn(lines[2], [x.text for x in win.lines])
+        self.assertEqual([x.text for x in win.lines][:3], lines[:3])
+        for off in (0, starts[1]):
+            self.assertEqual(logread.lines_from(p, off, 10).lines[0].tok, str(off))
+        for off in (len(raw), len(raw) + 99):
+            self.assertEqual(logread.lines_from(p, off, 10).lines, [])
+        big = self.dir / "t.log"
+        big.write_bytes(b"x" * 200_000 + b"\n" + b"tail\n")
+        self.assertEqual(logread.lines_from(big, 150_000, 5).lines[0].tok, "0")
 
     def test_long_line_is_cut_and_binary_is_safe(self):
         p = self.dir / "b.log"
@@ -333,6 +364,55 @@ class SearchTest(unittest.TestCase):
             self.find(r"(a+)+$", True)
         self.assertEqual(len(self.find(r"a+!", True, files=[self.f1], units=[]).hits), 1)
         self.assertLess(time.monotonic() - t0, 3)
+
+    def test_regex_guard_bypass_patterns_are_rejected_before_running(self):
+        # размножители без «.*»: раньше проходили проверку, а re на длинной строке держал GIL минутами
+        t0 = time.monotonic()
+        for bad in ("a*a*a*a*b", "[a-z]*[a-z]*[a-z]*!", "(?:a{0,50}){0,50}b", "a{0,50}a{0,50}a{0,50}b", r"\w*\w*\w*!",
+                    r"(?:\w{1,3}\w)*x", "(?:a?){60}a{60}", "(?:a*){0,5}b", "x+x+x+y", "[ab]+[bc]+[cd]+z"):
+            with self.assertRaises(logread.LogError, msg=bad):
+                logread.compile_query(bad, True)
+        self.assertLess(time.monotonic() - t0, 1)
+        self.f1.write_text("a" * 1000 + "\n", encoding="utf-8")
+        self.assertEqual(self.find(r"a{1,50}b", True, files=[self.f1], units=[]).hits, [])
+
+    def test_regex_guard_keeps_normal_patterns(self):
+        for ok in (r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", r"(?:\d{1,3}\.){3}\d{1,3}", "foo.*bar.*baz", ".{0,50}foo.{0,50}",
+                   "[0-9a-f]{64}", r"ERROR.*(timeout|refused)", r"\bfail(ed|ure)?\b.*port \d+", "colou?r.*fail"):
+            logread.compile_query(ok, True)
+        self.assertEqual(len(self.find(r"(?:\d{1,3}\.){3}\d{1,3}", True, files=[self.f2], units=[]).hits), 0)
+        self.f2.write_text("peer 10.0.0.12 up\n", encoding="utf-8")
+        self.assertEqual(len(self.find(r"(?:\d{1,3}\.){3}\d{1,3}", True, files=[self.f2], units=[]).hits), 1)
+
+    def test_qr_rows_are_masked_in_single_line_hits(self):
+        qr = ["█▀▀▀▀▀█ ▄▄ █▀▀▀▀▀█", "█ ███ █ ▀▀ █ ███ █", "▀▀▀▀▀▀▀ ▀▄ ▀▀▀▀▀▀▀"]
+        write_lines(self.f1, ["до", *qr, "после QR"])
+        for query, regex in (("█", False), (r"█+", True), ("▄", False)):
+            self.assertEqual(self.find(query, regex, files=[self.f1], units=[]).hits, [], query)
+        res = self.find("QR", files=[self.f1], units=[])
+        self.assertTrue(res.hits)
+        self.assertNotRegex(" ".join(h.text for h in res.hits), "[█▀▄]")
+        self.assertEqual(self.clean("█▀▀▀▀▀█ ▄▄ █"), "[QR скрыт]")
+        self.assertEqual(self.clean("█ █"), "█ █", "короткое — не QR")
+        self.assertEqual(self.clean("текст █▀▀▀▀▀█ ▄▄ █"), "текст █▀▀▀▀▀█ ▄▄ █", "строка не только из блоков")
+
+    def test_journal_hit_unit_comes_from_any_unit_field_and_unknown_is_not_guessed(self):
+        def raw(i, msg, **fields):
+            e = entry(i, "init.scope", msg)
+            e.update(fields)
+            return e
+        self.fj.entries += [raw(10, "crash one", OBJECT_SYSTEMD_UNIT="b.service"),
+                            raw(11, "crash two", COREDUMP_UNIT="b.service"),
+                            raw(12, "crash three", UNIT="a.service"),
+                            raw(13, "crash four", _SYSTEMD_SLICE="a.service")]
+        self.fj.entries.sort(key=lambda e: int(e["__REALTIME_TIMESTAMP"]))
+        res = self.find("crash", files=[], units=["a.service", "b.service"])
+        src = {h.text.split(": ", 1)[1]: h.src for h in res.hits}
+        self.assertEqual(src, {"crash one": "unit:b.service", "crash two": "unit:b.service",
+                               "crash three": "unit:a.service", "crash four": logread.JOURNAL_SRC})
+        fields = self.fj.calls[-1][self.fj.calls[-1].index("-o") + 2]
+        for f in ("OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT", "UNIT", "_SYSTEMD_UNIT"):
+            self.assertIn(f, fields)
 
     def test_secrets_are_masked_in_hits_and_cannot_be_probed(self):
         res = self.find("token")
@@ -544,6 +624,47 @@ class WebLogsTest(AppTestBase):
         self.assertNotIn(SECRET, d["text"])
         self.assertIn("•••", self.body("/logs?src=unit:zoo-web.service&lines=500&at=" + cursor(7, BASE + 7)))
 
+    def test_qr_rows_and_mid_line_offsets_do_not_leak_on_any_output(self):
+        qr = ["█▀▀▀▀▀█ ▄▄ █▀▀▀▀▀█", "█ ███ █ ▀▀ █ ███ █", "▀▀▀▀▀▀▀ ▀▄ ▀▀▀▀▀▀▀"]
+        lines = ["начало", *qr, f"token={SECRET}x", "конец"]
+        write_lines(self.f1, lines)
+        src = "file:install-20261001-100000.log"
+        raw = self.f1.read_bytes()
+        qr_mid = raw.index("█ ███".encode()) + 5
+        tok_mid = raw.index(SECRET.encode()) + 4
+        for path in (f"/logs/chunk?src={src}&after={qr_mid}", f"/logs/chunk?src={src}&before={qr_mid + 20}",
+                     f"/logs/chunk?src={src}&after={tok_mid}", f"/logs/chunk?src={src}&before={tok_mid + 3}",
+                     f"/logs?src={src}&at={qr_mid}", f"/logs?src={src}&q=QR", f"/logs/export?src={src}",
+                     f"/logs/export?src={src}&q=QR"):
+            resp, body = self.c.get(path)
+            self.assertEqual(resp.status, 200, path)
+            for bad in ("█", "▀", "▄", SECRET[4:], "abcdefghijkl"):
+                self.assertNotIn(bad, body, (path, bad))
+        d = json.loads(self.c.get(f"/logs/chunk?src={src}&after={qr_mid}")[1])
+        self.assertEqual(d["text"].split("\n")[0], "[QR скрыт]", "строка берётся целиком, с её начала")
+        d = json.loads(self.c.get(f"/logs/chunk?src={src}&after={tok_mid}")[1])
+        self.assertTrue(d["text"].startswith("token=•••"), d["text"])
+
+    def test_hit_without_known_unit_opens_the_whole_journal(self):
+        e = entry(500, "init.scope", "странный crash")
+        e["_SYSTEMD_SLICE"] = "zoo-web.service"
+        self.fj.entries.append(e)
+        body = self.body("/logs?q=crash&in=all")
+        self.assertIn("Найдено: 1", body)
+        self.assertRegex(body, r"<td[^>]*>журнал</td>|>журнал<")
+        href = re.search(r'href="(/logs\?src=journal%3Aall&amp;at=[^"]+)#hit"', body).group(1).replace("&amp;", "&")
+        self.fj.calls.clear()
+        page = self.body(href)
+        self.assertIn("странный crash", page)
+        self.assertIn('<mark id="hit" class="hitline">', page)
+        self.assertTrue(self.fj.calls)
+        self.assertTrue(all("-u" not in call for call in self.fj.calls), "без отбора по юниту")
+        d = json.loads(self.c.get("/logs/chunk?src=journal:all&before=" + e["__CURSOR"])[1])
+        self.assertNotIn("error", d)
+        self.assertEqual(self.c.get("/logs/export?src=journal:all")[0].status, 200)
+        self.assertEqual(self.c.get("/logs?src=journal:nope")[0].status, 200)
+        self.assertEqual(self.c.get("/logs/chunk?src=journal:nope&before=" + e["__CURSOR"])[0].status, 400)
+
     def test_export_is_attachment(self):
         resp, body = self.c.get("/logs/export?src=file:install-20261003-100000.log")
         self.assertIn("attachment", header(resp, "Content-Disposition")[0])
@@ -653,6 +774,11 @@ class WebLogsTest(AppTestBase):
         self.assertIn("PathExistsGlob=/var/lib/vpn-zoo/logs-req/*.json", path)
         self.assertIn("Unit=zoo-logs.service", path)
         self.assertIn("ExecStart=/usr/local/bin/zoo logs run", svc)
+        for need in ("ProtectSystem=strict", "NoNewPrivileges=yes", "PrivateDevices=yes"):
+            self.assertIn(need, svc)
+        rw = next(ln for ln in svc.splitlines() if ln.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+        self.assertEqual(sorted(p.lstrip("-") for p in rw),
+                         ["/run/log/journal", "/var/lib/vpn-zoo", "/var/log/journal", "/var/log/vpn-zoo"])
         self.assertIn("zoo-logs.path", (root / "enable.list").read_text(encoding="utf-8").split())
         web = (root / "zoo-web.service").read_text(encoding="utf-8")
         self.assertIn("ProtectSystem=strict", web)
@@ -709,6 +835,70 @@ class ExecutorTest(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual({s["status"] for s in logctl.states(10)}, {"fail"})
         self.assertEqual(logctl.pending(), [])
+
+    def symlink(self, link, target):
+        try:
+            Path(link).symlink_to(target, target_is_directory=Path(target).is_dir())
+        except (OSError, NotImplementedError):
+            self.skipTest("нет символьных ссылок")
+
+    def test_symlinked_request_dirs_are_refused_by_the_root_runner(self):
+        victim = self.env.root / "victim"
+        victim.mkdir()
+        rid = "a" * 32
+        req = json.dumps({"id": rid, "action": "vacuum-time", "value": "7d"})
+        (victim / f"{rid}.json").write_text(req, encoding="utf-8")
+        self.symlink(logctl.req_dir(), victim)             # logs-req -> чужой каталог
+        self.assertEqual(logctl.run_queue(), 1)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(sorted(p.name for p in victim.iterdir()), [f"{rid}.json"], "в чужой каталог ничего не писали")
+        logctl.req_dir().unlink()
+        logctl.req_dir().mkdir()
+        (logctl.req_dir() / f"{rid}.json").write_text(req, encoding="utf-8")
+        self.symlink(logctl.state_dir(), victim)           # logs-req/state -> чужой каталог
+        self.assertEqual(logctl.run_queue(), 1)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(sorted(p.name for p in victim.iterdir()), [f"{rid}.json"])
+        logctl.state_dir().unlink()
+        self.assertEqual(logctl.run_queue(), 0, "обычные каталоги — работает как прежде")
+        self.assertEqual(len(self.calls), 2)
+
+    def test_symlinked_state_root_is_refused(self):
+        victim = self.env.root / "victim"
+        victim.mkdir()
+        real = self.env.root / "state"
+        moved = self.env.root / "state-real"
+        real.rename(moved)
+        self.symlink(real, victim)
+        self.assertEqual(logctl.run_queue(), 1)
+        self.assertEqual(list(victim.iterdir()), [], "каталог данных — ссылка: ни замка, ни заявок")
+        self.assertEqual(self.calls, [])
+
+    def test_request_that_is_a_symlink_is_not_read(self):
+        target = self.env.root / "elsewhere.json"
+        rid = "a" * 32
+        target.write_text(json.dumps({"id": rid, "action": "vacuum-time", "value": "7d"}), encoding="utf-8")
+        logctl.req_dir().mkdir(parents=True)
+        self.symlink(logctl.req_dir() / f"{rid}.json", target)
+        self.assertIsNone(logctl._read(logctl.req_dir() / f"{rid}.json"))
+        self.assertEqual(logctl.pending(), [])
+        self.assertEqual(logctl.run_queue(), 0)
+        self.assertEqual(self.calls, [], "по заявке-ссылке journalctl не запускается")
+        self.assertEqual(logctl.states(1)[0]["status"], "fail")
+        self.assertTrue(target.exists(), "цель ссылки цела, сама ссылка убрана")
+        self.assertFalse((logctl.req_dir() / f"{rid}.json").is_symlink())
+
+    def test_unsafe_directory_check_without_real_symlinks(self):
+        # то же без ссылок ФС (на Windows их может не быть): lstat подсказывает «ссылка»
+        from zoolib import fsutil
+        real = os.lstat(self.env.root)
+        fake = os.stat_result((stat.S_IFLNK | 0o777,) + tuple(real)[1:])
+        with mock.patch("zoolib.fsutil.os.lstat", return_value=fake):
+            with self.assertRaises(fsutil.UnsafePath):
+                fsutil.check_real_dirs(self.env.root)
+            self.assertEqual(logctl.run_queue(), 1)
+        self.assertEqual(self.calls, [])
+        fsutil.check_real_dirs(self.env.root, self.env.root / "нет такого")
 
     def test_failure_is_reported(self):
         with mock.patch("zoolib.logctl.system.run", return_value=(1, "", "Failed to vacuum: Permission denied")):

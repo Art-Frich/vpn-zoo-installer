@@ -143,6 +143,8 @@ def run_search(app: "App", st: dict[str, Any], sources: list[tuple[str, str, str
 def known_source(key: str) -> bool:
     """Источник из списка страницы, но без опроса systemd (для подгрузки и выгрузки): лог установки или сервис зоопарка."""
     kind, name = _split(key)
+    if key == logread.JOURNAL_SRC:
+        return True
     if not SRC_RE.match(key):
         return False
     if kind == "file":
@@ -152,7 +154,7 @@ def known_source(key: str) -> bool:
 
 
 def _label(key: str) -> str:
-    return _split(key)[1]
+    return "журнал" if key == logread.JOURNAL_SRC else _split(key)[1]
 
 
 def _hit_time(h: logread.Hit) -> Any:
@@ -204,7 +206,7 @@ def _search_form(st: dict[str, Any]) -> Markup:
              t("select", scopes, name="in", aria_label="Где искать"),
              t("select", pers, name="per", aria_label="Период"),
              t("label", t("input", type="checkbox", name="rx", value="1", checked=st["rx"]), "регулярка",
-               title="Выражение Python re; вложенные повторы и «.*» больше двух отклоняются"),
+               title="Выражение Python re; вложенные повторы и больше двух неограниченных («.*», «+») отклоняются"),
              t("label", t("input", type="checkbox", name="cs", value="1", checked=st["cs"]), "регистр",
                title="Учитывать регистр букв"),
              t("button", "Найти", type="submit", class_="btn small primary"), reset, exact,
@@ -347,11 +349,12 @@ def logs_page(app: "App", req: "Request") -> "Response":
             problems.append(("bad", str(e)))
     content: Any
     title = ""
-    if st["src"] in keys:
+    if st["src"] in keys or st["src"] == logread.JOURNAL_SRC:
         kind, name = _split(st["src"])
-        title = name
+        title = name = _label(st["src"])
         try:
-            chunk = logread.view(kind, name, before=st["before"], after=st["after"], at=st["at"], n=st["lines"])
+            chunk = logread.view(kind, _split(st["src"])[1], before=st["before"], after=st["after"], at=st["at"],
+                                 n=st["lines"])
             content = _view_card(app, st, kind, name, chunk)
         except logread.LogError as e:
             problems.append(("bad", str(e)))
@@ -410,7 +413,7 @@ def logs_export(app: "App", req: "Request") -> "Response":
         lines = logread.export(kind, name)
     except logread.LogError as e:
         return text(str(e), 400)
-    fname = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    fname = "journal" if kind == "journal" else re.sub(r"[^A-Za-z0-9._-]", "_", name)
     return _attachment(fname if fname.endswith(".log") else fname + ".log",
                        logs.sanitize("\n".join(line.text for line in lines), cfg) + "\n")
 
