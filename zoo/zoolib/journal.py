@@ -37,7 +37,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
-from . import geoip, output, paths, system, traffic
+from . import config, geoip, output, paths, system, traffic
 from .config import Config
 from .fsutil import LockTimeout, file_lock
 
@@ -138,7 +138,7 @@ REALITY_UNTRACKED = "не отслеживается (так задумано: �
 DEFENCE_KINDS = {"ssh-ban"}
 OWN_LOGIN = "own-login"     # не событие журнала: адрес успешного входа по ключу
 
-SCOPE_TITLES = {"own": "свой", "local": "локальный"}
+SCOPE_TITLES = {"own": "свой", "local": "служебный"}
 
 BLIND = [
     ("REALITY", "Чужие клиенты REALITY не видны: Xray пишет их только на уровне Info, а на нём в журнал попадают "
@@ -367,10 +367,56 @@ def _addr(ip: str) -> Any:
         return None
 
 
+# не-интернет явно, не полагаясь на is_global разных версий Python: документационные (RFC 5737, 3849),
+# общий адрес операторов (CGNAT), тестовые стенды (RFC 2544)
+RESERVED_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "192.0.2.0/24", "198.18.0.0/15", "198.51.100.0/24",
+    "203.0.113.0/24", "240.0.0.0/4", "2001:db8::/32"))
+IFACE_TTL = 300
+_ifaces: tuple[float, list[str]] | None = None
+
+
 @lru_cache(maxsize=1 << 16)
 def _is_global(ip: str) -> bool:
     a = _addr(ip)
-    return a is not None and a.is_global
+    return a is not None and a.is_global and not any(a in n for n in RESERVED_NETS if n.version == a.version)
+
+
+def _iface_addrs(now: float | None = None) -> list[str]:
+    """Адреса интерфейсов сервера (ip -o addr): реже раза в IFACE_TTL не спрашиваем."""
+    global _ifaces
+    now = time.monotonic() if now is None else now
+    if _ifaces is not None and now - _ifaces[0] < IFACE_TTL:
+        return _ifaces[1]
+    rc, out, _ = system.run(["ip", "-o", "addr", "show"], timeout=5)
+    found: list[str] = []
+    if rc == 0:
+        for line in out.splitlines():
+            parts = line.split()
+            for i, w in enumerate(parts[:-1]):
+                if w in ("inet", "inet6"):
+                    found.append(parts[i + 1].split("/", 1)[0])
+    _ifaces = (now, found)
+    return found
+
+
+def server_nets() -> list[Any]:
+    """Адреса самого сервера: SERVER_IP из config.env и адреса его интерфейсов. Обращения с них — свои."""
+    raw = list(_iface_addrs())
+    try:
+        raw += [config.load().get(k) or "" for k in ("SERVER_IP", "SERVER_IPV6")]
+    except (config.ConfigError, OSError):
+        pass
+    nets = []
+    for a in dict.fromkeys(x.strip().split("%", 1)[0] for x in raw if x and x.strip()):
+        if _is_global(a):   # локальные и так «служебные»: своими их делать незачем
+            nets.append(ipaddress.ip_network(a, strict=False))
+    return nets
+
+
+def ignore_nets() -> list[Any]:
+    """Свои сети: journal-ignore.txt и адреса самого сервера."""
+    return load_ignore() + server_nets()
 
 
 def scope_of(ip: str, own: set[str], nets: list[Any]) -> str:
@@ -712,7 +758,7 @@ def resolve_period(period: str) -> str:
 
 def _scope_split(rows: Any, own: set[str], include_local: bool) -> tuple[set[str], dict[str, int]]:
     """По строкам (адрес, событий): адреса, которые скрываем (свои и локальные), и сколько событий они дали."""
-    nets = load_ignore()
+    nets = ignore_nets()
     hidden: set[str] = set()
     counts = {"own": 0, "local": 0}
     for ip, n in rows:
@@ -745,7 +791,7 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
         "include_local": include_local, "db": str(db_path()), "blind": [],
         "totals": {"events": 0, "ips": 0, "bans": 0, "by_kind": {}}, "groups": [], "top_ips": [], "top_ports": [],
         "countries": [], "timeline": {"buckets": [since + i * step for i in range(n)], "step": step, "series": []},
-        "hidden": {"own": 0, "local": 0}, "own_ips": [], "last_run": None,
+        "hidden": {"own": 0, "local": 0}, "own_ips": [], "last_run": None, "external": {},
     }
     tracked = reality_tracked()
     out["reality_tracked"] = tracked
@@ -766,7 +812,9 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
                     f"AND kind IN ({marks})", (res, since, *kinds))
         con.execute(f"CREATE TEMP TABLE _ip AS SELECT ip, SUM(n) AS n FROM _v WHERE kind IN ({amarks}) GROUP BY ip",
                     attack)
-        hidden, out["hidden"] = _scope_split(con.execute("SELECT ip, n FROM _ip"), set(own), include_local)
+        ip_rows = con.execute("SELECT ip, n FROM _ip").fetchall()
+        hidden, out["hidden"] = _scope_split(ip_rows, set(own), include_local)
+        nonpublic = _scope_split(ip_rows, set(own), False)[0] if include_local else hidden
         if hidden:
             con.execute("CREATE TEMP TABLE _hide (ip TEXT PRIMARY KEY) WITHOUT ROWID")
             con.executemany("INSERT INTO _hide VALUES (?)", ((ip,) for ip in hidden))
@@ -795,6 +843,16 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
         for grp, cnt in con.execute(f"SELECT {case}, COUNT(DISTINCT ip) FROM _v WHERE kind IN ({amarks}) GROUP BY 1",
                                     attack):
             by_group[grp]["ips"] = int(cnt)
+        # «внешние» счёты для вывода на странице: свои и служебные адреса в них не входят, даже когда показаны
+        external = {g: {"n": by_group[g]["n"], "ips": by_group[g]["ips"]} for g in GROUPS}
+        if include_local and nonpublic:
+            external = {g: {"n": 0, "ips": 0} for g in GROUPS}
+            con.execute("CREATE TEMP TABLE _np (ip TEXT PRIMARY KEY) WITHOUT ROWID")
+            con.executemany("INSERT INTO _np VALUES (?)", ((ip,) for ip in nonpublic))
+            for grp, cnt, ips in con.execute(f"SELECT {case}, SUM(n), COUNT(DISTINCT ip) FROM _v WHERE kind IN "
+                                             f"({amarks}) AND ip NOT IN (SELECT ip FROM _np) GROUP BY 1", attack):
+                external[grp] = {"n": int(cnt), "ips": int(ips)}
+        out["external"] = external
         # верхушка: адреса, порты, страны
         tops = con.execute("SELECT ip, n FROM _ip ORDER BY n DESC, ip LIMIT ?", (top,)).fetchall()
         top_ports = con.execute(f"SELECT port, SUM(n) AS n, COUNT(DISTINCT ip) AS ips FROM _v WHERE kind IN ({amarks}) "
@@ -819,7 +877,7 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
             detail[r["ip"]] = d
     finally:
         con.close()
-    nets = load_ignore()
+    nets = ignore_nets()
     own_set = set(own)
     out["own_ips"] = [{"ip": ip, "ts": ts} for ip, ts in own.items()]
     out["totals"]["events"] = sum(g["n"] for g in by_group.values())
@@ -1001,7 +1059,7 @@ def search(period: str = "24h", q: str = "", svc: str = "", kind: str = "", sort
     pos = parse_cursor(after)
     try:
         own = {r["ip"] for r in con.execute("SELECT ip FROM own")}
-        nets = load_ignore()
+        nets = ignore_nets()
         picked: list[Any] = []
         capped = False
         for i in range(SEARCH_BATCHES):
@@ -1104,7 +1162,7 @@ def ip_card(ip: str, period: str = "24h", after: str = "", limit: int = ROWS[1],
             by_service[KINDS[kind][0]] = by_service.get(KINDS[kind][0], 0) + cnt
     return {
         "ip": ip, "period": period, "res": res, "step": step, "first": row["first"], "last": row["last"],
-        "total": int(row["n"]), "cc": row["cc"] or "", "scope": scope_of(ip, own, load_ignore()),
+        "total": int(row["n"]), "cc": row["cc"] or "", "scope": scope_of(ip, own, ignore_nets()),
         "n": sum(by_service.values()), "bans": sum(by_kind.get(k, 0) for k in DEFENCE_KINDS),
         "by_service": sorted(by_service.items(), key=lambda kv: -kv[1]),
         "by_kind": sorted(((k, c) for k, c in by_kind.items() if k not in DEFENCE_KINDS), key=lambda kv: -kv[1]),
@@ -1185,7 +1243,7 @@ def health() -> list[str]:
 
 def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--period", default="24h", help="период: " + ", ".join(PERIODS) + " (по умолчанию 24h)")
-    p.add_argument("--all", action="store_true", help="и локальные/свои адреса (контейнеры, тесты, ваш SSH)")
+    p.add_argument("--all", action="store_true", help="и свои и служебные адреса (контейнеры, тесты, ваш SSH, сам сервер)")
     p.add_argument("--top", type=int, default=10, help="сколько адресов и портов показать (10)")
     p.add_argument("--collect", action="store_true", help="разобрать новые записи журнала (запускает zoo-collector)")
 
@@ -1211,9 +1269,9 @@ def _render(d: dict[str, Any]) -> None:
     hid = d["hidden"]
     hint = []
     if hid["local"] and not d["include_local"]:
-        hint.append(f"локальных {hid['local']}")
+        hint.append(f"служебных {hid['local']}")
     if hid["own"] and not d["include_local"]:
-        hint.append(f"со своих адресов {hid['own']}")
+        hint.append(f"со своих {hid['own']}")
     print(f"Попыток: {t['events']} с {t['ips']} адресов; банов fail2ban: {t['bans']}"
           + (f"  (скрыто: {', '.join(hint)}; все — zoo journal --all)" if hint else ""))
     print()

@@ -1,0 +1,13 @@
+# Заявка на очистку journald из админки: она кладёт /var/lib/vpn-zoo/logs-req/<uuid>.json (у песочницы
+# zoo-web нет записи в /var/log/journal), исполнитель забирает её и выполняет journalctl --vacuum-*.
+[Unit]
+Description=vpn-zoo: заявки на очистку журнала из админки
+
+[Path]
+PathExistsGlob=/var/lib/vpn-zoo/logs-req/*.json
+Unit=zoo-logs.service
+MakeDirectory=yes
+DirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

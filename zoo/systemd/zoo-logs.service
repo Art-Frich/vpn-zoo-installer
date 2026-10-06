@@ -1,0 +1,16 @@
+# zoo-logs — выполнить заявки админки на очистку журнала (zoo logs run): journalctl --rotate и
+# --vacuum-time/--vacuum-size. Запускает zoo-logs.path, когда в /var/lib/vpn-zoo/logs-req появляется
+# заявка *.json. Root: journald пишет в /var/log/journal, куда песочница zoo-web не пускает.
+# Действие и значение берутся только из белого списка zoolib/logctl.py (ACTIONS), больше из заявки
+# не читается ничего. Одна заявка за раз (flock); итог — logs-req/state/<id>.json.
+[Unit]
+Description=vpn-zoo: очистка журнала по заявке из админки
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zoo logs run
+TimeoutStartSec=10min
+Nice=10
+UMask=0077
+PrivateTmp=yes
+ProtectHome=yes
