@@ -481,9 +481,13 @@ JS = r"""
     if (msg && !window.confirm(msg)) { ev.preventDefault(); return; }
     if (f.hasAttribute('data-swap')) {
       ev.preventDefault();
-      var fd = new FormData(f);
-      if (ev.submitter && ev.submitter.name) fd.append(ev.submitter.name, ev.submitter.value);  // «Далее» / «Назад» мастера
-      go(f.getAttribute('action') || location.pathname, { method: 'POST', body: new URLSearchParams(fd) });
+      if (f.dataset.sending) return;  // двойной щелчок: второй POST не уходит
+      var fd = new FormData(f), btn = ev.submitter;
+      if (btn && btn.name) fd.append(btn.name, btn.value);  // «Далее» / «Назад» мастера
+      f.dataset.sending = '1';
+      if (btn) btn.disabled = true;
+      go(f.getAttribute('action') || location.pathname, { method: 'POST', body: new URLSearchParams(fd) },
+        { form: f, btn: btn });
     } else if (f.hasAttribute('data-get')) {
       // поиск: форма GET превращается в адрес со всем состоянием, пустые поля в него не попадают
       ev.preventDefault();
@@ -554,7 +558,11 @@ JS = r"""
   // пока человек не уйдёт со страницы; restore — та же страница: прокрутка внутри журналов и таблиц
   // остаётся. Заголовок вкладки и пункт меню берутся из ответа (форма могла увести на другую страницу).
   // Возвращает разобранный ответ или null
-  var stamp = '';
+  // stamp — отпечаток показанной страницы; held — на экране ответ POST (сравнение, шаги мастера, ошибки
+  // проверки): его нет на сервере как страницы, live не должен его стереть до следующего GET-перехода;
+  // navSeq — номер перехода (запоздалый ответ не затирает более новый); shown — путь показанной страницы
+  var stamp = '', held = false, navSeq = 0, shown = location.pathname,
+      cur = location.pathname + location.search;
   function swapMain(main, html, keep, restore) {
     var doc = new DOMParser().parseFromString(html, 'text/html'), fresh = doc.querySelector('main');
     if (!fresh) return null;
@@ -577,7 +585,7 @@ JS = r"""
   function rearm(doc) {
     clearTimeout(refreshTimer);
     var m = doc.querySelector('meta[http-equiv="refresh"]'), n = m ? parseInt(m.getAttribute('content'), 10) : 0;
-    if (n > 0 && n < 60) refreshTimer = setTimeout(function () { go(location.href); }, n * 1000);
+    if (n > 0 && n < 60 && !held) refreshTimer = setTimeout(function () { go(location.href); }, n * 1000);
   }
   function isHtml(r) { return (r.headers.get('content-type') || '').indexOf('text/html') === 0; }
   function toast(msg) {
@@ -594,11 +602,14 @@ JS = r"""
   }
 
   // переход без перезагрузки (ссылки-сегменты, ссылки и формы с data-swap): забрать страницу,
-  // подменить <main>, обновить адрес; прокрутка и фокус остаются, сверху — тонкая полоса загрузки
-  function go(url, init) {
+  // подменить <main>, обновить адрес; прокрутка и фокус остаются, сверху — тонкая полоса загрузки.
+  // GET на другой адрес — новая запись истории (кнопка «Назад»), тот же адрес и редирект после POST —
+  // замена; opts.pop — переход вызван самой историей (адрес уже новый, запись не добавляем)
+  function go(url, init, opts) {
+    opts = opts || {};
     var main = document.querySelector('main');
     if (!main) { location.href = url; return; }
-    var post = !!(init && init.method === 'POST'), y = window.scrollY,
+    var post = !!(init && init.method === 'POST'), y = window.scrollY, seq = ++navSeq,
         keep = document.activeElement && document.activeElement.id;
     document.body.classList.add('busy');
     // переход по ссылке — как фоновый запрос (сообщения не тратит), отправка формы — как обычный
@@ -612,9 +623,17 @@ JS = r"""
         return r.text().then(function (html) { return { html: html, url: r.url, moved: r.redirected, stamp: r.headers.get('X-Zoo-Stamp') }; });
       })
       .then(function (x) {
-        var doc = swapMain(main, x.html, !post, new URL(x.url).pathname === location.pathname);
+        if (seq !== navSeq) return;  // пока шёл ответ, начался более новый переход
+        var to = new URL(x.url), doc = swapMain(main, x.html, !post, to.pathname === shown);
         if (!doc) throw new Error('nav');
-        if (!post || x.moved) history.replaceState(null, '', x.url);
+        held = post && !x.moved;
+        if (!held) {
+          var at = to.pathname + to.search;
+          if (!post && !opts.pop && at !== location.pathname + location.search) history.pushState(null, '', x.url);
+          else history.replaceState(null, '', x.url);
+          cur = location.pathname + location.search;
+          shown = to.pathname;
+        }
         if (x.stamp) stamp = x.stamp;
         window.scrollTo(0, y);
         var el = keep && document.getElementById(keep);
@@ -623,11 +642,24 @@ JS = r"""
         rearm(doc);
       })
       .catch(function (e) {
-        if (e.message === 'auth') return;
+        if (e.message === 'auth' || seq !== navSeq) return;
         if (post) toast('Нет связи с админкой — повторите'); else location.href = url;
       })
-      .then(function () { document.body.classList.remove('busy'); });
+      .then(function () {
+        if (opts.form) delete opts.form.dataset.sending;
+        if (opts.btn) opts.btn.disabled = false;
+        if (seq === navSeq) document.body.classList.remove('busy');
+      });
   }
+  // «Назад»/«Вперёд»: адрес уже сменился — показать его страницу; якорь внутри страницы (тот же путь) — не трогаем
+  window.addEventListener('popstate', function () {
+    if (location.pathname + location.search === cur) return;
+    if (dirty() && !window.confirm('Изменения не сохранены. Уйти без сохранения?')) {
+      history.pushState(null, '', cur);
+      return;
+    }
+    go(location.href, undefined, { pop: true });
+  });
   // «показать ещё»: строки следующей страницы выдачи дописываются в таблицу; адрес не меняется,
   // пока выдача развёрнута, живое обновление молчит (иначе оно свернуло бы её обратно)
   document.addEventListener('click', function (ev) {
@@ -640,6 +672,7 @@ JS = r"""
     fetch(more.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
       .then(function (r) { if (!r.ok || !isHtml(r)) throw new Error('more'); return r.text(); })
       .then(function (html) {
+        if (!document.contains(box)) return;  // страницу за время запроса подменили
         var doc = new DOMParser().parseFromString(html, 'text/html');
         var fresh = box.id ? doc.getElementById(box.id) : doc.querySelector('[data-more-box]');
         var body = box.querySelector('tbody'), add = fresh && fresh.querySelectorAll('tbody tr');
@@ -651,7 +684,7 @@ JS = r"""
         if (cnt && fcnt) cnt.textContent = fcnt.textContent;
         box.setAttribute('data-expanded', '');
       })
-      .catch(function () { location.href = more.href; });
+      .catch(function () { if (document.contains(box)) location.href = more.href; });
   });
   // строка таблицы (web/table.py): с адресом (data-href) — переход, без него — раскрыть подробности
   document.addEventListener('click', function (ev) {
@@ -808,12 +841,18 @@ JS = r"""
     return Array.prototype.some.call(main.querySelectorAll('input, textarea, select'), function (i) {
       if (i.type === 'hidden' || i.type === 'file') return false;
       if (i.type === 'checkbox' || i.type === 'radio') return i.checked !== i.defaultChecked;
-      if (i.tagName === 'SELECT') return Array.prototype.some.call(i.options, function (o) { return o.selected !== o.defaultSelected; });
+      if (i.tagName === 'SELECT' && i.multiple)
+        return Array.prototype.some.call(i.options, function (o) { return o.selected !== o.defaultSelected; });
+      if (i.tagName === 'SELECT') {
+        // одиночный выбор без selected показывает первый пункт, хотя defaultSelected у него false
+        var def = Array.prototype.findIndex.call(i.options, function (o) { return o.defaultSelected; });
+        return i.selectedIndex !== (def < 0 ? 0 : def);
+      }
       return i.value !== i.defaultValue;
     });
   }
   function idle() {
-    if (document.hidden) return true;
+    if (document.hidden || held || document.body.classList.contains('busy')) return true;
     var a = document.activeElement, main = document.querySelector('main');
     if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
     if (!main || main.querySelector('details[open], [data-expanded], tr.det:not([hidden])') || document.querySelector('dialog[open]')) return true;
@@ -852,20 +891,22 @@ JS = r"""
     setInterval(function () {
       if (busy || dead || idle()) return;
       busy = true;
-      var opts = { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } };
+      var opts = { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } },
+          href = location.href, seq = navSeq;  // ответ чужой странице или старому переходу не показываем
       fetch('/api/stamp?page=' + encodeURIComponent(location.pathname), opts)
         .then(lost)
         .then(function (r) { return r.text(); })
         .then(function (s) {
           s = s.trim();
-          if (s === stamp) { label(); return null; }
-          return fetch(location.href, opts).then(lost).then(function (r) {
+          if (!stamp || s === stamp) { stamp = s; label(); return null; }  // без исходной точки — начинаем с неё
+          return fetch(href, opts).then(lost).then(function (r) {
             if (!isHtml(r)) throw new Error('сервер');
             return r.text().then(function (html) { return { html: html, stamp: r.headers.get('X-Zoo-Stamp') || s }; });
           });
         })
         .then(function (x) {
-          if (!x || idle()) return;  // за время запроса человек начал вводить: придём на следующем тике
+          // за время запроса человек начал вводить или ушёл на другую страницу: придём на следующем тике
+          if (!x || idle() || seq !== navSeq || href !== location.href) return;
           if (!swapMain(document.querySelector('main'), x.html, true, true)) throw new Error('сервер');
           stamp = x.stamp;
           initDrafts();

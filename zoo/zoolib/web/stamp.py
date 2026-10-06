@@ -61,6 +61,7 @@ PAGES: list[tuple[re.Pattern[str], tuple[str, ...], int]] = [(re.compile(p), s, 
     (r"/probe", ("probe", "selftest", "manifests", "config"), 60),
     (r"/journal", ("journal",), 60),
     (r"/logs", ("logs",), 0),
+    (r"/pjobs/[0-9a-f]{32}", (), 0),  # ход задачи обновляет сама страница (meta refresh): файлы не нужны
     (r"/settings", ("config", "manifests"), 30),  # состояния юнитов не в файлах
     (r".*", tuple(SOURCES), 60),
 ]]

@@ -25,6 +25,7 @@ from tests.helpers import ZooEnv, needs_bash
 from zoolib import config, traffic
 from zoolib import web as web_mod
 from zoolib.web import assets, auth, charts, logs
+from zoolib.web import stamp as stamp_mod
 from zoolib.web.app import App, Request, _safe_next
 from zoolib.web.html import Markup, card, post_button, t, table
 from zoolib.web.jobs import Jobs
@@ -636,6 +637,25 @@ class HtmlPartsTest(unittest.TestCase):
         self.assertEqual(gzip.decompress(assets.JS_GZ).decode(), js)
         self.assertEqual(gzip.decompress(assets.CSS_GZ).decode(), assets.CSS)
 
+    def test_js_contract_navigation(self):
+        js = assets.JS
+        # 1: ответ POST (сравнение, шаги мастера, ошибки проверки) держится, пока не будет GET-перехода
+        self.assertRegex(js, r"held = post && !x\.moved")
+        self.assertRegex(js, r"function idle\(\) \{\s*if \(document\.hidden \|\| held \|\| document\.body\.classList\.contains\('busy'\)\) return true;")
+        # 2: запоздалые ответы отбрасываются
+        for needle in ("seq !== navSeq", "href !== location.href", "document.contains(box)", "var post = !!(init"):
+            self.assertIn(needle, js)
+        # 3: история
+        for needle in ("history.pushState(null, '', x.url)", "addEventListener('popstate'", "{ pop: true }"):
+            self.assertIn(needle, js)
+        self.assertRegex(js, r"(?s)'popstate'.*?go\(location\.href, undefined, \{ pop: true \}\)")
+        # 4: одиночный select сравнивается по selectedIndex
+        self.assertIn("i.selectedIndex !== (def < 0 ? 0 : def)", js)
+        # 5: двойная отправка
+        for needle in ("if (f.dataset.sending) return;", "delete opts.form.dataset.sending", "btn.disabled = true",
+                       "opts.btn.disabled = false"):
+            self.assertIn(needle, js)
+
     def test_sanitize_hides_qr_blocks(self):
         qr_text = "\n".join(["████ ▄▄ ████", "█  █ ▀▀ █  █", "████ ▄  ████", "     ▀▄     "])
         out = logs.sanitize("до\n" + qr_text + "\nпосле")
@@ -986,6 +1006,21 @@ class ConnectPageTest(AppTestBase):
         _, body = self.c.get("/users/masha")
         self.assertIn('class="badge muted" title="креды сохранены, доступ закрыт">отключён', body)
         self.assertNotIn("Пользователь отключён: ссылки сохранены", body)
+
+    def test_stamp_is_skipped_where_response_is_not_a_page(self):
+        self.c.post("/users", {"name": "masha"})
+        _, body = self.c.get("/users/masha")
+        qr = re.search(r'data-src="(/users/masha/qr/\d+)"', body).group(1)
+        file = re.search(r'href="(/users/masha/file/[\w.-]+)"', body).group(1)
+        real = stamp_mod.compute
+        with mock.patch("zoolib.web.stamp.compute", side_effect=real) as comp:
+            self.c.get(qr)
+            self.c.get(file)
+            self.c.post("/live/vless-reality")
+            self.assertEqual(comp.call_count, 0)
+            resp, _ = self.c.get("/users/masha")
+            self.assertTrue(header(resp, "X-Zoo-Stamp"))
+            self.assertEqual(comp.call_count, 1)
 
     def users_disable(self):
         self.c.post("/users/masha/disable")
@@ -1465,6 +1500,11 @@ class StampTest(AppTestBase):
             self.assertNotEqual(self.stamp("/users"), users)
             self.assertEqual(self.stamp("/traffic"), traffic_)
             self.assertEqual(self.stamp("/apps"), apps)
+
+    def test_pjobs_stamp_reads_no_files(self):
+        self.c.login()
+        with mock.patch("zoolib.web.stamp._stat", side_effect=AssertionError("файлы не нужны")):
+            self.assertRegex(self.stamp("/pjobs/" + "a" * 32), r"^[0-9a-f]{12}$")
 
     def test_page_param_is_only_a_key(self):
         self.c.login()

@@ -37,6 +37,8 @@ NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", 
 MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
+# ответ не страница (картинка QR, скачиваемый файл) или всегда редирект: отпечаток считать незачем
+NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /live/[^/]+/?")
 
 
 @dataclass
@@ -232,7 +234,7 @@ class App:
                 bad = self._post_guard(req, need_auth)
                 if bad:
                     return bad
-            if need_auth:
+            if need_auth and not NO_STAMP.fullmatch(f"{req.method} {req.path}"):
                 req.stamp = stamp.compute(self, req.path)  # до чтения данных: изменение во время рендера не теряется
             try:
                 return handler(self, req, **m.groupdict())
