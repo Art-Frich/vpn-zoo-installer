@@ -1,4 +1,6 @@
 import copy
+import io
+import json
 import shutil
 import unittest
 from pathlib import Path
@@ -133,6 +135,113 @@ class SmokeTest(unittest.TestCase):
         d = self.run_smoke(st, probe_exc=RuntimeError("нет xray"))
         self.assertFalse(d["ok"])
         self.assertIn("нет xray", d["checks"][-1]["detail"])
+
+
+class UpstreamTest(unittest.TestCase):
+    def setUp(self):
+        self.env = ZooEnv().__enter__()
+        self.tags = {"MHSanaei/3x-ui": "v3.10.0", "XTLS/Xray-core": "v26.9.30", "HyNetworks/hysteria": "v2.12.3",
+                     "amnezia-vpn/amneziawg-tools": "v3.1.20260812", "amnezia-vpn/amneziawg-go": "v3.1.20260901",
+                     "SagerNet/sing-box": "v1.14.2"}
+
+    def tearDown(self):
+        self.env.__exit__(None, None, None)
+
+    def test_latest_tag_parses_and_uses_timeout(self):
+        for raw, want in (("app/v2.12.3", "v2.12.3"), ("v26.9.30", "v26.9.30"), ("1.14.2", "1.14.2")):
+            with mock.patch.object(upgrade, "_http_json", return_value={"tag_name": raw}):
+                self.assertEqual(upgrade.latest_tag("a/b"), want)
+        with mock.patch.object(upgrade, "_http_json", return_value={"tag_name": "nightly"}):
+            with self.assertRaises(ValueError):
+                upgrade.latest_tag("a/b")
+        resp = mock.MagicMock()
+        resp.__enter__.return_value = io.BytesIO(b'{"tag_name": "v1.2.3"}')
+        with mock.patch("urllib.request.urlopen", return_value=resp) as op:
+            self.assertEqual(upgrade.latest_tag("a/b"), "v1.2.3")
+        self.assertEqual(op.call_args.kwargs["timeout"], 10)
+        self.assertIn("repos/a/b/releases/latest", op.call_args.args[0].full_url)
+
+    def test_refresh_writes_cache(self):
+        with mock.patch.object(upgrade, "latest_tag", side_effect=lambda repo: self.tags[repo]) as lt:
+            data = upgrade.refresh_upstream(config.Config(), now=1000)
+        self.assertEqual(data["ts"], 1000)
+        self.assertEqual(data["items"]["x-ui"], {"repo": "MHSanaei/3x-ui", "tag": "v3.10.0", "error": ""})
+        self.assertEqual(data["items"]["hysteria"]["repo"], "HyNetworks/hysteria")
+        self.assertEqual(lt.call_count, 6)
+        self.assertEqual(upgrade.read_upstream(), data)
+
+    def test_failure_keeps_previous_tag(self):
+        with mock.patch.object(upgrade, "latest_tag", side_effect=lambda repo: self.tags[repo]):
+            upgrade.refresh_upstream(config.Config(), now=1000)
+
+        def flaky(repo):
+            if repo == "XTLS/Xray-core":
+                raise OSError("timed out")
+            return self.tags[repo]
+
+        with mock.patch.object(upgrade, "latest_tag", side_effect=flaky):
+            data = upgrade.refresh_upstream(config.Config(), now=2000)
+        self.assertEqual(data["items"]["xray"], {"repo": "XTLS/Xray-core", "tag": "v26.9.30", "error": "timed out"})
+        self.assertEqual(data["items"]["x-ui"]["error"], "")
+
+    def test_hysteria_source_follows_engine(self):
+        self.assertEqual(upgrade.upstream_repos(config.Config())["hysteria"], "HyNetworks/hysteria")
+        self.assertEqual(upgrade.upstream_repos(config.Config({"HY2_ENGINE": "apernet"}))["hysteria"],
+                         "HyNetworks/hysteria")
+        self.assertIsNone(upgrade.upstream_repos(config.Config({"HY2_ENGINE": "other"}))["hysteria"])
+        with mock.patch.object(upgrade, "latest_tag", side_effect=lambda repo: self.tags[repo]):
+            data = upgrade.refresh_upstream(config.Config({"HY2_ENGINE": "other"}), now=1)
+        self.assertEqual(data["items"]["hysteria"]["tag"], "")
+        self.assertIn("HY2_ENGINE=other", data["items"]["hysteria"]["error"])
+
+    def comps(self, cfg=None, up=None):
+        comp = upgrade.components(INSTALLED, {"XUI_VERSION": "v3.9.0", "XUI_XRAY_VERSION": "26.9.30",
+                                              "HY2_VERSION": "v2.12.3", "AWG_GO_REF": "v3.1.20260828"})
+        upgrade.with_upstream(comp, up if up is not None else {"items": {
+            n: {"tag": t} for n, t in (("x-ui", "v3.10.0"), ("xray", "v26.9.30"), ("hysteria", "v2.12.3"),
+                                       ("amneziawg-go", "v3.1.20260901"))}}, cfg or config.Config())
+        return comp
+
+    def test_labels(self):
+        comp = self.comps()
+        self.assertEqual(comp["x-ui"]["label"], "v3.10.0 ↑")
+        self.assertTrue(comp["x-ui"]["newer"])
+        self.assertEqual(comp["xray"]["label"], "—")      # «v26.9.30» = «26.9.30»
+        self.assertEqual(comp["hysteria"]["label"], "—")
+        self.assertEqual(comp["amneziawg-go"]["label"], "v3.1.20260901 ↑")
+
+    def test_not_checked(self):
+        comp = self.comps(up={})
+        self.assertTrue(all(c["label"] == "не проверено" and c["newer"] is None for c in comp.values()))
+
+    def test_kernel_engine_ignores_amneziawg_go(self):
+        comp = self.comps(config.Config({"AWG_ENGINE_ACTIVE": "kernel"}))
+        self.assertEqual(comp["amneziawg-go"]["label"], "не используется (ядро)")
+        self.assertEqual(comp["amneziawg-go"]["unused"], "kernel")
+        self.assertFalse(comp["amneziawg-go"]["newer"])
+        comp = self.comps(config.Config({"AWG_ENGINE_ACTIVE": "userspace"}))
+        self.assertEqual(comp["amneziawg-go"]["label"], "v3.1.20260901 ↑")
+
+    def test_check_never_goes_to_network(self):
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("сеть на чтении")):
+            d = upgrade.check(config.load())
+        self.assertIn("label", d["components"]["x-ui"])
+
+    def test_cli_check_upstream(self):
+        from tests.test_cli import run_cli
+        with mock.patch.object(upgrade, "latest_tag", side_effect=lambda repo: self.tags[repo]):
+            code, out, _ = run_cli("upgrade", "--check-upstream", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["items"]["sing-box"]["tag"], "v1.14.2")
+        with mock.patch.object(upgrade, "latest_tag", side_effect=OSError("нет сети")):
+            code, _, _ = run_cli("upgrade", "--check-upstream", "--json")
+        self.assertEqual(code, 1, "ни один не ответил — код 1 (юнит покажет сбой)")
+
+    def test_timer_units(self):
+        d = Path(__file__).resolve().parent.parent / "systemd"
+        self.assertIn("zoo upgrade --check-upstream", (d / "zoo-upstream.service").read_text(encoding="utf-8"))
+        self.assertIn("OnCalendar=daily", (d / "zoo-upstream.timer").read_text(encoding="utf-8"))
+        self.assertIn("zoo-upstream.timer", (d / "enable.list").read_text(encoding="utf-8").split())
 
 
 if __name__ == "__main__":
