@@ -146,7 +146,7 @@ research/YYYY-MM-DD/          исследования
 - `zoo history add FILE… [--tag] [--device]` | `list` | `export [--recipients FILE|--no-raw] [--out DIR|--tar] [--since 30d]` — история проб: запись клиентских отчётов, журнал, выгрузка для `history/` в репо (анонимный jsonl + сырые отчёты под age).
 - `zoo web [--info|--link|--new-token]` — веб-админка на `127.0.0.1:$ZOO_WEB_PORT`; вход по токену или одноразовой ссылке, сессии — `/var/lib/vpn-zoo/web-sessions.json` (D38); доступ через `ssh -L`.
 - `zoo upgrade [--apply] [--pull]`/`zoo smoke` — обновление закреплённых версий с проверкой до и после; `zoo version --all` — версии компонентов и пины.
-- Коллектор трафика — `zoo-collector.timer` (каждые 5 минут, `zoo traffic --collect`, затем `ExecStartPost` — `zoo journal --collect`: сбой журнала атак трафик не ломает) под песочницей systemd; админка — `zoo-web.service` (страницы, среди них «Атаки»). Юниты — `zoo/systemd/`, ставит фаза 09.
+- Коллектор трафика — `zoo-collector.timer` (каждые 5 минут, `zoo traffic --collect`, затем `ExecStartPost` — `zoo journal --collect`: сбой журнала атак трафик не ломает) под песочницей systemd; админка — `zoo-web.service` (страницы, среди них «Атаки»). Каталог клиентских приложений — `zoo/data/clients.json` (едет в `/opt/vpn-zoo` вместе с `zoo/`), версии из GitHub раз в сутки — `zoo-clients.timer` → `zoo clients --check-upstream` (кэш `/var/lib/vpn-zoo/clients-versions.json`; страницы «Клиенты» и «Что отправить» читают только его). Юниты — `zoo/systemd/`, ставит фаза 09.
 
 ## 7. Пробник
 

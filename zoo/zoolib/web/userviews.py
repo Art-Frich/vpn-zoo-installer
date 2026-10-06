@@ -9,11 +9,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import allowlist, manifests, paths, protolib, qr, traffic, users
+from .. import allowlist, clients, manifests, paths, protolib, qr, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
 from ..probe import rank
-from . import charts
+from . import charts, clientviews
 from .html import Markup, badge, card, csrf_input, join, kv, post_button, t, table
 from .views import (ago, alert_list, chart_block, fmt_time, get_period, no_history_hint, page_head,
                     period_selector)
@@ -347,7 +347,8 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     links_card = card("Подключение", err_list, quick_start(links, name),
                       connect_tiles(links, manifests.load_all()[0], name) or t("p", "Ссылок нет.", class_="muted"),
                       help="Ссылки и QR — ключи доступа: показывайте только самому пользователю.")
-    body = [page_head(name, user.note or None, actions), links_card, t("div", info, tr_card, class_="cols")]
+    body = [page_head(name, user.note or None, actions), links_card, clientviews.handoff_card(links),
+            t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
 
 
@@ -382,15 +383,8 @@ PLATFORMS = {
     "ss2022": "iPhone, Android, Windows",
     allowlist.V2RAYN_PROTO: "Windows",
 }
-CLIENTS = {
-    "vless-reality": "Happ, v2rayNG, v2rayN",
-    "vless-xhttp": "Happ, v2rayNG, v2rayN",
-    "hysteria2": "Happ, v2rayNG, Hiddify",
-    "amneziawg": "AmneziaWG, AmneziaVPN, WG Tunnel",
-    "tuic": "Hiddify, Karing, sing-box",
-    "ss2022": "Happ, v2rayNG",
-    allowlist.V2RAYN_PROTO: "v2rayN",
-}
+
+
 QUICK_CAPTION = "Happ → «+» → сканировать"
 
 
@@ -472,6 +466,10 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str) -> Mar
     if not links:
         return None
     by_id = {m.id: m for m in mans}
+    try:
+        cat: clients.Catalog | None = clients.load()
+    except clients.ClientsError:
+        cat = None  # без каталога плитки без подсказки о клиентах
     groups: dict[str, list[tuple[int, protolib.Link]]] = {}
     for i, link in enumerate(links):
         groups.setdefault(link.proto_id, []).append((i, link))
@@ -487,7 +485,7 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str) -> Mar
             "button", t("span", title, class_="ptile-name"),
             t("span", PLATFORMS.get(pid, "—"), class_="ptile-sub"),
             type="button", class_=f"ptile acc{n % 8 + 1}", data_dialog=dlg_id,
-            title=f"Клиенты: {CLIENTS[pid]}" if pid in CLIENTS else None))
+            title=f"Клиенты: {cat.names_for(pid)}" if cat and cat.names_for(pid) else None))
         items = sorted(groups[pid], key=lambda it: _variant_order(it[1]))  # sorted стабилен: порядок модуля цел
         tabs_data, uri_n = [], 0
         for k, (_, link) in enumerate(items):

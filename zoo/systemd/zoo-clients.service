@@ -1,0 +1,35 @@
+# zoo-clients — раз в сутки спрашивает GitHub про последние версии клиентских приложений
+# (zoo clients --check-upstream, 10 с на запрос, без токена) и пишет кэш в /var/lib/vpn-zoo.
+# Запускает zoo-clients.timer; страницы админки в сеть не ходят, читают только кэш.
+# Сети нужен только исходящий HTTPS; запись — только в каталог данных zoo.
+[Unit]
+Description=vpn-zoo: последние версии клиентских приложений (GitHub)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zoo clients --check-upstream
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3min
+UMask=0022
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/vpn-zoo
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
