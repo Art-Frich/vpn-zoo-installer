@@ -717,7 +717,7 @@ class RunnerTest(ProtoEnvTest):
                 self.assertIn("config.env", st["error"])
                 self.assertIn("строка 3", st["error"])
                 self.assertEqual(self.calls(), [], "ни фаза, ни ключ не тронуты")
-                self.assertEqual(cf.read_text(encoding="utf-8", newline=""), src, "файл не менялся")
+                self.assertEqual(open(cf, encoding="utf-8", newline="").read(), src, "файл не менялся")
 
     def test_config_env_v1_style_is_normalised_and_accepted(self):
         cf = self.env.etc / "config.env"
@@ -727,7 +727,7 @@ class RunnerTest(ProtoEnvTest):
         protoctl.submit("tuic", "disable")
         protoctl.run_queue()
         self.assertEqual(self.calls(), ["--phase 04d-tuic"])
-        text = cf.read_text(encoding="utf-8", newline="")
+        text = open(cf, encoding="utf-8", newline="").read()
         self.assertEqual(text.split("\n"),
                          ["# v1", "SERVER_IP='1.2.3.4'", "PANEL_PORT='2053'", "ENABLE_SS='1'", "", "A='b'",
                           "NOTE='it'\\''s \"q\" $x'", "Q='a$b \"c\" `d`'", "H='a#b'", "E=''", "ENABLE_TUIC='0'", ""])
@@ -755,7 +755,7 @@ class RunnerTest(ProtoEnvTest):
         src = f"A='{odd}'\nB=\"{odd}\"\nC=x y\nD=z\r\n"
         cf.write_text(src, encoding="utf-8", newline="")
         protoctl.normalise_config_file()
-        text = cf.read_text(encoding="utf-8", newline="")
+        text = open(cf, encoding="utf-8", newline="").read()
         self.assertEqual(text, f"A='{odd}'\nB='{odd}'\nC='x y'\nD='z\r'\n")
 
     def test_normalise_is_idempotent_and_keeps_file_when_clean(self):
