@@ -89,13 +89,14 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import allowviews, clientviews, journalviews, userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import allowviews, clientviews, journalviews, protoviews, userviews, views  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
         self.extra_hosts = extra_hosts or set()
         self._cache: dict[Any, tuple[float, Any, float]] = {}  # ключ → (когда, значение, ttl)
         self._cache_lock = threading.Lock()
+        self.seen_jobs: set[str] | None = None  # завершённые задачи вкл/выкл, о которых кэш статуса уже знает
         name = r"(?P<name>[a-z0-9][a-z0-9_-]{0,31})"
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., Response], bool]] = []
         for method, pattern, handler, need_auth in [
@@ -125,6 +126,10 @@ class App:
             ("POST", r"/settings/action", views.settings_action, True),
             ("GET", r"/jobs/(?P<job>\d+)", views.job_page, True),
             ("GET", r"/api/stamp", self.stamp_api, False),
+            ("POST", r"/live/(?P<proto>[a-z0-9][a-z0-9-]{0,39})", protoviews.live_request, True),
+            ("POST", r"/protocols/(?P<proto>[a-z0-9][a-z0-9-]{0,39})/(?P<action>enable|disable)",
+             protoviews.proto_toggle, True),
+            ("GET", r"/pjobs/(?P<jid>[0-9a-f]{32})", protoviews.job_page, True),
         ]:
             self.routes.append((method, re.compile(pattern + r"/?\Z"), handler, need_auth))
 

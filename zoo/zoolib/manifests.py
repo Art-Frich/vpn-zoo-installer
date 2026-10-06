@@ -59,6 +59,18 @@ class Manifest:
         return self.layer.split("+")
 
     @property
+    def phase(self) -> str:
+        """Фаза install.sh, которой принадлежит протокол (вкл/выкл с карточки). Пусто — не задана."""
+        v = self.raw.get("phase")
+        return v if isinstance(v, str) else ""
+
+    @property
+    def enable_var(self) -> str:
+        """Ключ config.env, включающий протокол (ENABLE_*). Пусто — не задан."""
+        v = self.raw.get("enable_var")
+        return v if isinstance(v, str) else ""
+
+    @property
     def has_users(self) -> bool:
         return self.users_backend != "none"
 

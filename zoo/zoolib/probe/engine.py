@@ -42,7 +42,7 @@ class Settings:
     timeout: float = 10.0           # рукопожатие и малый запрос
     connect_timeout: float = 5.0    # TCP-connect к порту сервера
     stall: float = 8.0              # нет данных дольше — застой
-    large_bytes: int = 5_000_000    # объём большого запроса: по нему же скорость (--speed-mb)
+    large_bytes: int = 5_000_000    # объём большого запроса: по нему же скорость (--speed-mb); 0 — не качать
     large_max_time: float = 60.0
     small_urls: tuple[str, ...] = SMALL_URLS
     large_urls: tuple[str, ...] = LARGE_URLS
@@ -187,34 +187,36 @@ def measure(entry: dict[str, Any], probe: dict[str, Any], st: Settings, workdir:
         lat = again.get("seconds") if again.get("ok") else small.get("seconds")
         obs.latency_ms = res["latency_ms"] = _ms(lat)
 
-        large = {}
-        for url in st.large_urls:
-            large = client.run_jobs([dict(url=url.format(bytes=st.large_bytes), connect_timeout=st.timeout,
-                                          stall=st.stall, max_time=st.large_max_time,
-                                          limit=st.large_bytes)])[0]
-            # на другой адрес — только если до тестового сервера не достучались (его вина или
-            # разовый сбой), а не если встал уже идущий поток: застой повторять незачем
-            if large.get("ok") or large.get("bytes") or large.get("error_kind") not in RETRY_KINDS:
-                break
-        obs.large_ok = bool(large.get("ok"))
-        obs.large_bytes = int(large.get("bytes") or 0)
-        obs.large_expected = large.get("expected")
-        obs.large_kind, obs.large_error = large.get("error_kind", ""), large.get("error", "")
-        body_s = large.get("body_seconds") or large.get("seconds")
-        if obs.large_ok and body_s:
-            obs.speed_mbps = res["speed_mbps"] = round(obs.large_bytes * 8 / 1e6 / max(body_s, 1e-3), 2)
-        metrics["download"] = metrics_mod.download_block(large)
-        res["large"] = {"ok": obs.large_ok, "bytes": obs.large_bytes, "seconds": large.get("seconds"),
-                        "url": large.get("url"), "stalled": bool(large.get("stalled")), "error": obs.large_error}
-        if not obs.large_ok:
-            res["client_log"] = client.log_tail()
+        if st.large_bytes > 0:   # 0 — лёгкий замер без скачивания (live)
+            large = {}
+            for url in st.large_urls:
+                large = client.run_jobs([dict(url=url.format(bytes=st.large_bytes), connect_timeout=st.timeout,
+                                              stall=st.stall, max_time=st.large_max_time,
+                                              limit=st.large_bytes)])[0]
+                # на другой адрес — только если до тестового сервера не достучались (его вина или
+                # разовый сбой), а не если встал уже идущий поток: застой повторять незачем
+                if large.get("ok") or large.get("bytes") or large.get("error_kind") not in RETRY_KINDS:
+                    break
+            obs.large_ok = bool(large.get("ok"))
+            obs.large_bytes = int(large.get("bytes") or 0)
+            obs.large_expected = large.get("expected")
+            obs.large_kind, obs.large_error = large.get("error_kind", ""), large.get("error", "")
+            body_s = large.get("body_seconds") or large.get("seconds")
+            if obs.large_ok and body_s:
+                obs.speed_mbps = res["speed_mbps"] = round(obs.large_bytes * 8 / 1e6 / max(body_s, 1e-3), 2)
+            metrics["download"] = metrics_mod.download_block(large)
+            res["large"] = {"ok": obs.large_ok, "bytes": obs.large_bytes, "seconds": large.get("seconds"),
+                            "url": large.get("url"), "stalled": bool(large.get("stalled")), "error": obs.large_error}
+            if not obs.large_ok:
+                res["client_log"] = client.log_tail()
 
-        ipr = _first_ok(client, st.ip_urls, connect_timeout=st.timeout, stall=st.timeout,
-                        max_time=st.timeout * 1.5, keep_body=2048)
-        m = IP_RE.search(ipr.get("body") or "")
-        res["egress_ip"] = m.group(1) if m else None
-        if not m:
-            obs.notes.append(f"IP выхода не определён ({ipr.get('error') or 'нет ip= в ответе'})")
+        if st.ip_urls:
+            ipr = _first_ok(client, st.ip_urls, connect_timeout=st.timeout, stall=st.timeout,
+                            max_time=st.timeout * 1.5, keep_body=2048)
+            m = IP_RE.search(ipr.get("body") or "")
+            res["egress_ip"] = m.group(1) if m else None
+            if not m:
+                obs.notes.append(f"IP выхода не определён ({ipr.get('error') or 'нет ip= в ответе'})")
         # расширенные метрики — после всех замеров вердикта: они его не меняют
         if st.latency_samples > 0:
             metrics["latency"] = measure_latency(client, st)

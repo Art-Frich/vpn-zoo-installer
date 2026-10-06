@@ -221,6 +221,8 @@ proto_tuic_manifest_refresh() {
         --arg pk "$(proto_tuic_pubkey_sha256)" --arg cert "$TUIC_CERT" \
         --argjson socks "$(proto_tuic_socks_port "$id")" '{
         id: "tuic",
+        phase: "04d-tuic",
+        enable_var: "ENABLE_TUIC",
         name: "TUIC v5 (3x-ui native)",
         short: "TUIC v5",
         layer: "udp",

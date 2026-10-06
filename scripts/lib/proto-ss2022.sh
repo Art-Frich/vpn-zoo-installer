@@ -154,6 +154,8 @@ proto_ss2022_manifest_refresh() {
         --argjson links "$links" --argjson probe "$probe" \
         --argjson ibid "$id" --arg tag "$(jq -r '.tag' <<< "$ib")" '{
         id: "ss2022",
+        phase: "04c-ss2022",
+        enable_var: "ENABLE_SS",
         name: "Shadowsocks-2022 (2022-blake3-aes-128-gcm)",
         short: "Shadowsocks-2022",
         layer: "tcp",

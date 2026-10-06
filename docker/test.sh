@@ -13,7 +13,7 @@
 #   --tests        после установки запустить docker/tests/<id>.sh против сервера
 #                  (all — тесты протоколов, чьи манифесты есть на сервере, routing, links,
 #                  security, а при установленном zoo — allowlist (если есть AmneziaWG),
-#                  web (zoo/tests/web_smoke.sh --users), collector, journal и history (если есть
+#                  web (zoo/tests/web_smoke.sh --users), collector, journal, live и history (если есть
 #                  образ zoo-probe); последним — ssh-harden)
 #   --probe-profiles  профили клиентского пробника (docker/probe/run.sh), через запятую:
 #                  direct,clean,drop-udp,ip-block,freeze-16k,rst-tls (по умолчанию все); none — без него
@@ -284,7 +284,7 @@ if [ -n "$TESTS_ARG" ]; then
         # тестов протоколов: им нужен накопленный трафик
         if docker exec "$NAME" test -x /usr/local/bin/zoo 2>/dev/null; then
             grep -qx amneziawg.json <<< "$have" && TESTS+=(allowlist)
-            TESTS+=(web collector journal)
+            TESTS+=(web collector journal live)
             # история проб: нужен образ пробника (его собирает docker/probe/run.sh выше)
             if docker image inspect "${ZOO_PROBE_IMAGE:-zoo-probe}" >/dev/null 2>&1; then TESTS+=(history); fi
         fi
@@ -310,7 +310,7 @@ if [ -n "$TESTS_ARG" ]; then
         zoo_log "  $t: $st"
     }
     # Параллельно — тесты, которые трогают только своих пользователей и своих клиентов.
-    # Остальные (routing, security, allowlist, web, collector, journal, history, ssh-harden) меняют общее
+    # Остальные (routing, security, allowlist, web, collector, journal, live, history, ssh-harden) меняют общее
     # состояние сервера или ждут накопленного трафика — по очереди после них
     PARALLEL_OK=" vless-reality vless-xhttp ss2022 tuic hysteria2 amneziawg links "
     PAR=(); SEQ=()

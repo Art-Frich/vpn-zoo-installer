@@ -4,3 +4,6 @@ zoo-collector.timer
 zoo-web.service
 zoo-upstream.timer
 zoo-clients.timer
+zoo-live.timer
+zoo-live.path
+zoo-job.path
