@@ -167,8 +167,9 @@ body.busy::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; 
   background: var(--accent); animation: busy 1s ease-in-out infinite; }
 @keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 footer .live { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
-footer .live.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-footer .live-btn { margin-left: 10px; }
+footer .live.on::before, footer .live.bad::before { content: ""; width: 7px; height: 7px; border-radius: 50%; }
+footer .live.on::before { background: var(--ok); }
+footer .live.bad::before { background: var(--bad); }
 .proto .num-big { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { font-size: .78rem; padding: 1px 7px; border-radius: 999px; background: var(--surface-2);
@@ -475,14 +476,33 @@ JS = r"""
   document.querySelectorAll('form[data-autosubmit]').forEach(function (f) { f.submit(); });
 
   // подмена <main> новой страницей; при фоновом обновлении (keep) сообщение (flash) остаётся,
-  // пока человек не уйдёт со страницы
-  function swapMain(main, html, keep) {
-    var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
-    if (!fresh) return false;
-    var flash = keep && main.querySelector(':scope > .alerts.flash');
+  // пока человек не уйдёт со страницы; restore — та же страница: прокрутка внутри журналов и таблиц
+  // остаётся. Заголовок вкладки и пункт меню берутся из ответа (форма могла увести на другую страницу).
+  // Возвращает разобранный ответ или null
+  var stamp = '';
+  function swapMain(main, html, keep, restore) {
+    var doc = new DOMParser().parseFromString(html, 'text/html'), fresh = doc.querySelector('main');
+    if (!fresh) return null;
+    var flash = keep && main.querySelector(':scope > .alerts.flash'), pos = [];
+    main.querySelectorAll('.log, .table-wrap').forEach(function (e) { pos.push([e.scrollTop, e.scrollLeft]); });
     main.innerHTML = fresh.innerHTML;
     if (flash) main.insertBefore(flash, main.firstChild);
-    return true;
+    if (restore) main.querySelectorAll('.log, .table-wrap').forEach(function (e, i) {
+      if (pos[i]) { e.scrollTop = pos[i][0]; e.scrollLeft = pos[i][1]; }
+    });
+    var title = doc.querySelector('title'), nav = document.querySelector('header nav.nav'),
+        fnav = doc.querySelector('header nav.nav');
+    if (title) document.title = title.textContent;
+    if (nav && fnav) nav.innerHTML = fnav.innerHTML;
+    return doc;
+  }
+  // страница задачи просит обновляться раз в N с (meta refresh): после подмены <main> заголовок не
+  // перечитывается, поэтому таймер ставим сами
+  var refreshTimer = 0;
+  function rearm(doc) {
+    clearTimeout(refreshTimer);
+    var m = doc.querySelector('meta[http-equiv="refresh"]'), n = m ? parseInt(m.getAttribute('content'), 10) : 0;
+    if (n > 0 && n < 60) refreshTimer = setTimeout(function () { go(location.href); }, n * 1000);
   }
   function isHtml(r) { return (r.headers.get('content-type') || '').indexOf('text/html') === 0; }
   function toast(msg) {
@@ -514,15 +534,18 @@ JS = r"""
           throw new Error('auth');
         }
         if (!isHtml(r)) throw new Error('nav');
-        return r.text().then(function (html) { return { html: html, url: r.url, moved: r.redirected }; });
+        return r.text().then(function (html) { return { html: html, url: r.url, moved: r.redirected, stamp: r.headers.get('X-Zoo-Stamp') }; });
       })
       .then(function (x) {
-        if (!swapMain(main, x.html, !post)) throw new Error('nav');
+        var doc = swapMain(main, x.html, !post, new URL(x.url).pathname === location.pathname);
+        if (!doc) throw new Error('nav');
         if (!post || x.moved) history.replaceState(null, '', x.url);
+        if (x.stamp) stamp = x.stamp;
         window.scrollTo(0, y);
         var el = keep && document.getElementById(keep);
         if (el) el.focus({ preventScroll: true });
         initDrafts();
+        rearm(doc);
       })
       .catch(function (e) {
         if (e.message === 'auth') return;
@@ -659,24 +682,38 @@ JS = r"""
   });
   initDrafts();
 
-  // live: раз в N секунд забрать ту же страницу и подменить <main>; пауза — вкладка скрыта,
-  // фокус в поле ввода, открыт <details> или окно, либо выключено кнопкой (запоминается).
-  // Запрос с If-None-Match: страница не изменилась — сервер отвечает 304, разметку не трогаем
+  // live: раз в 10 с спросить у сервера отпечаток данных страницы (/api/stamp: несколько os.stat, без
+  // SQL); изменился — забрать страницу и подменить <main>. Не трогаем: вкладка скрыта, фокус в поле, открыт
+  // <details> или окно, в форме несохранённый ввод (черновик «Приложений», текст в полях)
   var live = document.getElementById('live');
+  function typed(main) {
+    return Array.prototype.some.call(main.querySelectorAll('input, textarea, select'), function (i) {
+      if (i.type === 'hidden' || i.type === 'file') return false;
+      if (i.type === 'checkbox' || i.type === 'radio') return i.checked !== i.defaultChecked;
+      if (i.tagName === 'SELECT') return Array.prototype.some.call(i.options, function (o) { return o.selected !== o.defaultSelected; });
+      return i.value !== i.defaultValue;
+    });
+  }
+  function idle() {
+    if (document.hidden) return true;
+    var a = document.activeElement, main = document.querySelector('main');
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
+    if (!main || main.querySelector('details[open]') || document.querySelector('dialog[open]')) return true;
+    if (/[?&]verify=/.test(location.search)) return true;  // сверка зовёт модули протоколов: не по таймеру
+    return dirty() || typed(main);
+  }
   if (live) {
-    var every = (parseInt(live.getAttribute('data-live'), 10) || 10) * 1000;
-    var paused = false, dead = false, etag = '', etagUrl = '';
-    try { paused = localStorage.getItem('zoo-live') === 'off'; } catch (e) { /* без хранилища */ }
-    var btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'btn small live-btn';
-    var label = function (extra) {
+    var every = (parseInt(live.getAttribute('data-live'), 10) || 10) * 1000, dead = false, busy = false;
+    stamp = live.getAttribute('data-stamp') || '';
+    live.hidden = false;
+    try { localStorage.removeItem('zoo-live'); } catch (e) { /* без хранилища */ }
+    var label = function (ok) {
       if (dead) return;
-      live.textContent = paused ? 'live на паузе' : 'live · обновлено ' + (extra || new Date().toLocaleTimeString('ru-RU'));
-      btn.textContent = paused ? 'Включить' : 'Пауза';
-      live.className = paused ? 'live off' : 'live on';
+      live.className = ok === false ? 'live bad' : 'live on';
+      live.textContent = ok === false ? 'нет связи' : 'live · обновлено ' + new Date().toLocaleTimeString('ru-RU');
     };
     var expired = function (text) {
-      dead = true; paused = true; btn.hidden = true;
+      dead = true;
       var a = document.createElement('a');
       a.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
       a.textContent = text;
@@ -685,36 +722,38 @@ JS = r"""
       live.textContent = '';
       live.appendChild(a);
     };
-    btn.addEventListener('click', function () {
-      paused = !paused;
-      try { localStorage.setItem('zoo-live', paused ? 'off' : 'on'); } catch (e) { /* без хранилища */ }
-      label();
-    });
-    live.after(btn);
+    var lost = function (r) {
+      if (r.status === 401 || (r.redirected && new URL(r.url).pathname === '/login')) {
+        expired(r.status === 401 ? 'Войти' : 'сессия истекла — войти');
+        throw new Error('auth');
+      }
+      if (!r.ok) throw new Error('сервер');
+      return r;
+    };
     label();
-    var busy = false;
     setInterval(function () {
-      if (paused || busy || document.hidden) return;
-      var a = document.activeElement;
-      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
-      var main = document.querySelector('main');
-      if (!main || main.querySelector('details[open]') || document.querySelector('dialog[open]')) return;
+      if (busy || dead || idle()) return;
       busy = true;
-      var headers = { 'X-Zoo-Live': '1' };
-      if (etag && etagUrl === location.href) headers['If-None-Match'] = etag;
-      fetch(location.href, { credentials: 'same-origin', cache: 'no-store', headers: headers })
-        .then(function (r) {
-          if (r.status === 401) { expired('Войти'); throw new Error('сессия'); }
-          if (r.redirected && new URL(r.url).pathname === '/login') { expired('сессия истекла — войти'); throw new Error('сессия'); }
-          if (r.status === 304) { label(); return null; }
-          if (!r.ok || !isHtml(r)) { paused = true; label(); throw new Error('сервер'); }
-          etag = r.headers.get('ETag') || ''; etagUrl = location.href;
-          return r.text();
+      var opts = { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } };
+      fetch('/api/stamp?page=' + encodeURIComponent(location.pathname), opts)
+        .then(lost)
+        .then(function (r) { return r.text(); })
+        .then(function (s) {
+          s = s.trim();
+          if (s === stamp) { label(); return null; }
+          return fetch(location.href, opts).then(lost).then(function (r) {
+            if (!isHtml(r)) throw new Error('сервер');
+            return r.text().then(function (html) { return { html: html, stamp: r.headers.get('X-Zoo-Stamp') || s }; });
+          });
         })
-        .then(function (html) {
-          if (html !== null && html !== undefined) { swapMain(main, html, true); label(); }
+        .then(function (x) {
+          if (!x || idle()) return;  // за время запроса человек начал вводить: придём на следующем тике
+          if (!swapMain(document.querySelector('main'), x.html, true, true)) throw new Error('сервер');
+          stamp = x.stamp;
+          initDrafts();
+          label();
         })
-        .catch(function () { /* следующая попытка через интервал */ })
+        .catch(function (e) { if (e.message !== 'auth') label(false); })
         .then(function () { busy = false; });
     }, every);
   }

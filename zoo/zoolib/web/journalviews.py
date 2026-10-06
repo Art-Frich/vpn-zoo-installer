@@ -161,7 +161,8 @@ def journal_page(app: "App", req: "Request") -> "Response":
     period = _period(req)
     show_all = req.query.get("all") == "1"
     toggle = t("a", "скрыть локальные" if show_all else "показать локальные и свои",
-               href=f"/journal?period={period}" + ("" if show_all else "&all=1"), class_="btn small")
+               href=f"/journal?period={period}" + ("" if show_all else "&all=1"), class_="btn small",
+               data_swap=True)
     head = page_head("Атаки", None, join(_selector(period, show_all), toggle))
     key = ("journal", period, show_all, journal.last_run_ts())  # данные меняются только с разбором коллектора
     body = app.cache_get(key, 600)

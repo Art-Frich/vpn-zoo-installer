@@ -128,9 +128,9 @@ def users_list(app: "App", req: "Request") -> "Response":
                    t("button", "Добавить", type="submit", class_="btn primary"), class_="form-row"),
                  t("div", t("span", "Протоколы:", class_="label"), t("div", protos, class_="checks"), class_="field")
                  if protos else alert_list([("warn", "Нет протоколов, куда можно добавить пользователя.")]),
-                 method="post", action="/users", class_="stack")
+                 method="post", action="/users", class_="stack", data_swap=True)
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
-    head_actions = t("div", t("a", "Сверить", href="/users?verify=1", class_="btn small",
+    head_actions = t("div", t("a", "Сверить", href="/users?verify=1", class_="btn small", data_swap=True,
                               title="Сверить реестр с тем, что есть в протоколах"),
                      post_button("/users/sync", "Синхронизировать", csrf, "btn small",
                                  title="Завести креды в протоколах, включённых после создания") if missing else None,
@@ -219,7 +219,7 @@ def user_delete_confirm(app: "App", req: "Request", name: str) -> "Response":
                 t("p", "Креды пользователя будут удалены из протоколов: ", t("strong", ", ".join(user.protocols) or "—"),
                   ". Его ссылки и QR перестанут работать. Отменить нельзя — только создать заново с новыми ключами."),
                 t("div", t("form", csrf_input(csrf), t("button", "Удалить навсегда", type="submit", class_="btn danger-solid"),
-                           method="post", action=f"/users/{name}/delete", class_="inline"),
+                           method="post", action=f"/users/{name}/delete", class_="inline", data_swap=True),
                   t("a", "Отмена", href=f"/users/{name}", class_="btn"), class_="actions"),
                 cls="danger-zone")
     return app.render(req, "Удаление", [page_head("Удаление пользователя"), body], active="/users")

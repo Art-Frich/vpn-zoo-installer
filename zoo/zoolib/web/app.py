@@ -16,7 +16,7 @@ from typing import Any, Callable
 from .. import __version__, paths, qr
 from ..config import Config
 from ..config import load as load_config
-from . import assets, logs
+from . import assets, logs, stamp
 from .auth import ABSOLUTE_TTL, Auth, Session, cookie, cookie_names, host_allowed, new_token, same
 from .html import Markup, csrf_input, t
 from .jobs import Jobs
@@ -34,8 +34,6 @@ SECURITY_HEADERS = [
 ]
 NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/traffic", "Трафик"),
        ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
-# Страницы без форм ввода: обновляются сами (app.js подменяет <main> раз в 10 с)
-LIVE_PAGES = {"/", "/traffic", "/journal"}
 MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
@@ -51,6 +49,7 @@ class Request:
     headers: dict[str, str] = field(default_factory=dict)  # имена в нижнем регистре
     cookies: dict[str, str] = field(default_factory=dict)
     session: Session | None = None
+    stamp: str = ""  # отпечаток данных страницы на начало запроса (live, app.js)
 
     def header(self, name: str) -> str:
         return self.headers.get(name.lower(), "")
@@ -58,7 +57,7 @@ class Request:
     @property
     def live(self) -> bool:
         """Фоновое обновление страницы (app.js): не тратит сообщения и не продлевает сессию."""
-        return bool(self.header("x-zoo-live"))
+        return bool(self.header("x-zoo-live")) or self.path == "/api/stamp"
 
     def cookie_names(self) -> tuple[str, str]:
         """(сессия, форма входа): имена несут порт, cookie общие для всех портов 127.0.0.1."""
@@ -124,6 +123,7 @@ class App:
             ("GET", r"/settings", views.settings_page, True),
             ("POST", r"/settings/action", views.settings_action, True),
             ("GET", r"/jobs/(?P<job>\d+)", views.job_page, True),
+            ("GET", r"/api/stamp", self.stamp_api, False),
         ]:
             self.routes.append((method, re.compile(pattern + r"/?\Z"), handler, need_auth))
 
@@ -183,6 +183,8 @@ class App:
             if req.header("if-none-match") == etag:
                 resp = Response(304, b"", resp.content_type)
             resp.headers.append(("ETag", etag))
+        if req.stamp and resp.content_type.startswith("text/html"):
+            resp.headers.append(("X-Zoo-Stamp", req.stamp))  # app.js берёт отсюда исходную точку для live
         resp.headers += SECURITY_HEADERS
         if not resp.cache:
             resp.headers.append(("Cache-Control", "no-store"))
@@ -213,6 +215,8 @@ class App:
                 bad = self._post_guard(req, need_auth)
                 if bad:
                     return bad
+            if need_auth:
+                req.stamp = stamp.compute(self, req.path)  # до чтения данных: изменение во время рендера не теряется
             try:
                 return handler(self, req, **m.groupdict())
             except Exception as e:  # страница с ошибкой лучше обрыва соединения
@@ -245,6 +249,12 @@ class App:
             return text("нет такого файла", 404)
         r.headers.append(("Cache-Control", "public, max-age=86400, immutable"))
         return r
+
+    def stamp_api(self, app: "App", req: Request) -> Response:
+        """Отпечаток данных страницы для live: несколько os.stat, без SQL и рендера; сессию не продлевает."""
+        if req.session is None:
+            return text("Сессия истекла", 401)
+        return text(stamp.compute(self, req.query.get("page", "/")[:200]))
 
     # ---------- вход ----------
 
@@ -372,9 +382,9 @@ class App:
                                         for i, (label, href) in enumerate(links)], " →"] if links else None,
                                  class_="msg"), class_=k)
                              for k, msg, links in flashes], class_="alerts flash") if flashes else None
-            live = active in LIVE_PAGES
+            # без JS live нет: подпись показывает app.js
             footer = t("footer", f"zoo {__version__}",
-                       t("span", " · live", id="live", data_live="10") if live else None)
+                       t("span", id="live", data_live="10", data_stamp=req.stamp or None, hidden=True))
             content = [header, t("main", flash, body), footer]
         doc = Markup("<!doctype html>") + t("html", t("head", head), t("body", content), lang="ru")
         return Response(status, doc.encode("utf-8"))
