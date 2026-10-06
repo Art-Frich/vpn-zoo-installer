@@ -9,6 +9,7 @@ import io
 import ipaddress
 import json
 import os
+import re
 import time
 import unittest
 from contextlib import redirect_stdout
@@ -619,6 +620,462 @@ class GeoTest(unittest.TestCase):
             con.close()
 
 
+class QueryParseTest(unittest.TestCase):
+    def test_all_kinds_of_terms(self):
+        q = journal.parse_query("185.220. cc:nl :22 port:443 ssh hy2 ssh-auth 1.2.3.4 2001:DB8::1")
+        self.assertEqual(q.prefixes, ["185.220."])
+        self.assertEqual(q.ccs, ["NL"])
+        self.assertEqual(q.ports, [22, 443])
+        self.assertEqual(q.services, ["ssh", "hysteria"])
+        self.assertEqual(q.kinds, ["ssh-auth"])
+        self.assertEqual(q.exact, ["1.2.3.4", "2001:db8::1"])
+        self.assertEqual(q.bad, [])
+
+    def test_aliases_and_numeric_prefix(self):
+        q = journal.parse_query("f2b reality x-ui web 185")
+        self.assertEqual(q.services, ["fail2ban", "xray", "3x-ui", "zoo-web"])
+        self.assertEqual(q.prefixes, ["185"])
+
+    def test_garbage_goes_to_bad_not_to_sql(self):
+        q = journal.parse_query("cc:NLD :99999 :0 beef drop;table 'or'1'='1 %_ \"x")
+        self.assertTrue(q.empty)
+        self.assertEqual(len(q.bad), 8)
+        self.assertTrue(journal.parse_query("   ").empty)
+
+    def test_limits(self):
+        q = journal.parse_query(" ".join(["1.1.1.1"] * 50))
+        self.assertEqual(len(q.exact), journal.TOKENS_MAX)
+        self.assertEqual(journal.parse_query("1.2.3.4 " * 100).exact, ["1.2.3.4"] * journal.TOKENS_MAX)
+
+
+class KindHelpTest(unittest.TestCase):
+    def test_every_kind_has_four_lines_and_nothing_extra(self):
+        self.assertEqual(set(journal.KIND_HELP), set(journal.KINDS))
+        self.assertEqual(len(journal.HELP_LABELS), 4)
+        for kind, lines in journal.KIND_HELP.items():
+            self.assertEqual(len(lines), 4, kind)
+            self.assertTrue(all(isinstance(x, str) and len(x) > 2 for x in lines), kind)
+
+    def test_facts_match_code(self):
+        # справка не должна обещать больше, чем делает установщик: пароли выключает только SSH_HARDEN, limit — не ставится
+        repo = Path(__file__).resolve().parents[2]
+        fw = (repo / "scripts" / "01-firewall.sh").read_text(encoding="utf-8")
+        self.assertNotIn("ufw limit", "\n".join(ln for ln in fw.splitlines() if not ln.lstrip().startswith("#")).replace(
+            'grep -qE "ufw (allow|limit)', ""))
+        self.assertIn("SSH_HARDEN=1", journal.KIND_HELP["ssh-auth"][1])
+        self.assertIn("D37", journal.KIND_HELP["ssh-limit"][2])
+        self.assertIn("maxretry = 5", fw)
+        self.assertIn("bantime  = 1h", fw)
+        self.assertIn("bantime  = 1w", fw)
+        self.assertIn("127.0.0.1", journal.KIND_HELP["panel-login"][1])
+        self.assertIn("127.0.0.1", journal.KIND_HELP["web-login"][1])
+
+
+def seed_many(n_ips=40, now=NOW):
+    """Адреса 45.<i>.0.7: у i-го события по (i // 4 + 1), так что у четвёрок одинаковый счёт (ничьи для keyset)."""
+    con = journal.connect()
+    ips = [f"45.{i}.0.7" for i in range(n_ips)]
+    ev = []
+    for i, ip in enumerate(ips):
+        kind = ("port-scan", "ssh-auth", "hy2-auth", "port-scan")[i % 4]
+        port = {"port-scan": 3389 if i % 8 else 22, "ssh-auth": 22, "hy2-auth": 443}[kind]
+        ev += [Event(now - 3600 - i * 60, kind, ip, port)] * (i // 4 + 1)
+    with con:
+        journal.store(con, ev, now)
+        con.execute("UPDATE ips SET cc = CASE WHEN CAST(substr(ip, 4, instr(substr(ip, 4), '.') - 1) AS INT) % 2 = 0 "
+                    "THEN 'NL' ELSE 'DE' END")
+    con.close()
+    return ips
+
+
+class SearchTest(unittest.TestCase):
+    def setUp(self):
+        self.env = ZooEnv().__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+        self.ips = seed_many()
+
+    def s(self, q="", **kw):
+        return journal.search(kw.pop("period", "24h"), q, now=NOW, **kw)
+
+    def ips_of(self, res):
+        return [r["ip"] for r in res["rows"]]
+
+    def test_default_order_is_count_desc_then_ip(self):
+        res = self.s(limit=50)
+        rows = res["rows"]
+        self.assertEqual(len(rows), 40)
+        self.assertEqual([(-r["n"], r["ip"]) for r in rows], sorted((-r["n"], r["ip"]) for r in rows))
+        self.assertEqual(rows[0]["n"], 10)
+        self.assertEqual(rows[0]["ip"], "45.36.0.7")
+        self.assertEqual(rows[0]["kinds"], {"port-scan": 10})
+
+    def test_prefix_exact_cc_port_service(self):
+        self.assertEqual(len(self.s("45.3", limit=50)["rows"]), 11)
+        got = self.ips_of(self.s("45.3.", limit=50))
+        self.assertEqual(got, ["45.3.0.7"])
+        self.assertEqual(self.ips_of(self.s("45.12.0.7")), ["45.12.0.7"])
+        nl = self.s("cc:NL", limit=100)
+        self.assertEqual(len(nl["rows"]), 20)
+        self.assertTrue(all(r["cc"] == "NL" for r in nl["rows"]))
+        self.assertEqual(len(self.s("cc:nl cc:de", limit=100)["rows"]), 40, "внутри вида условий — «или»")
+        p22 = self.s(":22", limit=100)["rows"]
+        self.assertTrue(p22 and all(22 in r["ports"] for r in p22))
+        self.assertEqual({r["ip"] for r in p22}, {f"45.{i}.0.7" for i in range(40) if i % 4 == 1 or i % 8 == 0})
+        hy = self.s("hy2", limit=100)["rows"]
+        self.assertEqual(len(hy), 10)
+        self.assertTrue(all(set(r["kinds"]) == {"hy2-auth"} for r in hy))
+        self.assertEqual(len(self.s("hysteria2", limit=100)["rows"]), 10)
+
+    def test_filters_are_anded(self):
+        both = self.s("cc:NL :22", limit=100)["rows"]
+        self.assertTrue(both)
+        self.assertTrue(all(r["cc"] == "NL" and 22 in r["ports"] for r in both))
+        self.assertLess(len(both), len(self.s("cc:NL", limit=100)["rows"]))
+        self.assertEqual(self.s("cc:NL hy2 :22")["rows"], [])
+
+    def test_chips_service_and_kind(self):
+        ssh = self.s(svc="ssh", limit=100)["rows"]
+        self.assertEqual(len(ssh), 10)
+        self.assertTrue(all(set(r["kinds"]) == {"ssh-auth"} for r in ssh))
+        one = self.s(kind="ssh-auth", limit=100)["rows"]
+        self.assertEqual([r["ip"] for r in one], [r["ip"] for r in ssh])
+        self.assertEqual(self.s(svc="ssh", kind="hy2-auth")["rows"], [], "чипы сервиса и вида — «и»")
+        self.assertEqual(len(self.s("ssh", svc="ssh", limit=100)["rows"]), 10)
+        self.assertEqual(len(self.s(svc="bogus", limit=100)["rows"]), 40, "неизвестный чип игнорируется")
+
+    def test_sort_by_recency(self):
+        rows = self.s(sort="last", limit=50)["rows"]
+        self.assertEqual(rows[0]["ip"], "45.0.0.7")  # самое свежее событие — у нулевого адреса
+        lasts = [r["last"] for r in rows]
+        self.assertEqual(lasts, sorted(lasts, reverse=True))
+
+    def test_keyset_pages_cover_everything_without_overlap(self):
+        for sort in ("n", "last"):
+            seen, cur, pages = [], "", 0
+            while True:
+                res = self.s(sort=sort, after=cur, limit=15)
+                seen += self.ips_of(res)
+                pages += 1
+                cur = res["next"]
+                if not cur:
+                    break
+            self.assertEqual(pages, 3, sort)
+            self.assertEqual(len(seen), 40, sort)
+            self.assertEqual(len(set(seen)), 40, sort)
+            self.assertEqual(seen, self.ips_of(self.s(sort=sort, limit=100)), sort)
+
+    def test_keyset_is_stable_when_data_arrives_between_pages(self):
+        first = self.s(limit=15)
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(NOW - 10, "port-scan", "46.1.1.1", 80)] * 99, NOW)  # самый частый адрес
+        con.close()
+        second = self.s(after=first["next"], limit=15)
+        self.assertNotIn("46.1.1.1", self.ips_of(second))
+        self.assertFalse(set(self.ips_of(first)) & set(self.ips_of(second)))
+
+    def test_no_offset_in_sql(self):
+        stmts = []
+        orig = journal._con
+
+        def traced():
+            con = orig()
+            con.set_trace_callback(stmts.append)
+            return con
+        with mock.patch.object(journal, "_con", traced):
+            res = self.s(limit=15)
+            self.s(after=res["next"], limit=15)
+        self.assertTrue(stmts)
+        self.assertFalse([x for x in stmts if "OFFSET" in x.upper()])
+
+    def test_injection_stays_data(self):
+        evil = ["'; DROP TABLE hits; --", "x' OR '1'='1", "45.1.0.7' OR 1=1 --", "cc:NL') OR ('1'='1", ":22; DELETE FROM ips",
+                "%", "_", "\\", "\x00", "ssh\" OR \"1"]
+        stmts = []
+        orig = journal._con
+
+        def traced():
+            con = orig()
+            con.set_trace_callback(stmts.append)
+            return con
+        with mock.patch.object(journal, "_con", traced):
+            for q in evil:
+                res = self.s(q, svc=q, kind=q, after=q, sort=q, limit=15)
+                self.assertTrue(len(res["rows"]) <= 15)
+            self.s(q=" ".join(evil))
+        self.assertTrue(stmts)
+        self.assertGreater(self.sql_count("hits"), 0)
+        self.assertEqual(self.sql_count("ips"), 40)
+        self.assertEqual(len(self.s("45.1.0.7' OR 1=1 --", limit=100)["rows"]), 40, "мусор отброшен, остаётся «без фильтра»")
+
+    def sql_count(self, table):
+        con = journal.connect(create=False)
+        try:
+            return con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        finally:
+            con.close()
+
+    def test_hidden_do_not_eat_pages(self):
+        con = journal.connect()
+        with con:
+            ev = []
+            for i in range(30):
+                ev += [Event(NOW - 30, "port-scan", f"10.0.{i}.1", 80)] * 50   # локальные, самые частые
+            journal.store(con, ev, NOW)
+        con.close()
+        res = self.s(limit=15)
+        self.assertEqual(len(res["rows"]), 15)
+        self.assertTrue(all(r["scope"] == "public" for r in res["rows"]))
+        self.assertTrue(res["next"])
+        every = self.s(limit=100, include_local=True)
+        self.assertEqual(len(every["rows"]), 70)
+        self.assertEqual(every["rows"][0]["scope"], "local")
+
+    def test_empty_and_missing_database(self):
+        self.assertEqual(self.s("cc:ZZ")["rows"], [])
+        with ZooEnv():
+            res = journal.search("24h", "x", now=NOW)
+            self.assertTrue(res["empty"])
+
+    def test_bans_do_not_count_as_attempts(self):
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(NOW - 60, "ssh-ban", "45.1.0.7", 0)] * 3, NOW)
+        con.close()
+        row = [r for r in self.s(limit=100)["rows"] if r["ip"] == "45.1.0.7"][0]
+        self.assertEqual((row["n"], row["bans"]), (1, 3))
+        bans = self.s(svc="fail2ban", limit=100)["rows"]
+        self.assertEqual([r["ip"] for r in bans], ["45.1.0.7"])
+        self.assertEqual(bans[0]["n"], 0)
+
+    def test_index_covers_search(self):
+        con = journal.connect()
+        plan = " ".join(r[3] for r in con.execute(
+            "EXPLAIN QUERY PLAN SELECT ip, SUM(n) FROM hits WHERE res = 86400 AND ts + 0 >= 0 AND port IN (22) GROUP BY ip"))
+        con.close()
+        self.assertIn("COVERING INDEX hits_ip2", plan)
+        con = journal.connect(create=False)
+        self.assertEqual(con.execute("SELECT name FROM sqlite_master WHERE name = 'hits_ip'").fetchall(), [])
+        con.close()
+
+
+class IpCardTest(unittest.TestCase):
+    def setUp(self):
+        self.env = ZooEnv().__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+        con = journal.connect()
+        ev = []
+        for h in range(30):
+            ev += [Event(NOW - 3600 * h, "port-scan", A, 3389)] * 2 + [Event(NOW - 3600 * h - 5, "ssh-auth", A, 22)]
+        ev += [Event(NOW - 100, "ssh-ban", A, 0), Event(NOW - 90, "port-scan", B, 80)]
+        with con:
+            journal.store(con, ev, NOW)
+            con.execute("UPDATE ips SET cc = 'CN' WHERE ip = ?", (A,))
+        con.close()
+
+    def test_summary(self):
+        d = journal.ip_card(A, "7d", now=NOW)
+        self.assertEqual((d["cc"], d["n"], d["bans"], d["total"]), ("CN", 90, 1, 91))  # в «всего» входит и бан
+        self.assertEqual(dict(d["by_service"]), {"ufw": 60, "ssh": 30})
+        self.assertEqual(dict(d["by_kind"]), {"port-scan": 60, "ssh-auth": 30})
+        self.assertEqual(dict(d["by_port"]), {3389: 60, 22: 30})
+        self.assertEqual(d["scope"], "public")
+        self.assertLessEqual(d["first"], d["last"])
+
+    def test_feed_keyset(self):
+        seen, cur = [], ""
+        while True:
+            d = journal.ip_card(A, "7d", cur, limit=15, now=NOW)
+            seen += [(e["ts"], e["kind"], e["port"]) for e in d["feed"]]
+            cur = d["next"]
+            if not cur:
+                break
+        self.assertEqual(len(seen), 61)  # 30 часов × 2 вида + бан
+        self.assertEqual(len(set(seen)), 61)
+        self.assertEqual(seen, sorted(seen, reverse=True))
+
+    def test_unknown_or_bad_address(self):
+        for ip in ("203.0.113.9", "not-an-ip", "", "1.2.3.4' OR 1=1", "45.155.205.10/24"):
+            self.assertIsNone(journal.ip_card(ip, "24h", now=NOW), ip)
+        self.assertEqual(journal.ip_card(A, "24h", "bogus", now=NOW)["feed"][0]["kind"] in journal.KINDS, True)
+
+    def test_other_ip_does_not_leak(self):
+        d = journal.ip_card(B, "24h", now=NOW)
+        self.assertEqual((d["n"], len(d["feed"])), (1, 1))
+
+
+class RealityTrackedTest(unittest.TestCase):
+    def setUp(self):
+        self.env = ZooEnv().__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+        self.xui = self.env.root / "xui"
+        (self.xui / "bin").mkdir(parents=True)
+        p = mock.patch.dict("os.environ", {"XUI_DIR": str(self.xui)})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def level(self, lvl):
+        (self.xui / "bin" / "config.json").write_text(json.dumps({"log": {"loglevel": lvl}}), encoding="utf-8")
+
+    def test_levels(self):
+        self.assertFalse(journal.reality_tracked(), "нет файла")
+        for lvl, want in (("warning", False), ("error", False), ("none", False), ("info", True), ("DEBUG", True)):
+            self.level(lvl)
+            self.assertEqual(journal.reality_tracked(), want, lvl)
+        (self.xui / "bin" / "config.json").write_text("{ не json", encoding="utf-8")
+        self.assertFalse(journal.reality_tracked())
+
+    def test_report_flag_and_blind_list(self):
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(NOW - 60, "port-scan", A, 80)], NOW)
+        con.close()
+        d = journal.report("24h", now=NOW)
+        self.assertFalse(d["reality_tracked"])
+        self.assertIn("REALITY", [b["what"] for b in d["blind"]])
+        self.level("info")
+        d = journal.report("24h", now=NOW)
+        self.assertTrue(d["reality_tracked"])
+        self.assertNotIn("REALITY", [b["what"] for b in d["blind"]])
+
+    def test_recorded_probe_proves_tracking(self):
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(NOW - 60, "reality-probe", A, 443)], NOW)
+        con.close()
+        self.assertTrue(journal.report("24h", now=NOW)["reality_tracked"])
+
+
+class JournalSearchPageTest(AppTestBase):
+    def setUp(self):
+        super().setUp()
+        self.c.login()
+        now = int(time.time())
+        con = journal.connect()
+        ev = []
+        for i in range(40):
+            ev += [Event(now - 600 - i, "port-scan", f"45.{i}.0.7", 3389)] * (i + 1)
+        ev += [Event(now - 30, "ssh-auth", "91.240.118.5", 22)] * 3 + [Event(now - 20, "hy2-auth", C, 443)] * 2
+        with con:
+            journal.store(con, ev, now)
+            con.execute("UPDATE ips SET cc = 'CN' WHERE ip LIKE '45.%'")
+            con.execute("UPDATE ips SET cc = 'DE' WHERE ip = '91.240.118.5'")
+        con.close()
+
+    def test_filter_in_url_and_markup(self):
+        _, body = self.c.get("/journal?period=24h&q=cc%3ADE")
+        self.assertIn("91.240.118.5", body)
+        self.assertNotIn("45.5.0.7", body)
+        self.assertIn('value="cc:DE"', body)
+        self.assertIn("сбросить", body)
+        _, body = self.c.get("/journal?period=24h&svc=ssh")
+        self.assertIn("91.240.118.5", body)
+        self.assertNotIn("<code>45.", body)
+        self.assertIn("aria-pressed", body)
+        _, body = self.c.get("/journal?svc=hysteria")
+        self.assertIn("Hysteria2: неверный ключ</a>", body, "после выбора сервиса — чипы его видов")
+
+    def test_empty_result(self):
+        _, body = self.c.get("/journal?q=cc%3AZZ")
+        self.assertIn("Ничего не нашлось", body)
+        self.assertNotIn("показать ещё", body)
+
+    def test_bad_terms_are_reported(self):
+        resp, body = self.c.get("/journal?q=" + "%27%3B+DROP+TABLE+hits%3B+--+zzz")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Не понял: ", body)
+        self.assertNotIn("<script>", body)
+
+    def test_injection_and_html_in_every_param(self):
+        evil = "%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E"
+        for q in (f"q={evil}", f"svc={evil}", f"kind={evil}", f"after={evil}", f"ip={evil}", f"n={evil}", f"sort={evil}",
+                  "q=%27+OR+1%3D1+--", "after=1%3A%27%3BDROP", "n=99999", "n=-5", "ip=1.2.3.4%27--"):
+            resp, body = self.c.get("/journal?" + q)
+            self.assertEqual(resp.status, 200, q)
+            self.assertNotIn("<script>alert", body, q)
+        _, body = self.c.get("/journal?q=" + evil)
+        self.assertIn("&lt;script&gt;", body)
+        con = journal.connect(create=False)
+        self.assertGreater(con.execute("SELECT COUNT(*) FROM hits").fetchone()[0], 40)
+        con.close()
+
+    def test_more_link_walks_pages_without_offset(self):
+        _, p1 = self.c.get("/journal?period=24h")
+        self.assertEqual(p1.count("data-more>"), 1)
+        m = re.search(r'href="([^"]*)" class="btn small" data-more', p1)
+        self.assertTrue(m)
+        href = m.group(1).replace("&amp;", "&")
+        self.assertIn("after=", href)
+        self.assertNotIn("offset", href.lower())
+        seen = set(re.findall(r"<code>([0-9.]+)</code>", p1.split('data-more-box')[1].split("</table>")[0]))
+        self.assertEqual(len(seen), 15)
+        _, p2 = self.c.get(href)
+        seen2 = set(re.findall(r"<code>([0-9.]+)</code>", p2.split('data-more-box')[1].split("</table>")[0]))
+        self.assertEqual(len(seen2), 15)
+        self.assertFalse(seen & seen2)
+        self.assertIn("← с начала", p2)
+
+    def test_row_count_and_sort_selectors(self):
+        _, body = self.c.get("/journal?n=50&sort=last")
+        self.assertEqual(len(re.findall(r'data-label="адрес"', body)), 42)
+        self.assertNotIn("показать ещё", body)
+        self.assertIn('n=100', body)
+        self.assertIn('aria-label="Строк на странице"', body)
+
+    def test_ip_card_page(self):
+        _, body = self.c.get("/journal?ip=45.39.0.7&period=24h")
+        self.assertIn("45.39.0.7", body)
+        self.assertIn("Первый раз", body)
+        self.assertIn("По портам", body)
+        self.assertIn("3389", body)
+        self.assertIn("← все адреса", body)
+        _, body = self.c.get("/journal?ip=45.250.0.7")
+        self.assertIn("Адреса нет в журнале", body)
+        resp, body = self.c.get("/journal?ip=garbage")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Источники", body, "не адрес — обычная выдача")
+
+    def test_ip_links_lead_to_card_and_keep_state(self):
+        _, body = self.c.get("/journal?period=7d&q=cc%3ACN")
+        self.assertIn('href="/journal?period=7d&amp;ip=45.', body)
+        self.assertIn("data-swap", body)
+
+    def test_help_dialogs_for_every_kind_and_no_inline_js_or_css(self):
+        _, body = self.c.get("/journal")
+        for kind in journal.KINDS:
+            self.assertIn(f'id="kh-{kind}"', body, kind)
+        self.assertIn('data-dialog="kh-port-scan"', body)
+        self.assertEqual(body.count("Что это. "), len(journal.KINDS))
+        self.assertEqual(body.count("Что делать. "), len(journal.KINDS))
+        for bad in (" style=", " onclick=", " onchange=", " onsubmit=", "javascript:", "<style"):
+            self.assertNotIn(bad, body, bad)
+        _, ip_body = self.c.get("/journal?ip=45.1.0.7")
+        for bad in (" style=", " onclick=", "<style"):
+            self.assertNotIn(bad, ip_body, bad)
+
+    def test_quiet_groups_collapse_and_reality_is_honest(self):
+        _, body = self.c.get("/journal")
+        self.assertIn("панели — попыток не было", body)
+        self.assertIn("REALITY — не отслеживается (так задумано: иначе в логах были бы сайты пользователей)", body)
+        self.assertNotIn("тихо:", body)
+        self.assertNotIn("Проверяли REALITY и Hysteria2", body)
+        self.assertIn("Проверяли, прокси ли это", body)
+        xui = self.env.root / "xui"
+        (xui / "bin").mkdir(parents=True)
+        (xui / "bin" / "config.json").write_text('{"log": {"loglevel": "info"}}', encoding="utf-8")
+        with mock.patch.dict("os.environ", {"XUI_DIR": str(xui)}):
+            self.app.invalidate()
+            _, body = self.c.get("/journal")
+        self.assertNotIn("не отслеживается", body)
+        self.assertIn("REALITY/Hy2 — 2", body)
+
+    def test_search_results_cached_per_state(self):
+        self.c.get("/journal?q=cc%3ACN")
+        with mock.patch.object(journal, "search", side_effect=AssertionError("из кэша")):
+            self.assertEqual(self.c.get("/journal?q=cc%3ACN")[0].status, 200)
+            self.assertEqual(self.c.get("/journal?q=cc%3ADE")[0].status, 500, "другое состояние — новый запрос")
+
+
 class JournalPageTest(AppTestBase):
     def setUp(self):
         super().setUp()
@@ -644,7 +1101,7 @@ class JournalPageTest(AppTestBase):
         self.seed()
         resp, body = self.c.get("/journal?period=24h")
         self.assertEqual(resp.status, 200)
-        for text in (A, B, C, "CN", "Стучались в закрытые порты", "Перебор SSH", "Проверяли REALITY и Hysteria2",
+        for text in (A, B, C, "CN", "Стучались в закрытые порты", "Перебор SSH", "Проверяли, прокси ли это",
                      "Чего мы не видим", "3389"):
             self.assertIn(text, body)
         self.assertNotIn("172.22.0.4", body, "локальные скрыты по умолчанию")
@@ -657,8 +1114,8 @@ class JournalPageTest(AppTestBase):
         self.seed()
         _, body = self.c.get("/journal?period=24h")
         self.assertLessEqual(visible_words(body), 200)
-        self.assertIn("Щупают прокси и панели: REALITY/Hy2 — 1 (адресов: 1)", body)
-        self.assertIn("тихо: Входы в панели", body)
+        self.assertIn("Щупают прокси и панели: Hysteria2 — 1 (адресов: 1)", body)
+        self.assertIn("панели — попыток не было", body)
         self.assertNotIn("Чего мы не видим</strong>", body.split("<details")[0])
         self.assertIn("Чего мы не видим", body)  # в «?» у таблицы источников
         self.assertNotIn(">попыток<", body.split("<table")[0].split("Источники")[0])
