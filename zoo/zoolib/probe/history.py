@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -27,6 +28,7 @@ from . import metrics
 
 DB_NAME = "probe-history.sqlite"
 SCHEMA = 1
+DEFAULT_KEEP_DAYS = 365     # отчёт ~15 КБ: даже сотня прогонов в день — десятки МБ за год
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -51,6 +53,24 @@ class HistoryError(Exception):
 
 def db_path() -> Path:
     return paths.state_dir() / DB_NAME
+
+
+def keep_days() -> int:
+    """Срок хранения отчётов (ZOO_PROBE_KEEP_DAYS, 0 — хранить всё)."""
+    try:
+        d = int(os.environ.get("ZOO_PROBE_KEEP_DAYS", DEFAULT_KEEP_DAYS))
+    except ValueError:
+        d = DEFAULT_KEEP_DAYS
+    return max(d, 0)
+
+
+def prune(con: sqlite3.Connection, now: float | None = None) -> int:
+    """Удалить отчёты старше срока (results — каскадом). → сколько удалено."""
+    days = keep_days()
+    if not days:
+        return 0
+    cur = con.execute("DELETE FROM reports WHERE ts < ?", (int((now or time.time()) - days * 86400),))
+    return cur.rowcount
 
 
 def connect(path: Path | None = None, create: bool = True) -> sqlite3.Connection | None:
@@ -165,6 +185,7 @@ def record(rep: Any, source: str, con: sqlite3.Connection | None = None, tag: st
             con.execute("INSERT OR REPLACE INTO results VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (rid, r["id"], r["verdict"], n["latency_ms"], n["p90_ms"], n["jitter_ms"],
                          n["loss_pct"], n["rtt_ms"], n["down_mbps"], n["up_mbps"]))
+        prune(con)
         con.commit()
         return rid, uid
     finally:

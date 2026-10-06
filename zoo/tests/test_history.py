@@ -320,6 +320,20 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(oct(history.db_path().stat().st_mode & 0o777) if os.name != "nt" else "0o600", "0o600")
         con.close()
 
+    def test_prune_by_age(self):
+        old = report([result("a")], ts="2025-01-01T00:00:00+00:00")
+        new = report([result("a")], ts="2026-10-01T00:00:00+00:00")
+        history.record(old, "upload")
+        history.record(new, "upload")
+        con = history.connect(create=False)
+        now = datetime(2026, 10, 5, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(history.prune(con, now), 0)            # ZOO_PROBE_KEEP_DAYS=0 — хранить всё
+        with mock.patch.dict(os.environ, {"ZOO_PROBE_KEEP_DAYS": "365"}):
+            self.assertEqual(history.prune(con, now), 1)
+        con.commit()
+        self.assertEqual(history.counts(con), {"reports": 1, "results": 1})   # results ушли каскадом
+        con.close()
+
     def test_labels_override_and_validation(self):
         rep = report([result("a")], tag=None, device=None)
         history.record(rep, "upload", tag="cafe-wifi", device="laptop")
