@@ -111,6 +111,34 @@ main > h2 { margin-top: 28px; }
 .proto .meta { color: var(--text-2); font-size: .88rem; margin-bottom: 8px; }
 .proto .chips { margin-bottom: 12px; }
 .proto .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; margin-top: auto; }
+/* «Подключение»: плитки протоколов и окно протокола */
+.ptiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); }
+.ptile { display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer; font: inherit; color: inherit;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px;
+  border-left: 4px solid var(--accent); transition: transform .08s, border-color .08s; }
+.ptile:hover { border-color: var(--accent); transform: translateY(-1px); }
+.ptile-name { font-weight: 600; font-size: 1rem; }
+.ptile-sub { color: var(--muted); font-size: .85rem; }
+.ptile .warnchip, .warnchip { justify-self: start; color: var(--warn); background: var(--warn-soft); }
+.ptile.s1 { border-left-color: #2f8f5b; } .ptile.s2 { border-left-color: #b8860b; } .ptile.s3 { border-left-color: #8a63d2; }
+.ptile.s4 { border-left-color: #c2410c; } .ptile.s5 { border-left-color: #0e7490; } .ptile.s6 { border-left-color: #be185d; }
+.ptile.s7 { border-left-color: #4d7c0f; }
+dialog.pdlg { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
+dialog.pdlg::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px); }
+.dlg-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.dlg-head h3 { margin: 0; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.tab { font: inherit; font-size: .85rem; padding: 5px 12px; border-radius: 999px; cursor: pointer;
+  background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.variant { display: grid; gap: 12px; justify-items: center; margin-top: 8px; }
+.variant .qr { background: #fff; padding: 10px; border-radius: 12px; }
+.variant .qr svg { width: 260px; height: 260px; display: block; }
+.variant .link-uri { width: 100%; }
+.pdlg details { margin-top: 14px; color: var(--muted); font-size: .85rem; }
+main.loading { opacity: .55; transition: opacity .15s; }
 footer .live { display: inline-flex; align-items: center; gap: 6px; }
 footer .live.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 footer .live-btn { margin-left: 10px; }
@@ -307,6 +335,39 @@ JS = r"""
   // выделить содержимое поля ссылки по клику
   document.querySelectorAll('input[data-select]').forEach(function (inp) {
     inp.addEventListener('focus', function () { inp.select(); });
+  });
+  // окна протоколов: плитка [data-dialog] открывает <dialog>, ✕ или клик по фону — закрыть,
+  // вкладки вариантов [data-tab] — показать один вариант
+  document.addEventListener('click', function (ev) {
+    var open = ev.target.closest('[data-dialog]');
+    if (open) { var d = document.getElementById(open.getAttribute('data-dialog')); if (d && d.showModal) d.showModal(); return; }
+    var close = ev.target.closest('[data-close]');
+    if (close) { close.closest('dialog').close(); return; }
+    if (ev.target.tagName === 'DIALOG') { ev.target.close(); return; }
+    var tab = ev.target.closest('[data-tab]');
+    if (tab) {
+      var box = tab.closest('dialog') || document;
+      box.querySelectorAll('[data-tab]').forEach(function (b) { b.classList.toggle('active', b === tab); });
+      box.querySelectorAll('.variant').forEach(function (v) { v.hidden = v.id !== tab.getAttribute('data-tab'); });
+    }
+  });
+  // переключатель периода — без перезагрузки: забрать страницу, подменить <main>, обновить адрес
+  document.addEventListener('click', function (ev) {
+    var a = ev.target.closest('nav.seg a');
+    if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    ev.preventDefault();
+    var main = document.querySelector('main');
+    if (main) main.classList.add('loading');
+    fetch(a.href, { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { if (r.redirected || !r.ok) throw new Error('nav'); return r.text(); })
+      .then(function (html) {
+        var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
+        if (!fresh || !main) throw new Error('nav');
+        main.innerHTML = fresh.innerHTML;
+        history.replaceState(null, '', a.href);
+      })
+      .catch(function () { location.href = a.href; })
+      .then(function () { if (main) main.classList.remove('loading'); });
   });
   // live: раз в N секунд забрать ту же страницу и подменить <main>; пауза — вкладка
   // скрыта, фокус в поле ввода, открыт <details> или выключено кнопкой (запоминается)

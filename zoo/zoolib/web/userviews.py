@@ -310,50 +310,116 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
                    t("p", f"Итого {traffic.PERIOD_TITLES[period]}: {human_bytes(tot['total'])}", class_="hint")]
     tr_card = card("Трафик", tr_body, extra=period_selector(f"/users/{name}", period))
 
-    links, errors = users.user_links(name)
-    by_id = {m.id: m for m in manifests.load_all()[0]}
-    blocks = []
-    for i, link in enumerate(links):
-        m = by_id.get(link.proto_id)
-        v2rayn = link.proto_id == allowlist.V2RAYN_PROTO
-        base = m.name if m else ("Приложения через VPN" if v2rayn else link.proto_id)
-        title = base + (f" · {link.label}" if link.label else "")
-        uri_id = f"uri-{i}"
-        if link.kind == "file":
-            fname = Path(link.uri).name
-            main = t("div", t("span", fname, class_="mono small"),
-                     t("a", "Скачать", href=f"/users/{name}/file/{i}", class_="btn small primary"),
-                     class_="link-uri")
-            qr_label = ("QR-код для AmneziaWG / WG Tunnel на Android" if fname.endswith("-android.conf")
-                        else "QR-код файла (импорт в AmneziaWG, AmneziaVPN)")
-        else:
-            main = t("div", t("input", type="text", id=uri_id, value=link.uri, readonly=True, data_select=True,
-                              aria_label=f"Ссылка {title}"),
-                     t("button", "Копировать", type="button", class_="btn small", data_copy=uri_id),
-                     class_="link-uri")
-            qr_label = "QR-код"
-        extra = (t("p", "v2rayN → «Настройки» → «Настройки маршрутизации» → «Добавить набор правил» → "
-                        "«Импорт правил из файла». Подробно — docs/USER-GUIDE.md, раздел про Windows.",
-                   class_="hint") if v2rayn else
-                 t("details", t("summary", qr_label), qr_markup(_payload(link, name))))
-        blocks.append(t("div",
-                        t("div", t("h3", title), t("span", link.proto_id, class_="chip"), class_="link-head"),
-                        t("div", m.notes, class_="notes") if m and m.notes and _first_of(links, i) else None,
-                        main, extra,
-                        class_="link"))
+    links, errors = _cached_links(app, name)
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
-    links_card = card("Ссылки и QR", err_list,
-                      t("p", "Ссылки — это ключи доступа: отправляйте их только самому пользователю.", class_="hint"),
-                      blocks or t("p", "Ссылок нет.", class_="muted"))
+    links_card = card("Подключение", err_list,
+                      t("p", "Ссылки и QR — ключи доступа: только самому пользователю.", class_="hint"),
+                      connect_tiles(links, manifests.load_all()[0], name) or t("p", "Ссылок нет.", class_="muted"))
     body = [page_head(name, user.note or None, actions), t("div", info, tr_card, class_="cols"), links_card]
     if not user.enabled:
         body.insert(1, alert_list([("warn", "Пользователь отключён: ссылки сохранены, но не подключаются.")]))
     return app.render(req, name, body, active="/users")
 
 
-def _first_of(links: list[protolib.Link], i: int) -> bool:
-    """Заметки протокола — один раз, у первой его ссылки."""
-    return all(links[j].proto_id != links[i].proto_id for j in range(i))
+def _cached_links(app: "App", name: str) -> tuple[list[protolib.Link], dict[str, str]]:
+    """Ссылки собираются вызовами bash-модулей протоколов (сотни мс). Кэш, пока не менялись
+    файлы пользователя, реестр пользователей и манифесты; плюс страховка — не дольше 5 минут."""
+    def mtimes(d: Path) -> float:
+        try:
+            return max([d.stat().st_mtime] + [f.stat().st_mtime for f in d.iterdir()])
+        except OSError:
+            return 0.0
+    stamp = (mtimes(paths.clients_dir() / name), mtimes(paths.manifest_dir()),
+             mtimes(paths.users_file().parent) if paths.users_file().exists() else 0.0)
+    return app.cached(f"links:{name}:{stamp}", 300, lambda: users.user_links(name))
+
+
+# Плитки «Подключение»: протокол → группа, короткое «для каких клиентов», пометка
+MAIN_PROTOS = ("vless-reality", "vless-xhttp", "hysteria2", "amneziawg")
+CLIENTS = {
+    "vless-reality": "Happ, v2rayNG, v2rayN",
+    "vless-xhttp": "Happ, v2rayNG, v2rayN",
+    "hysteria2": "Happ, v2rayNG, Hiddify",
+    "amneziawg": "AmneziaWG, AmneziaVPN, WG Tunnel",
+    "tuic": "Hiddify, Karing, sing-box",
+    "ss2022": "Happ, v2rayNG",
+    allowlist.V2RAYN_PROTO: "v2rayN на Windows",
+}
+TAGS = {"vless-reality": "нужен Xray-клиент", "vless-xhttp": "нужен Xray-клиент"}
+
+
+def _variant_label(link: protolib.Link) -> str:
+    """Короткое имя варианта для вкладки окна."""
+    if link.kind == "file":
+        fname = Path(link.uri).name
+        if fname.endswith("-android.conf"):
+            return "Android"
+        if fname.endswith(".conf"):
+            return "Компьютер, iPhone"
+        return "Файл правил"
+    if link.uri.startswith("vpn://"):
+        return "Ключ AmneziaVPN"
+    if "obfs=salamander" in link.uri:
+        return "Salamander"
+    if re.search(r"@[^/?#]*:\d+,\d", link.uri):
+        return "Port hopping"
+    return link.label.split(":")[0] if link.label else "Обычная"
+
+
+def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool) -> Markup:
+    if link.kind == "file":
+        action = t("a", "Скачать файл", href=f"/users/{name}/file/{idx}", class_="btn primary")
+    else:
+        uri_id = f"uri-{idx}"
+        action = t("div", t("input", type="text", id=uri_id, value=link.uri, readonly=True, data_select=True,
+                            aria_label="Ссылка"),
+                   t("button", "Копировать", type="button", class_="btn primary", data_copy=uri_id),
+                   class_="link-uri")
+    if link.proto_id == allowlist.V2RAYN_PROTO:
+        qr_block = t("p", "v2rayN → Настройки маршрутизации → Импорт правил из файла.", class_="hint")
+    else:
+        qr_block = qr_markup(_payload(link, name))
+    return t("div", qr_block, action, class_="variant", id=vid, hidden=hidden or None)
+
+
+def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str) -> Markup | None:
+    """Плитки по протоколам; клик — окно протокола: вкладки вариантов, QR, копировать/скачать."""
+    if not links:
+        return None
+    by_id = {m.id: m for m in mans}
+    groups: dict[str, list[tuple[int, protolib.Link]]] = {}
+    for i, link in enumerate(links):
+        groups.setdefault(link.proto_id, []).append((i, link))
+    order = sorted(groups, key=lambda p: (p not in MAIN_PROTOS,
+                                          MAIN_PROTOS.index(p) if p in MAIN_PROTOS else 99, p))
+    sections: dict[bool, list[Markup]] = {True: [], False: []}
+    dialogs = []
+    for n, pid in enumerate(order):
+        m = by_id.get(pid)
+        title = (m.name if m else ("Приложения через VPN" if pid == allowlist.V2RAYN_PROTO else pid)).partition(" (")[0]
+        dlg_id = f"dlg-{n}"
+        tag = TAGS.get(pid)
+        sections[pid in MAIN_PROTOS].append(t(
+            "button", t("span", title, class_="ptile-name"),
+            t("span", f"Для: {CLIENTS.get(pid, '—')}", class_="ptile-sub"),
+            t("span", tag, class_="chip warnchip") if tag else None,
+            type="button", class_=f"ptile s{n % 8}", data_dialog=dlg_id))
+        items = groups[pid]
+        tabs = t("div", [t("button", _variant_label(link), type="button", data_tab=f"{dlg_id}-v{k}",
+                           class_="tab active" if k == 0 else "tab")
+                         for k, (_, link) in enumerate(items)], class_="tabs", role="tablist") if len(items) > 1 else None
+        variants = [_variant(link, i, name, f"{dlg_id}-v{k}", k > 0) for k, (i, link) in enumerate(items)]
+        more = t("details", t("summary", "подробнее"), t("p", m.notes, class_="hint")) if m and m.notes else None
+        dialogs.append(t("dialog",
+                         t("div", t("h3", title), t("button", "✕", type="button", class_="btn small", data_close=True,
+                                                    aria_label="Закрыть"), class_="dlg-head"),
+                         t("p", f"Для: {CLIENTS.get(pid, '—')}", class_="ptile-sub"),
+                         tabs, variants, more, id=dlg_id, class_="pdlg"))
+    out = []
+    for main, label in ((True, "Основные"), (False, "Запасные")):
+        if sections[main]:
+            out += [t("h3", label, class_="sub-h"), t("div", sections[main], class_="ptiles")]
+    return t("div", out, dialogs)
 
 
 def user_file(app: "App", req: "Request", name: str, idx: str) -> "Response":
