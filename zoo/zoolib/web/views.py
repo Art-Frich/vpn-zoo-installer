@@ -27,6 +27,24 @@ if TYPE_CHECKING:
 REBOOT_FLAG = Path("/var/run/reboot-required")
 GEO_UNIT = "vpn-zoo-geo-update.service"
 COLLECT_ACTION = {"action": "collect"}
+NL = chr(10)
+
+
+def users_line(p: dict[str, Any]) -> Markup:
+    """«пользователей: 5 (+1 откл.)»; подсказка — кто с протоколом, кто отключён, у кого его нет и почему."""
+    n = p.get("users")
+    if n is None:
+        return t("div", "пользователей: —", class_="muted small")
+    off = p.get("users_off") or 0
+    tip = ["с протоколом: " + (", ".join(p.get("user_names") or ()) or "никого")]
+    if off:
+        tip.append("отключены: " + ", ".join(p.get("off_names") or ()))
+    if p.get("lacking"):
+        tip.append("без протокола: " + ", ".join(f"{name} ({why})" for name, why in p["lacking"]))
+    return t("div", f"пользователей: {n}", t("span", f" (+{off} откл.)", class_="nw") if off else None,
+             class_="muted small", title=NL.join(tip))
+
+
 USERS_TRAFFIC_TITLE = "трафик пользователей сегодня (без служебного пробника)"
 
 
@@ -226,9 +244,10 @@ def overview(app: "App", req: "Request") -> "Response":
             t("div", t("span", f"{p['port']}/{p['layer']}", class_="chip", title=about), problems, class_="chips"),
             protoviews.metrics_row(p, pctx, csrf),
             t("div",
-              t("div", t("div", human_bytes(protoviews.today_bytes(pctx, p["id"])), class_="num-big",
-                         title="сегодня, без служебных замеров"),
-                t("div", f"пользователей: {'—' if p['users'] is None else p['users']}", class_="muted small")),
+              t("div", t("div", protoviews.approx(pctx, p["id"]) + human_bytes(protoviews.today_bytes(pctx, p["id"])), class_="num-big",
+                         title="сегодня, без служебных замеров" + (" (≈: у Xray-протоколов служебный трафик делится по долям замеров)"
+                                                                    if protoviews.approx(pctx, p["id"]) else "")),
+                users_line(p)),
               charts.sparkline(spark.get(p["id"], []), charts.series_class(i)),
               class_="row"),
             protoviews.switch_row(p, pctx, csrf),

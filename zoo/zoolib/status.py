@@ -11,9 +11,9 @@ import platform
 from pathlib import Path
 from typing import Any
 
-from . import __version__, manifests, output, paths, protolib, system, traffic
+from . import __version__, groups, manifests, output, paths, protolib, system, traffic
 from .config import Config
-from .users import Registry, UserError, users_module
+from .users import OWNER, Registry, UserError, users_module
 from .xui import XuiClient, XuiError
 
 # ufw проверяется через `ufw status` (system.ufw_active), а не по юниту
@@ -38,6 +38,29 @@ def _manifest_certs(m: manifests.Manifest) -> list[str]:
     if isinstance(tls, dict) and isinstance(tls.get("cert_path"), str):
         return [tls["cert_path"]]
     return []
+
+
+def protocol_users(reg: Registry | None, m: manifests.Manifest, libs: set[str],
+                   groups_by_id: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Кто сидит на протоколе по реестру: включённые обычные пользователи с ним в списке, отдельно отключённые
+    и те, у кого его нет (с причиной). Служебные (zoo-probe) не считаются, трафик не смотрится."""
+    if reg is None:
+        return {"users": None, "users_off": 0, "user_names": [], "off_names": [], "lacking": []}
+    ids = {m.id, users_module(m, libs)}
+    have, off, lacking = [], [], []
+    for u in reg.visible():
+        if ids & set(u.protocols):
+            (have if u.enabled else off).append(u.name)
+        elif u.enabled:
+            g = (groups_by_id or {}).get(u.group)
+            if u.custom and u.name != OWNER:
+                why = "свой набор протоколов"
+            elif g is not None and not g.all_protocols and not (ids & set(g.protocols)):
+                why = f"нет в группе «{g.name}»"
+            else:
+                why = "не заведён (zoo user sync)"
+            lacking.append([u.name, why])
+    return {"users": len(have), "users_off": len(off), "user_names": have, "off_names": off, "lacking": lacking}
 
 
 def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> dict[str, Any]:
@@ -78,6 +101,10 @@ def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
 
     protocols = []
     libs = set(protolib.list_libs())
+    try:
+        groups_by_id = {g.id: g for g in groups.Groups.load().groups} if reg else {}
+    except (UserError, OSError, ValueError):
+        groups_by_id = {}
     for m in good:
         svc = {u: states.get(_unit(u), {}).get("active", "unknown") for u in m.services}
         listening = {p: (p, m.port) in listen for p in m.protos}
@@ -98,7 +125,7 @@ def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
         protocols.append({
             "id": m.id, "name": m.name, "short": m.short, "port": m.port, "layer": m.layer, "engine": m.engine,
             "services": svc, "enabled": m.enabled, "listening": listening, "ok": ok,
-            "users": sum(1 for u in reg.visible() if {m.id, users_module(m, libs)} & set(u.protocols)) if reg else None,
+            **protocol_users(reg, m, libs, groups_by_id),
         })
 
     for u in BASE_UNITS:

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .. import manifests, protoctl, traffic
-from ..output import human_bytes, human_duration
+from ..output import human_bytes
 from ..probe import live, verdicts
 from . import logs
 from .html import Markup, badge, card, kv, post_button, t
@@ -28,6 +28,7 @@ class Ctx:
     now: float = field(default_factory=time.time)
     live: dict[str, dict[str, Any]] = field(default_factory=dict)
     split: dict[str, tuple[int, int]] = field(default_factory=dict)
+    approx: set[str] = field(default_factory=set)
     jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     busy: dict[str, Any] | None = None
     ctls: dict[str, protoctl.Ctl] = field(default_factory=dict)
@@ -35,8 +36,11 @@ class Ctx:
 
 def context() -> Ctx:
     ctx = Ctx()
-    ctx.live = live.latest(ctx.now)
-    ctx.split = traffic.today_split(live.own_bytes_today(ctx.now), ctx.now)
+    ctx.live = live.summary(now=ctx.now)
+    own = live.own_today(ctx.now)
+    ctx.split = traffic.today_split({p: b for p, (b, _) in own.items()}, ctx.now,
+                                    {p: b + n * live.LIGHT_BYTES for p, (b, n) in own.items()})
+    ctx.approx = {m.id for m in manifests.enabled() if m.users_backend == "xui"}
     ctx.jobs = protoctl.active_by_proto()
     ctx.busy = protoctl.active()
     ctx.ctls = protoctl.controls()
@@ -49,17 +53,14 @@ def _bytes(n: int) -> str:
     return human_bytes(n).replace(".0 ", " ")
 
 
-def _num(v: float, big: int = 10) -> str:
-    return f"{v:.0f}" if v >= big else f"{v:.1f}"
+def approx(ctx: Ctx, proto: str) -> str:
+    """«≈» у Xray-протоколов: 3x-ui считает клиента одним счётчиком на все inbound, доля замеров делится по весам."""
+    return "≈" if proto in ctx.approx else ""
 
 
 def today_bytes(ctx: Ctx, proto: str) -> int:
     up, down = ctx.split.get(proto, (0, 0))
     return up + down
-
-
-def _ago(ts: float, now: float) -> str:
-    return "только что" if now - ts < 90 else human_duration(now - ts) + " назад"
 
 
 def metrics(proto: str, ctx: Ctx) -> Markup:
@@ -71,7 +72,7 @@ def metrics(proto: str, ctx: Ctx) -> Markup:
         parts.append("нет замера")
     else:
         stale = ctx.now - d["ts"] > live.FRESH
-        age = _ago(d["ts"], ctx.now)
+        age = live.ago(d["ts"], ctx.now)
         if d["verdict"] in verdicts.NOT_TESTED:
             parts.append("не проверяется")
             title = f"{verdicts.DESCRIPTIONS.get(d['verdict'], d['verdict'])} · {age}"
@@ -79,22 +80,19 @@ def metrics(proto: str, ctx: Ctx) -> Markup:
             parts.append(f"сбой: {d['verdict']}")
             dot, title = "bad", f"{verdicts.DESCRIPTIONS.get(d['verdict'], d['verdict'])} · {age}"
         else:
-            if d["rtt_ms"] is not None:
-                parts.append(f"{d['rtt_ms']:.0f} мс")
-            if d["jitter_ms"] is not None:
-                parts.append(f"±{d['jitter_ms']:.0f}")
-            if d["speed"] is not None:
-                parts.append(f"{_num(d['speed'])} Мбит/с")
+            parts += live.parts(d, ctx.now)
             if not parts:
                 parts.append("нет замера")
             dot = "muted" if stale else ("ok" if d["verdict"] == verdicts.OK else "warn")
-            title = f"замер {age}" + (f" · {verdicts.DESCRIPTIONS.get(d['verdict'], '')}" if d["verdict"] != verdicts.OK else "")
+            note = live.speed_note(d, ctx.now)
+            title = " · ".join(x for x in (f"замер {age}", note,
+                                           verdicts.DESCRIPTIONS.get(d["verdict"], "") if d["verdict"] != verdicts.OK else "") if x)
         if stale and dot != "bad":
             dot = "muted"
             title += " · устарел"
     if ctx.split:
         up, down = ctx.split.get(proto, (0, 0))
-        parts.append(f"↓{_bytes(down)} ↑{_bytes(up)}")
+        parts.append(f"{approx(ctx, proto)}↓{_bytes(down)} ↑{_bytes(up)}")
     # куски не рвутся посередине: перенос — только на « · »
     chunks = [[" · ", t("span", p, class_="nw")] if i else t("span", p, class_="nw") for i, p in enumerate(parts)]
     return t("span", t("span", class_=f"dot {dot}"), t("span", chunks), class_="mline", title=title)
@@ -104,7 +102,7 @@ def caption(ctx: Ctx) -> Markup:
     if ctx.live:
         last = max(d["ts"] for d in ctx.live.values())
         stale = ctx.now - last > 3 * 600
-        return t("p", f"метрики раз в 10 мин · обновлено {_ago(last, ctx.now)}",
+        return t("p", f"метрики раз в 10 мин · обновлено {live.ago(last, ctx.now)}",
                  t("span", " · замеры не идут: systemctl status zoo-live.timer", class_="stale") if stale else None,
                  class_="quiet")
     return t("p", "метрики раз в 10 мин · первый замер — через пару минут после установки", class_="quiet")

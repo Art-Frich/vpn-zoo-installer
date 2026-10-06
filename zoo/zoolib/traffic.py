@@ -689,13 +689,15 @@ def first_run_since(ts: float) -> int | None:
     return int(r[0]) if r and r[0] is not None else None
 
 
-def today_split(own_down: dict[str, int] | None = None, now: float | None = None) -> dict[str, tuple[int, int]]:
+def today_split(own_down: dict[str, int] | None = None, now: float | None = None,
+                own_weight: dict[str, int] | None = None) -> dict[str, tuple[int, int]]:
     """Трафик протоколов за текущие сутки без служебного zoo-probe: {протокол: (↑ от клиента, ↓ к клиенту)}.
 
     Где у протокола есть серия служебного пользователя (Hysteria, AmneziaWG), она вычитается из итога
-    точно. У Xray-протоколов 3x-ui считает клиента одним счётчиком на все inbound, служебного там
-    не отделить: из ↓ вычитается own_down[протокол] — байты, которые скачали замеры live (без
-    накладных расходов TLS, поэтому цифра чуть выше настоящей).
+    точно. У Xray-протоколов 3x-ui считает клиента одним счётчиком на все inbound, поэтому служебный
+    трафик известен точно только суммой по всем Xray-протоколам (серия zoo-probe в «xray»): она делится
+    между ними по весам own_weight (замеры live) — итог по каждому приблизителен, сумма точна. Нет серии
+    zoo-probe (замеры шли от owner) — из ↓ вычитаются байты загрузок own_down, цифра чуть выше настоящей.
     """
     now = time.time() if now is None else now
     con = _con()
@@ -709,15 +711,23 @@ def today_split(own_down: dict[str, int] | None = None, now: float | None = None
     hidden = users.hidden_names()
     totals = {r["proto"]: [int(r["up"]), int(r["down"])] for r in rows if r["user"] == ""}
     sub: dict[str, list[int]] = {}
+    shared = [0, 0]
     for r in rows:
-        if r["user"] in hidden and r["proto"] != XRAY:
-            acc = sub.setdefault(r["proto"], [0, 0])
+        if r["user"] in hidden:
+            acc = shared if r["proto"] == XRAY else sub.setdefault(r["proto"], [0, 0])
             acc[0] += int(r["up"])
             acc[1] += int(r["down"])
+    xray = sorted(m.id for m in manifests.load_all()[0]
+                  if m.enabled and m.users_backend == "xui" and m.id in totals and m.id not in sub)
+    weights = {p: max((own_weight or {}).get(p, 0), 0) for p in xray}
+    wsum = sum(weights.values())
     out: dict[str, tuple[int, int]] = {}
     for proto, (up, down) in totals.items():
         if proto in sub:
             up, down = up - sub[proto][0], down - sub[proto][1]
+        elif proto in xray and any(shared):
+            share = weights[proto] / wsum if wsum else 1 / len(xray)
+            up, down = up - round(shared[0] * share), down - round(shared[1] * share)
         else:
             down -= (own_down or {}).get(proto, 0)
         out[proto] = (max(up, 0), max(down, 0))

@@ -34,6 +34,7 @@ SPEED_BYTES = 1_000_000     # на 512 КБ slow start занижает скор
 LATENCY_SAMPLES = 5
 RATE_LIMIT = 60             # ↻ чаще раза в минуту на протокол не принимается
 REQ_STALE = 300             # заявка старше — замер не пришёл (юнит не запущен): не «меряю…»
+LIGHT_BYTES = 250_000       # лёгкий замер ≈ 241–255 КБ rx на стенде (D41)
 FRESH = 25 * 60             # замер старше — на карточке «устарело» (таймер раз в 10 мин)
 
 
@@ -214,10 +215,49 @@ def latest(now: float | None = None) -> dict[str, dict[str, Any]]:
     return out
 
 
-def own_bytes_today(now: float | None = None) -> dict[str, int]:
-    """Сколько байт скачали сами замеры сегодня (по локальным суткам) с первого снятия счётчиков:
-    их вычитает трафик протоколов, у которых нельзя отделить служебного пользователя (общий счётчик
-    Xray). Замеры до первого снятия в счётчики не попали — их вычитать нельзя."""
+def summary(proto: str | None = None, now: float | None = None) -> Any:
+    """Единственный источник цифр «с сервера» для карточек «Обзора» и мастера подключения.
+    Без proto — {протокол: строка}, с proto — строка или None. Строка: ts, rtt_ms, jitter_ms, ok, verdict,
+    speed (Мбит/с последней загрузки за 2 часа) и speed_ts — у скорости своё время, она обновляется
+    раз в час, а задержка — раз в 10 минут."""
+    data = latest(now)
+    return data if proto is None else data.get(proto)
+
+
+def ago(ts: float, now: float) -> str:
+    return "только что" if now - ts < 90 else output.human_duration(now - ts) + " назад"
+
+
+def _num(v: float, big: int = 10) -> str:
+    return f"{v:.0f}" if v >= big else f"{v:.1f}"
+
+
+def parts(d: dict[str, Any], now: float, jitter: bool = True) -> list[str]:
+    """Цифры замера одним набором для обоих экранов: «8 мс», «±1», «51 Мбит/с», «3 мин назад»."""
+    out: list[str] = []
+    if d.get("rtt_ms") is not None:
+        out.append(f"{d['rtt_ms']:.0f} мс")
+    if jitter and d.get("jitter_ms") is not None:
+        out.append(f"±{d['jitter_ms']:.0f}")
+    if d.get("speed") is not None:
+        out.append(f"{_num(d['speed'])} Мбит/с")
+    if out:
+        out.append(ago(d["ts"], now))
+    return out
+
+
+def speed_note(d: dict[str, Any], now: float) -> str:
+    """«скорость 40 мин назад», если загрузка старше последнего замера больше чем на 5 минут."""
+    st = d.get("speed_ts")
+    if d.get("speed") is None or st is None or d["ts"] - st <= 300:
+        return ""
+    return "скорость " + ago(st, now)
+
+
+def own_today(now: float | None = None) -> dict[str, tuple[int, int]]:
+    """{протокол: (байт загрузок, замеров)} за локальные сутки с первого снятия счётчиков: так считается
+    доля замеров в трафике Xray-протоколов (общий счётчик клиента 3x-ui). Замеры до первого снятия в
+    счётчики не попали — их считать нельзя."""
     from .. import traffic
     now = time.time() if now is None else now
     day = traffic.align(now, traffic.RES_1D)
@@ -226,13 +266,19 @@ def own_bytes_today(now: float | None = None) -> dict[str, int]:
     if con is None:
         return {}
     try:
-        rows = con.execute("SELECT proto, SUM(bytes) AS b FROM live WHERE ts >= ? GROUP BY proto",
+        rows = con.execute("SELECT proto, SUM(bytes) AS b, COUNT(*) AS n FROM live WHERE ts >= ? GROUP BY proto",
                            (since,)).fetchall()
     except sqlite3.Error:
         return {}
     finally:
         con.close()
-    return {r["proto"]: int(r["b"] or 0) for r in rows}
+    return {r["proto"]: (int(r["b"] or 0), int(r["n"] or 0)) for r in rows}
+
+
+def own_bytes_today(now: float | None = None) -> dict[str, int]:
+    """Сколько байт скачали сами замеры сегодня: их вычитает трафик Xray-протоколов, у которых нет
+    серии служебного пользователя."""
+    return {p: b for p, (b, _) in own_today(now).items()}
 
 
 # ---------- прогон ----------
