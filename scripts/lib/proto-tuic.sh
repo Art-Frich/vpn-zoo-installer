@@ -222,6 +222,7 @@ proto_tuic_manifest_refresh() {
         --argjson socks "$(proto_tuic_socks_port "$id")" '{
         id: "tuic",
         name: "TUIC v5 (3x-ui native)",
+        short: "TUIC v5",
         layer: "udp",
         port: $port,
         engine: "x-ui",

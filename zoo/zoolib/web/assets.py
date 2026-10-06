@@ -132,7 +132,7 @@ details.help > .hint p { margin: 0 0 6px; } details.help > .hint ul { margin: 0 
    низ (сегодня, пользователи, график) прижат ко дну — в ряду всё на одной линии */
 .card.proto { display: flex; flex-direction: column; }
 .proto .card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; }
-.proto .card-head h3 { margin: 0; overflow-wrap: anywhere; line-height: 1.3; }
+.proto .card-head h3 { margin: 0; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .proto .meta { color: var(--text-2); font-size: .88rem; margin-bottom: 8px; }
 .proto .chips { margin-bottom: 12px; }
 .proto .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; margin-top: auto; }
@@ -183,6 +183,7 @@ footer .live-btn { margin-left: 10px; }
 .quick img.qr { background: #fff; padding: 8px; border-radius: 10px; width: 160px; height: 160px;
   box-sizing: content-box; display: block; }
 .quick .actions { margin-top: 10px; }
+tr.dim td { opacity: .55; }
 tr.off td { opacity: .55; }
 tr.off td:last-child, tr.off td:first-child { opacity: 1; }
 details.more > summary { margin-top: 12px; }
@@ -378,6 +379,7 @@ footer { max-width: 1200px; margin: 0 auto; padding: 0 16px 24px; color: var(--m
   table.stack td::before { content: attr(data-label); color: var(--muted); font-size: .8rem; text-align: left;
     flex: none; }
   table.stack td[data-label=""]::before, table.stack td:first-child::before { display: none; }
+  table.stack td:empty { display: none; }
   table.stack td:first-child { justify-content: flex-start; text-align: left; font-weight: 600; }
   table.stack tbody tr:hover td { background: none; }
   td.bar-cell, table.stack td .hbar { width: 40%; }

@@ -40,6 +40,12 @@ class Manifest:
     path: Path | None = None
 
     @property
+    def short(self) -> str:
+        """Короткое имя для карточек: поле short, иначе name до « (»."""
+        s = self.raw.get("short")
+        return s if isinstance(s, str) and s.strip() else self.name.partition(" (")[0]
+
+    @property
     def services(self) -> list[str]:
         """service может быть строкой или списком юнитов."""
         s = self.raw.get("service", self.service)
@@ -89,6 +95,8 @@ def validate(data: Any, file_id: str | None = None) -> list[str]:
         errs.append(f"id {mid!r} не совпадает с именем файла {file_id!r}")
     if not isinstance(data.get("name"), str) or not data.get("name"):
         errs.append("name: нужна непустая строка")
+    if "short" in data and not isinstance(data["short"], str):
+        errs.append("short: ожидается строка")
     if norm_layer(data.get("layer")) not in LAYERS:
         errs.append(f"layer: одно из {', '.join(LAYERS)}, получено {data.get('layer')!r}")
     port = data.get("port")

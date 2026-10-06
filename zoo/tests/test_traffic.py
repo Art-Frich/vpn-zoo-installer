@@ -187,6 +187,10 @@ class StoreReportTest(unittest.TestCase):
         self.assertIsNone(traffic.last_run())
 
 
+OBFS_YAML = "\n".join(['listen: ":24603"', "", "trafficStats:", "  listen: 127.0.0.1:25001", '  secret: "x"',
+                       "obfs:", "  type: salamander", ""])
+
+
 class GatherTest(unittest.TestCase):
     """Источники: 3x-ui API и trafficStats Hysteria подменяются."""
 
@@ -236,6 +240,43 @@ class GatherTest(unittest.TestCase):
         self.assertIn("3x-ui", g.errors)
         self.assertIn("hysteria2", g.errors)
         self.assertEqual(g.samples, [])
+
+    def add_obfs(self, **cfg):
+        self.env.add_manifest("hysteria2-obfs", engine="hysteria", users_backend="hysteria-command",
+                              service="hysteria-server@obfs.service", layer="udp", port=24603)
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "PANEL_PORT": "1", "PANEL_PATH": "p", "XUI_API_TOKEN": "t" * 20,
+                               "HY2_STATS_PORT": "25000", "HY2_STATS_SECRET": "s" * 20, **cfg})
+
+    def gather_obfs(self):
+        stats = {25000: {"masha": {"tx": 3, "rx": 4}}, 25001: {"masha": {"tx": 5, "rx": 6}}}
+        with mock.patch("zoolib.traffic.XuiClient.clients", return_value=[]),                 mock.patch("zoolib.traffic.XuiClient.inbounds", return_value=[]),                 mock.patch("zoolib.traffic.hysteria_stats", side_effect=lambda port, secret: stats[port]),                 mock.patch("zoolib.traffic._unit_epoch", return_value="1@x"),                 mock.patch("zoolib.traffic._host_sample", return_value=None):
+            return traffic.gather(config.load())
+
+    def test_obfs_instance_has_own_series(self):
+        self.add_obfs(HY2_OBFS_STATS_PORT="25001")
+        g = self.gather_obfs()
+        got = {(s.proto, s.user): (s.up, s.down) for s in g.samples}
+        self.assertEqual(got[("hysteria2", "masha")], (3, 4))
+        self.assertEqual(got[("hysteria2-obfs", "masha")], (5, 6))
+        self.assertEqual(g.sum_protos, {"hysteria2", "hysteria2-obfs"})
+        self.assertFalse([k for k in g.errors if k.startswith("hysteria2")])
+
+    def test_obfs_port_from_instance_config_when_key_missing(self):
+        # Salamander включили поверх старой установки: ключа HY2_OBFS_STATS_PORT в config.env нет
+        self.add_obfs()
+        hy_etc = self.env.root / "hy"
+        hy_etc.mkdir()
+        (hy_etc / "obfs.yaml").write_text(OBFS_YAML, encoding="utf-8")
+        with mock.patch.dict("os.environ", {"HY_ETC": str(hy_etc)}):
+            g = self.gather_obfs()
+        self.assertEqual({(s.proto, s.user): s.up for s in g.samples}[("hysteria2-obfs", "masha")], 5)
+
+    def test_obfs_without_port_is_an_error_not_silent_zero(self):
+        self.add_obfs()
+        with mock.patch.dict("os.environ", {"HY_ETC": str(self.env.root / "нет")}):
+            g = self.gather_obfs()
+        self.assertIn("hysteria2-obfs", g.errors)
+        self.assertNotIn("hysteria2", g.errors)
 
     def test_default_iface(self):
         d = self.env.root / "proc" / "net"

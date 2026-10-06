@@ -121,13 +121,15 @@ def post_button(action: str, label: str, csrf: str, cls: str = "btn", fields: di
              method="post", action=action, class_="inline", data_confirm=confirm, data_swap=swap or None)
 
 
-def card(title: Any, *body: Any, cls: str = "", extra: Any = None, help: Any = None) -> Markup:
-    """help — пояснение в свёрнутом «?» у заголовка: на карточке видна одна строка, остальное тут."""
+def card(title: Any, *body: Any, cls: str = "", extra: Any = None, help: Any = None, tip: str | None = None,
+         id_: str | None = None) -> Markup:
+    """help — пояснение в свёрнутом «?» у заголовка: на карточке видна одна строка, остальное тут.
+    tip — подсказка заголовка (title=), id_ — якорь для ссылок."""
     tail = [extra, t("details", t("summary", "?", aria_label="Пояснение"), t("div", help, class_="hint"),
                      class_="help") if help else None]
-    head = t("div", t("h3", title), t("div", tail, class_="head-end") if extra or help else None,
+    head = t("div", t("h3", title, title=tip), t("div", tail, class_="head-end") if extra or help else None,
              class_="card-head")
-    return t("section", head, *body, class_=f"card {cls}".strip())
+    return t("section", head, *body, class_=f"card {cls}".strip(), id=id_)
 
 
 def kv(rows: list[tuple[Any, Any]]) -> Markup:
