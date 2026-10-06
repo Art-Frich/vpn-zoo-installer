@@ -180,6 +180,9 @@ footer .live.bad::before { background: var(--bad); }
 .chip.info { color: var(--accent); background: var(--info-soft); border-color: transparent; }
 .chip.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
 .quiet { color: var(--muted); font-size: .85rem; margin: 10px 0 0; }
+.pack ul.steps { margin: 6px 0 10px; padding-left: 18px; }
+.pack ul.steps li { margin: 3px 0; }
+.pack + .pack { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .quick { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
 .quick img.qr { background: #fff; padding: 8px; border-radius: 10px; width: 160px; height: 160px;
   box-sizing: content-box; display: block; }
