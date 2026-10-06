@@ -655,7 +655,7 @@ class HandoffPageTest(AppTestBase):
         # приложение с версией и ссылкой, QR и ссылка этого человека
         self.assertIn("<strong>Happ</strong>", android)
         self.assertIn('href="https://github.com/Happ-proxy/happ-android/releases"', android)
-        self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+" loading="lazy"')
+        self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+\?p=[0-9a-f]{8}" loading="lazy"')
         self.assertRegex(android, r'<input type="text" id="k-android-happ-0" value="vless://masha@')
         self.assertIn('data-copy="k-android-happ-0">Копировать</button>', android)
         # текст — один на группу, с именем человека; ключей в нём нет

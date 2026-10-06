@@ -9,7 +9,7 @@ from tests.helpers import needs_bash
 from tests.test_live import seed_live
 from tests.test_web import AppTestBase, Client, header
 from zoolib import allowlist, groups, paths, users
-from zoolib.web import groupviews
+from zoolib.web import clientviews, groupviews
 
 PROTOS = ("vless-reality", "hysteria2", "amneziawg")
 
@@ -243,7 +243,7 @@ class WizardTest(GroupWebBase):
         android = page[page.index('data-pp="android"'):page.index('id="msg-android"')]
         self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>AmneziaWG</strong>"))
         self.assertEqual(android.count('class="app-head"'), 2, "каждое приложение набора — со своими ключами")
-        self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+"')
+        self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+\?p=[0-9a-f]{8}"')
         self.assertNotIn('data-pp="windows"', page, "для Windows клиенты не выбраны")
         _, done = self.c.get("/connect/done?group=g1&u=masha")
         self.assertIn("2) Установите «AmneziaWG»", done)
@@ -570,7 +570,9 @@ class GroupsPagesTest(GroupWebBase):
         # сохранить свой текст: он у всех участников с их именем
         resp, _ = self.post("/groups/g1/message", {"platform": ["android"], "text": ["{name}, ставь Happ.\r\nПотом QR."]})
         self.assertEqual(header(resp, "Location"), ["/groups/g1?m=android#texts"])
-        self.assertEqual(self.groups_json()[1]["messages"], {"android": "{name}, ставь Happ.\nПотом QR."})
+        saved = self.groups_json()[1]["messages"]["android"]
+        self.assertEqual(saved["text"], "{name}, ставь Happ.\nПотом QR.")
+        self.assertTrue(saved["sig"], "вместе с текстом сохраняется подпись набора клиентов")
         _, page = self.c.get("/groups/g1?m=android")
         self.assertIn("Текст сохранён", page)
         self.assertRegex(page, r'<details open class="more"><summary>Android <span class="badge info">свой текст</span>')
@@ -584,6 +586,48 @@ class GroupsPagesTest(GroupWebBase):
         self.assertNotIn("messages", self.groups_json()[1])
         self.assertIn("Установите «Happ»", self.msg(self.c.get("/users/masha")[1]))
 
+    def test_group_text_warns_when_client_set_changed(self):
+        self.post("/groups/g1/message", {"platform": ["android"], "text": ["Мой {name}"]})
+        _, page = self.c.get("/groups/g1?m=android")
+        self.assertNotIn(clientviews.STALE, page)
+        self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"],
+                                 "client:android": ["amneziawg"]})
+        _, page = self.c.get("/groups/g1?m=android")
+        self.assertIn(clientviews.STALE, page)
+        self.assertIn("проверьте", page)
+        self.post("/groups/g1/message", {"platform": ["android"], "text": ["Мой {name}, новый"]})
+        self.assertNotIn(clientviews.STALE, self.c.get("/groups/g1?m=android")[1], "после сохранения подпись свежая")
+        # прежний формат (строка) — подписи нет, предупреждать не о чем
+        data = json.loads(paths.groups_file().read_text(encoding="utf-8"))
+        data["groups"][1]["messages"] = {"android": "Старый {name}"}
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        _, page = self.c.get("/groups/g1?m=android")
+        self.assertNotIn(clientviews.STALE, page)
+        self.assertIn("Старый {name}", page)
+        self.assertIsNone(groups.Groups.load().get("g1").msg_sigs.get("android"))
+
+    def test_person_with_other_protocols_gets_own_text_with_note(self):
+        g = groups.Groups.load().get("g1")
+        ctx = clientviews.Ctx.load()
+        groups.set_message("g1", "android", "Групповой {name}", ctx.group_sig(g, "android"))
+        g = groups.Groups.load().get("g1")
+        full = str(clientviews.connect_panel(clientviews.synth_links(["vless-reality", "amneziawg"]), "masha", ctx, g))
+        self.assertIn("Групповой masha", full)
+        self.assertNotIn(clientviews.MISMATCH, full)
+        # у человека свой набор протоколов: приложения другие — текст группы не про него
+        part = str(clientviews.connect_panel(clientviews.synth_links(["amneziawg"]), "kolya", ctx, g))
+        self.assertNotIn("Групповой", part)
+        self.assertIn(html.escape(clientviews.MISMATCH), part)
+        self.assertIn("kolya, VPN на Android", html.unescape(part))
+        # группа без своего текста, но человек с другими приложениями: тоже свой пакет с пометкой
+        groups.set_message("g1", "android", None)
+        g = groups.Groups.load().get("g1")
+        self.assertIn(html.escape(clientviews.MISMATCH),
+                      str(clientviews.connect_panel(clientviews.synth_links(["amneziawg"]), "kolya", ctx, g)))
+        self.assertNotIn(clientviews.MISMATCH,
+                         str(clientviews.connect_panel(clientviews.synth_links(["vless-reality", "amneziawg"]),
+                                                       "masha", ctx, g)))
+
     def test_message_equal_to_default_is_not_frozen(self):
         _, page = self.c.get("/groups/g1")
         default = html.unescape(re.search(r'<form[^>]*action="/groups/g1/message"[^>]*>.*?<textarea[^>]*>(.*?)</textarea>',
@@ -591,7 +635,7 @@ class GroupsPagesTest(GroupWebBase):
         self.post("/groups/g1/message", {"platform": ["android"], "text": [default]})
         self.assertNotIn("messages", self.groups_json()[1], "версии приложений в файл не замораживаем")
         self.post("/groups/g1/message", {"platform": ["android"], "text": [default + "\nP.S."]})
-        self.assertIn("P.S.", self.groups_json()[1]["messages"]["android"])
+        self.assertIn("P.S.", self.groups_json()[1]["messages"]["android"]["text"])
 
     def test_message_errors(self):
         for multi, why in (({"platform": ["plan9"], "text": ["x"]}, "неизвестная платформа"),
@@ -608,7 +652,7 @@ class GroupsPagesTest(GroupWebBase):
     def test_saving_group_settings_keeps_texts(self):
         self.post("/groups/g1/message", {"platform": ["android"], "text": ["Мой {name}"]})
         self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "client:android": ["happ"]})
-        self.assertEqual(self.groups_json()[1]["messages"], {"android": "Мой {name}"})
+        self.assertEqual(self.groups_json()[1]["messages"]["android"]["text"], "Мой {name}")
 
     def test_users_form_does_not_make_group_member_custom(self):
         # протоколы в форме отмечены как у группы — only не передаётся, пользователь не «свой»

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -111,6 +112,12 @@ class Link:
     label: str = ""
     proto_id: str = ""
     kind: str = "uri"
+
+    @property
+    def tag(self) -> str:
+        """Короткая метка ссылки для адреса QR: номер в списке сдвигается, когда список меняется между показом
+        страницы и запросом картинки, а метка — нет."""
+        return hashlib.sha1("|".join((self.proto_id, self.kind, self.uri)).encode("utf-8")).hexdigest()[:8]
 
     def to_dict(self) -> dict[str, str]:
         return {"proto": self.proto_id, "kind": self.kind, "label": self.label, "uri": self.uri}

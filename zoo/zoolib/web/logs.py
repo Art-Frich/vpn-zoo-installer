@@ -12,8 +12,9 @@ MASK = "•••"
 SECRET_KEY_RE = re.compile(r"(PASS|SECRET|TOKEN|KEY|PSK|UUID|PRIV|SALT|AUTH|PIN|SHORT_?ID|_SID$|_USER$|SUB_?PATH|PANEL_PATH)",
                            re.I)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-# QR из блочных символов (qrencode -t UTF8 в журнале установки): три строки подряд — уже ключ доступа
-_QR_RE = re.compile(r"(?:^(?=[ █▀▄]*[█▀▄])[ █▀▄]+(?:\n|\Z)){3,}", re.M)  # без двух * подряд: линейно
+# QR из блочных символов (qrencode -t UTF8 в журнале установки): прячем каждую строку отдельно, а не «три подряд»,
+# иначе строка поиска, край страницы или выгрузка по одной строке показали бы кусок QR
+_QR_RE = re.compile(r"^(?=[ ]*[█▀▄])[ █▀▄]{8,}(?=\r?$)", re.M)
 _PATTERNS = [
     # ссылки протоколов целиком: в них ключи и пароли
     (re.compile(r"\b(vless|vmess|trojan|ss|hysteria2|hy2|tuic|vpn|wireguard|awg)://[^\s\"'<>]+", re.I), r"\1://" + MASK),
@@ -38,7 +39,7 @@ def cleaner(cfg: Config | None = None) -> Callable[[str], str]:
 
     def clean(text: str) -> str:
         text = _ANSI_RE.sub("", text)
-        text = _QR_RE.sub("[QR скрыт]\n", text)
+        text = _QR_RE.sub("[QR скрыт]", text)
         for v in secrets:
             text = text.replace(v, MASK)
         for rx, repl in _PATTERNS:

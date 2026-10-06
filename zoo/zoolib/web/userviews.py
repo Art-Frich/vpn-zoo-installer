@@ -506,6 +506,11 @@ def _variant_label(link: protolib.Link, uri_n: int) -> tuple[str, str | None]:
     return ("Обычная" if uri_n == 1 else f"Запасная {uri_n}"), why
 
 
+def qr_url(name: str, idx: int, link: protolib.Link) -> str:
+    """Адрес QR ссылки: номер в списке и её метка (сдвиг списка → 404, а не чужой QR)."""
+    return f"/users/{name}/qr/{idx}?p={link.tag}"
+
+
 def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool) -> Markup:
     fname = Path(link.uri).name if link.kind == "file" else ""
     if link.kind == "file":
@@ -525,7 +530,7 @@ def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool) -
         qr_block = None
     else:
         # QR рисуется по требованию: app.js ставит src видимому варианту при открытии окна и смене вкладки
-        qr_block = t("img", class_="qr", data_src=f"/users/{name}/qr/{idx}", width=240, height=240, alt="QR")
+        qr_block = t("img", class_="qr", data_src=qr_url(name, idx, link), width=240, height=240, alt="QR")
     return t("div", qr_block, action, class_="variant", id=vid, hidden=hidden or None)
 
 
@@ -544,7 +549,7 @@ def quick_start(links: list[protolib.Link], name: str) -> Markup | None:
     idx, link = next(((i, l) for pid in (*prefer, "vless-reality") for i, l in cand if l.proto_id == pid), cand[0])
     all_uris = "\n".join(l.uri for l in links if l.kind == "uri")
     return t("div",
-             t("img", class_="qr", src=f"/users/{name}/qr/{idx}", width=160, height=160, alt="QR",
+             t("img", class_="qr", src=qr_url(name, idx, link), width=160, height=160, alt="QR",
                title=link.proto_id),
              t("div", t("h3", "Быстрый старт"), t("p", QUICK_CAPTION, class_="muted"),
                t("textarea", all_uris, id="copy-all", hidden=True, readonly=True),
@@ -623,8 +628,8 @@ def user_qr(app: "App", req: "Request", name: str, idx: str) -> "Response":
         return text("нет пользователя", 404)
     links, _ = _cached_links(app, name)
     i = int(idx)
-    if i >= len(links) or links[i].proto_id == allowlist.V2RAYN_PROTO:
-        return text("нет такого варианта", 404)
+    if i >= len(links) or links[i].proto_id == allowlist.V2RAYN_PROTO or links[i].tag != req.query.get("p", ""):
+        return text("нет такого варианта", 404)   # метка не сошлась: список ссылок изменился, страницу нужно обновить
     payload = _payload(links[i], name)
     if not payload:
         return text("QR для этого варианта не строится", 404)

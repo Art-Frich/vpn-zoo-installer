@@ -34,7 +34,8 @@ from pathlib import Path
 from typing import Any
 
 from . import config, manifests, output, paths, protolib, users
-from .fsutil import LockTimeout, atomic_write_json, file_lock
+from .fsutil import (NOFOLLOW, LockTimeout, UnsafePath, atomic_write_json, check_real_dirs, file_lock,
+                     open_append_nofollow, read_text_nofollow)
 
 JOB_TIMEOUT = 30 * 60
 KEEP_STATES = 20
@@ -165,7 +166,7 @@ def submit(proto: str, action: str) -> str:
 
 def _read(path: Path) -> dict[str, Any] | None:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text_nofollow(path))   # заявку кладёт админка: ссылку на чужой файл не читаем
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
@@ -385,7 +386,7 @@ def normalise_config_file() -> None:
 def _run_phase(phase: str, log: Path, extra_env: dict[str, str] | None = None) -> int:
     env = dict(os.environ, ZOO_CALLER="zoo-job", NO_COLOR="1", ZOO_COLOR="0", **(extra_env or {}))
     script = install_script()
-    with open(log, "ab") as f:
+    with open_append_nofollow(log) as f:
         f.write(f"$ install.sh --phase {phase}\n".encode())
         f.flush()
         try:
@@ -409,7 +410,7 @@ def _sync_users(log: Path) -> None:
         note = "zoo user sync: " + ("; ".join(bad) if bad else f"пользователей: {len(reps)}, готово")
     except Exception as e:  # sync не должен ронять исполнитель
         note = f"zoo user sync не выполнен: {e}"
-    with open(log, "ab") as f:
+    with open_append_nofollow(log) as f:
         f.write((note + "\n").encode())
 
 
@@ -426,7 +427,7 @@ def _run_one(req: Path) -> None:
         ctl = check(proto, action)
         st["name"] = ctl.name
         _write_state(jid, st)
-        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | NOFOLLOW, 0o600)
         os.close(fd)
         normalise_config_file()
         # ключ едет в окружении: install.sh сам сохранит его в config.env под своей блокировкой;
@@ -460,20 +461,30 @@ def _drain() -> None:
             d.update(status="fail", error="оборвана (перезагрузка или остановка юнита)", finished=int(time.time()))
             atomic_write_json(f, d, 0o600)
     for _ in range(50):
+        _check_dirs()
         reqs = sorted((f for f in jobs_dir().glob("*.json") if ID_RE.match(f.stem)), key=lambda f: f.stat().st_mtime)
         if not reqs:
             return
         _run_one(reqs[0])
 
 
+def _check_dirs() -> None:
+    check_real_dirs(paths.state_dir(), jobs_dir(), state_dir())
+
+
 def run_queue() -> int:
-    """Выполнить заявки по порядку; уже работающий исполнитель — выйти (он дочитает очередь)."""
-    jobs_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+    """Выполнить заявки по порядку; уже работающий исполнитель — выйти (он дочитает очередь).
+    Это root в каталоге, куда пишет админка: каталог заявок — ссылка → отказ, ничего не трогаем."""
     try:
-        with file_lock(jobs_dir() / "runner.lock", timeout=0):
+        _check_dirs()
+        jobs_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+        with file_lock(jobs_dir() / "runner.lock", timeout=0, nofollow=True):
             _drain()
     except LockTimeout:
         pass
+    except UnsafePath as e:
+        output.error(str(e))
+        return 1
     return 0
 
 

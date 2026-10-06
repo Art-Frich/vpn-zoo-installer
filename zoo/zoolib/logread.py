@@ -39,10 +39,14 @@ SEARCH_SECONDS = 8.0
 SCAN_ENTRIES = 300_000      # строк (записей) за один поиск
 SCAN_BYTES = 64 * 1024 * 1024
 HITS = (200, 500, 1000)
+UNIT_FIELDS = ("_SYSTEMD_UNIT", "UNIT", "OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT")
+JOURNAL_SRC = "journal:all"  # весь журнал без отбора по сервису: источник строки поиска, не нашедшей своего юнита
 SNIPPET = 600
 SPANS_MAX = 30
 RX_LINE = 1000              # строк длиннее regex видит только начало
 REPEAT_CAP = 50             # «неограниченным» считается повтор с верхней границей больше этой
+BIG_WEIGHT = 50             # во сколько раз неограниченный повтор «дороже» ограниченного
+COST_CAP = 10_000           # потолок: произведение вариантов × BIG_WEIGHT^неограниченных
 
 CURSOR_RE = re.compile(r"^s=[0-9a-f]+;i=[0-9a-f]+;b=[0-9a-f]+;m=[0-9a-f]+;t=([0-9a-f]+);x=[0-9a-f]+\Z")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log\Z")
@@ -110,12 +114,28 @@ def file_start(path: Path) -> float:
 
 # ---------- файлы ----------
 
+def _snap(f: Any, off: int, size: int) -> int:
+    """Начало строки, в которой лежит off: смещение из адресной строки может попасть в середину строки,
+    а обрывок без начала (хвост ключа, часть блока QR) маскировке не поддаётся."""
+    if off <= 0 or off >= size:
+        return max(0, min(off, size))
+    pos = off
+    while pos > 0 and off - pos < READ_MAX:
+        step = min(BLOCK, pos)
+        f.seek(pos - step)
+        i = f.read(step).rfind(b"\n")
+        if i >= 0:
+            return pos - step + i + 1
+        pos -= step
+    return pos
+
+
 def lines_before(path: Path, end: int | None, n: int) -> Chunk:
     """До n строк, что заканчиваются перед смещением end (None — конец файла). end — начало строки."""
     try:
         with open(path, "rb") as f:
             size = os.fstat(f.fileno()).st_size
-            end = size if end is None else max(0, min(end, size))
+            end = size if end is None else _snap(f, end, size)
             pos, buf, nl = end, b"", 0
             while pos > 0 and nl <= n and end - pos < READ_MAX:
                 step = min(BLOCK, pos)
@@ -147,7 +167,7 @@ def lines_from(path: Path, start: int, n: int) -> Chunk:
     try:
         with open(path, "rb") as f:
             size = os.fstat(f.fileno()).st_size
-            start = max(0, min(start, size))
+            start = _snap(f, start, size)
             f.seek(start)
             off, out = start, []
             while len(out) < n:
@@ -164,8 +184,9 @@ def lines_from(path: Path, start: int, n: int) -> Chunk:
 def file_around(path: Path, at: int, n: int) -> Chunk:
     """Окно вокруг строки со смещением at: примерно n/2 строк до и после."""
     half = max(1, n // 2)
-    before = lines_before(path, at, half)
     after = lines_from(path, at, half + 1)
+    at = int(after.lines[0].tok) if after.lines else at
+    before = lines_before(path, at, half)
     return Chunk(before.lines + after.lines, before.older if before.lines else (str(at) if at > 0 else None),
                  after.newer, after.tip)
 
@@ -289,6 +310,11 @@ def check_unit(unit: str) -> str:
     return unit
 
 
+def _u(unit: str | None) -> list[str]:
+    """Отбор journalctl по сервису; None — весь журнал (запись не принадлежит ни одному известному сервису)."""
+    return [] if unit is None else ["-u", check_unit(unit)]
+
+
 def _jlines(args: list[str], n: int, *, drop: str | None = None, newest_first: bool,
             upto: float | None = None) -> tuple[list[Line], bool]:
     """Прочитать до n записей (+1, чтобы знать, есть ли ещё). → (строки в хронологии, есть ли ещё)."""
@@ -307,28 +333,28 @@ def _jlines(args: list[str], n: int, *, drop: str | None = None, newest_first: b
     return (out[::-1] if newest_first else out), more
 
 
-def journal_tail(unit: str, n: int) -> Chunk:
-    lines, more = _jlines(["-u", check_unit(unit), "-r", "-n", str(n + 3)], n, newest_first=True)
+def journal_tail(unit: str | None, n: int) -> Chunk:
+    lines, more = _jlines([*_u(unit), "-r", "-n", str(n + 3)], n, newest_first=True)
     return Chunk(lines, lines[0].tok if lines and more else None, None, lines[-1].tok if lines else "")
 
 
-def journal_before(unit: str, cursor: str, n: int, include: bool = False) -> Chunk:
+def journal_before(unit: str | None, cursor: str, n: int, include: bool = False) -> Chunk:
     """Записи раньше курсора (include — вместе с ним)."""
     check_cursor(cursor)
-    lines, more = _jlines(["-u", check_unit(unit), "-r", "-n", str(n + 3), "--cursor", cursor], n,
+    lines, more = _jlines([*_u(unit), "-r", "-n", str(n + 3), "--cursor", cursor], n,
                           drop=None if include else cursor, newest_first=True, upto=cursor_ts(cursor))
     tip = lines[-1].tok if lines else cursor
     return Chunk(lines, lines[0].tok if lines and more else None, tip, tip)
 
 
-def journal_after(unit: str, cursor: str, n: int) -> Chunk:
+def journal_after(unit: str | None, cursor: str, n: int) -> Chunk:
     check_cursor(cursor)
-    lines, more = _jlines(["-u", check_unit(unit), "--after-cursor", cursor, "-n", str(n + 3)], n, newest_first=False)
+    lines, more = _jlines([*_u(unit), "--after-cursor", cursor, "-n", str(n + 3)], n, newest_first=False)
     tip = lines[-1].tok if lines else cursor
     return Chunk(lines, None, tip if more else None, tip)
 
 
-def journal_around(unit: str, cursor: str, n: int) -> Chunk:
+def journal_around(unit: str | None, cursor: str, n: int) -> Chunk:
     half = max(1, n // 2)
     before = journal_before(unit, cursor, half + 1, include=True)
     after = journal_after(unit, cursor, half)
@@ -338,7 +364,8 @@ def journal_around(unit: str, cursor: str, n: int) -> Chunk:
 # ---------- страница: единая точка входа ----------
 
 def view(kind: str, name: str, *, before: str = "", after: str = "", at: str = "", n: int = CHUNK) -> Chunk:
-    """Страница лога. Без токенов — конец (живой хвост); before — раньше токена; after — позже; at — вокруг строки."""
+    """Страница лога. Без токенов — конец (живой хвост); before — раньше токена; after — позже; at — вокруг строки.
+    kind: file | unit | journal (весь журнал, name не используется)."""
     n = max(20, min(CHUNK_MAX, n))
     if kind == "file":
         path = file_path(name)
@@ -349,14 +376,15 @@ def view(kind: str, name: str, *, before: str = "", after: str = "", at: str = "
         if at:
             return file_around(path, _off(at), n)
         return file_tail(path, n)
-    if kind == "unit":
+    if kind in ("unit", "journal"):
+        unit = name if kind == "unit" else None
         if before:
-            return journal_before(name, before, n)
+            return journal_before(unit, before, n)
         if after:
-            return journal_after(name, after, n)
+            return journal_after(unit, after, n)
         if at:
-            return journal_around(name, at, n)
-        return journal_tail(name, n)
+            return journal_around(unit, at, n)
+        return journal_tail(unit, n)
     raise LogError("неизвестный источник")
 
 
@@ -372,8 +400,8 @@ def export(kind: str, name: str) -> list[Line]:
         lines = lines_before(file_path(name), None, EXPORT_LINES).lines
     else:
         lines = []
-        for e in journal_entries(["-u", check_unit(name), "-r", "-n", str(EXPORT_LINES)], max_entries=EXPORT_LINES,
-                                 max_bytes=EXPORT_BYTES):
+        for e in journal_entries([*_u(name if kind == "unit" else None), "-r", "-n", str(EXPORT_LINES)],
+                                 max_entries=EXPORT_LINES, max_bytes=EXPORT_BYTES):
             lines.append(entry_line(e))
         lines.reverse()
     total, keep = 0, []
@@ -387,41 +415,57 @@ def export(kind: str, name: str) -> list[Line]:
 
 # ---------- поиск ----------
 
-def _walk(p: Any, unbounded: bool = False, wide: list[int] | None = None) -> None:
-    """Отказ шаблонам, на которых re уходит в экспоненту или в степень: вложенные повторы, обратные ссылки,
-    развилки внутри повтора, больше двух «широких» повторов (.* и т. п.). re не прерывается по времени,
-    а зависший поиск остановил бы всю админку, поэтому проверка до запуска, а строки обрезаны до RX_LINE."""
-    wide = wide if wide is not None else [0]
+class _Cost:
+    """Накопленная «цена» шаблона: широкие повторы и произведение вариантов ограниченных."""
+    __slots__ = ("big", "ways")
+
+    def __init__(self) -> None:
+        self.big = 0
+        self.ways = 1
+
+
+def _walk(p: Any, cost: _Cost, mult: int = 1, inf: bool = False) -> None:
+    """Отказ шаблонам, на которых re уходит в экспоненту или в степень. re не прерывается по времени,
+    а зависший поиск остановил бы всю админку, поэтому проверка до запуска, а строки обрезаны до RX_LINE.
+    Считаем любой повтор с верхней границей больше REPEAT_CAP (не важно, что повторяется), вложенные
+    «переменные» повторы и произведение вариантов ограниченных повторов — по всему шаблону.
+    mult — во сколько раз самое большее повторяется объемлющее, inf — объемлющий повтор не ограничен."""
     for op, av in p:
         name = str(op)
         if name in ("GROUPREF", "GROUPREF_EXISTS"):
             raise LogError("обратные ссылки в шаблоне не поддерживаются")
         if name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
-            _lo, hi, sub = av
+            lo, hi, sub = av
             big = hi > REPEAT_CAP
-            if big and unbounded:
-                raise LogError("вложенные повторы (например, (a+)+) не поддерживаются")
-            if big and any(str(o) == "ANY" or (str(o) == "IN" and any(str(x) in ("NEGATE", "CATEGORY") for x, _ in a))
-                           for o, a in sub):
-                wide[0] += 1
-                if wide[0] > 2:
-                    raise LogError("слишком много «.*» в выражении — уточните")
-            _walk(sub, unbounded or big, wide)
+            if hi > lo:
+                if inf or mult > 1:
+                    if big or inf:
+                        raise LogError("вложенные повторы (например, (a+)+) не поддерживаются")
+                    if mult > 64:
+                        raise LogError("слишком сложные вложенные повторы — упростите")
+                    cost.ways *= (hi - lo + 1) ** mult
+                elif big:
+                    cost.big += 1
+                    if cost.big > 2:
+                        raise LogError("слишком много «.*» и других неограниченных повторов — уточните")
+                else:
+                    cost.ways *= hi - lo + 1
+            _walk(sub, cost, mult * hi if hi > 1 else mult, inf or (big and hi > lo))
         elif name == "SUBPATTERN":
-            _walk(av[-1], unbounded, wide)
+            _walk(av[-1], cost, mult, inf)
         elif name == "BRANCH":
             alts = av[1]
-            if unbounded:
+            if inf or mult > 8:
                 first = [alt[0] for alt in alts if len(alt)]
                 distinct = len({a for _, a in first}) == len(first)
                 if len(first) != len(alts) or not distinct or any(str(o) != "LITERAL" for o, _ in first):
                     raise LogError("«или» внутри повтора не поддерживается — вынесите его или используйте [ab]")
             for alt in alts:
-                _walk(alt, unbounded, wide)
+                _walk(alt, cost, mult, inf)
         elif name in ("ASSERT", "ASSERT_NOT"):
-            _walk(av[-1], unbounded, wide)
+            _walk(av[-1], cost, mult, inf)
         elif name == "ATOMIC_GROUP":
-            _walk(av, unbounded, wide)
+            _walk(av, cost, mult, inf)
 
 
 @dataclass(frozen=True)
@@ -442,7 +486,10 @@ def compile_query(text: str, regex: bool = False, ci: bool = True) -> Query:
     if not regex:
         return Query(re.compile(re.escape(text), flags), False, None)
     try:
-        _walk(_sre.parse(text, flags))
+        cost = _Cost()
+        _walk(_sre.parse(text, flags), cost)
+        if cost.ways * BIG_WEIGHT ** cost.big > COST_CAP:
+            raise LogError("выражение слишком сложное — упростите")
         rx = re.compile(text, flags)
     except re.error as e:
         raise LogError(f"ошибка в выражении: {e}") from None
@@ -490,7 +537,7 @@ class Budget:
             self.stopped = self.stopped or "entries"
         elif self.size <= 0:
             self.stopped = self.stopped or "bytes"
-        elif self.scanned % 512 == 0 and time.monotonic() > self.deadline:
+        elif self.scanned % 8 == 0 and time.monotonic() > self.deadline:
             self.stopped = self.stopped or "time"
         return not self.stopped
 
@@ -581,7 +628,7 @@ def search_journal(units: list[str], q: Query, clean: Callable[[str], str], budg
     state: dict[str, Any] = {}
     n = 0
     try:
-        for e in journal_entries(args, "MESSAGE,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,UNIT", seconds=budget.left,
+        for e in journal_entries(args, "MESSAGE,SYSLOG_IDENTIFIER," + ",".join(UNIT_FIELDS), seconds=budget.left,
                                  state=state):
             body = entry_body(e)
             if not budget.spend(len(body)):
@@ -589,8 +636,10 @@ def search_journal(units: list[str], q: Query, clean: Callable[[str], str], budg
             ts = entry_ts(e)
             if ts is not None and ((since is not None and ts < since) or (until is not None and ts > until + 1)):
                 continue
-            unit = next((u for u in (_field(e, "UNIT"), _field(e, "_SYSTEMD_UNIT")) if u in known), "")
-            hit = _make_hit(f"unit:{unit or units[0]}", ts, _field(e, "__CURSOR"), body, q, clean, prefilter)
+            # journalctl -u находит и записи PID 1 про юнит (UNIT), и про чужой юнит (OBJECT_SYSTEMD_UNIT), и
+            # coredump (COREDUMP_UNIT); не нашли ни одного известного — не выдаём чужой юнит за источник
+            unit = next((v for v in (_field(e, f) for f in UNIT_FIELDS) if v in known), "")
+            hit = _make_hit(f"unit:{unit}" if unit else JOURNAL_SRC, ts, _field(e, "__CURSOR"), body, q, clean, prefilter)
             if hit:
                 out.hits.append(hit)
                 n += 1

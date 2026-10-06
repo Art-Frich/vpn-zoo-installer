@@ -607,12 +607,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-NO_CONFIG_COMMANDS = {"version"}
+NO_ROOT_COMMANDS = {"version"}
+# не читают config.env: их запускают юниты по заявкам админки (clients/logs/live), и битый config.env
+# не должен оставить заявку, по которой .path-юнит гонял бы сервис по кругу
+NO_CONFIG_COMMANDS = NO_ROOT_COMMANDS | {"clients", "logs", "live"}
 
 
 def _need_root(command: str) -> str | None:
     """Сообщение об ошибке, если без root команда не прочитает /etc/vpn-setup."""
-    if command in NO_CONFIG_COMMANDS or not hasattr(os, "geteuid") or os.geteuid() == 0:
+    if command in NO_ROOT_COMMANDS or not hasattr(os, "geteuid") or os.geteuid() == 0:
         return None
     etc = paths.etc()
     if etc.exists() and not os.access(etc, os.R_OK | os.X_OK):

@@ -5,7 +5,8 @@
     {"schema": 1, "groups": [{"id": "main", "name": "Основная",
                               "protocols": ["*"] | [id, ...],          "*" — все включённые
                               "clients": {"android": ["happ", "amneziawg"], ...},   платформа → набор клиентов
-                              "messages": {"android": "текст с {name}", ...},   свой текст инструкции (нет — по умолчанию)
+                              "messages": {"android": {"text": "текст с {name}", "sig": "…"}, ...},   свой текст инструкции
+                                                  (нет — по умолчанию; sig — подпись набора клиентов, строка — старый формат)
                               "allowlist": null | {"android": [...], "windows": [...]}}]}
 
 allowlist null — группа на общем списке приложений (zoo allow), иначе свой список группы.
@@ -80,6 +81,7 @@ class Group:
     clients: dict[str, list[str]] = field(default_factory=dict)
     allowlist: dict[str, list[str]] | None = None
     messages: dict[str, str] = field(default_factory=dict)
+    msg_sigs: dict[str, str] = field(default_factory=dict)   # подпись набора клиентов на момент сохранения текста
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Group":
@@ -87,21 +89,28 @@ class Group:
         own = ({p: allowlist._clean(raw_al.get(p), p) for p in allowlist.PLATFORMS}
                if isinstance(raw_al, dict) else None)
         raw_cl = d.get("clients")
+        msgs: dict[str, str] = {}
+        sigs: dict[str, str] = {}
         raw_msg = d.get("messages")
+        for k, v in (raw_msg.items() if isinstance(raw_msg, dict) else ()):
+            body, sig = (v.get("text"), v.get("sig")) if isinstance(v, dict) else (v, None)  # строка — прежний формат
+            if isinstance(body, str) and (m := clean_message(body)[:MESSAGE_MAX]):
+                msgs[str(k)[:20]] = m
+                if isinstance(sig, str) and sig:
+                    sigs[str(k)[:20]] = sig[:40]
         return cls(
             id=str(d["id"]), name=str(d.get("name") or d["id"]),
             protocols=[str(x) for x in d.get("protocols", [ALL])] or [ALL],
             clients={str(k): ids for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())
                      if (ids := client_ids(v))},
             allowlist=own if own and all(own.values()) else None,
-            messages={str(k)[:20]: m for k, v in (raw_msg.items() if isinstance(raw_msg, dict) else ())
-                      if isinstance(v, str) and (m := clean_message(v)[:MESSAGE_MAX])})
+            messages=msgs, msg_sigs=sigs)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.id, "name": self.name, "protocols": list(self.protocols),
                                "clients": {k: list(v) for k, v in self.clients.items()}, "allowlist": self.allowlist}
         if self.messages:
-            out["messages"] = dict(self.messages)
+            out["messages"] = {k: {"text": m, "sig": self.msg_sigs.get(k)} for k, m in self.messages.items()}
         return out
 
     @property
@@ -568,9 +577,10 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         return rep
 
 
-def set_message(ref: str, platform: str, text: str | None) -> Group:
+def set_message(ref: str, platform: str, text: str | None, sig: str | None = None) -> Group:
     """Свой текст инструкции группы для платформы; пустой или None — вернуть текст по умолчанию.
-    Участников не трогает: текст читают страницы при показе."""
+    sig — подпись набора клиентов группы на эту платформу: по ней страница заметит, что набор сменился
+    и текст мог устареть. Участников не трогает: текст читают страницы при показе."""
     try:
         cat = clientcat.load()
     except clientcat.ClientsError as e:
@@ -585,8 +595,13 @@ def set_message(ref: str, platform: str, text: str | None) -> Group:
         g = gs.require(ref)
         if msg:
             g.messages[platform] = msg
+            if sig:
+                g.msg_sigs[platform] = sig[:40]
+            else:
+                g.msg_sigs.pop(platform, None)
         else:
             g.messages.pop(platform, None)
+            g.msg_sigs.pop(platform, None)
         gs.save()
         return g
 

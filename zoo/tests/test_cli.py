@@ -47,6 +47,35 @@ class CliBasicsTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("components", json.loads(out))
 
+    def test_request_commands_run_with_broken_config_and_clear_requests(self):
+        # битый config.env не должен оставлять заявку: .path-юнит гонял бы сервис по кругу
+        from zoolib import clients, logctl
+        from zoolib.probe import live
+        with ZooEnv():
+            boom = mock.patch("zoolib.cli.load_config", side_effect=config.ConfigError("битый config.env"))
+            with boom:
+                code, _, err = run_cli("version")
+                self.assertEqual(code, 0)
+                self.assertTrue(clients.request_check()[0])
+                self.assertTrue(clients.req_file().exists())
+                with mock.patch.object(clients, "check_upstream", return_value={"errors": {}}):
+                    code, _, err = run_cli("clients", "--check-upstream")
+                self.assertEqual(code, 0, err)
+                self.assertFalse(clients.req_file().exists())
+                rid = logctl.submit("vacuum-time", "7d")
+                with mock.patch.object(logctl, "vacuum", return_value={"freed": 0, "before": 0, "after": 0}):
+                    code, _, err = run_cli("logs", "run")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(logctl.pending(), [])
+                self.assertEqual(logctl.states()[0]["id"], rid)
+                with mock.patch.object(live, "run", return_value=[]) as run:
+                    code, _, err = run_cli("live", "run", "--requests")
+                self.assertEqual(code, 0, err)
+                run.assert_called_once()
+                code, _, err = run_cli("traffic")
+                self.assertEqual(code, 1, "остальным командам config.env по-прежнему нужен")
+                self.assertIn("битый config.env", err)
+
     def test_no_command(self):
         code, out, _ = run_cli()
         self.assertEqual(code, cli.EXIT_USAGE)

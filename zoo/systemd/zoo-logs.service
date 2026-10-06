@@ -14,3 +14,9 @@ Nice=10
 UMask=0077
 PrivateTmp=yes
 ProtectHome=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+# root, но писать ему нужно только в каталог заявок и в журнал (journalctl --rotate/--vacuum); «-» — каталога
+# может не быть (volatile-журнал). Остальное читается, не пишется.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vpn-zoo -/var/log/journal -/run/log/journal -/var/log/vpn-zoo
