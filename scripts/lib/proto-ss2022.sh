@@ -155,6 +155,7 @@ proto_ss2022_manifest_refresh() {
         --argjson ibid "$id" --arg tag "$(jq -r '.tag' <<< "$ib")" '{
         id: "ss2022",
         name: "Shadowsocks-2022 (2022-blake3-aes-128-gcm)",
+        short: "Shadowsocks-2022",
         layer: "tcp",
         port: $port,
         transports: ["tcp", "udp"],

@@ -15,6 +15,9 @@
 только внутри одного контекста (мобильная сеть и домашний Wi-Fi не смешиваются). Нет данных об
 одной из метрик — оценка по другой; нет обеих — множитель 0,5. Протокол, который ни разу не
 сработал, получает 0. Меньше 3 прогонов — «мало данных» (низкая уверенность), меньше 10 — средняя.
+
+Блок (контекст), где отчётов меньше 3, не ранжируется: один замер — шум, а не рейтинг (ranked=False,
+top пуст). Разброс — квартили p25–p75 по удачным прогонам, считаются от 3 замеров.
 """
 
 from __future__ import annotations
@@ -47,6 +50,18 @@ def _median(xs: list[float]) -> float | None:
     return statistics.median(xs) if xs else None
 
 
+def _spread(xs: list[float]) -> tuple[float | None, float | None]:
+    """(p25, p75) от LOW_SAMPLES замеров; меньше — разброс не показываем."""
+    if len(xs) < LOW_SAMPLES:
+        return None, None
+    q = statistics.quantiles(xs, n=4, method="inclusive")
+    return q[0], q[2]
+
+
+def _r(v: float | None, nd: int) -> float | None:
+    return None if v is None else round(v, nd)
+
+
 def rank_context(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """rows — строки одного контекста. → протоколы, лучшие первыми."""
     per: dict[str, list[dict[str, Any]]] = {}
@@ -57,11 +72,13 @@ def rank_context(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     stats = []
     for proto, rs in per.items():
         good = [r for r in rs if r["verdict"] in verdicts.WORKING]
-        lat = _median([r["latency_ms"] for r in good if r.get("latency_ms")])
-        down = _median([r["down_mbps"] for r in good if r.get("down_mbps")])
+        lats = [r["latency_ms"] for r in good if r.get("latency_ms")]
+        downs = [r["down_mbps"] for r in good if r.get("down_mbps")]
+        lat, down = _median(lats), _median(downs)
+        (lat_lo, lat_hi), (down_lo, down_hi) = _spread(lats), _spread(downs)
         stats.append({"proto": proto, "n": len(rs), "ok": len(good), "success_pct": round(100 * len(good) / len(rs), 1),
-                      "latency_ms": None if lat is None else round(lat, 1),
-                      "down_mbps": None if down is None else round(down, 2),
+                      "latency_ms": _r(lat, 1), "latency_p25": _r(lat_lo, 1), "latency_p75": _r(lat_hi, 1),
+                      "down_mbps": _r(down, 2), "down_p25": _r(down_lo, 2), "down_p75": _r(down_hi, 2),
                       "confidence": confidence(len(rs)), "last": [r["verdict"] for r in rs[-8:]]})
     best_down = max((s["down_mbps"] for s in stats if s["down_mbps"]), default=None)
     best_lat = min((s["latency_ms"] for s in stats if s["latency_ms"]), default=None)
@@ -88,10 +105,12 @@ def rank(rows: list[dict[str, Any]], by: str = "context", top: int = 3) -> list[
         if not protos:
             continue
         reports = len({r["report_id"] for r in rs})
-        out.append({"context": name, "reports": reports,
+        ranked = reports >= LOW_SAMPLES
+        out.append({"context": name, "reports": reports, "ranked": ranked,
                     "devices": sorted({r["device"] for r in rs if r.get("device")}),
                     "isps": sorted({r["isp"] for r in rs if r.get("isp")}),
-                    "top": [p for p in protos if p["ok"]][:top], "protocols": protos})
+                    "top": [p for p in protos if p["ok"] and p["n"] >= LOW_SAMPLES][:top] if ranked else [],
+                    "protocols": protos})
     return sorted(out, key=lambda c: (-c["reports"], c["context"]))
 
 
@@ -113,7 +132,29 @@ def load(period: str | None = "30d", tag: str | None = None, with_local: bool = 
 # ---------- вывод ----------
 
 FORMULA = ("оценка = 100 × успех × (0,6 × скорость/лучшая + 0,4 × лучшая задержка/задержка); "
-           "лучшие — внутри контекста, поэтому оценки сравнимы только в его пределах")
+           "лучшие — внутри контекста, поэтому оценки сравнимы только в его пределах; "
+           "задержка и скорость — медианы по удачным прогонам, в скобках разброс p25–p75 (от 3 замеров); "
+           "места — от 3 прогонов в контексте и от 3 замеров протокола")
+
+
+def plural_runs(n: int) -> str:
+    """«1 замер», «2 замера», «5 замеров»."""
+    word = "замер" if n % 10 == 1 and n % 100 != 11 else (
+        "замера" if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else "замеров")
+    return f"{n} {word}"
+
+
+def spread_text(p: dict[str, Any], metric: str, fmt: str, unit: str) -> str:
+    """metric: latency | down. «95 мс (80–130)»; нет данных — «—»; без разброса (мало замеров) — медиана."""
+    v = p.get("latency_ms" if metric == "latency" else "down_mbps")
+    if v is None:
+        return "—"
+    lo, hi = p.get(f"{metric}_p25"), p.get(f"{metric}_p75")
+    text = format(v, fmt) + unit
+    if lo is None or hi is None or format(lo, fmt) == format(hi, fmt):
+        return text
+    return f"{text} ({format(lo, fmt)}–{format(hi, fmt)})"
+
 
 
 def render(ranking: list[dict[str, Any]], period: str | None) -> None:
@@ -128,12 +169,18 @@ def render(ranking: list[dict[str, Any]], period: str | None) -> None:
         print()
         print(f"== {c['context']} — прогонов: {c['reports']}" + (f" ({'; '.join(extra)})" if extra else "") + " ==")
         rows = []
-        for i, p in enumerate(c["protocols"], 1):
-            mark = "мало данных" if p["low_confidence"] else ""
-            rows.append([i if p in c["top"] else "—", p["proto"], f"{p['score']:.0f}",
-                         f"{p['success_pct']:.0f}% ({p['ok']}/{p['n']})",
-                         "—" if p["latency_ms"] is None else f"{p['latency_ms']:.0f}",
-                         "—" if p["down_mbps"] is None else f"{p['down_mbps']:.1f}", mark])
+        if not c["ranked"]:
+            print(f"{plural_runs(c['reports'])} — ориентир, не рейтинг (мало данных)")
+            for p in c["protocols"]:
+                rows.append([p["proto"], f"{p['success_pct']:.0f}% ({p['ok']}/{p['n']})",
+                             spread_text(p, "latency", ".0f", ""), spread_text(p, "down", ".1f", "")])
+            print(output.table(rows, ["протокол", "успех", "задержка, мс", "скорость, Мбит/с"], right=(2, 3)))
+            continue
+        for p in c["protocols"]:
+            place = c["top"].index(p) + 1 if p in c["top"] else ""
+            rows.append([place, p["proto"], f"{p['score']:.0f}", f"{p['success_pct']:.0f}% ({p['ok']}/{p['n']})",
+                         spread_text(p, "latency", ".0f", ""), spread_text(p, "down", ".1f", ""),
+                         "мало замеров" if p["low_confidence"] else ""])
         print(output.table(rows, ["место", "протокол", "оценка", "успех", "задержка, мс", "скорость, Мбит/с", ""],
                            right=(2, 4, 5)))
     print()

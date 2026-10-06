@@ -88,6 +88,7 @@ research/YYYY-MM-DD/          исследования
 {
   "id": "vless-reality",
   "name": "VLESS + REALITY + Vision",
+  "short": "VLESS Vision",
   "layer": "tcp",
   "port": 443,
   "engine": "xray",
