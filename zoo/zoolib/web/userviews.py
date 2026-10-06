@@ -14,6 +14,7 @@ from ..fsutil import LockTimeout
 from ..output import human_bytes
 from ..probe import rank
 from . import charts, clientviews
+from . import table as tbl
 from .html import Markup, badge, card, csrf_input, join, kv, post_button, t, table
 from .views import (ago, alert_list, chart_block, fmt_time, get_period, no_history_hint, page_head,
                     period_selector)
@@ -84,35 +85,64 @@ def _proto_chip(u: users.User, managed: list[str]) -> Markup:
     return t("span", f"нет: {shown}", class_="chip warn", title=f"{len(have)}/{len(managed)}; нет в: {', '.join(missing)}")
 
 
+def _users_spec(csrf: str, managed: list[str], mx: int) -> tbl.Spec:
+    def name_cell(r: dict[str, Any]) -> Markup:
+        u = r["user"]
+        return t("span", t("a", t("strong", u.name), href=f"/users/{u.name}"), " " if not u.enabled else None,
+                 badge("откл.", "muted") if not u.enabled else None,
+                 t("span", u.note, class_="sub") if u.note else None)
+
+    def toggle(r: dict[str, Any]) -> Markup:
+        u = r["user"]
+        return post_button(f"/users/{u.name}/{'disable' if u.enabled else 'enable'}",
+                           "Отключить" if u.enabled else "Включить", csrf, "btn small", {"back": "/users"},
+                           confirm=_disable_confirm(u.name) if u.enabled else None)
+
+    cols = [
+        tbl.Col("name", "пользователь", cell=name_cell, value=lambda r: r["name"], find=lambda r: r["user"].note,
+                sort=True, search=True),
+        tbl.Col("access", "доступ", sort=True, chip=True, hidden=True),
+        tbl.Col("protos", "протоколы", cell=lambda r: _proto_chip(r["user"], managed),
+                value=lambda r: ", ".join(r["user"].protocols), secondary=True),
+        tbl.Col("day", "24 ч", cell=lambda r: human_bytes(r["day"]), value=lambda r: r["day"], num=True, sort=True,
+                first_desc=True),
+        tbl.Col("bar", "", cell=lambda r: charts.bar(r["day"], mx), secondary=True, export=False),
+        tbl.Col("month", "30 дней", cell=lambda r: human_bytes(r["month"]), value=lambda r: r["month"], num=True,
+                sort=True, secondary=True),
+        tbl.Col("seen", "активность", cell=lambda r: t("span", ago(r["seen"]), class_="nowrap"),
+                value=lambda r: fmt_time(r["seen"]) if r["seen"] else "", num=True, left=True, sort=True,
+                first_desc=True, secondary=True),
+        tbl.Col("act", "", cell=toggle, export=False),
+    ]
+    return tbl.Spec(path="/users", cols=cols, sort="name", id_key="name", paged=False, empty="пользователей нет",
+                    placeholder="имя или заметка", href=lambda r: f"/users/{r['name']}",
+                    row_cls=lambda r: None if r["user"].enabled else "off", name="users")
+
+
+def _user_rows(shown: list[users.User]) -> list[dict[str, Any]]:
+    day = {r["key"]: r["total"] for r in traffic.report(period="24h", by="user")["rows"]}
+    month = {r["key"]: r["total"] for r in traffic.report(period="30d", by="user")["rows"]}
+    seen = traffic.last_seen()
+    return [{"name": u.name, "user": u, "access": "включён" if u.enabled else "отключён", "day": day.get(u.name, 0),
+             "month": month.get(u.name, 0), "seen": seen.get(u.name)} for u in shown]
+
+
 def users_list(app: "App", req: "Request") -> "Response":
     csrf = req.session.csrf if req.session else ""
     reg = users.list_users()
     managed, skipped = users.managed_protocols()
-    day = {r["key"]: r["total"] for r in traffic.report(period="24h", by="user")["rows"]}
-    month = {r["key"]: r["total"] for r in traffic.report(period="30d", by="user")["rows"]}
-    seen = traffic.last_seen()
-    mx = max(day.values(), default=0)
-    rows, row_cls = [], []
     shown = reg.visible()
-    for u in shown:
-        toggle = post_button(f"/users/{u.name}/{'disable' if u.enabled else 'enable'}",
-                             "Отключить" if u.enabled else "Включить", csrf, "btn small",
-                             {"back": "/users"}, confirm=_disable_confirm(u.name) if u.enabled else None)
-        rows.append([
-            t("span", t("a", t("strong", u.name), href=f"/users/{u.name}"), " " if not u.enabled else None,
-              badge("откл.", "muted") if not u.enabled else None,
-              t("span", u.note, class_="sub") if u.note else None),
-            _proto_chip(u, managed),
-            human_bytes(day.get(u.name, 0)), charts.bar(day.get(u.name, 0), mx),
-            human_bytes(month.get(u.name, 0)), t("span", ago(seen.get(u.name)), class_="nowrap"),
-            toggle,
-        ])
-        row_cls.append(None if u.enabled else "off")
-    tbl = table(["пользователь", "протоколы", "24 ч", "", "30 дней", "активность", ""], rows,
-                num=[2, 4], empty="пользователей нет", stack=True, row_cls=row_cls)
+    rows = _user_rows(shown)
+    spec = _users_spec(csrf, managed, max((r["day"] for r in rows), default=0))
+    ex = tbl.memory_export(spec, req.query, rows)
+    if ex is not None:
+        return ex
+    opts = tbl.options_from_rows(spec, rows)
+    st = tbl.parse(spec, req.query, opts)
+    tbl_html = tbl.render(spec, st, tbl.memory_page(spec, st, rows, opts))
     if not reg.exists:
-        tbl = join(alert_list([("warn", "Реестра users.json ещё нет: он создастся при первом изменении "
-                                         "(или фазой 09).")]), tbl)
+        tbl_html = join(alert_list([("warn", "Реестра users.json ещё нет: он создастся при первом изменении "
+                                             "(или фазой 09).")]), tbl_html)
     protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=True), p) for p in managed]
     add_form = t("form", csrf_input(csrf),
                  t("div",
@@ -138,7 +168,7 @@ def users_list(app: "App", req: "Request") -> "Response":
     parts: list[Any] = [page_head("Пользователи", f"{sum(u.enabled for u in shown)}/{len(shown)} включено", head_actions)]
     if verify:
         parts.append(verify)
-    parts.append(card("Список", tbl))
+    parts.append(card("Список", tbl_html))
     parts.append(t("details", t("summary", "＋ Добавить пользователя"), add_form, class_="card more"))
     notes = [t("span", f"не участвует: {k}", class_="chip", title=v) for k, v in skipped.items()]
     notes += [t("a", f"служебный: {u.name}", href=f"/users/{u.name}", class_="chip",
