@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 import re
-from pathlib import Path
+from typing import Callable
 
+from .. import logread
 from ..config import Config
-from ..system import run
 
 MASK = "•••"
 SECRET_KEY_RE = re.compile(r"(PASS|SECRET|TOKEN|KEY|PSK|UUID|PRIV|SALT|AUTH|PIN|SHORT_?ID|_SID$|_USER$|SUB_?PATH|PANEL_PATH)",
@@ -33,47 +32,24 @@ def secret_values(cfg: Config) -> list[str]:
     return sorted(vals, key=len, reverse=True)
 
 
+def cleaner(cfg: Config | None = None) -> Callable[[str], str]:
+    """sanitize с заранее собранными секретами config.env: для поиска по сотням тысяч строк."""
+    secrets = secret_values(cfg) if cfg else []
+
+    def clean(text: str) -> str:
+        text = _ANSI_RE.sub("", text)
+        text = _QR_RE.sub("[QR скрыт]\n", text)
+        for v in secrets:
+            text = text.replace(v, MASK)
+        for rx, repl in _PATTERNS:
+            text = rx.sub(repl, text)
+        return text
+    return clean
+
+
 def sanitize(text: str, cfg: Config | None = None) -> str:
-    text = _ANSI_RE.sub("", text)
-    text = _QR_RE.sub("[QR скрыт]\n", text)
-    for v in secret_values(cfg) if cfg else ():
-        text = text.replace(v, MASK)
-    for rx, repl in _PATTERNS:
-        text = rx.sub(repl, text)
-    return text
+    return cleaner(cfg)(text)
 
 
-def log_dir() -> Path:
-    return Path(os.environ.get("LOG_DIR", "/var/log/vpn-zoo"))
-
-
-def log_files(limit: int = 30) -> list[Path]:
-    d = log_dir()
-    try:
-        files = [f for f in d.iterdir() if f.is_file() and f.suffix == ".log"]
-    except OSError:
-        return []
-    return sorted(files, key=lambda f: f.stat().st_mtime, reverse=True)[:limit]
-
-
-def tail_file(path: Path, lines: int = 400, max_bytes: int = 512 * 1024) -> str:
-    try:
-        with open(path, "rb") as f:
-            f.seek(0, os.SEEK_END)
-            size = f.tell()
-            f.seek(max(0, size - max_bytes))
-            data = f.read()
-    except OSError as e:
-        return f"не прочитать {path}: {e}"
-    text = data.decode("utf-8", "replace")
-    out = text.splitlines()[-lines:]
-    if size > max_bytes and len(out) == len(text.splitlines()):
-        out = out[1:]  # первая строка могла обрезаться
-    return "\n".join(out)
-
-
-def journal(unit: str, lines: int = 400) -> str:
-    rc, out, err = run(["journalctl", "-u", unit, "-n", str(lines), "--no-pager", "-o", "short-iso"], timeout=15)
-    if rc == 127:
-        return "journalctl недоступен"
-    return out if out.strip() else (err.strip() or "записей нет")
+log_dir = logread.log_dir
+log_files = logread.log_files

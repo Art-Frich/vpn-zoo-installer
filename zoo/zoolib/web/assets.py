@@ -436,9 +436,25 @@ summary { cursor: pointer; color: var(--accent); font-size: .9rem; }
 
 /* журнал и вывод */
 pre.log {
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 12px; position: relative;
   overflow: auto; max-height: 70vh; white-space: pre-wrap; word-break: break-word; font-size: .8rem; line-height: 1.45; margin: 0;
 }
+pre.log:empty::before { content: "пусто"; color: var(--muted); }
+mark { background: var(--warn-soft); color: var(--text); border-radius: 3px; padding: 0 1px; }
+mark.hitline { background: var(--accent-soft); }
+.col-stack { display: grid; gap: 16px; min-width: 0; align-content: start; }
+.logbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }
+.logbar .btn.busy { opacity: .5; pointer-events: none; }
+.search select { width: auto; }
+.search label { display: inline-flex; gap: 5px; align-items: center; font-size: .86rem; white-space: nowrap; }
+.search details { flex: 1 1 100%; }
+.search details input { width: auto; display: inline-block; margin: 4px 8px 0 0; }
+.hitcell { font-family: var(--mono); font-size: .8rem; word-break: break-word; }
+.logclean { display: grid; gap: 10px; }
+.logclean form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.logclean select { width: auto; }
+.logclean ul { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; width: 100%; }
+.logclean li label { display: inline-flex; gap: 6px; align-items: center; font-size: .86rem; }
 .side { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
 @media (min-width: 900px) { .side { grid-template-columns: 260px minmax(0, 1fr); } }
 .list { list-style: none; margin: 0; padding: 0; }
@@ -665,11 +681,15 @@ JS = r"""
     var doc = new DOMParser().parseFromString(html, 'text/html'), fresh = doc.querySelector('main');
     if (!fresh) return null;
     var flash = keep && main.querySelector(':scope > .alerts.flash'), pos = [];
-    main.querySelectorAll('.log, .table-wrap').forEach(function (e) { pos.push([e.scrollTop, e.scrollLeft]); });
+    main.querySelectorAll('.log, .table-wrap').forEach(function (e) {
+      pos.push([e.scrollTop, e.scrollLeft, e.scrollHeight - e.scrollTop - e.clientHeight < 30]);
+    });
     main.innerHTML = fresh.innerHTML;
     if (flash) main.insertBefore(flash, main.firstChild);
     if (restore) main.querySelectorAll('.log, .table-wrap').forEach(function (e, i) {
-      if (pos[i]) { e.scrollTop = pos[i][0]; e.scrollLeft = pos[i][1]; }
+      if (!pos[i]) return;
+      e.scrollTop = pos[i][2] && e.hasAttribute('data-tail') ? e.scrollHeight : pos[i][0];  // хвост лога остаётся внизу
+      e.scrollLeft = pos[i][1];
     });
     var title = doc.querySelector('title'), nav = document.querySelector('header nav.nav'),
         fnav = doc.querySelector('header nav.nav');
@@ -737,6 +757,7 @@ JS = r"""
         var el = keep && document.getElementById(keep);
         if (el) el.focus({ preventScroll: true });
         initPage();
+        initLogs();
         rearm(doc);
       })
       .catch(function (e) {
@@ -931,6 +952,76 @@ JS = r"""
     if (dirty()) { ev.preventDefault(); ev.returnValue = ''; }
   });
   initPage();
+
+  // логи: «показать раньше» (и прокрутка к началу) подгружает предыдущий кусок по токену; пока лог
+  // развёрнут, живое обновление страницы молчит, а свежие строки дочитываются отдельно (after=)
+  var logBusy = false;
+  function logUrl(box, key, tok) {
+    return '/logs/chunk?src=' + encodeURIComponent(box.getAttribute('data-src') || '') + '&' + key + '=' +
+      encodeURIComponent(tok) + '&lines=' + encodeURIComponent(box.getAttribute('data-lines') || '300');
+  }
+  function logFetch(url) {
+    return fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
+      .then(function (r) { if (!r.ok) throw new Error('log'); return r.json(); })
+      .then(function (d) { if (d.error) throw new Error(d.error); return d; });
+  }
+  function logOlder(link) {
+    var box = document.getElementById('logtext'), tok = box && box.getAttribute('data-older');
+    if (!box || !tok || logBusy) return;
+    logBusy = true;
+    link.classList.add('busy');
+    logFetch(logUrl(box, 'before', tok)).then(function (d) {
+      if (!document.contains(box)) return;
+      var h = box.scrollHeight, top = box.scrollTop;
+      if (d.text) box.insertBefore(document.createTextNode(d.text + '\n'), box.firstChild);
+      box.scrollTop = top + box.scrollHeight - h;
+      box.setAttribute('data-expanded', '');
+      if (d.older) {
+        box.setAttribute('data-older', d.older);
+        link.href = (link.getAttribute('data-base') || '') + encodeURIComponent(d.older);
+        link.classList.remove('busy');
+      } else {
+        box.removeAttribute('data-older');
+        var p = link.closest('p');
+        if (p) p.remove();
+      }
+    }).catch(function () {
+      link.classList.remove('busy');
+      location.href = link.href;
+    }).then(function () { logBusy = false; });
+  }
+  document.addEventListener('click', function (ev) {
+    var a = ev.target.closest && ev.target.closest('a[data-older]');
+    if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    ev.preventDefault();
+    logOlder(a);
+  });
+  document.addEventListener('scroll', function (ev) {
+    var box = ev.target;
+    if (!box || box.id !== 'logtext' || box.scrollTop > 60 || !box.hasAttribute('data-older')) return;
+    var link = document.querySelector('a[data-older]');
+    if (link) logOlder(link);
+  }, true);
+  function initLogs() {
+    var box = document.getElementById('logtext');
+    if (!box) return;
+    var hit = box.querySelector('#hit');
+    if (hit) box.scrollTop = Math.max(0, hit.offsetTop - box.clientHeight / 2);
+    else if (box.hasAttribute('data-tail')) box.scrollTop = box.scrollHeight;
+  }
+  setInterval(function () {
+    var box = document.getElementById('logtext'), tip = box && box.getAttribute('data-tip');
+    if (!box || !tip || !box.hasAttribute('data-tail') || !box.hasAttribute('data-expanded') || document.hidden || logBusy) return;
+    logBusy = true;
+    logFetch(logUrl(box, 'after', tip)).then(function (d) {
+      if (!document.contains(box) || !d.text) return;
+      var bottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.appendChild(document.createTextNode((box.textContent ? '\n' : '') + d.text));
+      if (d.tip) box.setAttribute('data-tip', d.tip);
+      if (bottom) box.scrollTop = box.scrollHeight;
+    }).catch(function () { /* следующий тик */ }).then(function () { logBusy = false; });
+  }, 10000);
+  initLogs();
 
   // live: раз в 10 с спросить у сервера отпечаток данных страницы (/api/stamp: несколько os.stat, без
   // SQL); изменился — забрать страницу и подменить <main>. Не трогаем: вкладка скрыта, фокус в поле, открыт

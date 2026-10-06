@@ -38,7 +38,7 @@ MSG_MAX = 300  # ошибки на странице короткие: длинн
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
 # ответ не страница (картинка QR, скачиваемый файл) или всегда редирект: отпечаток считать незачем
-NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /live/[^/]+/?")
+NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /live/[^/]+/?|GET /logs/(?:chunk|export)/?|POST /logs/(?:clean|vacuum)/?")
 
 
 @dataclass
@@ -91,7 +91,8 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import allowviews, clientviews, groupviews, journalviews, probeviews, protoviews, userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import (allowviews, clientviews, groupviews, journalviews, logviews, probeviews, protoviews, userviews,
+                       views)  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -136,7 +137,11 @@ class App:
             ("POST", r"/probe/compare", views.probe_compare, True),
             ("POST", r"/probe/history/(?P<rid>\d{1,9})/delete", probeviews.run_delete, True),
             ("GET", r"/journal", journalviews.journal_page, True),
-            ("GET", r"/logs", views.logs_page, True),
+            ("GET", r"/logs", logviews.logs_page, True),
+            ("GET", r"/logs/chunk", logviews.logs_chunk, True),
+            ("GET", r"/logs/export", logviews.logs_export, True),
+            ("POST", r"/logs/clean", logviews.logs_clean, True),
+            ("POST", r"/logs/vacuum", logviews.logs_vacuum, True),
             ("GET", r"/settings", views.settings_page, True),
             ("POST", r"/settings/action", views.settings_action, True),
             ("GET", r"/jobs/(?P<job>\d+)", views.job_page, True),

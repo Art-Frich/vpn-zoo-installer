@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from .. import clients as client_catalog
-from .. import journal, paths, traffic
+from .. import journal, logctl, paths, traffic
 from .. import probe as probe_mod
 from . import logs
 
@@ -46,7 +46,7 @@ SOURCES: dict[str, Callable[[], list[Path]]] = {
     "config": lambda: [paths.config_file()],
     "allowlist": lambda: [paths.allowlist_file()],
     "groups": lambda: [paths.groups_file()],
-    "logs": lambda: [logs.log_dir()],
+    "logs": lambda: [logs.log_dir(), logctl.req_dir()],
 }
 JOURNALD_BUCKET = 30  # journald пишет постоянно: логи подтягиваются не чаще раза в 30 с
 

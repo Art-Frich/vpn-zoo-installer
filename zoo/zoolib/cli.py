@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
-from . import clients, groups, journal, protoctl, storage, traffic, upgrade
+from . import clients, groups, journal, logctl, protoctl, storage, traffic, upgrade
 from . import probe as probe_mod
 from . import web as web_mod
 from .config import Config, ConfigError
@@ -584,6 +584,8 @@ def build_parser() -> argparse.ArgumentParser:
     probe_mod.live.add_arguments(p)
     p = add("job", protoctl.cmd_job, "заявки админки на вкл/выкл протокола: run — выполнить очередь, list — состояния")
     protoctl.add_arguments(p)
+    p = add("logs", logctl.cmd_logs, "чистка логов: install-*.log и journald (run — заявки админки, list, clean, vacuum)")
+    logctl.add_arguments(p)
     p = add("export-probe", probe_mod.cmd_export_probe, "пакет для клиентского пробника")
     probe_mod.add_export_arguments(p)
     p = add("history", probe_mod.history.cmd_history, "история проб: add, list, export (для history/ в репо)")

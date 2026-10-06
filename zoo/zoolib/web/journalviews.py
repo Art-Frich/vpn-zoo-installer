@@ -15,12 +15,15 @@ from .views import _tile, alert_list, ago, page_head
 if TYPE_CHECKING:
     from .app import App, Request, Response
 
-SCOPE_BADGE = {"own": ("свой", "info"), "local": ("локальный", "muted")}
+SCOPE_BADGE = {"own": ("свой", "info"), "local": ("служебный", "muted")}
 KIND_BADGE = {"port-scan": "warn", "ssh-auth": "bad", "ssh-scan": "warn", "ssh-limit": "warn", "ssh-ban": "ok",
               "hy2-auth": "bad", "reality-probe": "bad", "panel-login": "muted", "web-login": "muted"}
 
 
 SORT_TITLES = {"n": "по числу", "last": "по давности"}
+OWN_TITLE = ("Свои: адреса, с которых вы входили по SSH-ключу, и сам сервер. Служебные: локальные сети и контейнеры, "
+             "тестовые и зарезервированные диапазоны (например, 192.0.2.0/24). Это не атаки, поэтому по умолчанию "
+             "скрыты и в итоги не входят.")
 SEARCH_HINT = "IP или начало, cc:NL, :22, ssh"
 
 
@@ -128,19 +131,34 @@ def _countries_table(data: dict[str, Any]) -> Markup:
                  num=[1, 3], empty="нет данных", stack=True)
 
 
+def _ru(n: int, one: str, few: str, many: str) -> str:
+    """Число с существительным: 1 попытка, 2 попытки, 5 попыток."""
+    form = one if n % 10 == 1 and n % 100 != 11 else few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+    return f"{n} {form}"
+
+
+PROXY_LOUD = 100   # столько попыток по прокси уже стоит заметить
+
+
 def _verdict(data: dict[str, Any]) -> tuple[str, str]:
-    """Одна строка вывода: зондирования прокси и панелей нет — обычный фон, иначе — с числами."""
-    by = {g["key"]: g for g in data["groups"]}
-    proxy, login = by.get("proxy", {"n": 0, "ips": 0}), by.get("login", {"n": 0, "ips": 0})
+    """Одна строка вывода простым языком: что это значит и что делать. Считаются только внешние адреса:
+    свои, локальные, тестовые и сам сервер в тревогу не попадают, даже когда показаны в таблице."""
+    ext = data.get("external") or {g["key"]: g for g in data["groups"]}
+    proxy, login = ext.get("proxy", {"n": 0, "ips": 0}), ext.get("login", {"n": 0, "ips": 0})
     if not proxy["n"] and not login["n"]:
         return "ok", "Обычный фон: сканеры и перебор SSH"
     parts = []
     if proxy["n"]:
-        parts.append(f"{'REALITY/Hy2' if data.get('reality_tracked') else 'Hysteria2'} — {proxy['n']} "
-                     f"(адресов: {proxy['ips']})")
+        names = "REALITY, Hysteria2" if data.get("reality_tracked") else "Hysteria2"
+        parts.append(f"Прокси ({names}) проверяли чужие клиенты: {_ru(proxy['n'], 'попытка', 'попытки', 'попыток')} "
+                     f"с {_ru(proxy['ips'], 'адреса', 'адресов', 'адресов')}. Войти без ключа нельзя, ничего делать "
+                     "не нужно; если это ваш клиент со старым ключом — обновите ему ссылку.")
     if login["n"]:
-        parts.append(f"входы в панели — {login['n']} (адресов: {login['ips']})")
-    return "warn", "Щупают прокси и панели: " + "; ".join(parts)
+        parts.append(f"Пробовали войти в панель с внешних адресов: {_ru(login['n'], 'попытка', 'попытки', 'попыток')} "
+                     f"с {_ru(login['ips'], 'адреса', 'адресов', 'адресов')}. Панели должны слушать только "
+                     "127.0.0.1 — проверьте, что наружу они не открыты.")
+    loud = bool(login["n"]) or proxy["n"] >= PROXY_LOUD
+    return ("warn" if loud else "info"), " ".join(parts)
 
 
 def _help(data: dict[str, Any]) -> Markup:
@@ -287,12 +305,12 @@ def _build(data: dict[str, Any], app: "App", show_all: bool) -> tuple[list[Any],
     hid = data["hidden"]
     hidden_txt = []
     if not show_all and hid["local"]:
-        hidden_txt.append(f"локальных {hid['local']}")
+        hidden_txt.append(f"служебных {hid['local']}")
     if not show_all and hid["own"]:
-        hidden_txt.append(f"со своих адресов {hid['own']}")
+        hidden_txt.append(f"своих {hid['own']}")
     tiles = t("div",
               _tile("Попыток", charts.count_label(t_["events"]),
-                    title="скрыто: " + ", ".join(hidden_txt) if hidden_txt else "извне на сервер"),
+                    title="скрыты свои и служебные адреса — " + ", ".join(hidden_txt) if hidden_txt else "извне на сервер"),
               _tile("Адресов", str(t_["ips"]), title="разных источников"),
               _tile("Банов fail2ban", str(t_["bans"]), title="по SSH"),
               _tile("Чаще всего", top["ip"] if top else "—",
@@ -307,8 +325,8 @@ def journal_page(app: "App", req: "Request") -> "Response":
     st = _state(req)
     if st["ip"]:
         return _ip_page(app, req, st)
-    toggle = t("a", "скрыть локальные" if st["all"] else "показать локальные и свои",
-               href=_url(st, all=not st["all"], after=""), class_="btn small", data_swap=True)
+    toggle = t("a", "свои и служебные адреса: " + ("скрыть" if st["all"] else "показать"),
+               href=_url(st, all=not st["all"], after=""), title=OWN_TITLE, class_="btn small", data_swap=True)
     head = page_head("Атаки", None, join(_selector(st), toggle))
     stamp = journal.last_run_ts()  # данные меняются только с разбором коллектора
     key = ("journal", st["period"], st["all"], stamp)

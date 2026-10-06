@@ -1073,7 +1073,7 @@ class JournalSearchPageTest(AppTestBase):
             self.app.invalidate()
             _, body = self.c.get("/journal")
         self.assertNotIn("не отслеживается", body)
-        self.assertIn("REALITY/Hy2 — 2", body)
+        self.assertIn("Прокси (REALITY, Hysteria2) проверяли чужие клиенты: 2 попытки с 1 адреса", body)
 
     def test_search_results_cached_per_state(self):
         self.c.get("/journal?q=cc%3ACN")
@@ -1111,16 +1111,19 @@ class JournalPageTest(AppTestBase):
                      "Чего мы не видим", "3389"):
             self.assertIn(text, body)
         self.assertNotIn("172.22.0.4", body, "локальные скрыты по умолчанию")
-        self.assertIn("скрыто: локальных 3", body)
+        self.assertIn("скрыты свои и служебные адреса — служебных 3", body)
         resp, body = self.c.get("/journal?period=7d&all=1")
         self.assertIn("172.22.0.4", body)
-        self.assertIn("локальный", body)
+        self.assertIn("служебный", body)
 
     def test_page_is_short_with_verdict(self):
         self.seed()
         _, body = self.c.get("/journal?period=24h")
         self.assertLessEqual(visible_words(body), 200)
-        self.assertIn("Щупают прокси и панели: Hysteria2 — 1 (адресов: 1)", body)
+        self.assertIn("Прокси (Hysteria2) проверяли чужие клиенты: 1 попытка с 1 адреса.", body)
+        self.assertIn("ничего делать не нужно", body)
+        self.assertNotIn("Щупают", body)
+        self.assertIn('class="info"', body.split("Прокси (Hysteria2)")[0][-80:], "одна попытка — не тревога")
         self.assertIn("панели — попыток не было", body)
         self.assertNotIn("Чего мы не видим</strong>", body.split("<details")[0])
         self.assertIn("Чего мы не видим", body)  # в «?» у таблицы источников
@@ -1168,6 +1171,124 @@ class JournalPageTest(AppTestBase):
         self.c.cookies.clear()
         resp, _ = self.c.get("/journal")
         self.assertEqual(resp.status, 303)
+
+
+class OwnAddressesTest(AppTestBase):
+    """Тревоги и вывод страницы считают только внешние адреса: свои, служебные, тестовые и сам сервер не в счёт."""
+
+    SERVER = "45.9.9.9"
+    NOISE = ("192.0.2.5", "198.51.100.7", "203.0.113.9", "10.1.1.1", "172.22.0.4", "127.0.0.1", "100.64.0.9",
+             "2001:db8::5", "198.18.0.7")
+
+    def setUp(self):
+        super().setUp()
+        self.env.write_config({"SERVER_IP": self.SERVER, "LABEL": "t"})
+        journal._ifaces = None
+        self.addCleanup(setattr, journal, "_ifaces", None)
+        self.real_ifaces = journal._iface_addrs
+        p = mock.patch("zoolib.journal._iface_addrs", return_value=["10.0.0.5", "127.0.0.1", "46.8.8.8"])
+        p.start()
+        self.addCleanup(p.stop)
+        self.c.login()
+
+    def seed(self, extra=()):
+        now = int(time.time())
+        ev = []
+        for ip in (*self.NOISE, self.SERVER, "46.8.8.8", "203.0.113.50"):
+            ev += [Event(now - 60, "hy2-auth", ip, 443)] * 30 + [Event(now - 50, "panel-login", ip, 0)] * 3
+        con = journal.connect()
+        with con:
+            journal.store(con, [*ev, *extra, Event(now - 10, journal.OWN_LOGIN, "203.0.113.50", 0)], now)
+        con.close()
+
+    def test_documentation_private_and_own_addresses_are_not_public(self):
+        nets = journal.ignore_nets()
+        for ip in self.NOISE:
+            self.assertEqual(journal.scope_of(ip, set(), nets), "local", ip)
+        for ip in (self.SERVER, "46.8.8.8"):
+            self.assertEqual(journal.scope_of(ip, set(), nets), "own", ip)
+        self.assertEqual(journal.scope_of("8.8.8.8", set(), nets), "public")
+        self.assertEqual({str(n) for n in journal.server_nets()}, {self.SERVER + "/32", "46.8.8.8/32"},
+                         "из интерфейсов — только публичные, локальные и так служебные")
+
+    def test_only_external_address_makes_the_verdict(self):
+        self.seed()
+        for q in ("", "&all=1"):
+            _, body = self.c.get("/journal?period=24h" + q)
+            self.assertIn("Обычный фон: сканеры и перебор SSH", body, q)
+            self.assertNotIn("проверяли чужие клиенты", body, q)
+            self.assertNotIn("Пробовали войти", body, q)
+        now = int(time.time())
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(now - 5, "hy2-auth", "8.8.4.4", 443)] * 2, now)
+        con.close()
+        for q in ("", "&all=1"):
+            self.app.invalidate()
+            _, body = self.c.get("/journal?period=24h" + q)
+            self.assertIn("Прокси (Hysteria2) проверяли чужие клиенты: 2 попытки с 1 адреса.", body, q)
+            self.assertNotIn("Пробовали войти", body, q)
+
+    def test_external_panel_login_is_a_warning_in_plain_words(self):
+        now = int(time.time())
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(now - 5, "panel-login", "8.8.4.4", 0)] * 3 + [Event(now - 4, "panel-login", "8.8.8.8", 0)],
+                          now)
+        con.close()
+        _, body = self.c.get("/journal?period=24h")
+        self.assertIn("Пробовали войти в панель с внешних адресов: 4 попытки с 2 адресов.", body)
+        self.assertIn("слушать только 127.0.0.1", body)
+        self.assertIn('class="warn"', body.split("Пробовали войти")[0][-80:])
+
+    def test_toggle_wording_and_tooltip(self):
+        self.seed()
+        _, body = self.c.get("/journal?period=24h")
+        self.assertIn("свои и служебные адреса: показать", body)
+        self.assertNotIn("показать локальные", body)
+        m = re.search(r'<a href="/journal\?period=24h&amp;all=1" title="([^"]+)"', body)
+        self.assertIsNotNone(m)
+        for word in ("SSH-ключу", "сам сервер", "контейнеры", "192.0.2.0/24"):
+            self.assertIn(word, m.group(1))
+        _, body = self.c.get("/journal?period=24h&all=1")
+        self.assertIn("свои и служебные адреса: скрыть", body)
+        self.assertIn("служебный", body)
+
+    def test_spike_alert_ignores_noise_addresses(self):
+        now = int(time.time())
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(now - 60, "port-scan", ip, 80) for ip in self.NOISE] * 200
+                          + [Event(now - 60, "port-scan", self.SERVER, 80)] * 500, now)
+        con.close()
+        self.assertEqual(journal.alerts(now), [])
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(now - 30, "port-scan", "8.8.4.4", 80)] * 150, now)
+        con.close()
+        al = journal.alerts(now)
+        self.assertEqual(len(al), 1)
+        self.assertIn("150", al[0][1])
+
+    def test_ru_plural(self):
+        from zoolib.web.journalviews import _ru
+        got = [_ru(n, "попытка", "попытки", "попыток") for n in (1, 2, 4, 5, 11, 12, 21, 22, 25, 100, 101)]
+        self.assertEqual(got, ["1 попытка", "2 попытки", "4 попытки", "5 попыток", "11 попыток", "12 попыток",
+                               "21 попытка", "22 попытки", "25 попыток", "100 попыток", "101 попытка"])
+
+    def test_iface_parsing_is_cached_and_survives_missing_ip(self):
+        out = ("1: lo    inet 127.0.0.1/8 scope host lo\n2: eth0    inet 45.1.2.3/24 brd 45.1.2.255 scope global eth0\n"
+               "2: eth0    inet6 2a01:db8::1/64 scope global\n")
+        journal._ifaces = None
+        with mock.patch("zoolib.journal.system.run", return_value=(0, out, "")) as run:
+            self.assertEqual(self.real_ifaces(1000.0), ["127.0.0.1", "45.1.2.3", "2a01:db8::1"])
+            self.real_ifaces(1100.0)
+            self.assertEqual(run.call_count, 1, "раз в пять минут, не на каждую страницу")
+            self.real_ifaces(1000.0 + journal.IFACE_TTL + 1)
+            self.assertEqual(run.call_count, 2)
+        journal._ifaces = None
+        with mock.patch("zoolib.journal.system.run", return_value=(127, "", "нет ip")):
+            self.assertEqual(self.real_ifaces(5.0), [])
 
 
 if __name__ == "__main__":
