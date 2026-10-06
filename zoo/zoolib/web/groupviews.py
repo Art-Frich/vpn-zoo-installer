@@ -225,6 +225,8 @@ def _client_option(plat: str, o: dict[str, Any], chosen: str, protocols: list[st
     chips = [t("span", f"{len(o['covers'])} из {len(protocols)} протоколов", class_="chip ok" if len(o["covers"]) == len(protocols)
                else "chip warn", title=", ".join(cat.protocols[p]["title"] for p in o["covers"])),
              t("span", "приложения: " + cat.raw["per_app"][c["per_app"]], class_="chip")]
+    if o["no_ru_store"]:
+        chips.append(t("span", "нет в App Store РФ", class_="chip warn", title=clientviews.FOREIGN_STORE))
     if not c["verified"]["device"]:
         chips.append(t("span", "на устройстве не проверено", class_="chip", title=clientviews.UNVERIFIED))
     ver = clientviews._version_cell(c, cache, plat)
@@ -431,7 +433,12 @@ def connect_post(app: "App", req: "Request") -> "Response":
         return _wizard(app, req, 3, d, [_err(e)], 422)
     app.invalidate("status")
     app.invalidate_links()
+    if rep.removed:
+        # никого не добавили, пустая группа убрана: форма остаётся на шаге 3, повтор с тем же названием возможен
+        return _wizard(app, req, 3, d, rep.errors or ["Никого не удалось добавить"], 422)
     flash_report(req, rep)
+    if rep.crashed:
+        return _redirect(f"/groups/{rep.group.id}")
     who = ",".join(rep.created + rep.moved)
     return _redirect("/connect/done?" + urllib.parse.urlencode({"group": rep.group.id, "u": who}))
 
@@ -444,12 +451,14 @@ def connect_done(app: "App", req: "Request") -> "Response":
     ureg = users.list_users()
     wanted = [n for n in req.query.get("u", "").split(",") if n][:groups.NEW_USERS_MAX * 2]
     members = [u for u in ureg.visible() if u.group == g.id and u.name in wanted]
+    prefer, order = clientviews.group_prefs(g)
     blocks: list[Any] = []
     for u in members:
         links, _ = userviews._cached_links(app, u.name)
         blocks.append(t("div", t("h3", t("a", u.name, href=f"/users/{u.name}"), " ", t("span", u.note, class_="muted small")
                                   if u.note else None, class_="sub-h"),
-                        clientviews.handoff_card(links, g.clients, uid=f"{u.name}-", heading=f"{u.name}: что отправить")
+                        clientviews.handoff_card(links, prefer, uid=f"{u.name}-", heading=f"{u.name}: что отправить",
+                                                 order=order)
                         or t("p", "Ссылок пока нет.", class_="muted"),
                         t("p", t("a", "Ссылки и QR →", href=f"/users/{u.name}"), class_="small")))
     summary = card(f"Группа «{g.name}»", _summary(g),

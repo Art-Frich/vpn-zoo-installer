@@ -64,7 +64,7 @@ class NavTest(GroupWebBase):
         self.assertRegex(body, r'<a href="/connect/new"[^>]*class="btn small primary"[^>]*>Новое подключение</a>')
         self.assertIn(">группа<", body)
         self.assertIn('<select name="group" id="group"', body)
-        self.assertIn('<option value="main" selected>Основная</option>', body)
+        self.assertRegex(body, r'<option value="main" selected data-protos="[^"]*">Основная</option>')
 
     def test_anonymous_redirected(self):
         anon = Client(self.app)
@@ -152,11 +152,11 @@ class WizardTest(GroupWebBase):
         self.assertIn("рекомендуем", body)
         self.assertRegex(body, r'name="client:windows" value="v2rayn" checked')
         self.assertIn('name="client:android" value=""', body, "«Не нужен»")
-        self.assertRegex(body, r'name="client:android" value="hiddify"', "тянет только Hysteria2")
+        self.assertRegex(body, r'name="client:android" value="singbox"', "тянет только Hysteria2")
         self.assertIn("1 из 2 протоколов", body)
         self.assertIn("2 из 2 протоколов", body)
         _, only = self.wiz(1, name="Семья", proto=["vless-reality"])
-        self.assertNotRegex(only, r'name="client:android" value="hiddify"', "sing-box-клиенты REALITY не проходят")
+        self.assertNotRegex(only, r'name="client:android" value="singbox"', "sing-box-клиенты REALITY не проходят")
         self.assertIn("github.com/Happ-proxy", body)
         self.assertIn("Другие платформы", body)
         self.assertNotIn("style=", body)
@@ -444,6 +444,90 @@ class GroupsPagesTest(GroupWebBase):
         _, page = self.c.get("/users")
         self.assertIn("нет", page)
         self.assertNotIn("lena", {u["name"] for u in self.env.users_json()["users"]})
+
+    def test_handoff_follows_group_client_and_primary_protocol(self):
+        # группа выбрала Happ для Android и поставила VLESS первым: пакет — Happ, не рекомендуемый для AWG клиент
+        _, body = self.c.get("/users/masha")
+        msg = re.search(r'<textarea id="msg-android"[^>]*>(.*?)</textarea>', body, re.S).group(1)
+        self.assertIn("Скачайте «Happ»", msg)
+        self.assertNotIn("AmneziaWG", msg)
+        self.assertIn("Android · <strong>Happ</strong>", body)
+        # «Не нужен» для остальных платформ: у группы клиент выбран только для Android
+        self.assertNotIn('data-copy="msg-windows"', body)
+        # мастер: страница раздачи берёт те же клиент и порядок
+        resp, done = self.c.get("/connect/done?group=g1&u=masha")
+        self.assertIn('id="msg-masha-android"', done)
+        self.assertIn("Скачайте «Happ»", done)
+
+    def test_users_form_does_not_make_group_member_custom(self):
+        # протоколы в форме отмечены как у группы — only не передаётся, пользователь не «свой»
+        _, page = self.c.get("/users")
+        self.assertRegex(page, r'<option value="g1" data-protos="vless-reality amneziawg">Семья</option>')
+        self.assertRegex(page, r'<option value="main" selected data-protos="[^"]*">')
+        resp, _ = self.post("/users", {"name": ["vasya"], "group": ["g1"], "proto": ["vless-reality", "amneziawg"]})
+        self.assertEqual(header(resp, "Location"), ["/users/vasya"])
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((reg["vasya"]["group"], sorted(reg["vasya"]["protocols"])), ("g1", ["amneziawg", "vless-reality"]))
+        self.assertNotIn("custom", reg["vasya"])
+        # владелец снял протокол — набор «свой»
+        self.post("/users", {"name": ["lena"], "group": ["g1"], "proto": ["amneziawg"]})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((reg["lena"]["protocols"], reg["lena"]["custom"]), (["amneziawg"], True))
+        # «Основная» (все включённые): все отмечены — не «свой», меньше — «свой»
+        self.post("/users", {"name": ["olga"], "group": ["main"], "proto": list(PROTOS)})
+        self.post("/users", {"name": ["igor"], "group": ["main"], "proto": ["hysteria2"]})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertNotIn("custom", reg["olga"])
+        self.assertTrue(reg["igor"]["custom"])
+        # отметили у группы больше, чем у неё есть, — тоже отличие
+        self.post("/users", {"name": ["pasha"], "group": ["g1"], "proto": list(PROTOS)})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((sorted(reg["pasha"]["protocols"]), reg["pasha"]["custom"]), (sorted(PROTOS), True))
+
+    def test_wizard_crash_without_members_shows_error_and_allows_retry(self):
+        with mock.patch.object(groups, "add_members", side_effect=RuntimeError("сломалось")):
+            resp, body = self.create_group(name="Друзья", users_new="petya")
+        self.assertEqual(resp.status, 422)
+        self.assertIn("сломалось", body)
+        self.assertIn("3. Люди", body)
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main", "g1"], "пустая группа не осталась")
+        resp, _ = self.create_group(name="Друзья", users_new="petya")
+        self.assertEqual(resp.status, 303)
+
+    def test_wizard_crash_midway_redirects_to_group_page(self):
+        with mock.patch.object(groups, "move_many", side_effect=RuntimeError("упал перенос")):
+            resp, _ = self.create_group(name="Друзья", users_new="petya", existing=["owner"])
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(header(resp, "Location"), ["/groups/g2"])
+        _, page = self.c.get("/groups/g2")
+        self.assertIn("упал перенос", page)
+        self.assertIn("petya", page)
+        self.assertIn("с ошибками", page)
+
+    def test_apps_pages_know_group_list(self):
+        self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "allow_mode": ["own"],
+                                 "android": ["com.whatsapp"], "windows": ["Discord.exe"]})
+        _, page = self.c.get("/apps?user=masha")
+        self.assertIn("как у группы", page)
+        self.assertNotIn("как общий", page)
+        _, page = self.c.get("/users/masha")
+        self.assertIn("список приложений группы", page)
+        # свой список поверх группы: отличия считаются от списка группы, не от общего
+        allowlist.set_lists({"android": ["com.whatsapp", "org.telegram.messenger"], "windows": ["Discord.exe"]},
+                            "masha", apply_now=False)
+        _, page = self.c.get("/apps?user=masha")
+        self.assertIn("свой (отличается: +1 −0)", page)
+        self.assertIn("Вернуть как у группы", page)
+        self.assertNotIn("Вернуть общий", page)
+        self.assertIn("список группы? Его свой список будет удалён", page)
+        _, page = self.c.get("/apps")
+        self.assertIn("+1 −0", page)
+        # сброс: сообщение про группу, не про общий
+        ch = allowlist.reset("masha", apply_now=False)
+        self.assertEqual(ch.message, "сброшен на список группы")
+        # участник без списка у группы — по-старому
+        _, page = self.c.get("/apps?user=owner")
+        self.assertIn("как общий", page)
 
     def test_live_stamp_changes_with_groups(self):
         s1 = self.c.get("/api/stamp?page=/groups")[1]

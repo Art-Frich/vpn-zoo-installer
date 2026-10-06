@@ -136,7 +136,7 @@ def cmd_user_disable(args: argparse.Namespace, cfg: Config) -> int:
 
 
 def cmd_user_sync(args: argparse.Namespace, cfg: Config) -> int:
-    reports = users.sync_users(args.names or None)
+    reports = users.sync_users(args.names or None, include_custom=args.include_custom)
     if args.json:
         output.print_json([r.to_dict() for r in reports])
         return EXIT_OK if all(r.ok for r in reports) else EXIT_FAIL
@@ -298,7 +298,8 @@ def cmd_allow_list(args: argparse.Namespace, cfg: Config) -> int:
     if not al.exists:
         output.warn(f"реестра {al.path} ещё нет — действует пресет (реестр создаёт фаза 09 или первое изменение)")
     if user:
-        print(f"{user}: {'свой список' if al.own(user) else 'общий список'}")
+        print(f"{user}: " + ("свой список" if al.own(user) else
+                            "список группы" if al.from_group(user) else "общий список"))
     for p in allowlist.PLATFORMS:
         print(f"\n{output.color(allowlist.PLATFORM_TITLE[p], 'bold')}")
         for i in al.effective(p, user):
@@ -496,6 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("name")
     p = uadd("sync", cmd_user_sync, "завести креды в протоколах, включённых после создания пользователя")
     p.add_argument("names", nargs="*", metavar="name")
+    p.add_argument("--include-custom", action="store_true",
+                   help="и тем, у кого набор протоколов задан вручную (по умолчанию он не расширяется)")
 
     p = add("links", cmd_links, "ссылки и QR пользователя (по умолчанию owner)")
     p.add_argument("name", nargs="?")
