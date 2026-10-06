@@ -81,6 +81,18 @@ journald_limit
                              "# /etc/systemd/journald.conf.d/50-vpn-zoo.conf\n[Journal]\nSystemMaxUse=500M\n")
         self.assertIn("INSTALL", out)
 
+    def test_rerun_with_our_own_comment_line_is_not_foreign(self):
+        ours = ("# /etc/systemd/journald.conf.d/50-vpn-zoo.conf\n"
+                "# vpn-zoo: потолок объёма системного журнала\n[Journal]\nSystemMaxUse=500M\n")
+        out = self.run_limit(ours)
+        self.assertIn("INSTALL", out)
+        self.assertNotIn("чужой", out)
+        out = self.run_limit("# /etc/systemd/journald.conf\n[Journal]\n#SystemMaxUse=\n" + ours)
+        self.assertIn("INSTALL", out)
+        self.assertNotIn("чужой", out)
+        out = self.run_limit("# /etc/systemd/journald.conf.d/10-host.conf\n# note\n[Journal]\nSystemMaxUse=2G\n" + ours)
+        self.assertNotIn("INSTALL", out, "чужое значение рядом с нашим комментарием по-прежнему чужое")
+
 
 if __name__ == "__main__":
     unittest.main()

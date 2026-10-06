@@ -379,9 +379,10 @@ def refresh_upstream(cfg: Config, now: int | None = None) -> dict[str, Any]:
 _PRE_RE = re.compile(r"(?i)(?:rc|beta|alpha|pre|dev)\D*(\d*)")
 
 
-def _vtuple(v: str) -> tuple[int, ...]:
-    """Ключ сравнения версий. Хвостовые нули срезаны (1.2 == 1.2.0); pre-release (rc/beta/alpha/pre/dev)
-    младше той же версии без суффикса: «1.2.3-rc.1» < «1.2.3». Нет цифр — пустой кортеж."""
+def _vtuple(v: str) -> tuple:
+    """Ключ сравнения версий: (числа без хвостовых нулей, релиз=1/pre=0, номер pre). Хвостовые нули срезаны
+    (1.2 == 1.2.0, но 1.0.1 > 1.0); pre-release (rc/beta/alpha/pre/dev) младше той же версии без суффикса:
+    «1.2.3-rc.1» < «1.2.3», но «1.2.4-rc1» > «1.2.3». Нет цифр — пустой кортеж."""
     m = re.match(r"\D*(\d+(?:\.\d+)*)(.*)$", v.strip())
     if not m:
         return ()
@@ -389,7 +390,7 @@ def _vtuple(v: str) -> tuple[int, ...]:
     while nums and nums[-1] == 0:
         nums.pop()
     pre = _PRE_RE.search(m.group(2))
-    return (*nums, 0, int(pre.group(1) or 0)) if pre else (*nums, 1)
+    return (tuple(nums), 0, int(pre.group(1) or 0)) if pre else (tuple(nums), 1, 0)
 
 
 def with_upstream(comp: dict[str, dict[str, Any]], up: dict[str, Any], cfg: Config) -> None:

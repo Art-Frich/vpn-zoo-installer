@@ -93,6 +93,69 @@ class MigrationTest(GroupsBase):
         self.assertTrue(reg["petya"]["custom"], "набор протоколов не как у группы — свой")
         self.assertEqual(sorted(reg["petya"]["protocols"]), ["amneziawg"])
 
+    def edit_registry(self, **per_user):
+        data = json.loads(paths.users_file().read_text(encoding="utf-8"))
+        for u in data["users"]:
+            u.update(per_user.get(u["name"], {}))
+        paths.users_file().write_text(json.dumps(data), encoding="utf-8")
+
+    def test_custom_flags_recomputed_once_for_servers_migrated_by_old_code(self):
+        users.bootstrap()
+        users.add_user("masha")
+        users.add_user("petya", only=["amneziawg"])
+        groups.ensure()
+        self.env.add_protocol("tuic", users=("owner",))
+        # прежний код: у masha ошибочно custom (нового tuic у неё нет), метки в groups.json нет
+        self.edit_registry(masha={"custom": True})
+        data = self.groups_json()
+        data.pop("custom_recomputed", None)
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        self.assertTrue(self.registry()["masha"]["custom"])
+        groups.ensure()
+        reg = self.registry()
+        self.assertNotIn("custom", reg["masha"], "набор как у группы без нового tuic — не свой")
+        self.assertTrue(reg["petya"]["custom"], "сознательно урезанный набор остаётся своим")
+        self.assertEqual(self.groups_json().get("custom_recomputed"), 1)
+        # один раз: позже ручной custom не сбрасывается пересчётом
+        self.edit_registry(masha={"custom": True})
+        groups.ensure()
+        self.assertTrue(self.registry()["masha"]["custom"])
+
+    def test_recompute_flips_wrong_non_custom_and_skips_other_groups(self):
+        users.bootstrap()
+        users.add_user("masha", only=["vless-reality"])
+        users.add_user("vasya", only=["vless-reality"])
+        users.add_user("petya")   # держит все протоколы: они не «новые только у владельца»
+        groups.ensure()
+        g = groups.create("Семья", ["vless-reality"])
+        groups.move_many(["vasya"], g.id)
+        self.edit_registry(masha={"custom": False}, vasya={"custom": True})
+        data = self.groups_json()
+        data.pop("custom_recomputed", None)
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        groups.ensure()
+        reg = self.registry()
+        self.assertTrue(reg["masha"]["custom"], "урезанный набор в Основной — свой")
+        self.assertTrue(reg["vasya"]["custom"], "участников других групп пересчёт не трогает")
+
+    def test_fresh_install_marks_recompute_done(self):
+        users.bootstrap()
+        groups.ensure()
+        self.assertEqual(self.groups_json().get("custom_recomputed"), 1)
+
+    def test_sync_always_gives_owner_all_protocols(self):
+        users.bootstrap()
+        groups.ensure()
+        g = groups.create("Узкая", ["amneziawg"])
+        groups.move_many(["owner"], g.id)
+        self.env.add_protocol("tuic", users=())
+        users.sync_users()
+        self.assertIn("tuic", self.registry()["owner"]["protocols"], "владелец вне группы-«всех» всё равно получает всё")
+        self.env.add_protocol("tuic2", users=())
+        self.edit_registry(owner={"custom": True})
+        users.sync_users()
+        self.assertIn("tuic2", self.registry()["owner"]["protocols"], "custom у владельца sync не пропускает")
+
     def test_idempotent_and_leaves_system_user_alone(self):
         users.bootstrap()
         users.ensure_probe_user()

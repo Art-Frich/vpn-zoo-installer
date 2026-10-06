@@ -479,10 +479,15 @@ class GroupsPagesTest(GroupWebBase):
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
         self.assertNotIn("custom", reg["olga"])
         self.assertTrue(reg["igor"]["custom"])
-        # отметили у группы больше, чем у неё есть, — тоже отличие
+        # набор «Основной» при другой группе — форма без JS не перерисовала галочки: пользователь не «свой»
         self.post("/users", {"name": ["pasha"], "group": ["g1"], "proto": list(PROTOS)})
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
-        self.assertEqual((sorted(reg["pasha"]["protocols"]), reg["pasha"]["custom"]), (sorted(PROTOS), True))
+        self.assertEqual((reg["pasha"]["group"], sorted(reg["pasha"]["protocols"])), ("g1", ["amneziawg", "vless-reality"]))
+        self.assertNotIn("custom", reg["pasha"])
+        # а набор, не совпадающий ни с группой, ни с группой по умолчанию, — отличие
+        self.post("/users", {"name": ["nina"], "group": ["g1"], "proto": ["hysteria2", "vless-reality"]})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((sorted(reg["nina"]["protocols"]), reg["nina"]["custom"]), (["hysteria2", "vless-reality"], True))
 
     def test_wizard_crash_without_members_shows_error_and_allows_retry(self):
         with mock.patch.object(groups, "add_members", side_effect=RuntimeError("сломалось")):

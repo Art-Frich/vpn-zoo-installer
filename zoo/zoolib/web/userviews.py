@@ -247,13 +247,18 @@ def user_add(app: "App", req: "Request") -> "Response":
     managed, _ = users.managed_protocols()
     group = req.form.get("group") or None
     # only — только если владелец отметил не то, что у группы: иначе пользователь стал бы «своим»
+    # без JS форма не перерисовывает галочки при смене группы: они остаются от группы по умолчанию, и этот
+    # набор при другой выбранной группе — «не менялось», а не «свой»
     try:
-        grp = groups.Groups.load().get(group or groups.MAIN_ID)
+        gs = groups.Groups.load()
+        grp = gs.get(group or groups.MAIN_ID)
+        first = gs.get(groups.MAIN_ID) or (gs.groups[0] if gs.groups else None)
     except groups.GroupError:
-        grp = None
+        grp = first = None
     base = set(grp.resolve(managed) if grp else managed)
     picked = [p for p in chosen if p in managed]
-    only = None if not chosen or set(picked) == base else picked
+    untouched = grp is not None and first is not None and grp.id != first.id and set(picked) == set(first.resolve(managed))
+    only = None if not chosen or set(picked) == base or untouched else picked
     if chosen and not picked:
         req.session.flash("bad", "Не выбран ни один протокол")
         return _redirect("/users")

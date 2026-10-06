@@ -9,12 +9,13 @@ import os
 import re
 import sqlite3
 import stat
+import subprocess
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import REPO, ZooEnv, needs_bash
+from tests.helpers import BASH, REPO, ZooEnv, needs_bash
 from tests.test_cli import run_cli
 from tests.test_probe import ENTRIES, HY, VLESS
 from tests.test_web import HEALTHY, TOKEN, AppTestBase, Client, patch_status
@@ -372,9 +373,22 @@ class ControlsTest(ProtoEnvTest):
         self.assertEqual(protoctl.controls()["vless-xhttp"].requires, "vless-reality")
         with self.assertRaises(protoctl.JobError) as e:
             protoctl.check("vless-reality", "disable")
-        self.assertIn("последний", str(e.exception), "XHTTP-fallback без VLESS — не отдельный протокол")
+        self.assertIn("сначала выключите VLESS XHTTP", str(e.exception), "XHTTP-fallback без VLESS — не отдельный протокол")
+        self.manifest("vless-xhttp", enabled=False)
+        with self.assertRaises(protoctl.JobError) as e:
+            protoctl.check("vless-reality", "disable")
+        self.assertIn("последний", str(e.exception))
+        self.manifest("vless-xhttp")
         self.manifest("tuic")
-        self.assertEqual(protoctl.check("vless-reality", "disable").id, "vless-reality")
+        with self.assertRaises(protoctl.JobError) as e:
+            protoctl.check("vless-reality", "disable")
+        self.assertIn("сначала выключите VLESS XHTTP (он работает через VLESS)", str(e.exception))
+        with self.assertRaises(protoctl.JobError):
+            protoctl.submit("vless-reality", "disable")
+        self.assertEqual(protoctl.check("vless-xhttp", "disable").id, "vless-xhttp")
+        self.manifest("vless-xhttp", enabled=False)
+        self.assertEqual(protoctl.check("vless-reality", "disable").id, "vless-reality", "XHTTP выключен — можно")
+        self.manifest("vless-xhttp")
         self.env.write_config({"XHTTP_PLACEMENT": "port"})
         self.assertIsNone(protoctl.controls()["vless-xhttp"].requires)
         self.manifest("tuic", enabled=False)
@@ -594,12 +608,14 @@ class RunnerTest(ProtoEnvTest):
         self.assertEqual(protoctl.get_state(jid)["status"], "fail")
         self.assertEqual(config.load().get("ENABLE_TUIC"), "1", "фаза упала — прежнее значение вернулось")
 
-    def test_config_env_not_in_config_set_format_runs_nothing(self):
-        for bad in ("ENABLE_TUIC=1", 'EVIL="x"', "ENABLE_TUIC='1' ; id", "export A='1'", "echo hi", "A='x'$(id)",
-                    "KEY='multi", "ENABLE_TUIC=\"1\""):
+    def test_config_env_with_substitution_or_command_runs_nothing(self):
+        for bad in ("ENABLE_TUIC='1' ; id", "echo hi", "A='x'$(id)", "KEY='multi", 'FOO="$(id)"', "FOO=`id`",
+                    "FOO=$HOME", 'FOO="a${B}"', "FOO=a;id", "FOO=a|id", "FOO=a b", "FOO= id", "FOO=(a b)",
+                    "FOO=~/x", "FOO=a\\", "FOO+=x", "foo=1", 'FOO="a\\"', "\x0cFOO=1", "FOO=1\0", "\r"):
             with self.subTest(bad=bad):
                 cf = self.env.etc / "config.env"
-                cf.write_text("# c\nSERVER_IP='1.2.3.4'\n" + bad + "\n", encoding="utf-8", newline="\n")
+                src = '# c\nSERVER_IP="1.2.3.4"\n' + bad + "\n"
+                cf.write_text(src, encoding="utf-8", newline="")
                 jid = protoctl.submit("tuic", "disable")
                 protoctl.run_queue()
                 st = protoctl.get_state(jid)
@@ -607,7 +623,57 @@ class RunnerTest(ProtoEnvTest):
                 self.assertIn("config.env", st["error"])
                 self.assertIn("строка 3", st["error"])
                 self.assertEqual(self.calls(), [], "ни фаза, ни ключ не тронуты")
-                self.assertEqual(cf.read_text(encoding="utf-8"), "# c\nSERVER_IP='1.2.3.4'\n" + bad + "\n")
+                self.assertEqual(cf.read_text(encoding="utf-8", newline=""), src, "файл не менялся")
+
+    def test_config_env_v1_style_is_normalised_and_accepted(self):
+        cf = self.env.etc / "config.env"
+        cf.write_text('# v1\nSERVER_IP="1.2.3.4"\nPANEL_PORT=2053\nexport ENABLE_SS=1\n\n  A=b   # note\n'
+                      "NOTE='it'\\''s \"q\" $x'\nQ=\"a\\$b \\\"c\\\" \\`d\\`\"\nH=a#b\nE=\n",
+                      encoding="utf-8", newline="")
+        protoctl.submit("tuic", "disable")
+        protoctl.run_queue()
+        self.assertEqual(self.calls(), ["--phase 04d-tuic"])
+        text = cf.read_text(encoding="utf-8", newline="")
+        self.assertEqual(text.split("\n"),
+                         ["# v1", "SERVER_IP='1.2.3.4'", "PANEL_PORT='2053'", "ENABLE_SS='1'", "", "A='b'",
+                          "NOTE='it'\\''s \"q\" $x'", "Q='a$b \"c\" `d`'", "H='a#b'", "E=''", "ENABLE_TUIC='0'", ""])
+        v = config.load().values
+        self.assertEqual((v["SERVER_IP"], v["PANEL_PORT"], v["ENABLE_SS"], v["A"]), ("1.2.3.4", "2053", "1", "b"))
+        self.assertEqual((v["NOTE"], v["Q"], v["H"], v["E"]), ("it's \"q\" $x", 'a$b "c" `d`', "a#b", ""))
+
+    @needs_bash
+    def test_normalised_config_env_sources_to_the_same_values(self):
+        cf = self.env.etc / "config.env"
+        src = 'A="x y"\nB=2053\nC=\'q\'"\'"\'r\'\nD="a\\$b"\nE=a\\ b\n'
+        cf.write_text(src, encoding="utf-8", newline="")
+        out = []
+        for _ in range(2):
+            r = subprocess.run([BASH, "-c", 'set -e; . "$1"; printf "%s|" "$A" "$B" "$C" "$D" "$E"', "x", str(cf)],
+                               capture_output=True, text=True, check=True)
+            out.append(r.stdout)
+            protoctl.normalise_config_file()
+        self.assertEqual(out[0], out[1])
+        self.assertEqual(out[0], "x y|2053|q'r|a$b|a b|")
+
+    def test_config_env_values_with_odd_line_separators_are_preserved(self):
+        cf = self.env.etc / "config.env"
+        odd = "a\rb\x0cc\x85d e f"
+        src = f"A='{odd}'\nB=\"{odd}\"\nC=x y\nD=z\r\n"
+        cf.write_text(src, encoding="utf-8", newline="")
+        protoctl.normalise_config_file()
+        text = cf.read_text(encoding="utf-8", newline="")
+        self.assertEqual(text, f"A='{odd}'\nB='{odd}'\nC='x y'\nD='z\r'\n")
+
+    def test_normalise_is_idempotent_and_keeps_file_when_clean(self):
+        config.config_set("SERVER_IP", "1.2.3.4")
+        cf = self.env.etc / "config.env"
+        before = cf.read_bytes()
+        mtime = cf.stat().st_mtime_ns
+        protoctl.normalise_config_file()
+        self.assertEqual(cf.read_bytes(), before)
+        self.assertEqual(cf.stat().st_mtime_ns, mtime, "чистый файл не перезаписывается")
+        protoctl.normalise_config_file()
+        self.assertEqual(cf.read_bytes(), before)
 
     def test_config_env_in_config_set_format_is_accepted(self):
         config.config_set("SERVER_IP", "1.2.3.4")

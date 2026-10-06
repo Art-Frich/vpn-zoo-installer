@@ -361,10 +361,30 @@ class PackTest(unittest.TestCase):
     def test_group_without_client_for_platform_gets_no_pack(self):
         self.assertIsNone(self.gpack("windows", [VLESS], {"android": "happ"}), "«Не нужен» для Windows")
         self.assertIsNone(self.gpack("android", [VLESS], {"android": ""}))
-        self.assertIsNone(self.gpack("android", [VLESS], {"android": "ghost"}))
         self.assertIsNone(self.gpack("android", [VLESS], {"android": "happ"}, ["amneziawg"]), "Happ не умеет AWG")
         self.assertIsNone(self.gpack("android", [AWG_ANDROID], {"android": "happ"}, ["vless-reality"]),
                           "нет ссылки протокола — нечего отправлять")
+
+    def test_group_client_with_protocol_outside_handoff_order(self):
+        # TUIC нет в порядке раздачи Windows, но Karing умеет только его: группа «все включённые» всё равно получает пакет
+        tuic = link("tuic", "tuic://u:p@1.2.3.4:443?alpn=h3#x")
+        p = self.gpack("windows", [tuic], {"windows": "karing"}, None)
+        self.assertEqual((p.client["id"], p.proto, p.method), ("karing", "tuic", "link"))
+        # порядок раздачи по-прежнему главнее: VLESS у v2rayN первым, TUIC — только когда больше нечего
+        both = [tuic, VLESS]
+        self.assertEqual(self.gpack("windows", both, {"windows": "v2rayn"}, None).proto, "vless-reality")
+        self.assertEqual(self.gpack("windows", both, {"windows": "karing"}, None).proto, "tuic")
+
+    def test_stale_or_useless_group_client_falls_back_to_recommended(self):
+        # клиента убрали из каталога
+        p = self.gpack("android", [VLESS], {"android": "ghost"}, None)
+        self.assertEqual((p.client["id"], p.proto), ("happ", "vless-reality"))
+        # клиент есть, но не для этой платформы
+        self.assertEqual(self.gpack("windows", [VLESS], {"windows": "happ"}, None).client["id"], "v2rayn")
+        # клиент группы ничего из включённого не умеет: Karing не умеет VLESS
+        self.assertEqual(self.gpack("windows", [VLESS], {"windows": "karing"}, None).client["id"], "v2rayn")
+        # а «не нужен» по-прежнему означает «пакета нет»
+        self.assertIsNone(self.gpack("windows", [VLESS], {"android": "happ"}, None))
 
     def test_per_app_step_only_where_client_can(self):
         # iPhone: приложений через VPN нет, браузер любой

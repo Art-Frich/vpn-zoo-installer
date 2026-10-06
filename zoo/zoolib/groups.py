@@ -86,6 +86,7 @@ class Groups:
         self.path = path
         self.groups = groups or []
         self.exists = exists
+        self.custom_recomputed = 0   # метка разового пересчёта custom у «Основной» (_migrate)
 
     @classmethod
     def load(cls) -> "Groups":
@@ -102,10 +103,15 @@ class Groups:
         for d in data["groups"]:
             if isinstance(d, dict) and ID_RE.match(str(d.get("id", ""))):
                 out.append(Group.from_dict(d))
-        return cls(path, out, exists=True)
+        gs = cls(path, out, exists=True)
+        gs.custom_recomputed = 1 if data.get("custom_recomputed") == 1 else 0
+        return gs
 
     def save(self) -> None:
-        atomic_write_json(self.path, {"schema": SCHEMA, "groups": [g.to_dict() for g in self.groups]})
+        data: dict[str, Any] = {"schema": SCHEMA, "groups": [g.to_dict() for g in self.groups]}
+        if self.custom_recomputed:
+            data["custom_recomputed"] = self.custom_recomputed
+        atomic_write_json(self.path, data)
         self.exists = True
 
     def get(self, ref: str | None) -> Group | None:
@@ -338,7 +344,9 @@ def _errors(reports: list[users.OpReport]) -> list[str]:
 def _migrate(gs: Groups, ureg: users.Registry) -> bool:
     """«Основная» и все пользователи без группы — в неё, с текущими настройками: протоколы «*»
     (как раньше: всё включённое), у кого набор меньше — custom (группа его не трогает).
-    Идемпотентно. True — что-то записано."""
+    Один раз (метка custom_recomputed в groups.json) custom у участников «Основной» пересчитывается по
+    тому же правилу: серверы, перенесённые прежним кодом, получили неверные флаги. Идемпотентно.
+    True — что-то записано."""
     changed = False
     if not gs.exists:
         gs.groups.append(Group(MAIN_ID, MAIN_NAME, [ALL]))
@@ -351,14 +359,23 @@ def _migrate(gs: Groups, ureg: users.Registry) -> bool:
         # протокол, заведённый только у owner, — новый: фаза включила его владельцу, остальным его
         # доведёт zoo user sync; отсутствие такого протокола не делает набор «своим»
         fresh = {p for p in managed if {u.name for u in vis if p in u.protocols} <= {users.OWNER}}
+        recompute = not gs.custom_recomputed
         assigned = False
         for u in vis:
             if not u.group or gs.get(u.group) is None:
                 u.group = main.id
                 u.custom = bool(u.protocols) and not (set(managed) - fresh) <= set(u.protocols)
                 assigned = True
+            elif recompute and u.group == main.id:
+                custom = bool(u.protocols) and not (set(managed) - fresh) <= set(u.protocols)
+                assigned = assigned or custom != u.custom
+                u.custom = custom
         if assigned:
             ureg.save()
+            changed = True
+        if recompute:
+            gs.custom_recomputed = 1
+            gs.save()
             changed = True
     if changed:
         refresh_mirror(gs, ureg)
@@ -369,7 +386,10 @@ def _pending(gs: Groups, ureg: users.Registry) -> bool:
     """Нужна ли запись миграции (проверка без блокировки: страницы читают её на каждом показе)."""
     if not gs.exists:
         return ureg.exists
-    return gs.get(MAIN_ID) is not None and any(not u.group or gs.get(u.group) is None for u in ureg.visible())
+    if gs.get(MAIN_ID) is None:
+        return False
+    return (ureg.exists and not gs.custom_recomputed) or any(not u.group or gs.get(u.group) is None
+                                                             for u in ureg.visible())
 
 
 def ensure() -> Groups:
