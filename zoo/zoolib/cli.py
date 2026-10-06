@@ -1,6 +1,6 @@
 """CLI zoo: разбор аргументов и команды status, user, links, version, setup.
 
-Команды traffic/journal/probe/export-probe/web/upgrade/smoke живут в своих модулях: модуль даёт
+Команды traffic/journal/storage/probe/export-probe/web/upgrade/smoke живут в своих модулях: модуль даёт
 add_arguments(parser) и cmd_<name>(args, cfg) -> int; cli.py их только подключает.
 Коды выхода: 0 — успех, 1 — ошибка или найдены проблемы, 2 — неверные аргументы.
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
-from . import journal, traffic, upgrade
+from . import journal, storage, traffic, upgrade
 from . import probe as probe_mod
 from . import web as web_mod
 from .config import Config, ConfigError
@@ -517,6 +517,8 @@ def build_parser() -> argparse.ArgumentParser:
     traffic.add_arguments(p)
     p = add("journal", journal.cmd_journal, "журнал атак: кто и чем пробовал сервер снаружи")
     journal.add_arguments(p)
+    p = add("storage", storage.cmd_storage, "объём данных zoo: разделы, бюджет, чистка по лимиту")
+    storage.add_arguments(p)
     p = add("probe", probe_mod.cmd_probe, "проверка протоколов: --local с сервера, --remote с клиента")
     probe_mod.add_arguments(p)
     p = add("export-probe", probe_mod.cmd_export_probe, "пакет для клиентского пробника")

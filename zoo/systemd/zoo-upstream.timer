@@ -1,0 +1,11 @@
+# Раз в сутки; Persistent — если сервер был выключен, проверка пройдёт после включения.
+[Unit]
+Description=vpn-zoo: проверка свежих версий раз в сутки
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

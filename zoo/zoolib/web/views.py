@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import probe as probe_mod
-from .. import journal, manifests, paths, status, system, traffic, upgrade
+from .. import journal, manifests, paths, status, storage, system, traffic, upgrade
+from ..config import config_set
 from ..output import human_bytes, human_duration
 from . import charts, logs, probeviews
 from .html import Markup, badge, card, csrf_input, empty, join, kv, post_button, t, table
@@ -166,6 +167,7 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
     if traffic.last_run() is None:
         out.append(("warn", "Трафик ещё не собирался: первое снятие — в течение 5 минут после установки"))
     out += app.cached("journal-alerts", 60, journal.alerts)
+    out += app.cached("storage-alerts", 60, lambda: storage.alerts(app.cfg()))
     return out
 
 
@@ -529,33 +531,125 @@ def logs_page(app: "App", req: "Request") -> "Response":
 
 # ---------- настройки ----------
 
-SHOW_KEYS_FIRST = ("LABEL", "SERVER_IP", "DOMAIN", "SSH_PORTS", "RU_EGRESS", "AWG_ENGINE", "HY2_ENGINE",
-                   "AUTO_REBOOT", "AUTO_REBOOT_TIME", "PANEL_PORT", "ZOO_WEB_PORT", "ZOO_HOME")
-
-
 def restartable_units(app: "App") -> list[str]:
     units = service_units()
     states = system.unit_states(units)
     return [u for u in units if states.get(u, {}).get("load") == "loaded"]
 
 
+UPSTREAM_HINT = "обновление — через пины репозитория (bump-pins, sha256), не автоматом"
+
+
+def _available_cell(c: dict[str, Any]) -> Markup:
+    label = c.get("label", "не проверено")
+    return badge(label, "warn") if c.get("newer") else t("span", label, class_="muted")
+
+
 def _versions_card(app: "App", cfg: Any) -> Markup:
-    help_ = t("p", "Обновление версий — из консоли: ", t("code", "sudo zoo upgrade"), " (план) и ",
-              t("code", "sudo zoo upgrade --apply"), ": фазы перезапускают сервисы, в том числе эту админку.")
+    help_ = join(t("p", "«Доступно» — свежий релиз на GitHub: проверка раз в сутки (", t("code", "zoo upgrade --check-upstream"),
+                   "), страница читает только кэш. ", UPSTREAM_HINT.capitalize(), "."),
+                 t("p", "Обновление версий — из консоли: ", t("code", "sudo zoo upgrade"), " (план) и ",
+                   t("code", "sudo zoo upgrade --apply"), ": фазы перезапускают сервисы, в том числе эту админку."))
     try:
         up = app.cached("upgrade", 60, lambda: upgrade.check(cfg))
         comps, plan = up["components"], up["phases"]
-        ver_rows = [[name, c["installed"] or "—", c["pinned"] or "—",
+        ver_rows = [[name, c["installed"] or "—", c["pinned"] or "—", _available_cell(c),
                      badge("—", "muted") if c["outdated"] is None else
                      (badge("устарел", "warn") if c["outdated"] else badge("актуален", "ok"))]
                     for name, c in comps.items()]
-        tbl = table(["компонент", "установлен", "закреплён", ""], ver_rows, stack=True)
+        tbl = table(["компонент", "установлен", "закреплён", "доступно", ""], ver_rows, stack=True)
+        hint = t("p", UPSTREAM_HINT, class_="hint") if any(c.get("newer") for c in comps.values()) else None
         if comps and not plan and all(c["outdated"] is False for c in comps.values()):
             return card("Версии", badge("✓ всё актуально", "ok"),
-                        t("details", t("summary", "компоненты"), tbl, class_="more"), help=help_)
-        return card("Версии", tbl, t("p", "План: " + " → ".join(plan), class_="hint") if plan else None, help=help_)
+                        t("details", t("summary", "компоненты"), tbl, class_="more"), hint, help=help_)
+        return card("Версии", tbl, t("p", "План: " + " → ".join(plan), class_="hint") if plan else None, hint,
+                    help=help_)
     except Exception as e:  # сводка версий не должна ломать страницу
         return card("Версии", alert_list([("warn", f"не удалось сравнить версии: {e}")]), help=help_)
+
+
+def _date(ts: int | None) -> str:
+    return datetime.fromtimestamp(ts).strftime("%d.%m.%Y") if ts else "—"
+
+
+def _data_card(app: "App", cfg: Any, csrf: str) -> Markup:
+    help_ = t("p", "Данные zoo (трафик, журнал атак, история проб, логи установки) делят один бюджет ",
+              t("code", storage.LIMIT_KEY), ": по умолчанию 1 ГБ, но не больше 5 % диска. Пока он не превышен, ничего "
+              "не удаляется; при превышении коллектор режет раздел, сильнее всех вышедший за свою долю, начиная "
+              "с самых старых записей. journald (лимит 500 МБ, ставит установщик), geo/prev и geoip в бюджет "
+              "не входят.")
+    try:
+        d = app.cached("storage", 60, lambda: storage.report(cfg))
+    except Exception as e:  # сводка объёма не должна ломать страницу
+        return card("Данные", alert_list([("warn", f"не удалось посчитать объём: {e}")]), help=help_)
+    rows = []
+    for s in d["sections"]:
+        if not s["available"]:
+            continue
+        action = post_button("/settings/action", "очистить", csrf, "btn small",
+                             {"action": "storage-clear", "section": s["id"]},
+                             confirm=f"Очистить раздел «{s['title']}»? Записи удалятся насовсем.") if s["size"] else None
+        rows.append([s["title"], human_bytes(s["size"]),
+                     join(charts.meter(s["size"], s["share_bytes"]),
+                          t("span", f"{s['share']} %", class_="muted small",
+                            title=f"доля бюджета: {human_bytes(s['share_bytes'])}")),
+                     _date(s["oldest"]), action])
+    line = f"занято {human_bytes(d['total'])} из {human_bytes(d['limit'])}"
+    if d["disk"]:
+        line += f" · свободно на диске {human_bytes(d['disk']['free'])}"
+    outside = ", ".join(f"{o['title']} {human_bytes(o['size'])}" for o in d["outside"])
+    form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value="storage-limit"),
+             t("label", "Бюджет данных ", t("input", name="limit", value=storage.format_size(d["limit"]),
+                                          size="6", maxlength="12", aria_label="Бюджет данных, например 1G")),
+             t("button", "Сохранить", type="submit", class_="btn small"),
+             method="post", action="/settings/action", class_="inline")
+    more = t("details", t("summary", "бюджет и то, что вне его"), form,
+             t("p", f"Вне бюджета: {outside}", class_="hint") if outside else None, class_="more")
+    return card("Данные", t("p", line),
+                table(["раздел", "занято", "доля бюджета", "хранится с", ""], rows, stack=True), more, help=help_)
+
+
+# префикс ключа → группа; побеждает самый длинный, секреты и всё неизвестное — «Технические»
+CONFIG_MAIN, CONFIG_PROTO, CONFIG_TECH = "Основное", "Протоколы", "Технические"
+CONFIG_PREFIXES = {
+    "LABEL": CONFIG_MAIN, "SERVER_IP": CONFIG_MAIN, "DOMAIN": CONFIG_MAIN, "SSH_": CONFIG_MAIN,
+    "RU_EGRESS": CONFIG_MAIN, "AUTO_REBOOT": CONFIG_MAIN, "SUB_PUBLIC": CONFIG_MAIN, "ZOO_DATA_LIMIT": CONFIG_MAIN,
+    "ENABLE_": CONFIG_PROTO, "VLESS_PORT": CONFIG_PROTO, "VLESS_SNI": CONFIG_PROTO, "VLESS_TARGET": CONFIG_PROTO,
+    "XHTTP_PORT": CONFIG_PROTO, "XHTTP_SNI": CONFIG_PROTO, "XHTTP_PLACEMENT": CONFIG_PROTO,
+    "SS_PORT": CONFIG_PROTO, "TUIC_PORT": CONFIG_PROTO, "TUIC_SNI": CONFIG_PROTO,
+    "HY2_PORT": CONFIG_PROTO, "HY2_SNI": CONFIG_PROTO, "HY2_ENGINE": CONFIG_PROTO, "HY2_HOP": CONFIG_PROTO,
+    "AWG_PORT": CONFIG_PROTO, "AWG_PROFILE": CONFIG_PROTO, "AWG_ENGINE": CONFIG_PROTO,
+    "VLESS_PORT_MIGRATED": CONFIG_TECH, "AWG_ENGINE_": CONFIG_TECH,
+}
+
+
+def config_group(key: str) -> str:
+    if logs.SECRET_KEY_RE.search(key):
+        return CONFIG_TECH
+    best = max((p for p in CONFIG_PREFIXES if key.startswith(p)), key=len, default=None)
+    return CONFIG_PREFIXES[best] if best else CONFIG_TECH
+
+
+def _config_card(cfg: Any) -> Markup:
+    groups: dict[str, list[str]] = {CONFIG_MAIN: [], CONFIG_PROTO: [], CONFIG_TECH: []}
+    for k in sorted(cfg.values):
+        groups[config_group(k)].append(k)
+
+    def cfg_table(keys: list[str]) -> Markup:
+        return table(["ключ", "значение"],
+                     [[t("code", k), t("span", "••••", class_="muted", title="скрыто") if logs.SECRET_KEY_RE.search(k)
+                       else t("span", cfg.get(k), class_="mono")] for k in keys], stack=True)
+
+    parts: list[Any] = [t("p", "Что выбрано при установке. Менять — повторным запуском install.sh.", class_="hint")]
+    for name in (CONFIG_MAIN, CONFIG_PROTO):
+        if groups[name]:
+            parts += [t("h4", name), cfg_table(groups[name])]
+    if groups[CONFIG_TECH]:
+        parts.append(t("details", t("summary", f"{CONFIG_TECH} · {len(groups[CONFIG_TECH])}"),
+                       cfg_table(groups[CONFIG_TECH]), class_="more"))
+    return card("config.env", t("details", t("summary", f"Настройки сервера · только чтение · ключей: {len(cfg.values)}"),
+                                *parts, class_="more"),
+                help=f"{cfg.path} · пароли и ключи скрыты")
 
 
 def settings_page(app: "App", req: "Request") -> "Response":
@@ -587,6 +681,7 @@ def settings_page(app: "App", req: "Request") -> "Response":
         post_button("/settings/action", "Обновить geo-файлы", csrf, "btn", {"action": "geo"}),
         class_="btn-grid"))
     versions = _versions_card(app, cfg)
+    data = _data_card(app, cfg, csrf)
 
     jobs = app.jobs.recent(8)
     jobs_card = card("Последние задачи", table(["задача", "начата", "итог"], [
@@ -607,21 +702,8 @@ def settings_page(app: "App", req: "Request") -> "Response":
                              t("code", "sudo zoo web --new-token"), " (все сессии закроются). Вход по ссылке: ",
                              t("code", "sudo zoo web --link"), "."))
 
-    secret_keys = {k for k in cfg.values if logs.SECRET_KEY_RE.search(k)}
-    top = [k for k in SHOW_KEYS_FIRST if k in cfg.values] + sorted(
-        k for k in cfg.values if k.startswith("ENABLE_") and k not in SHOW_KEYS_FIRST)
-    rest = sorted(k for k in cfg.values if k not in top)
-
-    def cfg_table(keys: list[str]) -> Markup:
-        return table(["ключ", "значение"],
-                     [[t("code", k), badge("скрыто", "muted") if k in secret_keys else t("span", cfg.get(k), class_="mono")]
-                      for k in keys], stack=True)
-
-    config = card("config.env", cfg_table(top) if top else None,
-                  t("details", t("summary", f"config.env · ключей: {len(rest)}"), cfg_table(rest), class_="more")
-                  if rest else None,
-                  help=f"{cfg.path} · только просмотр; правка — config_set или install.sh")
-    body = [page_head("Настройки"), services, t("div", actions, versions, class_="cols"), jobs_card,
+    config = _config_card(cfg)
+    body = [page_head("Настройки"), services, t("div", actions, versions, class_="cols"), data, jobs_card,
             t("div", access, config, class_="cols") if access else config]
     return app.render(req, "Настройки", body, active="/settings")
 
@@ -640,6 +722,23 @@ def settings_action(app: "App", req: "Request") -> "Response":
         job = app.jobs.start("smoke", "Smoke-проверка", outside_sandbox(zoo_argv("smoke", "--json")), timeout=900)
     elif action == "collect":
         job = app.jobs.start("collect", "Снятие трафика", zoo_argv("traffic", "--collect", "--json"), timeout=300)
+    elif action == "storage-clear":
+        sid = req.form.get("section", "")
+        sec = storage.section(sid)
+        if sec is None or not sec.available:
+            req.session.flash("bad", "Неизвестный раздел")
+            return redirect("/settings")
+        job = app.jobs.start("storage", f"Очистка: {sec.title}", zoo_argv("storage", "--clear", sid, "--json"),
+                             timeout=600, on_done=lambda j: app.invalidate("storage"))
+    elif action == "storage-limit":
+        n = storage.parse_size(req.form.get("limit", ""))
+        if n is None or n < storage.MIN_LIMIT:
+            req.session.flash("bad", "Не понял размер или он меньше 16M. Пример: 1G, 500M")
+            return redirect("/settings")
+        config_set(storage.LIMIT_KEY, storage.format_size(n))
+        app.invalidate("storage", "storage-alerts")
+        req.session.flash("ok", f"Бюджет данных: {human_bytes(n)}")
+        return redirect("/settings")
     elif action == "geo":
         if system.unit_states([GEO_UNIT]).get(GEO_UNIT, {}).get("load") != "loaded":
             req.session.flash("bad", f"Нет юнита {GEO_UNIT} (фаза 07 не выполнена?)")
@@ -693,6 +792,9 @@ def job_page(app: "App", req: "Request", job: str) -> "Response":
                                                                               "ok" if c["ok"] else "bad"),
                  c["detail"]] for c in data["checks"]]
         parts += [t("h3", "Результат"), table(["проверка", "", "подробности"], rows, stack=True)]
+    elif j.kind == "storage" and isinstance(data, dict) and "removed" in data:
+        parts.append(kv([("раздел", data.get("section")), ("удалено записей", data["removed"]),
+                         ("было → стало", f"{human_bytes(data.get('before'))} → {human_bytes(data.get('size'))}")]))
     elif j.kind == "probe" and isinstance(data, dict) and isinstance(data.get("results"), list):
         parts += [t("h3", "Результат"), results_table(data["results"])]
     out = (j.stdout if data is None else "") + j.stderr
