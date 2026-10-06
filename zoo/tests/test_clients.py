@@ -329,14 +329,17 @@ class PackTest(unittest.TestCase):
     def pack(self, plat, links, cache=None):
         return clientviews.build_pack(catalog(), cache or {"checked": None, "versions": {}}, plat, links, [])
 
-    def test_android_prefers_awg_qr_with_android_tab(self):
+    def test_android_set_awg_qr_with_android_tab_then_happ(self):
         p = self.pack("android", [VLESS, AWG_ANDROID, AWG_COMMON, AWG_KEY])
-        self.assertEqual((p.proto, p.client["id"], p.method, p.tab), ("amneziawg", "amneziawg", "qr", "Android"))
-        self.assertIn("QR — плитка «AmneziaWG», вкладка «Android»", p.sends[0])
-        self.assertTrue(p.steps[0].startswith("Скачайте «AmneziaWG»"))
-        self.assertIn("github.com/amnezia-vpn/amneziawg-android", p.steps[0], "проверенные ссылки — раньше")
-        self.assertIn("Brave", p.steps[-1])
-        self.assertIn("2ip.ru", p.steps[-1], "у AWG echo-правила нет: адрес сервера виден")
+        # ни один клиент не умеет всё: AmneziaWG (первым в раздаче) + Happ для VLESS
+        self.assertEqual([s.client["id"] for s in p.sections], ["amneziawg", "happ"])
+        s = p.sections[0]
+        self.assertEqual((s.proto, s.method, s.tab), ("amneziawg", "qr", "Android"))
+        self.assertIn("QR — плитка «AmneziaWG», вкладка «Android»", s.sends[0])
+        self.assertTrue(s.steps[0].startswith("Скачайте «AmneziaWG»"))
+        self.assertIn("github.com/amnezia-vpn/amneziawg-android", s.steps[0], "проверенные ссылки — раньше")
+        self.assertIn("Brave", s.steps[-1])
+        self.assertIn("2ip.ru", s.steps[-1], "у AWG echo-правила нет: адрес сервера виден")
 
     def gpack(self, plat, links, prefer, order=None):
         return clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, plat, links, [], prefer, order)
@@ -345,98 +348,132 @@ class PackTest(unittest.TestCase):
         hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
         links = [VLESS, hy2, AWG_ANDROID]
         # у группы v2rayNG и основной протокол Hysteria2: не рекомендованный Happ и не AWG первым
-        p = self.gpack("android", links, {"android": "v2rayng"}, ["hysteria2", "vless-reality"])
-        self.assertEqual((p.client["id"], p.proto), ("v2rayng", "hysteria2"))
-        p = self.gpack("android", links, {"android": "v2rayng"}, ["vless-reality", "hysteria2"])
-        self.assertEqual((p.client["id"], p.proto), ("v2rayng", "vless-reality"))
-        # клиент группы не умеет первый протокол группы — берём первый, который умеет
-        p = self.gpack("android", links, {"android": "wgtunnel"}, ["vless-reality", "amneziawg"])
-        self.assertEqual((p.client["id"], p.proto, p.method), ("wgtunnel", "amneziawg", "qr"))
+        s = self.gpack("android", links, {"android": ["v2rayng"]}, ["hysteria2", "vless-reality"]).sections
+        self.assertEqual([(x.client["id"], [i.proto for i in x.items]) for x in s],
+                         [("v2rayng", ["hysteria2", "vless-reality"])])
+        s = self.gpack("android", links, {"android": ["v2rayng"]}, ["vless-reality", "hysteria2"]).sections
+        self.assertEqual([i.proto for i in s[0].items], ["vless-reality", "hysteria2"])
+        # клиент группы не умеет первый протокол группы — берём те, что умеет
+        s = self.gpack("android", links, {"android": ["wgtunnel"]}, ["vless-reality", "amneziawg"]).sections
+        self.assertEqual((s[0].client["id"], s[0].proto, s[0].method), ("wgtunnel", "amneziawg", "qr"))
         # группа «все включённые»: порядок раздачи каталога, но клиент — группы
-        p = self.gpack("android", links, {"android": "v2rayng"}, None)
-        self.assertEqual((p.client["id"], p.proto), ("v2rayng", "vless-reality"))
-        # без клиентов группы — как раньше
-        self.assertEqual(self.gpack("android", links, {}, ["hysteria2"]).client["id"], "amneziawg")
+        s = self.gpack("android", links, {"android": ["v2rayng"]}, None).sections
+        self.assertEqual([i.proto for i in s[0].items], ["vless-reality", "hysteria2"])
+        # без клиентов группы — рекомендованные каталога: AWG и остальное
+        self.assertEqual([x.client["id"] for x in self.gpack("android", links, {}, ["hysteria2"]).sections],
+                         ["amneziawg", "happ"])
+
+    def test_group_set_gives_one_section_per_client_with_own_protocols(self):
+        hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
+        p = self.gpack("android", [VLESS, hy2, AWG_ANDROID], {"android": ["happ", "amneziawg"]},
+                       ["hysteria2", "vless-reality", "amneziawg"])
+        self.assertEqual([(s.client["id"], [i.proto for i in s.items]) for s in p.sections],
+                         [("happ", ["hysteria2", "vless-reality"]), ("amneziawg", ["amneziawg"])])
+        self.assertEqual(p.sections[0].tiles, "Hysteria2, VLESS + REALITY")
+        msg = p.message
+        self.assertIn("1) Happ — Hysteria2, VLESS + REALITY", msg)
+        self.assertIn("2) AmneziaWG — AmneziaWG", msg)
+        self.assertIn("Скачайте «Happ»", msg)
+        self.assertIn("Скачайте «AmneziaWG»", msg)
+        self.assertLess(msg.index("Скачайте «Happ»"), msg.index("Скачайте «AmneziaWG»"))
+        self.assertNotIn("vless://", msg)
+        # с одним приложением заголовков «1)» нет — сообщение как раньше
+        one = self.gpack("android", [VLESS], {"android": ["happ", "amneziawg"]}, ["vless-reality", "amneziawg"])
+        self.assertEqual(len(one.sections), 1, "нет ссылки AWG — второе приложение не нужно")
+        self.assertNotIn("\n1) ", one.message)
+
+    def test_protocol_covered_by_earlier_client_is_not_repeated(self):
+        hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
+        both = [VLESS, hy2]
+        # Happ покрыл всё — v2rayNG после него пуст и в пакет не попадает
+        p = self.gpack("android", both, {"android": ["happ", "v2rayng"]}, ["vless-reality", "hysteria2"])
+        self.assertEqual([s.client["id"] for s in p.sections], ["happ"])
+        # INCY умеет только VLESS, остальное достаётся второму
+        p = self.gpack("android", both, {"android": ["incy", "v2rayng"]}, ["vless-reality", "hysteria2"])
+        self.assertEqual([(s.client["id"], [i.proto for i in s.items]) for s in p.sections],
+                         [("incy", ["vless-reality"]), ("v2rayng", ["hysteria2"])])
 
     def test_group_without_client_for_platform_gets_no_pack(self):
-        self.assertIsNone(self.gpack("windows", [VLESS], {"android": "happ"}), "«Не нужен» для Windows")
-        self.assertIsNone(self.gpack("android", [VLESS], {"android": ""}))
-        self.assertIsNone(self.gpack("android", [VLESS], {"android": "happ"}, ["amneziawg"]), "Happ не умеет AWG")
-        self.assertIsNone(self.gpack("android", [AWG_ANDROID], {"android": "happ"}, ["vless-reality"]),
+        self.assertIsNone(self.gpack("windows", [VLESS], {"android": ["happ"]}), "«Не нужна» для Windows")
+        self.assertIsNone(self.gpack("android", [VLESS], {"android": []}))
+        self.assertIsNone(self.gpack("android", [VLESS], {"android": ["happ"]}, ["amneziawg"]), "Happ не умеет AWG")
+        self.assertIsNone(self.gpack("android", [AWG_ANDROID], {"android": ["happ"]}, ["vless-reality"]),
                           "нет ссылки протокола — нечего отправлять")
 
     def test_group_client_with_protocol_outside_handoff_order(self):
         # TUIC нет в порядке раздачи Windows, но Karing умеет только его: группа «все включённые» всё равно получает пакет
         tuic = link("tuic", "tuic://u:p@1.2.3.4:443?alpn=h3#x")
-        p = self.gpack("windows", [tuic], {"windows": "karing"}, None)
-        self.assertEqual((p.client["id"], p.proto, p.method), ("karing", "tuic", "link"))
-        # порядок раздачи по-прежнему главнее: VLESS у v2rayN первым, TUIC — только когда больше нечего
+        s = self.gpack("windows", [tuic], {"windows": ["karing"]}, None).sections[0]
+        self.assertEqual((s.client["id"], s.proto, s.method), ("karing", "tuic", "link"))
+        # порядок раздачи по-прежнему главнее: VLESS у v2rayN первым, TUIC — после
         both = [tuic, VLESS]
-        self.assertEqual(self.gpack("windows", both, {"windows": "v2rayn"}, None).proto, "vless-reality")
-        self.assertEqual(self.gpack("windows", both, {"windows": "karing"}, None).proto, "tuic")
+        self.assertEqual([i.proto for i in self.gpack("windows", both, {"windows": ["v2rayn"]}, None).sections[0].items],
+                         ["vless-reality"])
+        self.assertEqual(self.gpack("windows", both, {"windows": ["karing"]}, None).sections[0].proto, "tuic")
 
     def test_stale_or_useless_group_client_falls_back_to_recommended(self):
         # клиента убрали из каталога
-        p = self.gpack("android", [VLESS], {"android": "ghost"}, None)
-        self.assertEqual((p.client["id"], p.proto), ("happ", "vless-reality"))
+        s = self.gpack("android", [VLESS], {"android": ["ghost"]}, None).sections[0]
+        self.assertEqual((s.client["id"], s.proto), ("happ", "vless-reality"))
         # клиент есть, но не для этой платформы
-        self.assertEqual(self.gpack("windows", [VLESS], {"windows": "happ"}, None).client["id"], "v2rayn")
+        self.assertEqual(self.gpack("windows", [VLESS], {"windows": ["happ"]}, None).sections[0].client["id"], "v2rayn")
         # клиент группы ничего из включённого не умеет: Karing не умеет VLESS
-        self.assertEqual(self.gpack("windows", [VLESS], {"windows": "karing"}, None).client["id"], "v2rayn")
-        # а «не нужен» по-прежнему означает «пакета нет»
-        self.assertIsNone(self.gpack("windows", [VLESS], {"android": "happ"}, None))
+        self.assertEqual(self.gpack("windows", [VLESS], {"windows": ["karing"]}, None).sections[0].client["id"], "v2rayn")
+        # а «не нужна» по-прежнему означает «пакета нет»
+        self.assertIsNone(self.gpack("windows", [VLESS], {"android": ["happ"]}, None))
 
     def test_per_app_step_only_where_client_can(self):
         # iPhone: приложений через VPN нет, браузер любой
-        p = self.gpack("ios", [VLESS], {"ios": "incy"}, ["vless-reality"])
-        self.assertNotIn("Приложения через VPN", " ".join(p.steps))
-        self.assertIn("любом браузере", p.steps[-1])
+        s = self.gpack("ios", [VLESS], {"ios": ["incy"]}, ["vless-reality"]).sections[0]
+        self.assertNotIn("Приложения через VPN", " ".join(s.steps))
+        self.assertIn("любом браузере", s.steps[-1])
         # Windows у AmneziaVPN — только исключение приложений: шага «только из списка» нет
-        w = self.gpack("windows", [AWG_COMMON, AWG_KEY], {"windows": "amneziavpn"}, ["amneziawg"])
+        w = self.gpack("windows", [AWG_COMMON, AWG_KEY], {"windows": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertEqual(w.client["id"], "amneziavpn")
         self.assertNotIn("только приложения из списка", " ".join(w.steps))
         self.assertIn("любом браузере", w.steps[-1])
-        a = self.gpack("android", [AWG_KEY], {"android": "amneziavpn"}, ["amneziawg"])
+        a = self.gpack("android", [AWG_KEY], {"android": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertIn("только приложения из списка", " ".join(a.steps))
         self.assertIn("Brave", a.steps[-1])
 
     def test_foreign_apple_id_warning(self):
-        p = self.gpack("ios", [VLESS], {"ios": "happ"}, ["vless-reality"])
-        self.assertEqual(p.client["id"], "happ")
+        p = self.gpack("ios", [VLESS], {"ios": ["happ"]}, ["vless-reality"])
+        self.assertEqual(p.sections[0].client["id"], "happ")
         self.assertIn("Apple ID другой страны", p.message)
         self.assertNotIn("Приложения через VPN", p.message, "на iPhone их нет")
-        self.assertNotIn("Apple ID", self.gpack("ios", [VLESS], {"ios": "incy"}, ["vless-reality"]).message)
-        self.assertNotIn("Apple ID", self.gpack("android", [VLESS], {"android": "happ"}, ["vless-reality"]).message)
+        self.assertNotIn("Apple ID", self.gpack("ios", [VLESS], {"ios": ["incy"]}, ["vless-reality"]).message)
+        self.assertNotIn("Apple ID", self.gpack("android", [VLESS], {"android": ["happ"]}, ["vless-reality"]).message)
 
     def test_android_without_awg_uses_happ(self):
         p = self.pack("android", [VLESS])
-        self.assertEqual((p.client["id"], p.method), ("happ", "qr"))
-        self.assertIn("Приложения через VPN:", " ".join(p.steps))
-        self.assertNotIn("вкладка", p.sends[0])
-        self.assertIn("не откроется", p.steps[-1], "echo-сервисы на сервере блокируются для Xray-протоколов")
+        s = p.sections[0]
+        self.assertEqual((len(p.sections), s.client["id"], s.method), (1, "happ", "qr"))
+        self.assertIn("Приложения через VPN:", " ".join(s.steps))
+        self.assertNotIn("вкладка", s.sends[0])
+        self.assertIn("не откроется", s.steps[-1], "echo-сервисы на сервере блокируются для Xray-протоколов")
 
     def test_windows_link_and_rules_file(self):
-        p = self.pack("windows", [VLESS, RULES])
-        self.assertEqual((p.client["id"], p.method), ("v2rayn", "link"))
-        self.assertEqual(len(p.sends), 2)
-        self.assertIn("«Приложения через VPN»", p.sends[1])
-        self.assertIn("v2rayn-routing.json", " ".join(p.steps))
-        self.assertEqual(len(self.pack("windows", [VLESS]).sends), 1, "без файла правил — один пункт")
+        s = self.pack("windows", [VLESS, RULES]).sections[0]
+        self.assertEqual((s.client["id"], s.method), ("v2rayn", "link"))
+        self.assertEqual(len(s.sends), 2)
+        self.assertIn("«Приложения через VPN»", s.sends[1])
+        self.assertIn("v2rayn-routing.json", " ".join(s.steps))
+        self.assertEqual(len(self.pack("windows", [VLESS]).sections[0].sends), 1, "без файла правил — один пункт")
 
     def test_ios_and_no_match(self):
         p = self.pack("ios", [VLESS])
-        self.assertEqual(p.client["id"], "incy")
-        self.assertIn("любом браузере", p.steps[-1])
+        self.assertEqual(p.sections[0].client["id"], "incy")
+        self.assertIn("любом браузере", p.sections[0].steps[-1])
         self.assertIsNone(self.pack("ios", [link("tuic", "tuic://x")]), "для TUIC на iPhone клиента не выбрано")
         self.assertIsNone(self.pack("macos", [VLESS]), "на macOS для VLESS проверенного клиента нет")
         self.assertIsNone(self.pack("android", []))
 
     def test_amneziavpn_takes_vpn_key_not_conf_qr(self):
-        p = self.pack("macos", [AWG_COMMON, AWG_KEY])
-        self.assertEqual((p.client["id"], p.method), ("amneziavpn", "link"))
-        self.assertEqual(p.tab, "Компьютер, iPhone")
+        s = self.pack("macos", [AWG_COMMON, AWG_KEY]).sections[0]
+        self.assertEqual((s.client["id"], s.method), ("amneziavpn", "link"))
+        self.assertEqual(s.tab, "Компьютер, iPhone")
         # без vpn:// остаётся файл
-        self.assertEqual(self.pack("macos", [AWG_COMMON]).method, "file")
+        self.assertEqual(self.pack("macos", [AWG_COMMON]).sections[0].method, "file")
 
     def test_conf_never_offered_as_link_and_vpn_key_not_to_wg_clients(self):
         p = self.pack("android", [AWG_KEY])
@@ -444,14 +481,17 @@ class PackTest(unittest.TestCase):
 
     def test_version_only_for_github_clients(self):
         cache = {"checked": 1.0, "versions": {"amneziawg": {"version": "2.1"}, "incy": {"version": "7"}}}
-        self.assertIn("(версия 2.1)", self.pack("android", [AWG_ANDROID], cache).steps[0])
-        self.assertNotIn("версия", self.pack("ios", [VLESS], cache).steps[0])
+        self.assertIn("(версия 2.1)", self.pack("android", [AWG_ANDROID], cache).sections[0].steps[0])
+        self.assertNotIn("версия", self.pack("ios", [VLESS], cache).sections[0].steps[0])
 
     def test_message_has_no_secrets(self):
         p = self.pack("android", [VLESS, AWG_ANDROID])
         self.assertNotIn("vless://", p.message)
         self.assertNotIn(".conf", p.message)
-        self.assertTrue(p.message.startswith("VPN на Android: что сделать\n1. "))
+        self.assertTrue(p.message.startswith("VPN на Android: что сделать\n"))
+        self.assertIn("\n1) AmneziaWG — AmneziaWG\n1. Скачайте", p.message, "два приложения — заголовки и своя нумерация шагов")
+        one = self.pack("android", [VLESS]).message
+        self.assertTrue(one.startswith("VPN на Android: что сделать\n1. "), "одно приложение — без заголовков")
 
 
 @needs_bash
@@ -494,7 +534,7 @@ class HandoffPageTest(AppTestBase):
 
     def test_page_stays_light(self):
         _, body = self.c.get("/users/masha")
-        self.assertLessEqual(len(body.encode("utf-8")), 24 * 1024)
+        self.assertLessEqual(len(body.encode("utf-8")), 26 * 1024)
 
 
 if __name__ == "__main__":

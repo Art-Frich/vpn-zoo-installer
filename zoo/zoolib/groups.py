@@ -4,10 +4,12 @@
 
     {"schema": 1, "groups": [{"id": "main", "name": "Основная",
                               "protocols": ["*"] | [id, ...],          "*" — все включённые
-                              "clients": {"android": "happ", ...},     платформа → клиент из каталога
+                              "clients": {"android": ["happ", "amneziawg"], ...},   платформа → набор клиентов
                               "allowlist": null | {"android": [...], "windows": [...]}}]}
 
 allowlist null — группа на общем списке приложений (zoo allow), иначе свой список группы.
+Клиенты — набор на платформу (по порядку): ни один клиент не умеет все протоколы, поэтому набор
+вместе покрывает протоколы группы. Старый формат (строка — один клиент) читается как набор из одного.
 В реестре пользователей у участника поле group (id) и, если его набор протоколов задан вручную,
 custom: изменение группы его набор протоколов не трогает (zoo group move на ту же группу — вернуть).
 
@@ -41,6 +43,7 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 NAME_MAX = 40
 NEW_USERS_MAX = 20
 NOTE_MAX = 200
+CLIENTS_MAX = 5       # клиентов на платформу
 KEEP: Any = object()  # «не менять» для update (None у allowlist значит «общий список»)
 
 
@@ -48,12 +51,24 @@ class GroupError(users.UserError):
     """Неверный ввод или состояние групп."""
 
 
+def client_ids(v: Any) -> list[str]:
+    """Набор клиентов платформы из файла или формы: список id или (старый формат) одна строка;
+    порядок сохраняется, пустые и повторы убираются."""
+    items = [v] if isinstance(v, str) else (list(v) if isinstance(v, (list, tuple)) else [])
+    out: list[str] = []
+    for x in items:
+        x = str(x).strip()
+        if x and x not in out:
+            out.append(x)
+    return out
+
+
 @dataclass
 class Group:
     id: str
     name: str
     protocols: list[str] = field(default_factory=lambda: [ALL])
-    clients: dict[str, str] = field(default_factory=dict)
+    clients: dict[str, list[str]] = field(default_factory=dict)
     allowlist: dict[str, list[str]] | None = None
 
     @classmethod
@@ -65,12 +80,13 @@ class Group:
         return cls(
             id=str(d["id"]), name=str(d.get("name") or d["id"]),
             protocols=[str(x) for x in d.get("protocols", [ALL])] or [ALL],
-            clients={str(k): str(v) for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())},
+            clients={str(k): ids for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())
+                     if (ids := client_ids(v))},
             allowlist=own if own and all(own.values()) else None)
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "protocols": list(self.protocols),
-                "clients": dict(self.clients), "allowlist": self.allowlist}
+                "clients": {k: list(v) for k, v in self.clients.items()}, "allowlist": self.allowlist}
 
     @property
     def all_protocols(self) -> bool:
@@ -174,10 +190,10 @@ def clean_protocols(raw: list[str]) -> list[str]:
     return out
 
 
-def clean_clients(raw: dict[str, str], protocols: list[str] | None = None) -> dict[str, str]:
-    """{платформа: id клиента}: клиент есть в каталоге, на этой платформе и подходит хотя бы к одному
-    из выбранных протоколов. Пустое значение — «клиент не нужен»."""
-    wanted = {p: c for p, c in raw.items() if c}
+def clean_clients(raw: dict[str, Any], protocols: list[str] | None = None) -> dict[str, list[str]]:
+    """{платформа: [id клиента, ...]}: каждый клиент есть в каталоге, на этой платформе и подходит хотя бы
+    к одному из выбранных протоколов. Пустое значение — «платформа не нужна» (в итог не попадает)."""
+    wanted = {p: ids for p, v in raw.items() if (ids := client_ids(v))}
     if not wanted:
         return {}
     try:
@@ -186,16 +202,19 @@ def clean_clients(raw: dict[str, str], protocols: list[str] | None = None) -> di
         raise GroupError(str(e)) from None
     managed, _ = users.managed_protocols()
     protos = managed if not protocols or ALL in protocols else protocols
-    out: dict[str, str] = {}
-    for plat, cid in wanted.items():
+    out: dict[str, list[str]] = {}
+    for plat, ids in wanted.items():
         if plat not in cat.platforms:
             raise GroupError(f"неизвестная платформа «{plat[:20]}»")
-        c = cat.client(cid)
-        if c is None or plat not in c["platforms"]:
-            raise GroupError(f"клиента «{cid[:30]}» для платформы {cat.platforms[plat]} нет в каталоге")
-        if not any(c["protocols"].get(p, {}).get("s") in ("ok", "warn") for p in protos):
-            raise GroupError(f"{c['name']} не поддерживает выбранные протоколы")
-        out[plat] = cid
+        if len(ids) > CLIENTS_MAX:
+            raise GroupError(f"на платформу {cat.platforms[plat]} — не больше {CLIENTS_MAX} клиентов")
+        for cid in ids:
+            c = cat.client(cid)
+            if c is None or plat not in c["platforms"]:
+                raise GroupError(f"клиента «{cid[:30]}» для платформы {cat.platforms[plat]} нет в каталоге")
+            if not any(c["protocols"].get(p, {}).get("s") in ("ok", "warn") for p in protos):
+                raise GroupError(f"{c['name']} не поддерживает выбранные протоколы")
+        out[plat] = ids
     return out
 
 
@@ -277,13 +296,53 @@ def client_options(cat: clientcat.Catalog, platform: str, protocols: list[str]) 
     return opts
 
 
-def default_clients(cat: clientcat.Catalog, protocols: list[str]) -> dict[str, str]:
+def _real(cat: clientcat.Catalog, protocols: list[str]) -> list[str]:
+    return [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
+
+
+def suggest_clients(cat: clientcat.Catalog, platform: str, protocols: list[str]) -> list[str]:
+    """Минимальный набор клиентов платформы, вместе покрывающий протоколы (жадно). На каждом шаге: клиент не из
+    российского магазина — только если иначе протокол не покрыть; затем покрывающий больше ещё не покрытых
+    протоколов; затем рекомендованный каталогом для них; затем порядок client_options. Результат — по порядку
+    протоколов группы: первым идёт клиент основного протокола."""
+    real = _real(cat, protocols)
+    opts = client_options(cat, platform, protocols)
+    todo = list(real)
+    picked: list[tuple[int, str]] = []
+    while todo:
+        best: tuple[tuple[Any, ...], str, list[str]] | None = None
+        for pos, o in enumerate(opts):
+            cid = o["client"]["id"]
+            new = [p for p in todo if p in o["covers"]]
+            if not new or any(cid == x for _, x in picked):
+                continue
+            rec = sum(1 for p in new if (cat.recommended(platform, p) or {}).get("id") == cid)
+            key = (o["no_ru_store"], -len(new), -rec, pos)
+            if best is None or key < best[0]:
+                best = (key, cid, new)
+        if best is None:
+            break
+        picked.append((min(real.index(p) for p in best[2]), best[1]))
+        todo = [p for p in todo if p not in best[2]]
+    return [cid for _, cid in sorted(picked, key=lambda x: x[0])]
+
+
+def default_clients(cat: clientcat.Catalog, protocols: list[str]) -> dict[str, list[str]]:
     out = {}
     for plat in cat.platforms:
-        opts = client_options(cat, plat, protocols)
-        if opts:
-            out[plat] = opts[0]["client"]["id"]
+        ids = suggest_clients(cat, plat, protocols)
+        if ids:
+            out[plat] = ids
     return out
+
+
+def coverage(cat: clientcat.Catalog, platform: str, protocols: list[str],
+             ids: list[str]) -> tuple[list[str], list[str]]:
+    """(покрытые, не покрытые) протоколы группы набором клиентов ids."""
+    real = _real(cat, protocols)
+    have = [c for c in (cat.client(i) for i in ids) if c and platform in c["platforms"]]
+    done = [p for p in real if any(c["protocols"].get(p, {}).get("s") in ("ok", "warn") for c in have)]
+    return done, [p for p in real if p not in done]
 
 
 # ---------- зеркало списка приложений ----------
@@ -419,7 +478,7 @@ def members_of(gs: Groups, ureg: users.Registry, gid: str) -> list[users.User]:
 
 # ---------- изменения ----------
 
-def create(name: str, protocols: list[str], clients: dict[str, str] | None = None,
+def create(name: str, protocols: list[str], clients: dict[str, Any] | None = None,
            allow: dict[str, list[str]] | None = None) -> Group:
     with users._lock():
         gs, ureg = _open()
@@ -470,7 +529,7 @@ def _snapshot(ureg: users.Registry, names: list[str]) -> tuple[dict[str, list[st
 
 
 def update(ref: str, name: str | None = None, protocols: list[str] | None = None,
-           clients: dict[str, str] | None = None, allow: Any = KEEP) -> GroupReport:
+           clients: dict[str, Any] | None = None, allow: Any = KEEP) -> GroupReport:
     """Изменить группу и применить к участникам один раз. allow: KEEP — не менять, None — общий
     список, словарь — свой список группы."""
     with users._lock():
@@ -554,7 +613,7 @@ def add_members(ref: str, new: list[tuple[str, str]], existing: list[str]) -> Gr
     return rep
 
 
-def connect(name: str, protocols: list[str], clients: dict[str, str] | None,
+def connect(name: str, protocols: list[str], clients: dict[str, Any] | None,
             allow: dict[str, list[str]] | None, new: list[tuple[str, str]], existing: list[str]) -> GroupReport:
     """Мастер «Новое подключение»: группа + пользователи, всё проверено до первого изменения.
     Исключение при добавлении людей не бросается наружу (rep.crashed): отчёт с ошибками и тем, что
@@ -615,13 +674,14 @@ def _print_report(rep: GroupReport, as_json: bool) -> int:
     return 0 if rep.ok else 1
 
 
-def _parse_clients(items: list[str] | None) -> dict[str, str]:
-    out = {}
+def _parse_clients(items: list[str] | None) -> dict[str, list[str]]:
+    """--client android=happ,amneziawg: набор платформы (повтор платформы дописывает клиентов)."""
+    out: dict[str, list[str]] = {}
     for it in items or []:
-        plat, sep, cid = it.partition("=")
+        plat, sep, cids = it.partition("=")
         if not sep:
-            raise GroupError(f"--client ждёт ПЛАТФОРМА=КЛИЕНТ (android=happ), получено «{it[:40]}»")
-        out[plat.strip()] = cid.strip()
+            raise GroupError(f"--client ждёт ПЛАТФОРМА=КЛИЕНТ[,КЛИЕНТ] (android=happ,amneziawg), получено «{it[:40]}»")
+        out.setdefault(plat.strip(), []).extend(client_ids(cids.split(",")))
     return out
 
 
@@ -640,7 +700,7 @@ def cmd_group_list(args: argparse.Namespace, cfg: Any) -> int:
     for g in gs.groups:
         names = [u.name for u in members_of(gs, ureg, g.id)]
         data.append({**g.to_dict(), "members": names})
-        rows.append([g.id, g.name, _fmt_protocols(g), ", ".join(f"{p}={c}" for p, c in g.clients.items()) or "—",
+        rows.append([g.id, g.name, _fmt_protocols(g), ", ".join(f"{p}={'+'.join(c)}" for p, c in g.clients.items()) or "—",
                      "свой" if g.allowlist else "общий", ", ".join(names) or "—"])
     if args.json:
         output.print_json({"path": str(gs.path), "groups": data})
@@ -674,7 +734,7 @@ def cmd_group_set(args: argparse.Namespace, cfg: Any) -> int:
         allow = _allow_lists(args.allow, allowlist.Allowlist.load())
     clients = _parse_clients(args.client) if args.client else None
     if args.no_client:
-        clients = {**(clients or {}), **{p: "" for p in args.no_client}}
+        clients = {**(clients or {}), **{p: [] for p in args.no_client}}
     if clients is not None:
         # изменение — поверх текущих клиентов группы
         cur = Groups.load().require(args.group).clients

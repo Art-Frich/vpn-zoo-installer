@@ -222,10 +222,19 @@ class ModelTest(GroupsBase):
         with self.assertRaises(groups.GroupError):
             groups.create("Семья", ["amneziawg"], allow={"android": ["bad id"], "windows": ["a.exe"]})
         self.assertEqual([g["id"] for g in self.groups_json()["groups"]], ["main"], "ошибки ничего не записали")
-        g = groups.create("  Семья \n", ["hysteria2", "amneziawg"], {"android": "happ", "ios": ""})
+        with self.assertRaises(groups.GroupError):  # один из набора не умеет ни одного выбранного протокола
+            groups.create("Семья", ["amneziawg"], {"android": ["amneziawg", "happ"]})
+        with self.assertRaises(groups.GroupError):
+            groups.create("Семья", ["amneziawg"], {"android": ["amneziawg", "ghost"]})
+        with self.assertRaises(groups.GroupError):
+            groups.create("Семья", ["amneziawg"], {"android": ["amneziawg"] * 2 + ["wgtunnel", "amneziavpn", "v2rayng",
+                                                                                     "happ", "incy", "singbox"]})
+        g = groups.create("  Семья \n", ["hysteria2", "amneziawg"], {"android": ["happ", "amneziawg", "happ"], "ios": ""})
         self.assertEqual((g.id, g.name, g.protocols, g.clients), ("g1", "Семья", ["hysteria2", "amneziawg"],
-                                                                 {"android": "happ"}))
-        self.assertEqual(groups.Groups.load().next_name(), "Группа 3")
+                                                                 {"android": ["happ", "amneziawg"]}))
+        g2 = groups.create("Старый вид", ["hysteria2"], {"android": "happ", "windows": []})
+        self.assertEqual(g2.clients, {"android": ["happ"]}, "строка — набор из одного клиента")
+        self.assertEqual(groups.Groups.load().next_name(), "Группа 4")
         self.assertEqual(groups.Groups.load().get("семья").id, "g1")
 
     def test_user_gets_group_protocols(self):
@@ -258,10 +267,10 @@ class ModelTest(GroupsBase):
         self.assertEqual(rep.needs_qr, ["masha"])
         self.assertEqual(len(self.refresh_calls()), before, "протоколы без приложений: файлы AWG не пересобирались")
         # смена названия и клиентов — без пересборки и без новых QR
-        rep = groups.update(g.id, name="Мобильные", clients={"android": "happ"})
+        rep = groups.update(g.id, name="Мобильные", clients={"android": ["happ", "amneziawg"]})
         self.assertEqual((rep.needs_qr, rep.skipped), ([], []))
         self.assertEqual(self.groups_json()["groups"][1]["name"], "Мобильные")
-        self.assertEqual(self.groups_json()["groups"][1]["clients"], {"android": "happ"})
+        self.assertEqual(self.groups_json()["groups"][1]["clients"], {"android": ["happ", "amneziawg"]})
         with self.assertRaises(groups.GroupError):
             groups.update(g.id, name="Основная")
         with self.assertRaises(groups.GroupError):
@@ -447,7 +456,7 @@ class ModelTest(GroupsBase):
         self.assertIn("wgtunnel", only_awg)
         self.assertEqual(groups.client_options(cat, "macos", ["vless-reality"]), [])
         defaults = groups.default_clients(cat, ["vless-reality"])
-        self.assertEqual(defaults["android"], "happ")
+        self.assertEqual(defaults["android"], ["happ"])
         self.assertNotIn("macos", defaults)
 
     def test_ios_default_is_not_happ(self):
@@ -458,11 +467,58 @@ class ModelTest(GroupsBase):
         self.assertEqual(ids[0], "incy", "Happ нет в российском App Store")
         self.assertIn("happ", ids, "выбрать его осознанно можно")
         self.assertTrue(next(o for o in opts if o["client"]["id"] == "happ")["no_ru_store"])
-        self.assertEqual(groups.default_clients(cat, proto3)["ios"], "incy")
-        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["ios"], "incy",
-                         "Happ покрывает оба протокола, но он не из РФ-магазина")
+        ios = groups.default_clients(cat, proto3)["ios"]
+        self.assertIn("incy", ios)
+        self.assertNotIn("happ", ios, "Happ нет в российском App Store, а покрыть протоколы можно без него")
+        self.assertEqual(groups.coverage(cat, "ios", proto3, ios)[1], [], "набор покрывает все три протокола")
+        both = groups.default_clients(cat, ["vless-reality", "hysteria2"])["ios"]
+        self.assertNotIn("happ", both, "Happ покрывает оба протокола, но он не из РФ-магазина")
+        self.assertEqual(sorted(both), ["incy", "singbox"])
         # на Android Happ остаётся первым: он есть в Google Play и на GitHub
-        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["android"], "happ")
+        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["android"], ["happ"])
+
+    def test_suggest_covers_all_default_protocols(self):
+        cat = clients.load()
+        # Happ/v2rayNG умеют VLESS и Hysteria2, но не AmneziaWG: нужен ещё один клиент
+        proto3 = ["hysteria2", "vless-xhttp", "amneziawg"]
+        android = groups.suggest_clients(cat, "android", proto3)
+        self.assertEqual(android, ["happ", "amneziawg"], "первым — клиент основного протокола, минимум приложений")
+        self.assertEqual(groups.coverage(cat, "android", proto3, android), (proto3, []))
+        self.assertEqual(len(android), 2, "лишнего третьего приложения нет")
+        ios = groups.suggest_clients(cat, "ios", proto3)
+        self.assertNotIn("happ", ios)
+        self.assertIn("incy", ios)
+        self.assertEqual(groups.coverage(cat, "ios", proto3, ios)[1], [])
+        win = groups.suggest_clients(cat, "windows", proto3)
+        self.assertEqual(win, ["v2rayn", "amneziavpn"])
+        # один протокол — одно приложение; протокол без клиента на платформе — набор без него
+        self.assertEqual(groups.suggest_clients(cat, "android", ["amneziawg"]), ["amneziawg"])
+        self.assertEqual(groups.suggest_clients(cat, "macos", ["vless-reality", "amneziawg"]), ["amneziavpn"])
+        self.assertEqual(groups.coverage(cat, "macos", ["vless-reality", "amneziawg"], ["amneziavpn"]),
+                         (["amneziawg"], ["vless-reality"]))
+        self.assertEqual(groups.suggest_clients(cat, "android", []), [])
+        self.assertEqual(groups.coverage(cat, "android", proto3, ["happ"])[1], ["amneziawg"])
+        self.assertEqual(groups.coverage(cat, "android", proto3, [])[1], proto3)
+
+    def test_legacy_string_client_loads_as_one_item_set_and_saves_as_list(self):
+        users.bootstrap()
+        data = self.groups_json()
+        data["groups"].append({"id": "old", "name": "Старая", "protocols": ["hysteria2"],
+                               "clients": {"android": "happ", "ios": "", "windows": ["v2rayn", "v2rayn", ""]},
+                               "allowlist": None})
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        gs = groups.Groups.load()
+        self.assertEqual(gs.get("old").clients, {"android": ["happ"], "windows": ["v2rayn"]})
+        # идемпотентно: сохранённое читается так же, повторное сохранение ничего не меняет
+        gs.save()
+        saved = self.groups_json()["groups"][-1]["clients"]
+        self.assertEqual(saved, {"android": ["happ"], "windows": ["v2rayn"]})
+        groups.Groups.load().save()
+        self.assertEqual(self.groups_json()["groups"][-1]["clients"], saved)
+        self.assertEqual(groups.Groups.load().get("old").to_dict()["clients"], saved)
+        # сохранение без правок клиентов (update без clients) не ломает старую запись
+        groups.update("old", name="Старая 2")
+        self.assertEqual(self.groups_json()["groups"][-1]["clients"], saved)
 
     def test_default_client_follows_first_handoff_protocol(self):
         cat = clients.load()
@@ -496,10 +552,14 @@ class CliTest(GroupsBase):
         self.assertIn("Основная", out)
         self.assertIn("owner", out)
         code, out, err = run_cli("group", "add", "Семья", "--proto", "hysteria2", "--proto", "amneziawg",
-                                 "--client", "android=happ", "--allow", "whatsapp", "--allow", "Discord.exe")
+                                 "--client", "android=happ,amneziawg", "--client", "windows=v2rayn",
+                                 "--allow", "whatsapp", "--allow", "Discord.exe")
         self.assertEqual(code, 0, err)
         g = self.groups_json()["groups"][1]
-        self.assertEqual((g["id"], g["protocols"], g["clients"]), ("g1", ["hysteria2", "amneziawg"], {"android": "happ"}))
+        self.assertEqual((g["id"], g["protocols"], g["clients"]),
+                         ("g1", ["hysteria2", "amneziawg"], {"android": ["happ", "amneziawg"], "windows": ["v2rayn"]}))
+        code, out, _ = run_cli("group", "list")
+        self.assertIn("android=happ+amneziawg", out)
         self.assertEqual(g["allowlist"]["android"], ["com.whatsapp"])
         self.assertEqual(g["allowlist"]["windows"], ["Discord.exe"])
         code, out, err = run_cli("user", "add", "masha", "--group", "Семья")
@@ -514,6 +574,10 @@ class CliTest(GroupsBase):
         self.assertIn("masha", out + err)
         self.assertIn("новые QR", out + err)
         self.assertEqual(self.registry()["masha"]["protocols"], ["amneziawg"])
+        # --client платформы заменяет её набор целиком, остальные платформы остаются
+        code, out, err = run_cli("group", "set", "g1", "--client", "android=amneziawg", "--no-client", "windows")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.groups_json()["groups"][1]["clients"], {"android": ["amneziawg"]})
         code, out, err = run_cli("group", "set", "g1", "--allow-common", "--no-client", "android")
         self.assertEqual(code, 0, err)
         g = self.groups_json()["groups"][1]
