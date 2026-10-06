@@ -1,3 +1,4 @@
+import html
 import json
 import re
 import time
@@ -56,6 +57,11 @@ class GroupWebBase(AppTestBase):
     def groups_json(self):
         return json.loads(paths.groups_file().read_text(encoding="utf-8"))["groups"]
 
+    def msg(self, body, plat="android", user=""):
+        """Текст сообщения в поле: на странице пользователя или в его блоке на шаге раздачи."""
+        uid = f"{user}-" if user else ""
+        return html.unescape(re.search(rf'<textarea id="msg-{uid}{plat}"[^>]*>(.*?)</textarea>', body, re.S).group(1))
+
 
 class NavTest(GroupWebBase):
     def test_nav_and_users_page(self):
@@ -72,13 +78,15 @@ class NavTest(GroupWebBase):
             resp, _ = anon.get(path)
             self.assertEqual(resp.status, 303, path)
             self.assertTrue(header(resp, "Location")[0].startswith("/login"), path)
-        for path in ("/connect/new", "/groups/main", "/groups/main/move", "/groups/main/delete", "/groups/main/members"):
+        for path in ("/connect/new", "/groups/main", "/groups/main/move", "/groups/main/delete", "/groups/main/members",
+                     "/groups/main/message"):
             resp, _ = anon.post(path, csrf=False)
             self.assertEqual(resp.status, 401, path)
 
     def test_post_needs_csrf(self):
         self.c.get("/groups")
-        for path in ("/connect/new", "/groups/main", "/groups/main/move", "/groups/main/delete", "/groups/main/members"):
+        for path in ("/connect/new", "/groups/main", "/groups/main/move", "/groups/main/delete", "/groups/main/members",
+                     "/groups/main/message"):
             resp, _ = self.c.req("POST", path, {"csrf": "wrong"})
             self.assertEqual(resp.status, 403, path)
         self.assertEqual([g["id"] for g in self.groups_json()], ["main"])
@@ -218,15 +226,18 @@ class WizardTest(GroupWebBase):
         g = [x for x in self.groups_json() if x["id"] == "g1"][0]
         self.assertEqual(g["clients"], {"android": ["happ", "amneziawg"]})
         _, page = self.c.get("/users/masha")
-        msg = re.search(r'<textarea id="msg-android"[^>]*>(.*?)</textarea>', page, re.S).group(1)
-        self.assertIn("1) Happ — ", msg)
-        self.assertIn("2) AmneziaWG — ", msg)
-        self.assertLess(msg.index("Скачайте «Happ»"), msg.index("Скачайте «AmneziaWG»"))
-        self.assertIn("Android · 2 приложения", text_of(page))
-        self.assertRegex(text_of(page), r"1\) Happ — .*2\) AmneziaWG — .*amneziawg")
-        self.assertNotIn('data-copy="msg-windows"', page, "для Windows клиенты не выбраны")
+        msg = self.msg(page)
+        self.assertIn("1) Установите «Happ»", msg)
+        self.assertIn("2) Установите «AmneziaWG»", msg)
+        self.assertIn("Happ (", msg)
+        self.assertIn("AmneziaWG (", msg)
+        android = page[page.index('data-pp="android"'):page.index('id="msg-android"')]
+        self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>AmneziaWG</strong>"))
+        self.assertEqual(android.count('class="app-head"'), 2, "каждое приложение набора — со своими ключами")
+        self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+"')
+        self.assertNotIn('data-pp="windows"', page, "для Windows клиенты не выбраны")
         _, done = self.c.get("/connect/done?group=g1&u=masha")
-        self.assertIn("2) AmneziaWG", done)
+        self.assertIn("2) Установите «AmneziaWG»", done)
         # страница группы: набор виден галочками, снять все — платформа не нужна
         _, gp = self.c.get("/groups/g1")
         self.assertEqual(self.checked(gp, "android"), ["happ", "amneziawg"])
@@ -279,14 +290,22 @@ class WizardTest(GroupWebBase):
         resp, body = self.c.get(loc)
         self.assertEqual(resp.status, 200)
         self.assertIn("«Семья» создано", text_of(body).replace("«Семья»: подключение создано", "«Семья» создано"))
+        # текст группы — один раз сверху; люди — свёрнутыми строками, по одной открытой за раз
+        self.assertEqual(body.count("Текст для группы"), 1)
+        self.assertRegex(body, r'<h3>Текст для группы</h3>.*<pre class="msg-pre">имя, VPN на Android')
+        self.assertEqual(len(re.findall(r'<details name="conn-user" class="urow">', body)), 3)
+        self.assertNotIn(" open>", body.split("Кому что отправить")[1].split("</summary>")[0])
         for n in ("masha", "kolya", "owner"):
-            self.assertIn(f"{n}: что отправить", body)
+            self.assertIn(f"<strong>{n}</strong>", body)
             self.assertIn(f'href="/users/{n}"', body)
             self.assertIn(f'data-copy="msg-{n}-android"', body)
-        self.assertIn("не отправляйте через MAX и VK", body)
+            self.assertIn(f'src="/users/{n}/qr/', body, "QR именно этого человека")
+            self.assertTrue(self.msg(body, user=n).startswith(f"{n}, VPN на Android"))
+        self.assertNotIn("{name}", body.replace("«{name}»", ""))
+        self.assertEqual(body.count("не отправляйте через MAX и VK"), 1, "предупреждение — одно, а не в каждом блоке")
         self.assertNotIn("<svg", body)
-        # id полей не повторяются между пакетами
-        ids = re.findall(r'<textarea id="([^"]+)"', body)
+        # id полей не повторяются между блоками
+        ids = re.findall(r'\sid="([^"]+)"', body)
         self.assertEqual(len(ids), len(set(ids)))
         # выбранный в группе клиент AmneziaWG на Android — WG Tunnel
         self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "client:android": ["wgtunnel"]})
@@ -515,16 +534,72 @@ class GroupsPagesTest(GroupWebBase):
     def test_handoff_follows_group_client_and_primary_protocol(self):
         # группа выбрала Happ для Android и поставила VLESS первым: пакет — Happ, не рекомендуемый для AWG клиент
         _, body = self.c.get("/users/masha")
-        msg = re.search(r'<textarea id="msg-android"[^>]*>(.*?)</textarea>', body, re.S).group(1)
-        self.assertIn("Скачайте «Happ»", msg)
+        msg = self.msg(body)
+        self.assertIn("Установите «Happ»", msg)
         self.assertNotIn("AmneziaWG", msg)
-        self.assertIn("Android · <strong>Happ</strong>", body)
+        self.assertNotIn("<strong>AmneziaWG</strong>", body)
         # «Не нужен» для остальных платформ: у группы клиент выбран только для Android
         self.assertNotIn('data-copy="msg-windows"', body)
+        self.assertNotIn("<select", body.split(">Подключить<")[1].split("Все ссылки и QR")[0],
+                         "платформа одна — выбирать нечего")
         # мастер: страница раздачи берёт те же клиент и порядок
         resp, done = self.c.get("/connect/done?group=g1&u=masha")
         self.assertIn('id="msg-masha-android"', done)
-        self.assertIn("Скачайте «Happ»", done)
+        self.assertIn("Установите «Happ»", self.msg(done, user="masha"))
+
+    def test_group_page_edits_one_text_per_platform(self):
+        _, page = self.c.get("/groups/g1")
+        card = page[page.index('<section class="card" id="texts">'):]
+        card = card[:card.index("</section>")]
+        self.assertIn("Текст для участников", card)
+        self.assertIn("«{name}» заменится именем", card)
+        self.assertRegex(card, r'<summary>Android </summary>', "платформа без набора клиентов группы текста не получает")
+        self.assertNotIn("Windows", card)
+        default = html.unescape(re.search(r"<textarea[^>]*>(.*?)</textarea>", card, re.S).group(1))
+        self.assertTrue(default.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
+        self.assertNotIn("Вернуть по умолчанию", card)
+        # сохранить свой текст: он у всех участников с их именем
+        resp, _ = self.post("/groups/g1/message", {"platform": ["android"], "text": ["{name}, ставь Happ.\r\nПотом QR."]})
+        self.assertEqual(header(resp, "Location"), ["/groups/g1?m=android#texts"])
+        self.assertEqual(self.groups_json()[1]["messages"], {"android": "{name}, ставь Happ.\nПотом QR."})
+        _, page = self.c.get("/groups/g1?m=android")
+        self.assertIn("Текст сохранён", page)
+        self.assertRegex(page, r'<details open class="more"><summary>Android <span class="badge info">свой текст</span>')
+        self.assertIn("Вернуть по умолчанию", page)
+        for n in ("masha", "kolya"):
+            self.assertEqual(self.msg(self.c.get(f"/users/{n}")[1]), f"{n}, ставь Happ.\nПотом QR.")
+        _, done = self.c.get("/connect/done?group=g1&u=masha")
+        self.assertIn("имя, ставь Happ.", done, "на шаге раздачи текст группы показан один раз, с «имя»")
+        # вернуть по умолчанию
+        self.post("/groups/g1/message", {"platform": ["android"], "reset": ["1"]})
+        self.assertNotIn("messages", self.groups_json()[1])
+        self.assertIn("Установите «Happ»", self.msg(self.c.get("/users/masha")[1]))
+
+    def test_message_equal_to_default_is_not_frozen(self):
+        _, page = self.c.get("/groups/g1")
+        default = html.unescape(re.search(r'<form[^>]*action="/groups/g1/message"[^>]*>.*?<textarea[^>]*>(.*?)</textarea>',
+                                          page, re.S).group(1))
+        self.post("/groups/g1/message", {"platform": ["android"], "text": [default]})
+        self.assertNotIn("messages", self.groups_json()[1], "версии приложений в файл не замораживаем")
+        self.post("/groups/g1/message", {"platform": ["android"], "text": [default + "\nP.S."]})
+        self.assertIn("P.S.", self.groups_json()[1]["messages"]["android"])
+
+    def test_message_errors(self):
+        for multi, why in (({"platform": ["plan9"], "text": ["x"]}, "неизвестная платформа"),
+                           ({"platform": ["android"], "text": ["я" * (groups.MESSAGE_MAX + 1)]}, "длиннее")):
+            resp, _ = self.post("/groups/g1/message", multi)
+            self.assertEqual(resp.status, 303)
+            _, page = self.c.get("/groups/g1")
+            self.assertIn(why, page)
+            self.assertNotIn("messages", self.groups_json()[1])
+        resp, _ = self.post("/groups/nope/message", {"platform": ["android"], "text": ["x"]})
+        self.assertEqual(resp.status, 303)
+        self.assertIn("группы «nope» нет", self.c.get("/groups/g1")[1])
+
+    def test_saving_group_settings_keeps_texts(self):
+        self.post("/groups/g1/message", {"platform": ["android"], "text": ["Мой {name}"]})
+        self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "client:android": ["happ"]})
+        self.assertEqual(self.groups_json()[1]["messages"], {"android": "Мой {name}"})
 
     def test_users_form_does_not_make_group_member_custom(self):
         # протоколы в форме отмечены как у группы — only не передаётся, пользователь не «свой»

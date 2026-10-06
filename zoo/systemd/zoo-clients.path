@@ -1,0 +1,12 @@
+# Заявка «Проверить сейчас» со страницы «Клиенты»: админка кладёт файл /var/lib/vpn-zoo/clients-req
+# (у неё нет права на systemctl и сеть ей не нужна), systemd запускает zoo-clients.service —
+# тот же опрос GitHub, что по суточному таймеру; сам опрос удаляет заявку в начале.
+[Unit]
+Description=vpn-zoo: заявка на проверку версий клиентов из админки
+
+[Path]
+PathExists=/var/lib/vpn-zoo/clients-req
+Unit=zoo-clients.service
+
+[Install]
+WantedBy=multi-user.target

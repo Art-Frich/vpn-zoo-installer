@@ -80,13 +80,11 @@ def _group_link(user: users.User) -> Markup | str:
              t("span", " · свой набор протоколов", class_="muted small") if user.custom else None)
 
 
-def _group_prefs(user: users.User) -> tuple[dict[str, str], list[str] | None]:
-    """Клиенты и порядок протоколов группы пользователя (для «Что отправить»)."""
+def _group_of(user: users.User) -> groups.Group | None:
     try:
-        g = groups.Groups.load().get(user.group)
+        return groups.Groups.load().get(user.group)
     except groups.GroupError:
-        return {}, None
-    return clientviews.group_prefs(g)
+        return None
 
 
 def _disable_confirm(name: str) -> str:
@@ -356,7 +354,7 @@ def clean_qr_svg(svg: str) -> Markup | None:
 # секреты модулей
 CLIENT_FILE_SUFFIXES = {".conf"}
 CLIENT_FILE_NAMES = {allowlist.V2RAYN_FILE}
-FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+FILE_NAME_RE = clientviews.FILE_NAME_RE
 
 
 def _file_ok(path: str, name: str) -> Path | None:
@@ -434,12 +432,14 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
 
     links, errors = _cached_links(app, name)
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
-    links_card = card("Подключение", err_list, quick_start(links, name),
-                      connect_tiles(links, manifests.load_all()[0], name) or t("p", "Ссылок нет.", class_="muted"),
-                      help="Ссылки и QR — ключи доступа: показывайте только самому пользователю.")
-    prefer, order = _group_prefs(user)
-    body = [page_head(name, user.note or None, actions), links_card,
-            clientviews.handoff_card(links, prefer, order=order),
+    connect = clientviews.connect_card(links, name, clientviews.Ctx.load(), _group_of(user))
+    tiles = connect_tiles(links, manifests.load_all()[0], name)
+    # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
+    advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name), tiles,
+                 t("p", "Ссылки и QR — ключи доступа: показывайте только самому пользователю.", class_="hint"),
+                 class_="card more", open=connect is None or None) if tiles else None
+    body = [page_head(name, user.note or None, actions), err_list, connect, advanced,
+            None if connect or advanced else card("Подключить", t("p", "Ссылок нет.", class_="muted")),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
 

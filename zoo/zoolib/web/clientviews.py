@@ -1,27 +1,32 @@
-"""Страница «Клиенты» (что ставить по протоколам и платформам) и блок «Что отправить» на странице
-пользователя. Данные — каталог zoo/data/clients.json и кэш версий; в сеть страницы не ходят."""
+"""Страница «Клиенты» (что ставить по протоколам и платформам) и блок «Подключить»: приложения платформы,
+QR и ссылки конкретного человека и один текст инструкции на группу. Данные — каталог
+zoo/data/clients.json и кэш версий; в сеть страницы не ходят."""
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
+from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .. import clients, groups, manifests, protolib, qr
-from .html import Markup, badge, card, t, table
+from .. import allowlist, clients, groups, manifests, protolib, qr, users
+from .html import Markup, badge, card, post_button, t, table
 from .views import ago, alert_list, page_head
 
 if TYPE_CHECKING:
     from .app import App, Request, Response
 
 DESKTOP = {"windows", "macos", "linux"}
-MAIN_PLATFORMS = ("android", "ios", "windows")  # остальные — под «Другие платформы»
+MAIN_PLATFORMS = ("android", "ios", "windows")  # остальные — под «Другие платформы» на шаге «Клиенты»
 BADGE_KIND = {"ok": "ok", "warn": "warn", "no": "bad", "unk": "muted"}
 LEGEND = "✓ заявлено поддерживаемым · ! с оговоркой · ✕ не работает · ? не проверено · — не заявлено"
 UNVERIFIED = "Шаги и статусы — по коду и документации клиентов, на устройстве не проверялись."
 SEND_WARN = ("Ссылки и QR — ключи доступа: не отправляйте через MAX и VK, лучше лично или мессенджером "
              "со сквозным шифрованием.")
-SEND_WHAT = {"qr": "QR", "link": "ссылку", "file": "файл"}
 FOREIGN_STORE = "В российском App Store его нет: нужен Apple ID другой страны, подделки с похожим названием не ставьте."
+NAME_TOKEN = "{name}"
+FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 def _sorted_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -68,7 +73,37 @@ def _version_cell(client: dict[str, Any], cache: dict[str, Any], platform: str |
              class_="mono")
 
 
+def _proto_chips(cat: clients.Catalog, c: dict[str, Any], plat: str, protos: list[str]) -> Markup:
+    """Все протоколы клиента (✓ и !), рекомендованные каталогом для этой платформы — зелёные."""
+    chips = []
+    for p in protos:
+        st = c["protocols"].get(p, {})
+        if st.get("s") not in ("ok", "warn"):
+            continue
+        rec = (cat.recommended(plat, p) or {}).get("id") == c["id"]
+        why = ["рекомендуем для этого протокола"] if rec else []
+        if st.get("note"):
+            why.append(st["note"])
+        kind = "chip ok" if rec else ("chip warn" if st["s"] == "warn" else "chip")
+        chips.append(t("span", cat.protocols[p]["title"], class_=kind, title="; ".join(why) or None))
+    return t("div", chips, class_="chips")
+
+
+def _check_controls(cache: dict[str, Any], csrf: str) -> Markup:
+    checked = cache["checked"]
+    can, why = clients.check_state()
+    status = t("span", f"версии проверены {ago(checked)}" if checked else "версии ещё не проверялись",
+               class_="muted small")
+    if can:
+        btn = post_button("/clients/check", "Проверить сейчас", csrf, "btn small",
+                          title="Спросить GitHub про свежие версии (не чаще раза в 10 минут)")
+    else:
+        btn = t("button", "Проверить сейчас", type="button", class_="btn small", disabled=True, title=why)
+    return t("div", status, btn, class_="actions")
+
+
 def clients_page(app: "App", req: "Request") -> "Response":
+    csrf = req.session.csrf if req.session else ""
     try:
         cat = clients.load()
     except clients.ClientsError as e:
@@ -80,21 +115,15 @@ def clients_page(app: "App", req: "Request") -> "Response":
 
     cards: list[Markup] = []
     for plat, plat_title in cat.platforms.items():
-        by_client: dict[str, list[str]] = {}
-        for pid in protos:
-            c = cat.recommended(plat, pid)
-            if c:
-                by_client.setdefault(c["id"], []).append(pid)
-        if not by_client:
+        rec = {cat.recommended(plat, p)["id"] for p in protos if cat.recommended(plat, p)}  # type: ignore[index]
+        mine = [c for c in cat.clients if plat in c["platforms"]
+                and any(c["protocols"].get(p, {}).get("s") in ("ok", "warn") for p in protos)]
+        if not mine:
             continue
-        rows = []
-        for cid, pids in by_client.items():
-            c = cat.client(cid)
-            assert c is not None
-            rows.append([t("strong", c["name"]),
-                         t("div", [t("span", cat.protocols[p]["title"], class_="chip") for p in pids], class_="chips"),
-                         _version_cell(c, cache, plat),
-                         t("div", _link_anchors(c["platforms"][plat]), class_="chips")])
+        mine.sort(key=lambda c: c["id"] not in rec)  # рекомендованные первыми, дальше порядок каталога
+        rows = [[t("span", t("strong", c["name"]), " ", badge("рекомендуем", "ok") if c["id"] in rec else None),
+                 _proto_chips(cat, c, plat, protos), _version_cell(c, cache, plat),
+                 t("div", _link_anchors(c["platforms"][plat]), class_="chips")] for c in mine]
         cards.append(card(plat_title, table(["клиент", "для протоколов", "версия", "скачать"], rows, stack=True)))
 
     names = {c["id"]: c["name"] for c in cat.clients}
@@ -118,26 +147,31 @@ def clients_page(app: "App", req: "Request") -> "Response":
     notes = [alert_list(caveats) if caveats else None,
              t("details", t("summary", f"Почему ✕ и ! ({len(why)})"), alert_list(why), class_="more") if why else None]
 
-    checked = cache["checked"]
     failed = [names.get(k, k) for k, v in cache["versions"].items() if v.get("error")]
-    foot = t("p", "Версии из GitHub: " + (f"проверены {ago(checked)}" if checked else
-             "ещё не проверялись (sudo zoo clients --check-upstream)") + " · раз в сутки, страница в сеть не ходит"
+    foot = t("p", "Версии из GitHub: раз в сутки и по кнопке, страница в сеть не ходит"
              + (f" · не удалось: {', '.join(failed)}" if failed else "") + f" · каталог от {cat.raw['updated']}",
              class_="hint")
-    body = [page_head("Клиенты", "что ставить на устройство"), t("p", UNVERIFIED, class_="hint"), *cards, matrix,
+    intro = t("p", UNVERIFIED + " Зелёным — рекомендуем для протокола, жёлтым — с оговоркой (наведите).", class_="hint")
+    body = [page_head("Клиенты", "что ставить на устройство", _check_controls(cache, csrf)), intro, *cards, matrix,
             *[n for n in notes if n], foot]
     return app.render(req, "Клиенты", body, active="/clients")
+
+
+def check_now(app: "App", req: "Request") -> "Response":
+    from .app import redirect
+    ok, why = clients.request_check()
+    req.session.flash("ok" if ok else "warn", why[:1].upper() + why[1:])
+    return redirect("/clients")
 
 
 # ---------- пакет раздачи ----------
 
 @dataclass
 class Item:
-    """Протокол, который отдаёт клиент: способ передачи ключа и где он лежит на странице пользователя."""
+    """Протокол, который отдаёт клиент, и способ передачи ключа по умолчанию."""
     proto: str
     method: str
     tile: str
-    tab: str | None
 
 
 @dataclass
@@ -147,8 +181,10 @@ class Section:
     version: str | None
     links: list[dict[str, Any]]
     items: list[Item]
+    install: str = ""
     steps: list[str] = field(default_factory=list)
-    sends: list[str] = field(default_factory=list)
+    extras: list[Item] = field(default_factory=list)
+    check: str = ""
 
     @property
     def proto(self) -> str:
@@ -157,10 +193,6 @@ class Section:
     @property
     def method(self) -> str:
         return self.items[0].method
-
-    @property
-    def tab(self) -> str | None:
-        return self.items[0].tab
 
     @property
     def tiles(self) -> str:
@@ -175,14 +207,18 @@ class Pack:
 
     @property
     def message(self) -> str:
-        """Одно сообщение на платформу: с одним приложением — шаги по порядку; с несколькими —
-        «1) Приложение — протоколы» и шаги каждого."""
-        lines = [f"VPN на {self.platform_title}: что сделать"]
-        for n, s in enumerate(self.sections, 1):
-            if len(self.sections) > 1:
-                lines += ["", f"{n}) {s.client['name']} — {s.tiles}"]
-            lines += [f"{i}. {x}" for i, x in enumerate(s.steps, 1)]
-        return "\n".join(lines)
+        """Текст инструкции платформы одним списком: сначала установка всех приложений, потом по порядку
+        импорт и настройки каждого (с несколькими приложениями — с их названием), в конце проверка по
+        основному протоколу. Начинается с {name}: имя подставляет тот, кто показывает текст человеку."""
+        many = len(self.sections) > 1
+        steps = [s.install for s in self.sections]
+        for s in self.sections:
+            for n, x in enumerate(s.steps):
+                lead = (f"{s.client['name']} ({s.tiles}): " if n == 0 else f"{s.client['name']}: ") if many else ""
+                steps.append(lead + x)
+        steps.append(self.sections[0].check)
+        return "\n".join([f"{NAME_TOKEN}, VPN на {self.platform_title}: что сделать",
+                          *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
 
 
 def _usable(proto: str, client_id: str, link: protolib.Link) -> bool:
@@ -205,6 +241,21 @@ def pick_method(proto: str, client: dict[str, Any], platform: str, links: list[p
             "file": any(ln.kind == "file" for ln in mine)}
     order = ("link", "file", "qr") if platform in DESKTOP else ("qr", "link", "file")
     return next((m for m in order if m in client.get("import", {}) and have[m]), None)
+
+
+def pick_link(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link], method: str) -> int | None:
+    """Номер ссылки пользователя под способ передачи: ссылка — первая («Обычная»); из файлов Android берёт
+    конфиг со списком приложений, остальные — общий."""
+    mine = [(i, ln) for i, ln in enumerate(links) if ln.proto_id == proto and _usable(proto, client["id"], ln)]
+    pool = {"link": [x for x in mine if x[1].kind == "uri"], "file": [x for x in mine if x[1].kind == "file"],
+            "qr": [x for x in mine if _qrable(x[1])]}[method]
+
+    def rank(x: tuple[int, protolib.Link]) -> int:
+        if x[1].kind != "file":
+            return 0
+        return 0 if Path(x[1].uri).name.endswith("-android.conf") == (platform == "android") else 1
+
+    return min(pool, key=rank)[0] if pool else None
 
 
 def _tile_title(cat: clients.Catalog, mans: list[Any], proto: str) -> str:
@@ -268,89 +319,184 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         return None
     sections = []
     for c, mine in plan:
-        items = []
-        for proto, method in mine:
-            tabs = cat.raw.get("tabs", {}).get(proto)
-            items.append(Item(proto, method, _tile_title(cat, mans, proto),
-                              (tabs.get(platform) or tabs.get("*")) if tabs else None))
+        items = [Item(proto, method, _tile_title(cat, mans, proto)) for proto, method in mine]
         sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform]), items)
         ver = f" (версия {sec.version})" if sec.version else ""
         foreign = f" {FOREIGN_STORE}" if cat.no_ru_store(c, platform) else ""
-        sec.steps.append(f"Скачайте «{c['name']}»{ver}: {sec.links[0]['url']}{foreign}")
-        for method in dict.fromkeys(i.method for i in items):
-            sec.steps.append(c["import"][method])
-        sec.sends += [f"{SEND_WHAT[i.method]} — плитка «{i.tile}»" + (f", вкладка «{i.tab}»" if i.tab else "")
-                      for i in items]
+        sec.install = f"Установите «{c['name']}»{ver}: {sec.links[0]['url']}{foreign}"
+        sec.steps += [c["import"][m] for m in dict.fromkeys(i.method for i in items)]
         for ex in c.get("extra", []):
             if ex["platform"] == platform and ex["proto"] in have:
                 sec.steps.append(ex["text"])
-                sec.sends.append(f"файл — плитка «{_tile_title(cat, mans, ex['proto'])}»")
+                sec.extras.append(Item(ex["proto"], "file", _tile_title(cat, mans, ex["proto"])))
         app_step = cat.per_app_steps(c, platform)
         if app_step:
             sec.steps.append("Приложения через VPN: " + app_step)
         # Brave — «приложение под VPN»: только там, где клиент умеет пускать в туннель выбранные приложения
         brave = (c.get("per_app") in ("config", "rules") and platform != "ios") or bool(app_step)
         browser = "Brave" if brave else "любом браузере"
-        check = cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]
-        sec.steps.append(check.replace("{browser}", browser))
+        sec.check = (cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]).replace("{browser}", browser)
         sections.append(sec)
     return Pack(platform, cat.platforms[platform], sections)
 
 
 def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]], list[str] | None]:
-    """Наборы клиентов и порядок протоколов группы для «Что отправить» (у «всех включённых» порядок — из каталога)."""
+    """Наборы клиентов и порядок протоколов группы для «Подключить» (у «всех включённых» порядок — из каталога)."""
     if g is None:
         return {}, None
     prefer = {p: list(ids) for p, ids in g.clients.items()}
     return prefer, (None if g.all_protocols else list(g.protocols))
 
 
-def _section_head(s: Section, n: int | None) -> list[Any]:
-    return [f"{n}) " if n else None, t("strong", s.client["name"]),
-            t("span", f" {s.version}", class_="muted") if s.version else None]
+def synth_links(protos: list[str]) -> list[protolib.Link]:
+    """Ссылки-заглушки по протоколам группы: пакет группы строится до того, как у кого-то есть ключи, и без
+    них (ни в тексте, ни в способах передачи ничего личного)."""
+    out = [protolib.Link(f"{p}://", "", p, "uri") for p in protos]
+    if "amneziawg" in protos:
+        out += [protolib.Link("vpn://", "", "amneziawg", "uri"), protolib.Link("amneziawg.conf", "", "amneziawg", "file")]
+    return out + [protolib.Link(allowlist.V2RAYN_FILE, "", allowlist.V2RAYN_PROTO, "file")]
 
 
-def handoff_card(links: list[protolib.Link], prefer: dict[str, list[str]] | None = None, uid: str = "",
-                 heading: str = "Что отправить", order: list[str] | None = None) -> Markup | None:
-    """«Что отправить»: по платформе — клиенты набора (ссылка, версия, за какие протоколы отвечают), что
-    прислать, одно сообщение на платформу. prefer и order — клиенты и протоколы группы (см. build_pack);
-    uid — приставка id полей, если на странице несколько пакетов."""
+@dataclass
+class Ctx:
+    """Всё, что нужно блокам «Подключить» и текстам групп; грузится один раз на страницу."""
+    cat: clients.Catalog
+    cache: dict[str, Any]
+    mans: list[Any]
+    texts: dict[tuple[str, str], str | None] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls) -> "Ctx | None":
+        try:
+            cat = clients.load()
+        except clients.ClientsError:
+            return None
+        return cls(cat, clients.load_cache(), manifests.load_all()[0])
+
+    @cached_property
+    def managed(self) -> list[str]:
+        return users.managed_protocols()[0]
+
+    def default_text(self, g: groups.Group, plat: str) -> str | None:
+        """Текст по умолчанию: набор клиентов группы по всем её протоколам. None — для платформы пакета нет."""
+        key = (g.id, plat)
+        if key not in self.texts:
+            prefer, order = group_prefs(g)
+            pack = build_pack(self.cat, self.cache, plat, synth_links(g.resolve(self.managed)), self.mans, prefer, order)
+            self.texts[key] = pack.message if pack else None
+        return self.texts[key]
+
+    def text(self, g: groups.Group, plat: str) -> str | None:
+        """Текст группы для платформы: свой или по умолчанию."""
+        return g.messages.get(plat) or self.default_text(g, plat)
+
+
+# ---------- «Подключить»: приложения, QR и ссылки человека, текст группы ----------
+
+@dataclass
+class Key:
+    """Что передать человеку по одному протоколу его приложением: QR, ссылка, файл."""
+    title: str
+    qr: int | None = None
+    uri: str | None = None
+    file: str | None = None
+
+
+def _keys(sec: Section, platform: str, links: list[protolib.Link]) -> list[Key]:
+    c = sec.client
+    imp = c.get("import", {})
+    out = []
+    for it in sec.items:
+        k = Key(it.tile)
+        if "qr" in imp:
+            k.qr = pick_link(it.proto, c, platform, links, "qr")
+        if "link" in imp and (i := pick_link(it.proto, c, platform, links, "link")) is not None:
+            k.uri = links[i].uri
+        if "file" in imp and (i := pick_link(it.proto, c, platform, links, "file")) is not None:
+            k.file = Path(links[i].uri).name
+        out.append(k)
+    for ex in sec.extras:
+        f = next((Path(ln.uri).name for ln in links if ln.proto_id == ex.proto and ln.kind == "file"), None)
+        out.append(Key(ex.tile, file=f))
+    return [k for k in out if k.qr is not None or k.uri or k.file]
+
+
+def _key_html(k: Key, name: str, kid: str) -> Markup:
+    parts: list[Any] = [t("div", k.title, class_="key-name")]
+    if k.qr is not None:
+        parts.append(t("img", class_="qr", src=f"/users/{name}/qr/{k.qr}", loading="lazy", width=160, height=160,
+                       alt=f"QR: {k.title}"))
+    if k.uri:
+        parts.append(t("div", t("input", type="text", id=kid, value=k.uri, readonly=True, data_select=True,
+                                aria_label=f"Ссылка: {k.title}"),
+                       t("button", "Копировать", type="button", class_="btn small", data_copy=kid), class_="link-uri"))
+    if k.file and FILE_NAME_RE.fullmatch(k.file):
+        parts.append(t("a", "Скачать файл", href=f"/users/{name}/file/{k.file}", class_="btn small"))
+    return t("div", parts, class_="key")
+
+
+def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.Catalog, uid: str) -> Markup:
+    head = t("div", t("strong", sec.client["name"]),
+             t("span", sec.version, class_="mono muted") if sec.version else None,
+             t("span", "нет в App Store РФ", class_="chip warn", title=FOREIGN_STORE) if cat.no_ru_store(sec.client, plat)
+             else None,
+             t("div", _link_anchors(sec.links), class_="chips"), class_="app-head")
+    return t("div", head, t("div", [_key_html(k, name, f"k-{uid}{plat}-{sec.client['id']}-{n}")
+                                    for n, k in enumerate(keys)], class_="keys"), class_="app")
+
+
+def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
+                  uid: str = "") -> Markup | None:
+    """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, текст
+    группы с его именем. Без JS видны все платформы подряд; с JS список оставляет одну. uid — приставка id
+    полей, если на странице несколько блоков."""
     if not links:
         return None
-    try:
-        cat = clients.load()
-    except clients.ClientsError:
-        return None
-    cache = clients.load_cache()
-    mans = manifests.load_all()[0]
-    blocks: dict[bool, list[Markup]] = {True: [], False: []}
-    unverified = False
-    for plat in cat.platforms:
-        pack = build_pack(cat, cache, plat, links, mans, prefer, order)
+    prefer, order = group_prefs(g)
+    panels: list[Markup] = []
+    plats: list[tuple[str, str]] = []
+    for plat, title in ctx.cat.platforms.items():
+        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order)
         if pack is None:
             continue
-        unverified = unverified or any(not s.client["verified"]["device"] for s in pack.sections)
+        text = ((ctx.text(g, plat) if g else None) or pack.message).replace(NAME_TOKEN, name)
         mid = f"msg-{uid}{plat}"
-        many = len(pack.sections) > 1
-        parts: list[Any] = []
-        for n, s in enumerate(pack.sections, 1):
-            lines = [t("li", "Скачать: ", _link_anchors(s.links)), t("li", "Отправить: ", "; ".join(s.sends))]
-            if many:
-                parts.append(t("p", _section_head(s, n), " — " + s.tiles, class_="pack-app"))
-            parts.append(t("ul", lines, class_="steps"))
-        if many:
-            title = [pack.platform_title, t("span", f" · {len(pack.sections)} приложения", class_="muted")]
-        else:
-            title = [pack.platform_title, " · ", *_section_head(pack.sections[0], None)]
-        blocks[plat in MAIN_PLATFORMS].append(t(
-            "div", t("h3", title, class_="sub-h"), parts,
-            t("textarea", pack.message, id=mid, hidden=True, readonly=True),
-            t("div", t("button", "Скопировать сообщение", type="button", class_="btn", data_copy=mid,
-                       title="Инструкция без ключей: QR, ссылку или файл отправьте отдельно"), class_="actions"),
-            class_="pack"))
-    if not blocks[True] and not blocks[False]:
+        keys = [_keys(s, plat, links) for s in pack.sections]
+        apps = [_app_html(s, k, plat, name, ctx.cat, uid) for s, k in zip(pack.sections, keys)]
+        msg = t("div",
+                t("label", "Текст сообщения — можно править", for_=mid),
+                t("textarea", text, id=mid, rows=str(min(16, text.count("\n") + 3)), spellcheck="false"),
+                t("div",
+                  t("button", "Скопировать текст", type="button", class_="btn primary", data_copy=mid,
+                    title="Копируется текст из поля выше, без ключей"),
+                  t("label", t("input", type="checkbox", data_addlinks=mid), " добавить ссылки в текст",
+                    class_="chk", data_links=True, hidden=True) if any(k.uri for ks in keys for k in ks) else None,
+                  t("a", "текст для всей группы", href=f"/groups/{g.id}#texts", class_="small") if g else None,
+                  class_="actions"),
+                t("p", "Ключей в тексте нет: QR и ссылки выше отправьте отдельно.", class_="hint"), class_="msg")
+        panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))
+        plats.append((plat, title))
+    if not panels:
         return None
-    other = t("details", t("summary", "Другие платформы"), blocks[False], class_="more") if blocks[False] else None
-    return card(heading, blocks[True], other, t("p", SEND_WARN, class_="hint"),
-                t("p", UNVERIFIED, class_="hint") if unverified else None,
-                help="Сообщение — только инструкция, без ключей. Сами QR, ссылки и файлы — в плитках выше.")
+    pick = (t("div", t("label", "Платформа", for_=f"pl-{uid}"),
+              t("select", [t("option", title, value=p, selected=n == 0) for n, (p, title) in enumerate(plats)],
+                id=f"pl-{uid}", data_plat=True), class_="conn-pick", hidden=True) if len(panels) > 1 else None)
+    return t("div", pick, panels, class_="conn")
+
+
+def hints(ctx: Ctx) -> list[Markup]:
+    """Строки под блоками «Подключить»: один раз на страницу, не в каждом блоке."""
+    out = [t("p", SEND_WARN, class_="hint")]
+    if any(not c["verified"]["device"] for c in ctx.cat.clients):
+        out.append(t("p", UNVERIFIED, class_="hint"))
+    return out
+
+
+def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: groups.Group | None,
+                 uid: str = "") -> Markup | None:
+    panel = connect_panel(links, name, ctx, g, uid) if ctx else None
+    if panel is None:
+        return None
+    return card("Подключить", panel, hints(ctx),
+                help="Приложения и текст — как у группы (менять на её странице). QR и ссылки — этого человека: "
+                     "показывайте только ему.")
