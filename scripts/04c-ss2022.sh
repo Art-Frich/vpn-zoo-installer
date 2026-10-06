@@ -13,7 +13,7 @@ config_load
 xui_wait_api 60 || die "API 3x-ui не отвечает — сначала фаза 03-3xui"
 
 # Выключено флагом после установки: inbound выключить, порты закрыть, манифест enabled=false
-if [ "${ENABLE_SS:-1}" != "1" ]; then
+if [ "${ENABLE_SS:-0}" != "1" ]; then
     SS_PORT="$(config_get SS_PORT)"
     proto_ss2022_disable
     log_ok "ENABLE_SS=$ENABLE_SS: SS-2022 выключен, порт закрыт"

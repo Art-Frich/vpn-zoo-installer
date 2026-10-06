@@ -23,6 +23,16 @@ BLOCKS = {FREEZE_16K, HANDSHAKE_FAIL, IP_BLOCKED, UDP_BLOCKED}
 # итог «не проверялось»: нет клиента на этой машине или нет probe в манифесте
 NOT_TESTED = {SKIPPED, CLIENT_ERROR}
 
+def describe(verdict: str, intercepted: bool = False) -> str:
+    """Расшифровка вердикта. Через локальный VPN/TUN путь к серверу идёт не через провайдера:
+    «блокировка» тогда — свойство этого пути или хостера, а не ТСПУ."""
+    text = DESCRIPTIONS.get(verdict, "")
+    if intercepted and verdict in BLOCKS:
+        text = text.replace(" (типичная «заморозка» ТСПУ)", "")
+        text += " — путь шёл через локальный VPN, провайдер и ТСПУ тут ни при чём"
+    return text
+
+
 DESCRIPTIONS = {
     OK: "работает",
     SLOW: "работает, но медленно или с обрывами",

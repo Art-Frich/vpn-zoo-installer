@@ -337,13 +337,13 @@ f2b_owner() {
     [ "$1" = del ] || log_info "fail2ban: адрес $2 (эта сессия) не банится, пока перенос ждёт подтверждения"
 }
 
-# ssh_fw_sync «ПОРТ,ПОРТ» ПОРТ_ВХОДА — ufw limit на нужные порты (сначала открыть, потом
+# ssh_fw_sync «ПОРТ,ПОРТ» ПОРТ_ВХОДА — ufw allow на нужные порты (сначала открыть, потом
 # закрыть лишние), jail sshd, SSH_PORTS и SSH_LOGIN_PORT в config.env
 ssh_fw_sync() {
     local list="$1" login="$2" p spec
     for p in ${list//,/ }; do
         # владелец SSH-правил — 01: иначе её fw_allow при следующем запуске упрётся в «чужой» порт
-        ZOO_PHASE=01-firewall fw_allow "$p/tcp" "SSH" limit
+        ZOO_PHASE=01-firewall fw_allow "$p/tcp" "SSH"
     done
     if [ -f "$PORTS_FILE" ]; then
         while IFS= read -r spec; do

@@ -81,7 +81,7 @@ remote_install() {
 cfg() { sx bash -c ". /etc/vpn-setup/config.env; printf '%s' \"\${$1:-}\""; }
 pending_val() { sx bash -c ". $ST/pending.env 2>/dev/null && printf '%s' \"\${$1:-}\""; }
 listening() { [ -n "$(sx ss -Htln "sport = :$1" 2>/dev/null)" ]; }
-ufw_has() { sx ufw status 2>/dev/null | grep -qE "^$1/tcp +LIMIT"; }
+ufw_has() { sx ufw status 2>/dev/null | grep -qE "^$1/tcp +(ALLOW|LIMIT)"; }
 jail_ports() { sx awk -F'= *' '/^port/ {print $2}' /etc/fail2ban/jail.d/vpn-zoo.local; }
 state_of() { sx bash -c "grep '^$1=' /var/lib/vpn-setup/state | tail -n 1 | cut -d= -f2"; }
 
@@ -190,7 +190,7 @@ grep -q "ssh -p $NEW " <<< "$out" && grep -q "SSH_CONFIRM=1" <<< "$out" && pass 
 [ "$NEW" -ge 20000 ] && ! grep -qw "$NEW" <<< "1080 3128 8080 9050 2053 54321" && pass "порт случайный высокий" || fail "порт $NEW"
 for p in "$OLD" "$NEW"; do
     listening "$p" && pass "порт $p слушается" || fail "порт $p не слушается"
-    ufw_has "$p" && pass "ufw limit $p/tcp" || fail "нет ufw limit $p/tcp"
+    ufw_has "$p" && pass "ufw allow $p/tcp" || fail "нет ufw allow $p/tcp"
     r="$(cssh "$p" root 'echo ok-$(id -un)' 2>&1 || true)";[ "$r" = "ok-root" ] && pass "порт $p: root по ключу" || fail "порт $p: root по ключу: $r"
     m="$(auth_methods "$p")"; [ "$m" = "publickey" ] && pass "порт $p: предлагается только publickey" || fail "порт $p: методы «$m»"
 done
@@ -290,7 +290,7 @@ out="$(cssh "$NEW" "$TEST_USER" "cd /repo && SSH_CONFIRM=1 ZOO_TEST_ENV=docker s
 listening "$OLD" && fail "порт $OLD всё ещё слушается" || pass "порт $OLD не слушается"
 ufw_has "$OLD" && fail "ufw: $OLD открыт" || pass "ufw: $OLD закрыт"
 sx ufw status | grep -qE "^$OLD/tcp " && fail "в ufw осталось правило $OLD/tcp" || pass "в ufw нет правил $OLD/tcp"
-ufw_has "$NEW" && listening "$NEW" && pass "порт $NEW: ufw limit и слушается" || fail "порт $NEW не готов"
+ufw_has "$NEW" && listening "$NEW" && pass "порт $NEW: ufw allow и слушается" || fail "порт $NEW не готов"
 r="$(cssh "$NEW" root 'echo ok' 2>&1 || true)"; [ "$r" = "ok" ] && pass "вход root по ключу на $NEW" || fail "вход на $NEW: $r"
 ssh_gap
 r="$(cx ssh "${SSH_OPTS[@]}" -p "$OLD" "root@$SIP" true 2>&1 || true)"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 04d-tuic.sh — TUIC v5 нативным сервером 3x-ui v3.9.0 (флаг ENABLE_TUIC, по умолчанию 0, D5).
+# 04d-tuic.sh — TUIC v5 нативным сервером 3x-ui v3.9.0 (флаг ENABLE_TUIC, по умолчанию 1, D5).
 # Случайный высокий UDP-порт (TUIC_PORT), самоподписанный сертификат в /etc/vpn-setup/tuic/
 # (SAN = IP сервера, опционально TUIC_SNI), пользователь owner.
 # Клиент TUIC для самопроверки (`zoo probe --local`): закреплённый sing-box (SINGBOX_* в
@@ -43,7 +43,7 @@ tuic_probe_client_install() {
 [ -n "${SERVER_IP:-}" ] || die "SERVER_IP не задан (config.env)"
 xui_wait_api 60 || die "API 3x-ui не отвечает — сначала фаза 03-3xui"
 
-if [ "${ENABLE_TUIC:-0}" != "1" ]; then
+if [ "${ENABLE_TUIC:-1}" != "1" ]; then
     TUIC_PORT="$(config_get TUIC_PORT)"
     proto_tuic_disable
     rm -f "$TUIC_PROBE_BIN"

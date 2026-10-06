@@ -121,7 +121,7 @@ def render(report: dict[str, Any]) -> None:
     if seen:
         print()
         for v in seen:
-            print(f"  {v} — {verdicts.DESCRIPTIONS.get(v, '')}")
+            print(f"  {v} — {verdicts.describe(v, bool(report.get('tcp_intercepted')))}")
     if report.get("compare"):
         print()
         render_compare(report["compare"])
@@ -261,5 +261,5 @@ def markdown(report: dict[str, Any]) -> str:
     seen = sorted({r["verdict"] for r in report.get("results", [])})
     if seen:
         lines += ["", "## Обозначения", ""]
-        lines += [f"- **{v}** — {verdicts.DESCRIPTIONS.get(v, '')}" for v in seen]
+        lines += [f"- **{v}** — {verdicts.describe(v, bool(report.get('tcp_intercepted')))}" for v in seen]
     return "\n".join(lines) + "\n"

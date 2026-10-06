@@ -59,7 +59,7 @@ if [ "$HY2_HOP" = "1" ]; then
     iface="$(detect_default_iface || true)"
     config_default HY2_HOP_IFACE "$iface"
 fi
-config_default ENABLE_HY2_OBFS 0
+config_default ENABLE_HY2_OBFS 1
 gen_once HY2_STATS_PORT rand_port
 gen_once HY2_STATS_SECRET gen_random_alnum 32
 
