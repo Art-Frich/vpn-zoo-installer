@@ -31,7 +31,7 @@ import os
 import re
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -71,12 +71,69 @@ KINDS: dict[str, tuple[str, str, str]] = {
     "panel-login": ("3x-ui", "вход в 3x-ui", "login"),
     "web-login": ("zoo-web", "вход в админку zoo", "login"),
 }
+# справка по видам событий (одно место правды для веба): что это / опасно ли / что сделала защита / что делать.
+# Факты сверены с кодом: 01-firewall.sh (ufw allow без limit — D37, fail2ban sshd 5 за 10 мин → 1 ч, recidive → 1 нед),
+# 01b-ssh.sh (пароли выключает только SSH_HARDEN=1, по умолчанию 0), 03-3xui.sh (панель на 127.0.0.1 или die),
+# web/server.py (админка только loopback), proto-hysteria2.sh (хук пишет «reject АДРЕС»), PROBE-SURFACE (REALITY).
+HELP_LABELS = ("Что это", "Опасно ли", "Что сделала защита", "Что делать")
+KIND_HELP: dict[str, tuple[str, str, str, str]] = {
+    "port-scan": (
+        "Кто-то стучался в порт, который у вас закрыт: сканеры обходят адреса и порты в поиске сервисов.",
+        "Нет. Это фон интернета: на любом сервере таких сотни в сутки.",
+        "ufw закрывает всё, кроме нужных портов, и молча отбрасывает пакеты.",
+        "Ничего."),
+    "ssh-limit": (
+        "Слишком частые подключения к SSH с одного адреса: сработало правило ufw limit (6 подключений за 30 секунд).",
+        "Само по себе нет: похоже на перебор, но так же выглядят частые ssh и scp подряд.",
+        "ufw отбросил лишние подключения. Установщик такое правило больше не ставит (D37): запись осталась "
+        "от старой установки или от вашего правила.",
+        "Ваш адрес — подождать полминуты. Чужой — ничего."),
+    "ssh-auth": (
+        "Подбор входа по SSH: неверный пароль или ключ, несуществующий пользователь.",
+        "Если вход по паролю выключен — подобрать нельзя. Установщик выключает его только с SSH_HARDEN=1 "
+        "(тогда вход лишь по ключу); иначе зависит от настроек хостера.",
+        "fail2ban банит адрес на час после 5 неудач за 10 минут, повторных нарушителей — на неделю.",
+        "Пароль включён — поставьте SSH_HARDEN=1 (README). Выключен — ничего."),
+    "ssh-scan": (
+        "Подключились к SSH и ушли без попытки войти: проверили версию или не договорились о шифрах.",
+        "Нет.",
+        "Входа не было, блокировать нечего.",
+        "Ничего."),
+    "ssh-ban": (
+        "fail2ban заблокировал адрес: jail sshd — SSH на час, recidive — все порты на неделю.",
+        "Нет: это реакция защиты, а не атака (в «попытках» не считается).",
+        "Правило ufw закрывает адресу порты, снимается само по сроку.",
+        "Забанили себя — с другого адреса или из консоли хостера: sudo fail2ban-client unban АДРЕС."),
+    "hy2-auth": (
+        "К порту Hysteria2 пришли с ключом, которого у вас нет: чужой зонд или клиент со старым ключом.",
+        "Само по себе нет: без верного ключа к VPN не подключиться. Частые попытки — активное зондирование.",
+        "Помощник авторизации отказал; в журнал записан только адрес, ключ и имя не пишутся.",
+        "Адрес ваш — обновите ссылку подключения у пользователя. Чужой — ничего."),
+    "reality-probe": (
+        "К порту VLESS пришёл клиент без верного ключа REALITY. Так цензор проверяет, прокси ли это.",
+        "Нет: без ключа REALITY отвечает как настоящий сайт-прикрытие.",
+        "Соединение ушло на сайт-прикрытие: сертификат и ответы его, а не ваши.",
+        "Единичные — норма. Лавина с одного адреса — активная проверка: попробуйте другой SNI (VLESS_SNI, REFERENCE)."),
+    "panel-login": (
+        "Неудачный вход в панель 3x-ui.",
+        "Панель слушает только 127.0.0.1 (установщик это проверяет): снаружи на неё не зайти.",
+        "Вход отклонён.",
+        "Адрес 127.0.0.1 — обычно ssh-туннель: вы или опечатка. Внешний — кто-то открыл панель наружу, закройте."),
+    "web-login": (
+        "Неверный токен при входе в админку zoo (или слишком частые попытки).",
+        "Админка слушает только 127.0.0.1: зайти можно лишь через ssh-туннель.",
+        "Вход отклонён, при частых попытках сервер отвечает 429.",
+        "В записи всегда 127.0.0.1 (так пишется). Не вы — у кого-то есть доступ к серверу: смените токен админки."),
+}
 GROUPS: dict[str, str] = {
     "ports": "Стучались в закрытые порты",
     "ssh": "Перебор SSH",
-    "proxy": "Проверяли REALITY и Hysteria2",
+    "proxy": "Проверяли, прокси ли это",
     "login": "Входы в панели",
 }
+# как группа называется в строке «…— попыток не было»; REALITY добавляется, только если он отслеживается
+GROUP_QUIET: dict[str, str] = {"ports": "закрытые порты", "ssh": "SSH", "proxy": "Hysteria2", "login": "панели"}
+REALITY_UNTRACKED = "не отслеживается (так задумано: иначе в логах были бы сайты пользователей)"
 # реакция защиты, а не атака: в «событий» не считается
 DEFENCE_KINDS = {"ssh-ban"}
 OWN_LOGIN = "own-login"     # не событие журнала: адрес успешного входа по ключу
@@ -338,7 +395,9 @@ CREATE TABLE IF NOT EXISTS hits (
     ip TEXT NOT NULL, port INTEGER NOT NULL DEFAULT 0, n INTEGER NOT NULL,
     PRIMARY KEY (res, ts, kind, ip, port)
 );
-CREATE INDEX IF NOT EXISTS hits_ip ON hits (res, ip, ts);
+-- покрывающий: суммы по адресам считаются обходом индекса, без прыжков в таблицу (замер: 1100 → 50 мс на 90 сутках)
+CREATE INDEX IF NOT EXISTS hits_ip2 ON hits (res, ip, ts, kind, port, n);
+DROP INDEX IF EXISTS hits_ip;
 CREATE TABLE IF NOT EXISTS ips (
     ip TEXT PRIMARY KEY, first INTEGER NOT NULL, last INTEGER NOT NULL, n INTEGER NOT NULL DEFAULT 0, cc TEXT
 );
@@ -683,11 +742,14 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
     since, step, n, res = traffic.window(period, now)
     out: dict[str, Any] = {
         "period": period, "title": traffic.PERIOD_TITLES[period], "since": since, "step": step,
-        "include_local": include_local, "db": str(db_path()), "blind": [{"what": a, "why": b} for a, b in BLIND],
+        "include_local": include_local, "db": str(db_path()), "blind": [],
         "totals": {"events": 0, "ips": 0, "bans": 0, "by_kind": {}}, "groups": [], "top_ips": [], "top_ports": [],
         "countries": [], "timeline": {"buckets": [since + i * step for i in range(n)], "step": step, "series": []},
         "hidden": {"own": 0, "local": 0}, "own_ips": [], "last_run": None,
     }
+    tracked = reality_tracked()
+    out["reality_tracked"] = tracked
+    out["blind"] = [{"what": a, "why": b} for a, b in BLIND if not (tracked and a == "REALITY")]
     con = _con()
     if con is None:
         out["empty"] = True
@@ -700,7 +762,7 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
         out["last_run"] = _last_run(con)
         # события периода — во временную таблицу один раз, суммы — SQL-запросами к ней
         con.execute("PRAGMA temp_store = MEMORY")
-        con.execute(f"CREATE TEMP TABLE _v AS SELECT ts, kind, ip, port, n FROM hits WHERE res = ? AND ts >= ? "
+        con.execute(f"CREATE TEMP TABLE _v AS SELECT ts, kind, ip, port, n FROM hits WHERE res = ? AND ts + 0 >= ? "
                     f"AND kind IN ({marks})", (res, since, *kinds))
         con.execute(f"CREATE TEMP TABLE _ip AS SELECT ip, SUM(n) AS n FROM _v WHERE kind IN ({amarks}) GROUP BY ip",
                     attack)
@@ -726,6 +788,9 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
             if 0 <= i < n:
                 series[group][i] += int(cnt)
         out["totals"]["bans"] = sum(by_kind.get(k, 0) for k in DEFENCE_KINDS)
+        if by_kind.get("reality-probe") and not tracked:  # записи есть — значит, строку кто-то включил
+            out["reality_tracked"] = True
+            out["blind"] = [b for b in out["blind"] if b["what"] != "REALITY"]
         case = "CASE kind " + " ".join(f"WHEN '{k}' THEN '{KINDS[k][2]}'" for k in attack) + " END"
         for grp, cnt in con.execute(f"SELECT {case}, COUNT(DISTINCT ip) FROM _v WHERE kind IN ({amarks}) GROUP BY 1",
                                     attack):
@@ -773,6 +838,280 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
     out["top_ports"] = [{"port": r["port"], "n": int(r["n"]), "ips": int(r["ips"])} for r in top_ports]
     out["countries"] = [{"cc": r["c"], "n": int(r["n"]), "ips": int(r["ips"])} for r in countries[:top]]
     return out
+
+
+
+def reality_tracked() -> bool:
+    """Видит ли журнал чужие клиенты REALITY: Xray пишет их только на уровне info/debug (D32), по умолчанию
+    уровень выше — владелец поднимает его сам в шаблоне Xray 3x-ui."""
+    cfg = Path(os.environ.get("XUI_DIR", "/usr/local/x-ui")) / "bin" / "config.json"
+    try:
+        level = json.loads(cfg.read_text(encoding="utf-8")).get("log", {}).get("loglevel", "")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return str(level).lower() in ("info", "debug")
+
+
+# ---------- поиск и карточка адреса ----------
+
+ROWS = (15, 50, 100)
+SORTS = ("n", "last")           # по числу попыток / по давности (ключ keyset — (значение, адрес))
+SERVICES = tuple(dict.fromkeys(v[0] for v in KINDS.values()))
+SERVICE_TITLES = {"ufw": "ufw", "ssh": "SSH", "fail2ban": "fail2ban", "hysteria": "Hysteria2", "xray": "REALITY",
+                  "3x-ui": "3x-ui", "zoo-web": "админка"}
+SERVICE_ALIASES = {"sshd": "ssh", "f2b": "fail2ban", "hy2": "hysteria", "hysteria2": "hysteria", "reality": "xray",
+                   "xui": "3x-ui", "x-ui": "3x-ui", "web": "zoo-web", "zoo": "zoo-web", "firewall": "ufw"}
+QUERY_MAX = 200
+TOKENS_MAX = 10
+SEARCH_BATCH = 200              # строк за обращение к базе, пока отсеиваем свои и локальные адреса
+SEARCH_BATCHES = 20             # и не больше стольких обращений на один запрос
+_PREFIX = re.compile(r"^[0-9a-f:.]{1,45}$")
+
+
+@dataclass
+class Query:
+    """Разобранная строка поиска. Внутри одного вида условий — «или», между видами — «и»."""
+    exact: list[str] = field(default_factory=list)
+    prefixes: list[str] = field(default_factory=list)
+    ccs: list[str] = field(default_factory=list)
+    ports: list[int] = field(default_factory=list)
+    services: list[str] = field(default_factory=list)
+    kinds: list[str] = field(default_factory=list)
+    bad: list[str] = field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        return not (self.exact or self.prefixes or self.ccs or self.ports or self.services or self.kinds)
+
+
+def parse_query(text: str) -> Query:
+    """IP или префикс (`185.220.`), страна (`cc:NL`), порт (`:22`, `port:22`), сервис (`ssh`, `hy2`) или вид
+    события (`ssh-auth`). Непонятное — в bad, а не в SQL: условия строятся только из разобранных значений."""
+    q = Query()
+    for tok in text[:QUERY_MAX].lower().split()[:TOKENS_MAX]:
+        m = re.fullmatch(r"(?:cc|country):([a-z]{2})", tok)
+        if m:
+            q.ccs.append(m.group(1).upper())
+            continue
+        m = re.fullmatch(r"(?:port)?:(\d{1,5})", tok)
+        if m:
+            if 0 < int(m.group(1)) <= 65535:
+                q.ports.append(int(m.group(1)))
+            else:
+                q.bad.append(tok)
+            continue
+        svc = SERVICE_ALIASES.get(tok, tok)
+        addr = norm_ip(tok)
+        if svc in SERVICES:
+            q.services.append(svc)
+        elif tok in KINDS:
+            q.kinds.append(tok)
+        elif addr:
+            q.exact.append(addr)
+        elif _PREFIX.match(tok) and ("." in tok or ":" in tok or tok.isdigit()):
+            q.prefixes.append(tok)
+        else:
+            q.bad.append(tok[:40])
+    return q
+
+
+def _prefix_range(prefix: str) -> tuple[str, str]:
+    """[prefix, верхняя граница): диапазон по индексу, а не LIKE (он без индекса и нечувствителен к регистру)."""
+    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
+
+
+def _clauses(q: Query, svc: str, kind: str) -> tuple[list[str], list[Any]]:
+    """Условия WHERE по таблице hits (алиас h). Страна — отдельно, по адресу после группировки. Значения — только параметрами."""
+    where: list[str] = []
+    args: list[Any] = []
+
+    def one_of(col: str, vals: list[Any]) -> None:
+        where.append(f"{col} IN ({','.join('?' * len(vals))})")
+        args.extend(vals)
+
+    ip_or: list[str] = []
+    for ip in q.exact:
+        ip_or.append("h.ip = ?")
+        args.append(ip)
+    for pf in q.prefixes:
+        ip_or.append("(h.ip >= ? AND h.ip < ?)")
+        args.extend(_prefix_range(pf))
+    if ip_or:
+        where.append("(" + " OR ".join(ip_or) + ")")
+    if q.ports:
+        one_of("h.port", q.ports)
+    if q.services:  # вид однозначно задаёт источник: так читается только покрывающий индекс
+        one_of("h.kind", [k for k, v in KINDS.items() if v[0] in q.services])
+    if q.kinds:
+        one_of("h.kind", q.kinds)
+    if svc in SERVICES:
+        one_of("h.kind", [k for k, v in KINDS.items() if v[0] == svc])
+    if kind in KINDS:
+        where.append("h.kind = ?")
+        args.append(kind)
+    return where, args
+
+
+def parse_cursor(text: str) -> tuple[int, str] | None:
+    """«ключ:адрес» (адрес может содержать «:», ключ — число); мусор — как «с начала»."""
+    key, _, ip = text.partition(":")
+    ip = norm_ip(ip) or ""
+    return (int(key), ip) if key.isdigit() and ip else None
+
+
+def search(period: str = "24h", q: str = "", svc: str = "", kind: str = "", sort: str = "n", after: str = "",
+           limit: int = ROWS[0], include_local: bool = False, now: float | None = None) -> dict[str, Any]:
+    """Адреса периода по фильтрам, keyset-страницами: ORDER BY (ключ, адрес) и условие «после курсора» вместо
+    OFFSET — стоимость страницы не растёт с глубиной. Свои и локальные адреса отсеиваются после запроса
+    (их единицы), поэтому читаем пачками, пока не наберём страницу. {rows, next, query, empty}."""
+    period = resolve_period(period)
+    sort = sort if sort in SORTS else "n"
+    limit = limit if limit in ROWS else ROWS[0]
+    query = parse_query(q)
+    since, _, _, res = traffic.window(period, now)
+    out: dict[str, Any] = {"period": period, "query": query, "rows": [], "next": None, "empty": False, "sort": sort}
+    con = _con()
+    if con is None:
+        out["empty"] = True
+        return out
+    dm = ",".join("?" * len(DEFENCE_KINDS))
+    want_def = bool(DEFENCE_KINDS & ({kind} | set(query.kinds)) or "fail2ban" in (svc, *query.services))
+    where, wargs = _clauses(query, svc, kind)
+    # «+ 0»: иначе при фильтрах планировщик берёт индекс по ts с прыжками в таблицу (замер: 500 против 120 мс)
+    where = ["h.res = ?", "h.ts + 0 >= ?", f"h.kind IN ({','.join('?' * len(KINDS))})", *where]
+    # att — попытки (без банов fail2ban), k — когда адрес замечен в последний раз; страну и «замечен» берём у уже
+    # сгруппированных адресов, а не у каждой строки hits
+    inner = (f"SELECT h.ip AS ip, SUM(CASE WHEN h.kind IN ({dm}) THEN 0 ELSE h.n END) AS att, "
+             f"SUM(CASE WHEN h.kind IN ({dm}) THEN h.n ELSE 0 END) AS bans, MAX(h.ts) AS mts "
+             f"FROM hits h WHERE {' AND '.join(where)} GROUP BY h.ip "
+             f"HAVING {'(att > 0 OR bans > 0)' if want_def else 'att > 0'}")
+    joined = sort == "last" or bool(query.ccs)  # к ips присоединяем все адреса, только если по ним сортируем или ищем
+    outer = (f"SELECT g.ip AS ip, g.att AS att, g.bans AS bans, {'COALESCE(i.last, g.mts)' if joined else 'g.mts'} AS k "
+             f"FROM ({inner}) g" + (" LEFT JOIN ips i ON i.ip = g.ip" if joined else ""))
+    base = [*sorted(DEFENCE_KINDS), *sorted(DEFENCE_KINDS), res, since, *KINDS, *wargs]
+    key = "att" if sort == "n" else "k"
+    conds = []
+    if query.ccs:
+        conds.append(f"i.cc IN ({','.join('?' * len(query.ccs))})")
+        base += query.ccs
+    if sort == "n":
+        order, cmp_ = " ORDER BY g.att DESC, g.ip ASC", "(g.att < ? OR (g.att = ? AND g.ip > ?))"
+    else:
+        order, cmp_ = " ORDER BY k DESC, g.ip DESC", "(COALESCE(i.last, g.mts) < ? OR (COALESCE(i.last, g.mts) = ? AND g.ip < ?))"
+    pos = parse_cursor(after)
+    try:
+        own = {r["ip"] for r in con.execute("SELECT ip FROM own")}
+        nets = load_ignore()
+        picked: list[Any] = []
+        capped = False
+        for i in range(SEARCH_BATCHES):
+            use = [*conds, *([cmp_] if pos else [])]
+            stmt = outer + (" WHERE " + " AND ".join(use) if use else "") + order + " LIMIT ?"
+            args = [*base, *([pos[0], pos[0], pos[1]] if pos else []), SEARCH_BATCH]
+            batch = con.execute(stmt, args).fetchall()
+            for r in batch:
+                pos = (int(r[key]), r["ip"])
+                if include_local or scope_of(r["ip"], own, nets) == "public":
+                    picked.append(r)
+                    if len(picked) > limit:
+                        break
+            if len(picked) > limit or len(batch) < SEARCH_BATCH:
+                break
+            capped = i == SEARCH_BATCHES - 1
+        page = picked[:limit]
+        if len(picked) > limit:
+            out["next"] = f"{int(page[-1][key])}:{page[-1]['ip']}"
+        elif capped and pos:
+            out["next"] = f"{pos[0]}:{pos[1]}"
+        out["rows"] = _row_details(con, page, res, since, own, nets)
+    finally:
+        con.close()
+    return out
+
+
+def _row_details(con: sqlite3.Connection, page: list[Any], res: int, since: int, own: set[str],
+                 nets: list[Any]) -> list[dict[str, Any]]:
+    """Виды и порты адресов страницы — одним запросом по индексу hits_ip."""
+    rows: dict[str, dict[str, Any]] = {}
+    for r in page:
+        rows[r["ip"]] = {"ip": r["ip"], "n": int(r["att"]), "bans": int(r["bans"]), "cc": "", "first": None,
+                         "last": None, "kinds": {}, "ports": {}, "scope": scope_of(r["ip"], own, nets)}
+    if not rows:
+        return []
+    ips = list(rows)
+    for r in con.execute(f"SELECT ip, cc, first, last FROM ips WHERE ip IN ({','.join('?' * len(ips))})", ips):
+        rows[r["ip"]].update(cc=r["cc"] or "", first=r["first"], last=r["last"])
+    for ip, kind, port, cnt in con.execute(
+            f"SELECT ip, kind, port, SUM(n) FROM hits WHERE res = ? AND ts >= ? AND ip IN ({','.join('?' * len(ips))}) "
+            f"AND kind IN ({','.join('?' * len(KINDS))}) GROUP BY ip, kind, port", (res, since, *ips, *KINDS)):
+        d = rows[ip]
+        if kind in DEFENCE_KINDS:
+            continue
+        d["kinds"][kind] = d["kinds"].get(kind, 0) + int(cnt)
+        if port:
+            d["ports"][port] = d["ports"].get(port, 0) + int(cnt)
+    for d in rows.values():
+        d["ports"] = [p for p, _ in sorted(d["ports"].items(), key=lambda kv: -kv[1])[:6]]
+    return list(rows.values())
+
+
+def parse_feed_cursor(text: str) -> tuple[int, str, int] | None:
+    parts = text.split(":")
+    if len(parts) == 3 and parts[0].isdigit() and parts[1] in KINDS and parts[2].isdigit():
+        return int(parts[0]), parts[1], int(parts[2])
+    return None
+
+
+def ip_card(ip: str, period: str = "24h", after: str = "", limit: int = ROWS[1],
+            now: float | None = None) -> dict[str, Any] | None:
+    """Всё об одном адресе: первый/последний раз, страна, разбивка по сервисам, видам и портам, лента событий
+    (keyset по (время, вид, порт), индекс hits_ip). None — адрес не записан или не адрес."""
+    ip = norm_ip(ip) or ""
+    period = resolve_period(period)
+    limit = limit if limit in ROWS else ROWS[1]
+    since, step, _, res = traffic.window(period, now)
+    con = _con() if ip else None
+    if con is None:
+        return None
+    marks = ",".join("?" * len(KINDS))
+    try:
+        row = con.execute("SELECT first, last, n, cc FROM ips WHERE ip = ?", (ip,)).fetchone()
+        if row is None:
+            return None
+        own = {r["ip"] for r in con.execute("SELECT ip FROM own")}
+        by_kind: dict[str, int] = {}
+        by_port: dict[int, int] = {}
+        for kind, port, cnt in con.execute("SELECT kind, port, SUM(n) FROM hits WHERE res = ? AND ip = ? AND ts >= ? "
+                                           f"AND kind IN ({marks}) GROUP BY kind, port", (res, ip, since, *KINDS)):
+            by_kind[kind] = by_kind.get(kind, 0) + int(cnt)
+            if port and kind not in DEFENCE_KINDS:
+                by_port[port] = by_port.get(port, 0) + int(cnt)
+        cur = parse_feed_cursor(after)
+        cond, args = "", [res, ip, since]
+        if cur:
+            cond = " AND (ts < ? OR (ts = ? AND (kind < ? OR (kind = ? AND port < ?))))"
+            args += [cur[0], cur[0], cur[1], cur[1], cur[2]]
+        feed = con.execute(f"SELECT ts, kind, port, n FROM hits WHERE res = ? AND ip = ? AND ts >= ?{cond} "
+                           f"AND kind IN ({marks}) ORDER BY ts DESC, kind DESC, port DESC LIMIT ?",
+                           (*args, *KINDS, limit + 1)).fetchall()
+    finally:
+        con.close()
+    more = len(feed) > limit
+    feed = feed[:limit]
+    by_service: dict[str, int] = {}
+    for kind, cnt in by_kind.items():
+        if kind not in DEFENCE_KINDS:
+            by_service[KINDS[kind][0]] = by_service.get(KINDS[kind][0], 0) + cnt
+    return {
+        "ip": ip, "period": period, "res": res, "step": step, "first": row["first"], "last": row["last"],
+        "total": int(row["n"]), "cc": row["cc"] or "", "scope": scope_of(ip, own, load_ignore()),
+        "n": sum(by_service.values()), "bans": sum(by_kind.get(k, 0) for k in DEFENCE_KINDS),
+        "by_service": sorted(by_service.items(), key=lambda kv: -kv[1]),
+        "by_kind": sorted(((k, c) for k, c in by_kind.items() if k not in DEFENCE_KINDS), key=lambda kv: -kv[1]),
+        "by_port": sorted(by_port.items(), key=lambda kv: -kv[1])[:20],
+        "feed": [{"ts": r["ts"], "kind": r["kind"], "port": r["port"], "n": int(r["n"])} for r in feed],
+        "next": f"{feed[-1]['ts']}:{feed[-1]['kind']}:{feed[-1]['port']}" if more else None,
+    }
 
 
 def _last_run(con: sqlite3.Connection) -> dict[str, Any] | None:
