@@ -80,7 +80,8 @@ class SizeTest(unittest.TestCase):
 class BudgetTest(unittest.TestCase):
     def test_default_is_one_gb_but_not_more_than_5_percent_of_disk(self):
         with mock.patch.object(storage, "disk", return_value={"total": 100 << 30, "free": 50 << 30, "used": 0}):
-            self.assertEqual(storage.budget(cfg()), {"limit": 1 << 30, "configured": False, "capped": False})
+            self.assertEqual(storage.budget(cfg()), {"limit": 1 << 30, "configured": False, "capped": False,
+                                                      "too_small": False})
         with mock.patch.object(storage, "disk", return_value={"total": 10 << 30, "free": 5 << 30, "used": 0}):
             b = storage.budget(cfg())
             self.assertEqual(b["limit"], (10 << 30) // 20)
@@ -93,6 +94,31 @@ class BudgetTest(unittest.TestCase):
 
     def test_shares_sum_to_100(self):
         self.assertEqual(sum(storage.SHARES.values()), 100)
+        self.assertNotIn("live", storage.SHARES, "live-замеры лежат в базе проб и входят в её долю")
+
+    def test_limit_below_minimum_falls_back_to_default(self):
+        with mock.patch.object(storage, "disk", return_value={"total": 100 << 30, "free": 50 << 30, "used": 0}):
+            for raw in ("1M", "15M", "1024"):
+                b = storage.budget(cfg(ZOO_DATA_LIMIT=raw))
+                self.assertEqual((b["limit"], b["configured"], b["too_small"]), (1 << 30, False, True), raw)
+            b = storage.budget(cfg(ZOO_DATA_LIMIT="16M"))
+            self.assertEqual((b["limit"], b["configured"], b["too_small"]), (16 << 20, True, False))
+            self.assertFalse(storage.budget(cfg())["too_small"])
+
+    def test_limit_below_minimum_raises_alert(self):
+        with mock.patch.object(storage, "disk", return_value={"total": 100 << 30, "free": 50 << 30, "used": 0}):
+            out = storage.alerts(cfg(ZOO_DATA_LIMIT="1M"), NOW)
+            self.assertEqual([k for k, _ in out], ["warn"])
+            self.assertIn("ZOO_DATA_LIMIT=1M", out[0][1])
+            self.assertIn("не применён", out[0][1])
+            self.assertEqual(storage.alerts(cfg(ZOO_DATA_LIMIT="64M"), NOW), [])
+
+    def test_enforce_uses_default_when_limit_too_small(self):
+        env = ZooEnv().__enter__()
+        self.addCleanup(env.__exit__, None, None, None)
+        fill_traffic(300, 30, 5)
+        res = storage.enforce(cfg(ZOO_DATA_LIMIT="1M"), NOW)
+        self.assertEqual((res["limit"], res["trimmed"]), (storage.budget(cfg())["limit"], {}))
 
 
 class StorageBase(unittest.TestCase):
@@ -101,6 +127,9 @@ class StorageBase(unittest.TestCase):
         self.logs = self.env.root / "logs"
         self.logs.mkdir()
         p = mock.patch.dict(os.environ, {"LOG_DIR": self.logs.as_posix()})
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch.object(storage, "MIN_LIMIT", 1)     # тестовые бюджеты — килобайты
         p.start()
         self.addCleanup(p.stop)
         p = mock.patch.object(storage, "JOURNALD_DIRS", (str(self.env.root / "no-journal"),))
@@ -117,11 +146,10 @@ class StorageBase(unittest.TestCase):
 class ReportTest(StorageBase):
     def test_empty_install(self):
         d = storage.report(cfg())
-        self.assertEqual([s["id"] for s in d["sections"]], ["traffic", "journal", "probe", "live", "logs"])
+        self.assertEqual([s["id"] for s in d["sections"]], ["traffic", "journal", "probe", "logs"])
         self.assertEqual(d["total"], 0)
         self.assertFalse(d["over"])
         self.assertTrue(all(s["oldest"] is None for s in d["sections"]))
-        self.assertFalse(next(s for s in d["sections"] if s["id"] == "live")["available"])
 
     def test_sizes_oldest_and_outside(self):
         fill_traffic(100, 10, 5)
@@ -183,10 +211,40 @@ class EnforceTest(StorageBase):
         newest = count(traffic.connect, f"SELECT MAX(ts) FROM traffic WHERE res = {traffic.RES_5M}")
         self.assertEqual(newest, NOW)
 
+    def test_probe_trim_drops_live_rows_before_reports(self):
+        fill_probe(30)
+        con = history.connect()
+        with con:
+            con.executemany("INSERT INTO live (ts, proto, ok, rtt_ms, jitter_ms, mbps, verdict, bytes) "
+                            "VALUES (?, 'tuic', 1, 20, 2, NULL, 'OK', 0)", [(NOW - i * 600,) for i in range(2000)])
+        con.close()
+        sec = storage.section("probe")
+        self.assertEqual(sec.rows(), 2030)
+        full = sec.size()
+        self.assertGreater(storage.trim(sec, full * 8 // 10), 0)
+        self.assertEqual(count(history.connect, "SELECT COUNT(*) FROM reports"), 30, "отчёты целы, пока есть live")
+        left = count(history.connect, "SELECT COUNT(*) FROM live")
+        self.assertLess(left, 2000)
+        self.assertEqual(count(history.connect, "SELECT MAX(ts) FROM live"), NOW, "режутся самые старые")
+        storage.trim(sec, 0)
+        self.assertEqual((count(history.connect, "SELECT COUNT(*) FROM reports"),
+                          count(history.connect, "SELECT COUNT(*) FROM live")), (0, 0))
+
+    def test_probe_trim_works_without_live_table(self):
+        fill_probe(30)
+        con = history.connect()
+        with con:
+            con.execute("DROP TABLE live")
+        con.close()
+        sec = storage.section("probe")
+        self.assertEqual(sec.rows(), 30)
+        self.assertGreater(storage.trim(sec, sec.size() // 2), 0)
+        self.assertLess(count(history.connect, "SELECT COUNT(*) FROM reports"), 30)
+
     def test_cut_is_oldest_first_for_probe_history(self):
         fill_probe(60)
         size = storage.section("probe").size()
-        storage.enforce(cfg(ZOO_DATA_LIMIT=size * 6 // 10), NOW)   # probe — 25 % бюджета: далеко за долей
+        storage.enforce(cfg(ZOO_DATA_LIMIT=size * 6 // 10), NOW)   # probe — 30 % бюджета: далеко за долей
         con = history.connect()
         left = [r[0] for r in con.execute("SELECT ts FROM reports ORDER BY ts")]
         con.close()
@@ -245,7 +303,8 @@ class ClearTest(StorageBase):
     def test_unknown_and_unavailable(self):
         with self.assertRaises(ValueError):
             storage.clear("nope")
-        self.assertEqual(storage.clear("live")["removed"], 0)
+        with self.assertRaises(ValueError):
+            storage.clear("live")
 
 
 class AlertsTest(StorageBase):
@@ -285,7 +344,8 @@ class CliTest(StorageBase):
         code, _, _ = run_cli("storage", "--limit", "512M")
         self.assertEqual(code, 0)
         self.assertEqual(config.load().get("ZOO_DATA_LIMIT"), "512M")
-        code, _, err = run_cli("storage", "--limit", "1K")
+        with mock.patch.object(storage, "MIN_LIMIT", 16 << 20):
+            code, _, err = run_cli("storage", "--limit", "1K")
         self.assertEqual(code, 2)
         self.assertEqual(config.load().get("ZOO_DATA_LIMIT"), "512M")
         self.assertEqual(run_cli("storage", "--limit", "мусор")[0], 2)

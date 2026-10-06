@@ -9,10 +9,13 @@
     jobs/state/<uuid>.json    состояние: running | ok | fail, время, код возврата
     jobs/state/<uuid>.log     вывод install.sh (0600; в браузер — только через logs.sanitize)
 
-Что можно трогать, решает не запрос, а манифесты: phase и enable_var лежат в манифесте протокола
-(пишет proto-<id>.sh), для манифестов без них и для ещё не установленных протоколов — таблица STATIC.
-Фаза проверяется по файлу scripts/<фаза>.sh. Одна задача за раз (flock), последний включённый
-протокол выключить нельзя.
+Что можно трогать, решает таблица STATIC, а не запрос и не манифест: фаза и ENABLE_* берутся только
+из неё. Манифест пишет proto-<id>.sh, но его каталог читает и веб-процесс, поэтому phase/enable_var
+оттуда принимаются, лишь когда пара равна STATIC[id], — то есть ничего нового не дают; из манифеста
+берутся имя и enabled. Фаза проверяется по файлу в установленной копии (zoo_home()/scripts/<фаза>.sh),
+оттуда же запускается install.sh. Перед фазой config.env обязан целиком лежать в формате config_set
+(KEY='значение'): исполнитель — root, и install.sh делает source этого файла. Одна задача за раз
+(flock), последний включённый протокол выключить нельзя.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import config, manifests, output, paths, protolib, upgrade, users
+from . import config, manifests, output, paths, protolib, users
 from .fsutil import LockTimeout, atomic_write_json, file_lock
 
 JOB_TIMEOUT = 30 * 60
@@ -54,7 +57,7 @@ class Ctl:
     installed: bool = False       # есть манифест (протокол когда-то ставился)
 
 
-# запасная таблица: манифесты, записанные до появления phase/enable_var, и протоколы без манифеста
+# единственный источник фазы и ключа: что можно включать и выключать, решает эта таблица
 STATIC: dict[str, Ctl] = {c.id: c for c in (
     Ctl("vless-reality", "VLESS + REALITY", "04-vless-reality", "ENABLE_VLESS"),
     Ctl("vless-xhttp", "VLESS + XHTTP + REALITY", "04b-vless-xhttp", "ENABLE_XHTTP"),
@@ -74,27 +77,36 @@ def state_dir() -> Path:
     return jobs_dir() / "state"
 
 
+def installed_scripts() -> Path:
+    """scripts/ установленной копии: исполнитель берёт install.sh и проверяет фазы только здесь."""
+    return paths.zoo_home() / "scripts"
+
+
 def _phase_ok(phase: str) -> bool:
-    return bool(PHASE_RE.match(phase)) and (paths.scripts_dir() / f"{phase}.sh").is_file()
+    return bool(PHASE_RE.match(phase)) and (installed_scripts() / f"{phase}.sh").is_file()
 
 
 def controls() -> dict[str, Ctl]:
-    """Протоколы, которыми можно управлять: {id: Ctl}. Только с допустимой фазой и ключом."""
+    """Протоколы, которыми можно управлять: {id: Ctl}. Только id из STATIC с существующей фазой;
+    phase/enable_var манифеста не используются (пара не из STATIC никогда не принимается)."""
     good, _ = manifests.load_all()
+    by_id = {m.id: m for m in good}
+    try:
+        fallback = config.load().get("XHTTP_PLACEMENT") == "fallback"
+    except config.ConfigError:
+        fallback = False
     out: dict[str, Ctl] = {}
-    for m in good:
-        st = STATIC.get(m.id)
-        phase, var = m.phase, m.enable_var
-        if not (_phase_ok(phase) and VAR_RE.match(var)):
-            phase, var = (st.phase, st.var) if st else ("", "")
-        if _phase_ok(phase) and VAR_RE.match(var):
-            out[m.id] = Ctl(m.id, m.name, phase, var, st.requires if st else None, m.enabled, True)
     for sid, st in STATIC.items():
-        if sid in out or not _phase_ok(st.phase):
+        if not (_phase_ok(st.phase) and VAR_RE.match(st.var)):
             continue
-        if st.requires and not (st.requires in out and out[st.requires].enabled):
-            continue
-        out[sid] = Ctl(st.id, st.name, st.phase, st.var, st.requires)
+        requires = st.requires
+        if sid == "vless-xhttp" and fallback:
+            requires = "vless-reality"   # child за inbound'ом фазы 04: без него XHTTP не принимает
+        m = by_id.get(sid)
+        if m is not None:
+            out[sid] = Ctl(st.id, m.name, st.phase, st.var, requires, m.enabled, True)
+        elif not requires or (requires in out and out[requires].enabled):
+            out[sid] = Ctl(st.id, st.name, st.phase, st.var, requires)
     return out
 
 
@@ -113,6 +125,9 @@ def check(proto: str, action: str, ctls: dict[str, Ctl] | None = None) -> Ctl:
     if action == "enable":
         if ctl.enabled:
             raise JobError(f"{ctl.name} уже включён")
+        dep = ctls.get(ctl.requires) if ctl.requires else None
+        if ctl.requires and not (dep and dep.enabled):
+            raise JobError(f"{ctl.name} без {dep.name if dep else ctl.requires} не включить: сначала включите его")
         return ctl
     if not ctl.enabled:
         raise JobError(f"{ctl.name} уже выключен")
@@ -126,14 +141,19 @@ def check(proto: str, action: str, ctls: dict[str, Ctl] | None = None) -> Ctl:
 
 def submit(proto: str, action: str) -> str:
     """Принять заявку: проверка, одна задача за раз, файл jobs/<uuid>.json. → id задачи."""
-    ctl = check(proto, action)
-    busy = active()
-    if busy:
-        raise JobError(f"Сейчас идёт: {busy['verb']} {busy['name']}. Дождитесь окончания.")
-    jid = uuid.uuid4().hex
     jobs_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
-    atomic_write_json(jobs_dir() / f"{jid}.json",
-                      {"id": jid, "proto": ctl.id, "action": action, "created": int(time.time())}, 0o600)
+    try:
+        # проверка, active() и запись — под одним замком: два одновременных POST не пройдут оба
+        with file_lock(jobs_dir() / "submit.lock", timeout=10):
+            ctl = check(proto, action)
+            busy = active()
+            if busy:
+                raise JobError(f"Сейчас идёт: {busy['verb']} {busy['name']}. Дождитесь окончания.")
+            jid = uuid.uuid4().hex
+            atomic_write_json(jobs_dir() / f"{jid}.json",
+                              {"id": jid, "proto": ctl.id, "action": action, "created": int(time.time())}, 0o600)
+    except LockTimeout:
+        raise JobError("Заявки принимаются по одной, повторите через несколько секунд.") from None
     return jid
 
 
@@ -232,8 +252,7 @@ def log_tail(jid: str, lines: int = 40) -> str:
 # ---------- исполнитель (zoo job run, root, вне песочницы) ----------
 
 def install_script() -> Path:
-    repo = upgrade.repo_dir()
-    return (repo / "scripts" if repo else paths.scripts_dir()) / "install.sh"
+    return installed_scripts() / "install.sh"
 
 
 def _write_state(jid: str, data: dict[str, Any]) -> None:
@@ -250,8 +269,31 @@ def _prune() -> None:
                 pass
 
 
-def _run_phase(phase: str, log: Path) -> int:
-    env = dict(os.environ, ZOO_CALLER="zoo-job", NO_COLOR="1", ZOO_COLOR="0")
+def check_config_file() -> None:
+    """config.env читает root-овый install.sh через source: каждая строка должна быть ровно такой,
+    какую пишет config_set (KEY='значение'). Иначе JobError, ничего не запускается."""
+    path = paths.config_file()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except (OSError, UnicodeDecodeError) as e:
+        raise JobError(f"config.env не прочитать: {e}") from None
+    for n, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        try:
+            kv = config.parse_line(line)
+        except ValueError:
+            kv = None
+        if kv is None or line != f"{kv[0]}={config.quote(kv[1])}":
+            raise JobError(f"config.env, строка {n}: не в формате KEY='значение' как пишет config_set — "
+                           "задачу не запускаю. Поправьте файл руками на сервере.")
+
+
+def _run_phase(phase: str, log: Path, extra_env: dict[str, str] | None = None) -> int:
+    env = dict(os.environ, ZOO_CALLER="zoo-job", NO_COLOR="1", ZOO_COLOR="0", **(extra_env or {}))
     script = install_script()
     with open(log, "ab") as f:
         f.write(f"$ install.sh --phase {phase}\n".encode())
@@ -296,8 +338,14 @@ def _run_one(req: Path) -> None:
         _write_state(jid, st)
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(fd)
-        config.config_set(ctl.var, "1" if action == "enable" else "0")
-        rc = _run_phase(ctl.phase, log)
+        check_config_file()
+        # ключ едет в окружении: install.sh сам сохранит его в config.env под своей блокировкой;
+        # при сбое фазы возвращаем прежнее значение, чтобы файл не расходился с реальным состоянием
+        value = "1" if action == "enable" else "0"
+        old = config.load().values.get(ctl.var)
+        rc = _run_phase(ctl.phase, log, {ctl.var: value})
+        if rc != 0 and old is not None:
+            config.config_set(ctl.var, old)
         st.update(rc=rc, status="ok" if rc == 0 else "fail")
         if rc == 0 and action == "enable":
             _sync_users(log)

@@ -376,8 +376,20 @@ def refresh_upstream(cfg: Config, now: int | None = None) -> dict[str, Any]:
     return data
 
 
+_PRE_RE = re.compile(r"(?i)(?:rc|beta|alpha|pre|dev)\D*(\d*)")
+
+
 def _vtuple(v: str) -> tuple[int, ...]:
-    return tuple(int(x) for x in re.findall(r"\d+", v))
+    """Ключ сравнения версий. Хвостовые нули срезаны (1.2 == 1.2.0); pre-release (rc/beta/alpha/pre/dev)
+    младше той же версии без суффикса: «1.2.3-rc.1» < «1.2.3». Нет цифр — пустой кортеж."""
+    m = re.match(r"\D*(\d+(?:\.\d+)*)(.*)$", v.strip())
+    if not m:
+        return ()
+    nums = [int(x) for x in m.group(1).split(".")]
+    while nums and nums[-1] == 0:
+        nums.pop()
+    pre = _PRE_RE.search(m.group(2))
+    return (*nums, 0, int(pre.group(1) or 0)) if pre else (*nums, 1)
 
 
 def with_upstream(comp: dict[str, dict[str, Any]], up: dict[str, Any], cfg: Config) -> None:

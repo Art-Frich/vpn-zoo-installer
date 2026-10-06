@@ -169,6 +169,28 @@ class UpstreamTest(unittest.TestCase):
         self.assertEqual(op.call_args.kwargs["timeout"], 10)
         self.assertIn("repos/a/b/releases?per_page=20", op.call_args.args[0].full_url)
 
+    def test_prerelease_suffix_ranks_below_same_base(self):
+        v = upgrade._vtuple
+        self.assertLess(v("v1.2.3-rc.1"), v("v1.2.3"))
+        self.assertLess(v("1.2.3-beta"), v("1.2.3"))
+        self.assertLess(v("1.2.3-rc1"), v("1.2.3-rc2"))
+        self.assertLess(v("1.2.3-pre"), v("1.2.3"))
+        self.assertGreater(v("1.2.4-rc1"), v("1.2.3"), "rc следующей версии новее прошлого релиза")
+        self.assertEqual(v("1.2"), v("1.2.0"))
+        self.assertEqual(v(""), ())
+        self.assertLess(v("v26.3.27"), v("v26.9.30"))
+        rels = [{"tag_name": "v1.2.3"}, {"tag_name": "v1.2.3-rc.1", "prerelease": True}]
+        with mock.patch.object(upgrade, "_http_json", return_value=rels):
+            self.assertEqual(upgrade.latest_tag("a/b"), "v1.2.3")
+        with mock.patch.object(upgrade, "_http_json", return_value=list(reversed(rels))):
+            self.assertEqual(upgrade.latest_tag("a/b"), "v1.2.3")
+
+    def test_prerelease_of_pinned_is_not_newer(self):
+        comp = self.comps(up={"items": {"x-ui": {"tag": "v3.9.0-rc.2"}, "xray": {"tag": "v26.9.30-beta"}}})
+        self.assertFalse(comp["x-ui"]["newer"])
+        self.assertEqual(comp["x-ui"]["label"], "—")
+        self.assertFalse(comp["xray"]["newer"])
+
     def test_refresh_writes_cache(self):
         with mock.patch.object(upgrade, "latest_tag", side_effect=lambda repo: self.tags[repo]) as lt:
             data = upgrade.refresh_upstream(config.Config(), now=1000)
@@ -248,7 +270,9 @@ class UpstreamTest(unittest.TestCase):
     def test_timer_units(self):
         d = Path(__file__).resolve().parent.parent / "systemd"
         self.assertIn("zoo upgrade --check-upstream", (d / "zoo-upstream.service").read_text(encoding="utf-8"))
-        self.assertIn("OnCalendar=daily", (d / "zoo-upstream.timer").read_text(encoding="utf-8"))
+        timer = (d / "zoo-upstream.timer").read_text(encoding="utf-8")
+        self.assertIn("OnCalendar=daily", timer)
+        self.assertIn("OnActiveSec=5min", timer, "кэш версий заполняется сразу после установки")
         self.assertIn("zoo-upstream.timer", (d / "enable.list").read_text(encoding="utf-8").split())
 
 

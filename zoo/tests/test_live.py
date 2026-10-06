@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -311,8 +312,10 @@ class ProtoEnvTest(unittest.TestCase):
     def setUp(self):
         self.env = ZooEnv().__enter__()
         self.addCleanup(self.env.__exit__, None, None, None)
+        self.scripts = protoctl.installed_scripts()
+        self.scripts.mkdir(parents=True, exist_ok=True)
         for ph in PHASES:
-            (self.env.scripts / f"{ph}.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+            (self.scripts / f"{ph}.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
 
     def manifest(self, pid, enabled=True, **kw):
         self.env.add_manifest(pid, enabled=enabled, name=kw.pop("name", pid), **kw)
@@ -337,12 +340,56 @@ class ControlsTest(ProtoEnvTest):
 
     def test_bad_manifest_values_are_ignored(self):
         self.manifest("tuic", phase="../../etc/evil", enable_var="PATH")
-        self.manifest("unknown-proto", phase="04d-tuic", enable_var="ENABLE_X")
         self.manifest("vless-reality", phase="77-nothing", enable_var="ENABLE_VLESS")
         c = protoctl.controls()
-        self.assertEqual(c["tuic"].phase, "04d-tuic", "вместо чужой фазы — из таблицы")
+        self.assertEqual((c["tuic"].phase, c["tuic"].var), ("04d-tuic", "ENABLE_TUIC"), "вместо чужой фазы — из таблицы")
         self.assertEqual(c["vless-reality"].phase, "04-vless-reality", "фазы без файла нет")
-        self.assertEqual(c["unknown-proto"].var, "ENABLE_X", "манифест с годными полями управляем")
+
+    def test_manifest_phase_never_widens_the_table(self):
+        # годная по виду пара у id, которого нет в STATIC, и чужая годная пара у известного протокола
+        self.manifest("unknown-proto", phase="04d-tuic", enable_var="ENABLE_X")
+        self.manifest("ss2022", phase="06-amneziawg", enable_var="ENABLE_AWG")
+        (self.scripts / "99-print-creds.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+        self.manifest("tuic", phase="99-print-creds", enable_var="ENABLE_TUIC")
+        c = protoctl.controls()
+        self.assertNotIn("unknown-proto", c, "id вне таблицы управлять нельзя, что бы ни лежало в манифесте")
+        self.assertEqual((c["ss2022"].phase, c["ss2022"].var), ("04c-ss2022", "ENABLE_SS"))
+        self.assertEqual(c["tuic"].phase, "04d-tuic")
+        with self.assertRaises(protoctl.JobError):
+            protoctl.check("unknown-proto", "disable", c)
+
+    def test_phase_is_looked_up_in_installed_copy(self):
+        (self.scripts / "04d-tuic.sh").unlink()
+        (self.env.scripts / "04d-tuic.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+        self.manifest("tuic")
+        self.assertNotIn("tuic", protoctl.controls(), "файл фазы вне zoo_home()/scripts не считается")
+
+    def test_xhttp_fallback_requires_vless_reality(self):
+        self.env.write_config({"XHTTP_PLACEMENT": "fallback"})
+        (self.scripts / "04b-vless-xhttp.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+        self.manifest("vless-reality")
+        self.manifest("vless-xhttp")
+        self.assertEqual(protoctl.controls()["vless-xhttp"].requires, "vless-reality")
+        with self.assertRaises(protoctl.JobError) as e:
+            protoctl.check("vless-reality", "disable")
+        self.assertIn("последний", str(e.exception), "XHTTP-fallback без VLESS — не отдельный протокол")
+        self.manifest("tuic")
+        self.assertEqual(protoctl.check("vless-reality", "disable").id, "vless-reality")
+        self.env.write_config({"XHTTP_PLACEMENT": "port"})
+        self.assertIsNone(protoctl.controls()["vless-xhttp"].requires)
+        self.manifest("tuic", enabled=False)
+        self.assertEqual(protoctl.check("vless-reality", "disable").id, "vless-reality")
+
+    def test_enable_needs_required_protocol_enabled(self):
+        self.manifest("hysteria2", enabled=False)
+        self.manifest("hysteria2-obfs", enabled=False)
+        self.manifest("tuic")
+        with self.assertRaises(protoctl.JobError) as e:
+            protoctl.check("hysteria2-obfs", "enable")
+        self.assertIn("без hysteria2", str(e.exception))
+        self.assertEqual(protoctl.check("hysteria2", "enable").id, "hysteria2")
+        self.manifest("hysteria2")
+        self.assertEqual(protoctl.check("hysteria2-obfs", "enable").id, "hysteria2-obfs")
 
     def test_static_table_matches_manifest_writers(self):
         text = "\n".join(p.read_text(encoding="utf-8") for p in (REPO / "scripts" / "lib").glob("proto-*.sh"))
@@ -376,6 +423,40 @@ class ControlsTest(ProtoEnvTest):
         self.manifest("tuic")
         self.assertEqual(protoctl.check("hysteria2", "disable").var, "ENABLE_HY2")
 
+    def test_submit_checks_and_writes_under_submit_lock(self):
+        self.manifest("vless-reality")
+        self.manifest("tuic")
+        events: list[str] = []
+
+        @contextlib.contextmanager
+        def fake_lock(path, timeout=30.0):
+            events.append(f"lock {Path(path).name}")
+            yield
+            events.append("unlock")
+
+        real_check, real_active, real_write = protoctl.check, protoctl.active, protoctl.atomic_write_json
+        with mock.patch.object(protoctl, "file_lock", fake_lock), \
+                mock.patch.object(protoctl, "check", lambda *a, **k: (events.append("check"), real_check(*a, **k))[1]), \
+                mock.patch.object(protoctl, "active", lambda: (events.append("active"), real_active())[1]), \
+                mock.patch.object(protoctl, "atomic_write_json",
+                                  lambda *a, **k: (events.append("write"), real_write(*a, **k))[1]):
+            protoctl.submit("tuic", "disable")
+        self.assertEqual(events, ["lock submit.lock", "check", "active", "write", "unlock"])
+
+    def test_submit_lock_timeout_is_a_job_error(self):
+        self.manifest("vless-reality")
+        self.manifest("tuic")
+
+        @contextlib.contextmanager
+        def busy(path, timeout=30.0):
+            raise protoctl.LockTimeout("занято")
+            yield
+
+        with mock.patch.object(protoctl, "file_lock", busy):
+            with self.assertRaises(protoctl.JobError):
+                protoctl.submit("tuic", "disable")
+        self.assertEqual(list(protoctl.jobs_dir().glob("*.json")), [])
+
     def test_submit_writes_job_and_refuses_second(self):
         self.manifest("vless-reality")
         self.manifest("tuic")
@@ -391,6 +472,10 @@ class ControlsTest(ProtoEnvTest):
 
 FAKE_INSTALL = """#!/usr/bin/env bash
 echo "install.sh $*"
+for v in $(compgen -e | grep '^ENABLE_'); do
+    { grep -v "^$v=" "$CONFIG_FILE" 2>/dev/null || true; echo "$v='${!v}'"; } > "$CONFIG_FILE.new"
+    mv "$CONFIG_FILE.new" "$CONFIG_FILE"
+done
 echo "cfg: $(grep -h '^ENABLE_' "$CONFIG_FILE" | tr '\\n' ' ')"
 echo "password=hunter2secret"
 echo "$*" >> "$FAKE_STATE/install.calls"
@@ -402,10 +487,10 @@ exit "${FAKE_INSTALL_RC:-0}"
 class RunnerTest(ProtoEnvTest):
     def setUp(self):
         super().setUp()
-        (self.env.scripts / "install.sh").write_text(FAKE_INSTALL, encoding="utf-8", newline="\n")
-        p = mock.patch.dict(os.environ, {"ZOO_REPO": self.env.root.as_posix()})
-        p.start()
-        self.addCleanup(p.stop)
+        (self.scripts / "install.sh").write_text(FAKE_INSTALL, encoding="utf-8", newline="\n")
+        # чужой install.sh (рабочая копия репо, scripts_dir()) исполнитель запускать не должен
+        (self.env.scripts / "install.sh").write_text('#!/usr/bin/env bash\necho WRONG-DIR >> "$FAKE_STATE/install.calls"\n',
+                                                     encoding="utf-8", newline="\n")
         self.manifest("vless-reality")
         self.manifest("tuic")
 
@@ -477,6 +562,61 @@ class RunnerTest(ProtoEnvTest):
         protoctl.run_queue()
         self.assertEqual(self.calls(), ["--phase 04d-tuic"])
         self.assertEqual(config.load().get("PATH"), "")
+
+    def test_runs_installed_copy_not_repo(self):
+        protoctl.submit("tuic", "disable")
+        protoctl.run_queue()
+        self.assertEqual(self.calls(), ["--phase 04d-tuic"], "чужой install.sh (WRONG-DIR) не запускался")
+        self.assertEqual(protoctl.install_script(), protoctl.installed_scripts() / "install.sh")
+
+    def test_enable_var_goes_through_environment_not_config_before_phase(self):
+        self.env.write_config({"ENABLE_TUIC": "1"})
+        jid = protoctl.submit("tuic", "disable")
+        seen: dict[str, str] = {}
+        real = protoctl._run_phase
+
+        def spy(phase, log, extra_env=None):
+            seen["before"] = config.load().get("ENABLE_TUIC")
+            seen["env"] = (extra_env or {}).get("ENABLE_TUIC", "")
+            return real(phase, log, extra_env)
+
+        with mock.patch.object(protoctl, "_run_phase", spy):
+            protoctl.run_queue()
+        self.assertEqual(seen, {"before": "1", "env": "0"}, "до фазы config.env не тронут, значение — в окружении")
+        self.assertIn("ENABLE_TUIC='0'", protoctl.log_tail(jid))
+        self.assertEqual(config.load().get("ENABLE_TUIC"), "0", "install.sh сам сохранил ключ")
+
+    def test_failed_phase_keeps_old_value_in_config(self):
+        self.env.write_config({"ENABLE_TUIC": "1"})
+        jid = protoctl.submit("tuic", "disable")
+        with mock.patch.dict(os.environ, {"FAKE_INSTALL_RC": "3"}):
+            protoctl.run_queue()
+        self.assertEqual(protoctl.get_state(jid)["status"], "fail")
+        self.assertEqual(config.load().get("ENABLE_TUIC"), "1", "фаза упала — прежнее значение вернулось")
+
+    def test_config_env_not_in_config_set_format_runs_nothing(self):
+        for bad in ("ENABLE_TUIC=1", 'EVIL="x"', "ENABLE_TUIC='1' ; id", "export A='1'", "echo hi", "A='x'$(id)",
+                    "KEY='multi", "ENABLE_TUIC=\"1\""):
+            with self.subTest(bad=bad):
+                cf = self.env.etc / "config.env"
+                cf.write_text("# c\nSERVER_IP='1.2.3.4'\n" + bad + "\n", encoding="utf-8", newline="\n")
+                jid = protoctl.submit("tuic", "disable")
+                protoctl.run_queue()
+                st = protoctl.get_state(jid)
+                self.assertEqual(st["status"], "fail")
+                self.assertIn("config.env", st["error"])
+                self.assertIn("строка 3", st["error"])
+                self.assertEqual(self.calls(), [], "ни фаза, ни ключ не тронуты")
+                self.assertEqual(cf.read_text(encoding="utf-8"), "# c\nSERVER_IP='1.2.3.4'\n" + bad + "\n")
+
+    def test_config_env_in_config_set_format_is_accepted(self):
+        config.config_set("SERVER_IP", "1.2.3.4")
+        config.config_set("NOTE", "it's $(not run) `x` \"q\"")
+        (self.env.etc / "config.env").write_text(
+            (self.env.etc / "config.env").read_text(encoding="utf-8") + "\n   \n# коммент\n", encoding="utf-8", newline="\n")
+        protoctl.submit("tuic", "disable")
+        protoctl.run_queue()
+        self.assertEqual(self.calls(), ["--phase 04d-tuic"])
 
     def test_oneshot_queue_in_order_and_old_running_state_is_failed(self):
         protoctl.state_dir().mkdir(parents=True)
@@ -610,8 +750,9 @@ class OverviewMetricsTest(AppTestBase):
 class ToggleWebTest(AppTestBase):
     def setUp(self):
         super().setUp()
+        protoctl.installed_scripts().mkdir(parents=True, exist_ok=True)
         for ph in PHASES:
-            (self.env.scripts / f"{ph}.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
+            (protoctl.installed_scripts() / f"{ph}.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8", newline="\n")
         self.env.add_manifest("vless-reality")
         self.env.add_manifest("hysteria2")
         self.env.add_manifest("tuic", enabled=False, name="TUIC v5")
