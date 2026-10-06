@@ -95,13 +95,13 @@ class Session:
     csrf: str
     created: float
     last: float
-    flashes: list[tuple[str, str]] = field(default_factory=list)  # в памяти, на диск не пишутся
+    flashes: list[tuple[str, str, tuple]] = field(default_factory=list)  # в памяти, на диск не пишутся
 
-    def flash(self, kind: str, text: str) -> None:
-        """kind: ok | warn | bad | info"""
-        self.flashes.append((kind, text))
+    def flash(self, kind: str, text: str, links: tuple | list = ()) -> None:
+        """kind: ok | warn | bad | info; links — [(подпись, адрес)] после текста"""
+        self.flashes.append((kind, text, tuple(links)))
 
-    def pop_flashes(self) -> list[tuple[str, str]]:
+    def pop_flashes(self) -> list[tuple[str, str, tuple]]:
         out, self.flashes = self.flashes, []
         return out
 

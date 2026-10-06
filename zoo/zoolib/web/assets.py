@@ -39,7 +39,7 @@ CSS = r"""
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -76,7 +76,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .86em; }
 .nav a { text-align: center; }
 .top form { margin: 0; }
 
-main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 48px; min-width: 0; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 48px; min-width: 0; min-height: 70vh; }
 body { overflow-x: hidden; }
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
   gap: 12px; margin-bottom: 4px; }
@@ -163,7 +163,9 @@ dialog.pdlg::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
   box-sizing: content-box; display: block; max-width: 100%; }
 .variant .link-uri { width: 100%; }
 .pdlg details { margin-top: 14px; color: var(--muted); font-size: .85rem; }
-main.loading { opacity: .55; transition: opacity .15s; }
+body.busy::before { content: ""; position: fixed; top: 0; left: 0; width: 100%; height: 2px; z-index: 30;
+  background: var(--accent); animation: busy 1s ease-in-out infinite; }
+@keyframes busy { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 footer .live { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
 footer .live.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 footer .live-btn { margin-left: 10px; }
@@ -259,6 +261,30 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .checks { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: .9rem; }
 .checks label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
 .hint { color: var(--muted); font-size: .82rem; }
+
+/* приложения через VPN: переключатели и панель сохранения */
+table.apps td, table.apps th { padding-left: 6px; padding-right: 6px; }
+table.apps td.num, table.apps th.num { width: 76px; text-align: center; }
+table.apps td:first-child { overflow-wrap: anywhere; }
+table.apps tr.chg td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.tgl { position: relative; display: inline-block; width: 38px; height: 22px; vertical-align: middle; }
+.tgl input { position: absolute; inset: -8px -6px; width: calc(100% + 12px); height: calc(100% + 16px); margin: 0;
+  opacity: 0; cursor: pointer; z-index: 1; }
+.tgl i { position: absolute; inset: 0; border-radius: 999px; background: var(--track); border: 1px solid var(--border);
+  transition: background .12s; }
+.tgl i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .12s; }
+.tgl input:checked + i { background: var(--accent); border-color: var(--accent); }
+.tgl input:checked + i::after { transform: translateX(16px); }
+.tgl input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+details.custom { margin-top: 14px; }
+details.custom > .stack { margin-top: 10px; }
+.hint.err { color: var(--bad); }
+.savebar { position: sticky; bottom: 8px; z-index: 6; display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,.14); }
+.savebar .count { flex: 1; min-width: 0; font-size: .9rem; color: var(--text-2); }
+.btn:disabled { opacity: .5; cursor: default; }
 
 /* сегменты (период) */
 .seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
@@ -381,10 +407,14 @@ JS = r"""
       try { document.execCommand('copy'); done(); } catch (e) { /* выделено — копируйте вручную */ }
     }
   });
-  // подтверждение опасных действий
+  // подтверждение опасных действий; форма с data-swap уходит в фоне, <main> подменяется ответом
   document.addEventListener('submit', function (ev) {
-    var msg = ev.target.getAttribute('data-confirm');
-    if (msg && !window.confirm(msg)) ev.preventDefault();
+    var f = ev.target, msg = f.getAttribute('data-confirm');
+    if (msg && !window.confirm(msg)) { ev.preventDefault(); return; }
+    if (f.hasAttribute('data-swap')) {
+      ev.preventDefault();
+      go(f.getAttribute('action') || location.pathname, { method: 'POST', body: new URLSearchParams(new FormData(f)) });
+    }
   });
   // обработчики делегированы: страница подменяется целиком (live, переключатель периода)
   document.addEventListener('focusin', function (ev) {
@@ -444,33 +474,190 @@ JS = r"""
   // форма входа по одноразовой ссылке отправляется сама
   document.querySelectorAll('form[data-autosubmit]').forEach(function (f) { f.submit(); });
 
-  // подмена <main> новой страницей; сообщение (flash) остаётся, пока человек не уйдёт со страницы
-  function swapMain(main, html) {
+  // подмена <main> новой страницей; при фоновом обновлении (keep) сообщение (flash) остаётся,
+  // пока человек не уйдёт со страницы
+  function swapMain(main, html, keep) {
     var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
     if (!fresh) return false;
-    var flash = main.querySelector(':scope > .alerts.flash');
+    var flash = keep && main.querySelector(':scope > .alerts.flash');
     main.innerHTML = fresh.innerHTML;
     if (flash) main.insertBefore(flash, main.firstChild);
     return true;
   }
   function isHtml(r) { return (r.headers.get('content-type') || '').indexOf('text/html') === 0; }
+  function toast(msg) {
+    var main = document.querySelector('main');
+    if (!main) return;
+    var old = main.querySelector(':scope > .alerts.flash');
+    if (old) old.remove();
+    var ul = document.createElement('ul'), li = document.createElement('li'), ico = document.createElement('span'),
+        txt = document.createElement('span');
+    ul.className = 'alerts flash'; li.className = 'bad'; ico.className = 'ico'; ico.textContent = '✕';
+    txt.className = 'msg'; txt.textContent = msg;
+    li.appendChild(ico); li.appendChild(txt); ul.appendChild(li);
+    main.insertBefore(ul, main.firstChild);
+  }
 
-  // переключатель периода — без перезагрузки: забрать страницу, подменить <main>, обновить адрес
+  // переход без перезагрузки (ссылки-сегменты, ссылки и формы с data-swap): забрать страницу,
+  // подменить <main>, обновить адрес; прокрутка и фокус остаются, сверху — тонкая полоса загрузки
+  function go(url, init) {
+    var main = document.querySelector('main');
+    if (!main) { location.href = url; return; }
+    var post = !!(init && init.method === 'POST'), y = window.scrollY,
+        keep = document.activeElement && document.activeElement.id;
+    document.body.classList.add('busy');
+    // переход по ссылке — как фоновый запрос (сообщения не тратит), отправка формы — как обычный
+    fetch(url, Object.assign({ credentials: 'same-origin', cache: 'no-store' }, init || { headers: { 'X-Zoo-Live': '1' } }))
+      .then(function (r) {
+        if (r.status === 401 || (r.redirected && new URL(r.url).pathname === '/login')) {
+          location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+          throw new Error('auth');
+        }
+        if (!isHtml(r)) throw new Error('nav');
+        return r.text().then(function (html) { return { html: html, url: r.url, moved: r.redirected }; });
+      })
+      .then(function (x) {
+        if (!swapMain(main, x.html, !post)) throw new Error('nav');
+        if (!post || x.moved) history.replaceState(null, '', x.url);
+        window.scrollTo(0, y);
+        var el = keep && document.getElementById(keep);
+        if (el) el.focus({ preventScroll: true });
+        initDrafts();
+      })
+      .catch(function (e) {
+        if (e.message === 'auth') return;
+        if (post) toast('Нет связи с админкой — повторите'); else location.href = url;
+      })
+      .then(function () { document.body.classList.remove('busy'); });
+  }
   document.addEventListener('click', function (ev) {
-    var a = ev.target.closest('nav.seg a');
+    var a = ev.target.closest('nav.seg a, a[data-swap]');
     if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || a.origin !== location.origin) return;
     ev.preventDefault();
-    var main = document.querySelector('main');
-    if (main) main.classList.add('loading');
-    fetch(a.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
-      .then(function (r) { if (r.redirected || !r.ok || !isHtml(r)) throw new Error('nav'); return r.text(); })
-      .then(function (html) {
-        if (!main || !swapMain(main, html)) throw new Error('nav');
-        history.replaceState(null, '', a.href);
-      })
-      .catch(function () { location.href = a.href; })
-      .then(function () { if (main) main.classList.remove('loading'); });
+    if (dirty() && !window.confirm('Изменения не сохранены. Уйти без сохранения?')) return;
+    go(a.href);
   });
+
+  // черновик списка приложений: переключатели меняют только форму, «Сохранить» — один POST
+  function was(i) { return i.getAttribute('data-was') === '1'; }
+  function boxes(form) { return form.querySelectorAll('input[type=checkbox][data-was]'); }
+  function refreshDraft(form) {
+    var n = 0, pend = false;
+    form.querySelectorAll('tbody tr').forEach(function (tr) {
+      var d = false;
+      tr.querySelectorAll('input[data-was]').forEach(function (i) { if (i.checked !== was(i)) d = true; });
+      tr.classList.toggle('chg', d);
+    });
+    boxes(form).forEach(function (i) { if (i.checked !== was(i)) n++; });
+    form.querySelectorAll('[data-pend]').forEach(function (i) { if (i.value.trim()) pend = true; });
+    var c = form.querySelector('[data-count]'), s = form.querySelector('[data-save]');
+    if (c) c.textContent = n ? 'Изменено: ' + n : (pend ? 'Своё приложение ждёт сохранения' : 'Без изменений');
+    if (s) s.disabled = !n && !pend;
+  }
+  function dirty() {
+    var f = document.querySelector('form[data-draft]'), n = 0;
+    if (f) boxes(f).forEach(function (i) { if (i.checked !== was(i)) n++; });
+    return n > 0;
+  }
+  function initDrafts() {
+    document.querySelectorAll('form[data-draft]').forEach(function (f) {
+      f.querySelectorAll('[data-add]').forEach(function (b) { b.hidden = false; });
+      refreshDraft(f);
+    });
+  }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text) e.textContent = text;
+    return e;
+  }
+  // «Своё приложение» → строка таблицы (id, уже есть в таблице, — просто включается)
+  function addCustom(form) {
+    var inp = function (p) { return form.querySelector('[name="custom_' + p + '"]'); },
+        err = form.querySelector('[data-cu-err]'), title = inp('title').value.trim(), ids = {}, msg = '';
+    ['android', 'windows'].forEach(function (p) {
+      var v = inp(p).value.trim();
+      if (!v) return;
+      if (!new RegExp('^(?:' + form.getAttribute('data-re-' + p) + ')$').test(v))
+        msg = p === 'android' ? 'Пакет Android вида com.example.app' : 'Процесс Windows вида program.exe';
+      else ids[p] = v;
+    });
+    if (!msg && !ids.android && !ids.windows) msg = 'Укажите пакет Android или процесс Windows';
+    err.textContent = msg; err.hidden = !msg;
+    if (msg) return;
+    var fresh = {};
+    ['android', 'windows'].forEach(function (p) {
+      if (!ids[p]) return;
+      var same = Array.prototype.filter.call(form.querySelectorAll('input[type=checkbox][name=' + p + ']'),
+        function (i) { return i.value.toLowerCase() === ids[p].toLowerCase(); })[0];
+      if (same) same.checked = true; else fresh[p] = ids[p];
+    });
+    if (fresh.android || fresh.windows) {
+      var label = title || fresh.android || fresh.windows, tr = el('tr', 'added'), td = el('td', '');
+      td.appendChild(el('span', '', label));
+      if (title) td.appendChild(el('span', 'sub', [fresh.android, fresh.windows].filter(Boolean).join(' · ')));
+      tr.appendChild(td);
+      ['android', 'windows'].forEach(function (p) {
+        var c = el('td', 'num');
+        if (fresh[p]) {
+          var lab = el('label', 'tgl'), box = el('input', '');
+          box.type = 'checkbox'; box.name = p; box.value = fresh[p]; box.checked = true;
+          box.setAttribute('data-was', '0');
+          box.setAttribute('aria-label', (p === 'android' ? 'Android: ' : 'Windows: ') + label);
+          lab.appendChild(box); lab.appendChild(el('i', '')); c.appendChild(lab);
+          if (title) {
+            var h = el('input', '');
+            h.type = 'hidden'; h.name = 'title:' + fresh[p]; h.value = title; td.appendChild(h);
+          }
+        } else {
+          c.className = 'num muted'; c.textContent = '—';
+        }
+        tr.appendChild(c);
+      });
+      form.querySelector('tbody').appendChild(tr);
+    }
+    ['title', 'android', 'windows'].forEach(function (p) { inp(p).value = ''; });
+    refreshDraft(form);
+  }
+  document.addEventListener('change', function (ev) {
+    var i = ev.target, form = i.closest && i.closest('form[data-draft]');
+    if (!form || i.type !== 'checkbox') return;
+    if (!i.checked && !form.querySelector('input[type=checkbox][name=' + i.name + ']:checked')) {
+      i.checked = true;  // пустой список платформы не допускается
+      form.querySelector('[data-count]').textContent =
+        'Нельзя выключить последнее приложение ' + (i.name === 'android' ? 'Android' : 'Windows');
+      return;
+    }
+    refreshDraft(form);
+  });
+  document.addEventListener('input', function (ev) {
+    var form = ev.target.closest && ev.target.closest('form[data-draft]');
+    if (form && ev.target.hasAttribute('data-pend')) refreshDraft(form);
+  });
+  document.addEventListener('keydown', function (ev) {
+    var form = ev.target.closest && ev.target.closest('form[data-draft]');
+    if (form && ev.key === 'Enter' && ev.target.hasAttribute('data-pend')) {
+      ev.preventDefault();
+      addCustom(form);
+    }
+  });
+  document.addEventListener('click', function (ev) {
+    var add = ev.target.closest('[data-add]'), cancel = ev.target.closest('a[data-cancel]'), form;
+    if (add && (form = add.closest('form[data-draft]'))) { addCustom(form); return; }
+    if (cancel && (form = cancel.closest('form[data-draft]'))) {
+      ev.preventDefault();
+      form.querySelectorAll('tr.added').forEach(function (tr) { tr.remove(); });
+      boxes(form).forEach(function (i) { i.checked = was(i); });
+      form.querySelectorAll('[data-pend]').forEach(function (i) { i.value = ''; });
+      var err = form.querySelector('[data-cu-err]');
+      if (err) err.hidden = true;
+      refreshDraft(form);
+    }
+  });
+  window.addEventListener('beforeunload', function (ev) {
+    if (dirty()) { ev.preventDefault(); ev.returnValue = ''; }
+  });
+  initDrafts();
 
   // live: раз в N секунд забрать ту же страницу и подменить <main>; пауза — вкладка скрыта,
   // фокус в поле ввода, открыт <details> или окно, либо выключено кнопкой (запоминается).
@@ -525,7 +712,7 @@ JS = r"""
           return r.text();
         })
         .then(function (html) {
-          if (html !== null && html !== undefined) { swapMain(main, html); label(); }
+          if (html !== null && html !== undefined) { swapMain(main, html, true); label(); }
         })
         .catch(function () { /* следующая попытка через интервал */ })
         .then(function () { busy = false; });

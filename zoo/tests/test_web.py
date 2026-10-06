@@ -608,6 +608,8 @@ class HtmlPartsTest(unittest.TestCase):
         self.assertNotIn("<details", card("Без", "тела"))
         self.assertIn('data-confirm="Точно?"', post_button("/x", "Да", "csrf", confirm="Точно?"))
         self.assertNotIn("data-confirm", post_button("/x", "Да", "csrf"))
+        self.assertIn(" data-swap", post_button("/x", "Да", "csrf", swap=True))
+        self.assertNotIn("data-swap", post_button("/x", "Да", "csrf"))
 
     def test_css_fixes(self):
         css = assets.CSS
@@ -1289,6 +1291,24 @@ class LiveTest(AppTestBase):
     def test_period_switch_also_live(self):
         # переключатель периода шлёт X-Zoo-Live (app.js), поэтому тоже не забирает сообщения
         self.assertRegex(assets.JS, r"headers: \{ 'X-Zoo-Live': '1' \}")
+
+    def test_partial_navigation_contract(self):
+        # ссылки и формы с data-swap — без перезагрузки: прокрутка и фокус остаются, без дёрганий вёрстки
+        for needle in ("a[data-swap]", "nav.seg a", "form[data-draft]", "hasAttribute('data-swap')",
+                       "window.scrollTo(0, y)", "new URLSearchParams(new FormData(f))", "getAttribute('action')"):
+            self.assertIn(needle, assets.JS)
+        self.assertIn("scrollbar-gutter: stable", assets.CSS)
+        self.assertNotRegex(assets.JS, r"\.style\.|setAttribute\('style'|on(click|change|submit)=")
+
+    def test_flash_links_and_escaping(self):
+        self.c.login()
+        s = self.app.auth.session(self.c.cookies[SID_COOKIE], touch=False)
+        s.flash("ok", "Сохранено. Нужны:", [("a<b", "/users/a"), ("c", "/users/c")])
+        s.flash("bad", "ошибка")
+        _, body = self.c.get("/users")
+        self.assertIn('<span class="msg">Сохранено. Нужны: <a href="/users/a">a&lt;b</a>, '
+                      '<a href="/users/c">c</a> →</span>', body)
+        self.assertIn('<span class="msg">ошибка</span>', body)
 
     def test_second_live_request_gets_304(self):
         self.c.login()
