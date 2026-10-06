@@ -8,11 +8,11 @@
 |---|---|---|---|---|---|
 | `vless-reality` | VLESS + REALITY + Vision | TCP 443 | вкл. | Основной TCP: выглядит как TLS к чужому сайту | v2rayN ≥7.25, v2rayNG ≥2.2.6, Happ, INCY, Streisand, Throne; mihomo ≥1.19.31 (подписка/YAML) |
 | `vless-xhttp` | VLESS + XHTTP + REALITY | TCP, случайный порт | вкл. | Запасной TCP: свой порт, свои ключи и SNI, не падает вместе с 443 | v2rayN, v2rayNG, Happ, Throne; mihomo ≥1.19.22 |
-| `ss2022` | Shadowsocks-2022 | TCP+UDP, случайный порт | вкл. | Запасной без TLS: его не ловят правила по TLS ClientHello | v2rayN/v2rayNG, Happ, Hiddify, sing-box, mihomo |
+| `ss2022` | Shadowsocks-2022 | TCP+UDP, случайный порт | `ENABLE_SS=1` | Запасной без TLS. Выключен по умолчанию: в полевом тесте соединения с реальных клиентов теряли данные (research/2026-10-05) | v2rayN/v2rayNG, Happ, Hiddify, sing-box, mihomo |
 | `hysteria2` | Hysteria2 | UDP 443 | вкл. | Основной UDP (QUIC), быстрый на плохих каналах; ссылка первой версии продолжает работать | hysteria 2.12, v2rayN/v2rayNG, Happ, mihomo, Throne |
 | `amneziawg` | AmneziaWG 2.0 | UDP, случайный порт | вкл. | Полный L3-туннель, обфусцированный WireGuard; в клиентах нет локального прокси | AmneziaVPN ≥5.0.1.5, AmneziaWG ≥2.0, WG Tunnel ≥4.2, DefaultVPN (iOS), mihomo ≥1.19.14 |
-| `hysteria2-obfs` | Hysteria2 + Salamander | UDP, случайный порт | `ENABLE_HY2_OBFS=1` | QUIC, который не похож на QUIC: если режут по сигнатуре QUIC | hysteria, sing-box, mihomo, v2rayN/v2rayNG |
-| `tuic` | TUIC v5 | UDP, случайный порт | `ENABLE_TUIC=1` | Ещё один QUIC-протокол для клиентов на sing-box | sing-box/SFA/SFI, Hiddify, Karing, NekoBox, mihomo |
+| `hysteria2-obfs` | Hysteria2 + Salamander | UDP, случайный порт | вкл. | QUIC, который не похож на QUIC: если режут по сигнатуре QUIC | hysteria, sing-box, mihomo, v2rayN/v2rayNG |
+| `tuic` | TUIC v5 | UDP, случайный порт | вкл. | Ещё один QUIC-протокол для клиентов на sing-box | sing-box/SFA/SFI, Hiddify, Karing, NekoBox, mihomo |
 | — | Cloudflare WARP | исходящий | `ENABLE_WARP=1` | Выход для echo-сервисов «мой IP» (и RU по флагу) не с адреса сервера | — |
 
 Движки: VLESS, XHTTP, SS-2022 и TUIC — Xray внутри [3x-ui](https://github.com/MHSanaei/3x-ui) v3.9.0 (Xray 26.9.30); Hysteria2 — standalone [HyNetworks/hysteria](https://github.com/HyNetworks/hysteria) v2.12.3; AmneziaWG — модуль ядра (DKMS) или `amneziawg-go`. Всё скачиваемое закреплено в [scripts/versions.env](../scripts/versions.env) и проверяется по sha256.
@@ -38,7 +38,7 @@ cd /opt/vpn-zoo-src
 sudo bash scripts/install.sh
 ```
 
-Установка идёт 5–15 минут (дольше всего — сборка `amneziawg-go`, если модуль ядра не подходит). Каталог клона не удаляйте: из него `zoo upgrade` берёт новые версии. Все команды `sudo bash scripts/install.sh …` ниже запускаются из него (`cd /opt/vpn-zoo-src`).
+На реальном VPS установка шла около 30 минут, большую часть — скачивание с медленного в тот день GitHub; оборванная загрузка докачивается при повторном запуске. Каталог клона не удаляйте: из него `zoo upgrade` берёт новые версии. Все команды `sudo bash scripts/install.sh …` ниже запускаются из него (`cd /opt/vpn-zoo-src`).
 
 **Перезагрузка.** На Ubuntu 22.04 со старым ядром фаза 02 может поставить HWE-ядро 6.8 (для модуля AmneziaWG) и попросить перезагрузку. Тогда `sudo reboot` и та же команда ещё раз: установка продолжится с места остановки. Если хостер не даёт сменить ядро, запустите с `AWG_NO_HWE=1`: AmneziaWG пойдёт в userspace (`amneziawg-go`).
 
@@ -81,7 +81,7 @@ vless-reality   443/tcp    да                   OK    59 Мбит/с
 
 «Работает в принципе» ещё не значит «работает у вас». Второй шаг — тот же набор проверок из вашей сети: контейнер `zoo-probe` подключается к серверу через вашего провайдера и сравнивает результат с самопроверкой сервера.
 
-Нужны Docker (на Windows и macOS — Docker Desktop), `git` и `ssh`/`scp` (в Windows 10/11 OpenSSH встроен). **VPN на компьютере на время проверки выключите**, иначе проверяется чужой туннель, а не ваш провайдер. Мобильный и домашний интернет блокируют по-разному: проверяйте из той сети, которая важна (например, раздайте интернет с телефона на ноутбук).
+Нужны Docker (на Windows и macOS — Docker Desktop), `git` и `ssh`/`scp` (в Windows 10/11 OpenSSH встроен). **Пробник должен ходить к серверу через вашего провайдера, а не через ваш VPN.** Выключите VPN на время проверки или, если выключать нельзя, исключите из него только адрес сервера: Windows (PowerShell от администратора) — шлюз из `Get-NetRoute 0.0.0.0/0`, затем `route add СЕРВЕР mask 255.255.255.255 ШЛЮЗ`; macOS — `sudo route -n add -host СЕРВЕР ШЛЮЗ`; Linux — `sudo ip route add СЕРВЕР via ШЛЮЗ` (проверено с Hiddify в режиме TUN). Если трафик всё ещё перехватывает VPN, пробник предупредит об этом в начале отчёта. Мобильный и домашний интернет блокируют по-разному: проверяйте из той сети, которая важна (например, раздайте интернет с телефона на ноутбук).
 
 **Linux, macOS:**
 
@@ -377,15 +377,15 @@ sudo zoo links masha --qr               # новый QR — старый раб�
 Задаются через окружение, сохраняются в `/etc/vpn-setup/config.env` и действуют при следующих запусках:
 
 ```bash
-ENABLE_TUIC=1 ENABLE_HY2_OBFS=1 RU_EGRESS=block sudo -E bash scripts/install.sh
+ENABLE_SS=1 RU_EGRESS=block sudo -E bash scripts/install.sh
 ```
 
 Повторный запуск с изменённым параметром перезапускает только фазу-владельца (и маршрутизацию). `ENABLE_X=0` на установленном сервере выключает протокол: сервис или inbound остановлен, порт закрыт, манифест `enabled=false`. `ENABLE_X=1` возвращает его.
 
 | Группа | Ключи | По умолчанию |
 |---|---|---|
-| Протоколы | `ENABLE_VLESS`, `ENABLE_XHTTP`, `ENABLE_SS`, `ENABLE_HY2`, `ENABLE_AWG` | `1` |
-| | `ENABLE_TUIC`, `ENABLE_HY2_OBFS`, `ENABLE_WARP` | `0` |
+| Протоколы | `ENABLE_VLESS`, `ENABLE_XHTTP`, `ENABLE_HY2`, `ENABLE_HY2_OBFS`, `ENABLE_TUIC`, `ENABLE_AWG` | `1` |
+| | `ENABLE_SS`, `ENABLE_WARP` | `0` |
 | | `ENABLE_ZOO` (инструмент zoo, админка, самопроверка) | `1`; выключение после установки не реализовано |
 | Движки | `AWG_ENGINE=auto\|kernel\|userspace` | `auto`: модуль ядра, если DKMS собирается, иначе `amneziawg-go` |
 | | `HY2_ENGINE` | `apernet` (единственный) |

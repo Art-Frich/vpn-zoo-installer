@@ -56,7 +56,7 @@ research/YYYY-MM-DD/          исследования
 ## 3. Конфиг
 
 - `/etc/vpn-setup/config.env` (0600). Все параметры и сгенерированные секреты. Каждый модуль добавляет свои переменные через `config_set KEY VALUE`, а не через переписывание файла целиком.
-- Флаги включения: `ENABLE_VLESS=1 ENABLE_XHTTP=1 ENABLE_SS=1 ENABLE_TUIC=0 ENABLE_HY2=1 ENABLE_HY2_OBFS=0 ENABLE_AWG=1 ENABLE_WARP=0 RU_EGRESS=direct|block|warp`.
+- Флаги включения: `ENABLE_VLESS=1 ENABLE_XHTTP=1 ENABLE_SS=0 ENABLE_TUIC=1 ENABLE_HY2=1 ENABLE_HY2_OBFS=1 ENABLE_AWG=1 ENABLE_WARP=0 RU_EGRESS=direct|block|warp`.
 - Движки: `AWG_ENGINE=auto|kernel|userspace` (`auto` = kernel, если DKMS собирается, иначе userspace), `HY2_ENGINE=apernet`.
 - Порты по умолчанию: VLESS 443/tcp, Hy2 443/udp, остальные — случайные высокие порты при первой установке, сохраняются в config.env. Никогда не используем 1080, 3128, 8080, 9050, 2053, 54321.
 - Ключи модулей (через окружение install.sh, сохраняются в config.env; список — `CONFIG_ENV_KEYS_RE` в lib.sh):
