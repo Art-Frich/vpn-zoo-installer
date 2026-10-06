@@ -323,6 +323,13 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .opt-row { align-items: center; margin-bottom: 8px; }
 fieldset.plat { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
 fieldset.plat legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
+.plat-sum { margin: 0 0 8px; font-size: .9rem; }
+.plat-sum.ok { color: var(--ok); }
+.plat-sum.warn { color: var(--warn); }
+.plat-sum.muted { color: var(--muted); }
+fieldset.plat details.more { margin-top: 8px; }
+fieldset.plat details.more > summary { margin-top: 0; }
+.pack .pack-app { margin: 10px 0 0; font-weight: 600; }
 .wiz-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 .wiz-nav .btn.primary { order: 2; }
 .wiz-nav .btn:not(.primary) { order: 1; }
@@ -481,6 +488,28 @@ JS = r"""
     if (!sel.matches || !sel.matches('select[data-group]') || !sel.form) return;
     var want = (sel.selectedOptions[0].getAttribute('data-protos') || '').split(' ');
     sel.form.querySelectorAll('input[name=proto]').forEach(function (c) { c.checked = want.indexOf(c.value) >= 0; });
+  });
+  // шаг «Клиенты»: строка над платформой пересчитывается при отметке клиентов (data-covers у галочек)
+  document.addEventListener('change', function (ev) {
+    var box = ev.target, fs = box.closest && box.closest('fieldset[data-sum]');
+    if (!fs || !box.matches('input[type=checkbox]')) return;
+    var all = fs.getAttribute('data-protos').split(' '), names = fs.getAttribute('data-names').split('|');
+    var on = [], have = {}, miss = [];
+    fs.querySelectorAll('input[type=checkbox]:checked').forEach(function (c) {
+      on.push(c.getAttribute('data-name'));
+      c.getAttribute('data-covers').split(' ').forEach(function (p) { have[p] = 1; });
+    });
+    all.forEach(function (p, i) { if (!have[p]) miss.push(names[i]); });
+    var out = fs.querySelector('[data-sumtext]');
+    if (!out) return;
+    if (!on.length) {
+      out.textContent = 'Платформа не нужна: ничего не отмечено';
+      out.className = 'plat-sum muted';
+      return;
+    }
+    out.textContent = 'Набор: ' + on.join(' + ') + ' — покрывает ' + (all.length - miss.length) + ' из ' + all.length +
+      (miss.length ? ': для ' + miss.join(', ') + ' нет клиента' : '');
+    out.className = 'plat-sum ' + (miss.length ? 'warn' : 'ok');
   });
   // подтверждение опасных действий; форма с data-swap уходит в фоне, <main> подменяется ответом
   document.addEventListener('submit', function (ev) {

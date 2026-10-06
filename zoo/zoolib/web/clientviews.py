@@ -132,23 +132,56 @@ def clients_page(app: "App", req: "Request") -> "Response":
 # ---------- пакет раздачи ----------
 
 @dataclass
-class Pack:
-    platform: str
-    platform_title: str
+class Item:
+    """Протокол, который отдаёт клиент: способ передачи ключа и где он лежит на странице пользователя."""
     proto: str
-    client: dict[str, Any]
-    version: str | None
-    links: list[dict[str, Any]]
     method: str
     tile: str
     tab: str | None
+
+
+@dataclass
+class Section:
+    """Один клиент набора платформы и протоколы, за которые отвечает он (уже покрытые прежним клиентом — не повторяются)."""
+    client: dict[str, Any]
+    version: str | None
+    links: list[dict[str, Any]]
+    items: list[Item]
     steps: list[str] = field(default_factory=list)
     sends: list[str] = field(default_factory=list)
 
     @property
+    def proto(self) -> str:
+        return self.items[0].proto
+
+    @property
+    def method(self) -> str:
+        return self.items[0].method
+
+    @property
+    def tab(self) -> str | None:
+        return self.items[0].tab
+
+    @property
+    def tiles(self) -> str:
+        return ", ".join(i.tile for i in self.items)
+
+
+@dataclass
+class Pack:
+    platform: str
+    platform_title: str
+    sections: list[Section]
+
+    @property
     def message(self) -> str:
+        """Одно сообщение на платформу: с одним приложением — шаги по порядку; с несколькими —
+        «1) Приложение — протоколы» и шаги каждого."""
         lines = [f"VPN на {self.platform_title}: что сделать"]
-        lines += [f"{i}. {s}" for i, s in enumerate(self.steps, 1)]
+        for n, s in enumerate(self.sections, 1):
+            if len(self.sections) > 1:
+                lines += ["", f"{n}) {s.client['name']} — {s.tiles}"]
+            lines += [f"{i}. {x}" for i, x in enumerate(s.steps, 1)]
         return "\n".join(lines)
 
 
@@ -179,87 +212,109 @@ def _tile_title(cat: clients.Catalog, mans: list[Any], proto: str) -> str:
     return (m.name if m else cat.protocols[proto]["title"]).partition(" (")[0]
 
 
-def _pick(platform: str, links: list[protolib.Link], proto: str, c: dict[str, Any] | None,
-          have: set[str]) -> tuple[str, dict[str, Any], str] | None:
-    method = pick_method(proto, c, platform, links) if c and proto in have else None
-    return (proto, c, method) if c and method else None
+def _assign(platform: str, links: list[protolib.Link], have: set[str], cs: list[dict[str, Any]],
+            protos: list[str]) -> list[tuple[dict[str, Any], list[tuple[str, str]]]]:
+    """Клиенты набора по порядку → [(клиент, [(протокол, способ передачи)])]. Протокол отдаёт первый клиент
+    набора, который его умеет и которому есть что отправить; следующим он не повторяется, клиент без
+    протоколов в пакет не попадает."""
+    taken: set[str] = set()
+    out = []
+    for c in cs:
+        mine = []
+        for proto in protos:
+            if proto in taken or proto not in have or c["protocols"].get(proto, {}).get("s") not in ("ok", "warn"):
+                continue
+            method = pick_method(proto, c, platform, links)
+            if method:
+                mine.append((proto, method))
+                taken.add(proto)
+        if mine:
+            out.append((c, mine))
+    return out
 
 
-def _choose(cat: clients.Catalog, platform: str, links: list[protolib.Link], have: set[str],
-            prefer: dict[str, str] | None, order: list[str] | None) -> tuple[str, dict[str, Any], str] | None:
-    """(протокол, клиент, способ передачи). Клиент, выбранный в группе, главнее рекомендованного: берём
-    первый протокол группы (порядок группы, первый — основной; у «всех включённых» — порядок раздачи
-    каталога, затем остальные включённые), который он умеет и для которого есть что отправить. Группа
-    выбрала клиентов, а для платформы — «не нужен» (нет записи): пакета нет. Если выбранный клиент
-    устарел (убран из каталога или платформы) или не покрывает ничего включённого — рекомендованный
-    клиент (если клиент группы был выбран — только в рамках протоколов группы)."""
+def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have: set[str],
+          prefer: dict[str, list[str]] | None, order: list[str] | None) -> list[tuple[dict[str, Any], list[tuple[str, str]]]]:
+    """Набор клиентов платформы и их протоколы. Набор группы главнее рекомендованных: протоколы идут в порядке
+    группы (первый — основной; у «всех включённых» — порядок раздачи каталога, затем остальные включённые).
+    Группа выбрала клиентов, а для платформы — «не нужна» (нет записи): пакета нет. Если набор устарел
+    (клиент убран из каталога или платформы) или не покрывает ничего включённого — рекомендованные
+    клиенты по протоколам (если клиенты группы были выбраны — только в рамках протоколов группы)."""
     handoff = cat.raw["handoff"].get(platform, [])
     if prefer:
-        cid = prefer.get(platform, "")
-        if not cid:
-            return None
-        c = cat.client(cid)
-        if c is not None and platform in c["platforms"]:
-            for proto in order or [*handoff, *sorted(have - set(handoff))]:
-                if c["protocols"].get(proto, {}).get("s") in ("ok", "warn"):
-                    got = _pick(platform, links, proto, c, have)
-                    if got:
-                        return got
-    for proto in handoff:
-        if not (prefer and order) or proto in order:
-            got = _pick(platform, links, proto, cat.recommended(platform, proto), have)
-            if got:
-                return got
-    return None
+        ids = prefer.get(platform) or []
+        if not ids:
+            return []
+        cs = [c for c in (cat.client(i) for i in ids) if c is not None and platform in c["platforms"]]
+        got = _assign(platform, links, have, cs, order or [*handoff, *sorted(have - set(handoff))])
+        if got:
+            return got
+    protos = [p for p in handoff if not (prefer and order) or p in order]
+    rec: list[dict[str, Any]] = []
+    for proto in protos:
+        c = cat.recommended(platform, proto)
+        if c is not None and c not in rec:
+            rec.append(c)
+    return _assign(platform, links, have, rec, protos)
 
 
 def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links: list[protolib.Link],
-               mans: list[Any], prefer: dict[str, str] | None = None, order: list[str] | None = None) -> Pack | None:
-    """prefer — клиенты группы по платформам, order — протоколы группы по порядку (первый — основной);
-    без них — рекомендованный клиент и порядок раздачи из каталога."""
+               mans: list[Any], prefer: dict[str, list[str]] | None = None, order: list[str] | None = None) -> Pack | None:
+    """prefer — наборы клиентов группы по платформам, order — протоколы группы по порядку (первый — основной);
+    без них — рекомендованные клиенты и порядок раздачи из каталога."""
     have = {ln.proto_id for ln in links}
-    chosen = _choose(cat, platform, links, have, prefer, order)
-    if chosen is None:
+    plan = _plan(cat, platform, links, have, prefer, order)
+    if not plan:
         return None
-    proto, c, method = chosen
-    tabs = cat.raw.get("tabs", {}).get(proto)
-    pack = Pack(platform, cat.platforms[platform], proto, c, _version(c, platform, cache),
-                _sorted_links(c["platforms"][platform]), method, _tile_title(cat, mans, proto),
-                (tabs.get(platform) or tabs.get("*")) if tabs else None)
-    ver = f" (версия {pack.version})" if pack.version else ""
-    foreign = f" {FOREIGN_STORE}" if cat.no_ru_store(c, platform) else ""
-    pack.steps.append(f"Скачайте «{c['name']}»{ver}: {pack.links[0]['url']}{foreign}")
-    pack.steps.append(c["import"][method])
-    pack.sends.append(f"{SEND_WHAT[method]} — плитка «{pack.tile}»" + (f", вкладка «{pack.tab}»" if pack.tab else ""))
-    for ex in c.get("extra", []):
-        if ex["platform"] == platform and ex["proto"] in have:
-            pack.steps.append(ex["text"])
-            pack.sends.append(f"файл — плитка «{_tile_title(cat, mans, ex['proto'])}»")
-    app_step = cat.per_app_steps(c, platform)
-    if app_step:
-        pack.steps.append("Приложения через VPN: " + app_step)
-    # Brave — «приложение под VPN»: только там, где клиент умеет пускать в туннель выбранные приложения
-    brave = (c.get("per_app") in ("config", "rules") and platform != "ios") or bool(app_step)
-    browser = "Brave" if brave else "любом браузере"
-    check = cat.raw["check"].get(proto) or cat.raw["check"]["*"]
-    pack.steps.append(check.replace("{browser}", browser))
-    return pack
+    sections = []
+    for c, mine in plan:
+        items = []
+        for proto, method in mine:
+            tabs = cat.raw.get("tabs", {}).get(proto)
+            items.append(Item(proto, method, _tile_title(cat, mans, proto),
+                              (tabs.get(platform) or tabs.get("*")) if tabs else None))
+        sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform]), items)
+        ver = f" (версия {sec.version})" if sec.version else ""
+        foreign = f" {FOREIGN_STORE}" if cat.no_ru_store(c, platform) else ""
+        sec.steps.append(f"Скачайте «{c['name']}»{ver}: {sec.links[0]['url']}{foreign}")
+        for method in dict.fromkeys(i.method for i in items):
+            sec.steps.append(c["import"][method])
+        sec.sends += [f"{SEND_WHAT[i.method]} — плитка «{i.tile}»" + (f", вкладка «{i.tab}»" if i.tab else "")
+                      for i in items]
+        for ex in c.get("extra", []):
+            if ex["platform"] == platform and ex["proto"] in have:
+                sec.steps.append(ex["text"])
+                sec.sends.append(f"файл — плитка «{_tile_title(cat, mans, ex['proto'])}»")
+        app_step = cat.per_app_steps(c, platform)
+        if app_step:
+            sec.steps.append("Приложения через VPN: " + app_step)
+        # Brave — «приложение под VPN»: только там, где клиент умеет пускать в туннель выбранные приложения
+        brave = (c.get("per_app") in ("config", "rules") and platform != "ios") or bool(app_step)
+        browser = "Brave" if brave else "любом браузере"
+        check = cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]
+        sec.steps.append(check.replace("{browser}", browser))
+        sections.append(sec)
+    return Pack(platform, cat.platforms[platform], sections)
 
 
-def group_prefs(g: groups.Group | None) -> tuple[dict[str, str], list[str] | None]:
-    """Клиенты и порядок протоколов группы для «Что отправить» (у «всех включённых» порядок — из каталога)."""
+def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]], list[str] | None]:
+    """Наборы клиентов и порядок протоколов группы для «Что отправить» (у «всех включённых» порядок — из каталога)."""
     if g is None:
         return {}, None
-    if g.all_protocols:
-        return dict(g.clients), None
-    return dict(g.clients), list(g.protocols)
+    prefer = {p: list(ids) for p, ids in g.clients.items()}
+    return prefer, (None if g.all_protocols else list(g.protocols))
 
 
-def handoff_card(links: list[protolib.Link], prefer: dict[str, str] | None = None, uid: str = "",
+def _section_head(s: Section, n: int | None) -> list[Any]:
+    return [f"{n}) " if n else None, t("strong", s.client["name"]),
+            t("span", f" {s.version}", class_="muted") if s.version else None]
+
+
+def handoff_card(links: list[protolib.Link], prefer: dict[str, list[str]] | None = None, uid: str = "",
                  heading: str = "Что отправить", order: list[str] | None = None) -> Markup | None:
-    """«Что отправить»: по платформе — клиент (ссылка, версия), что прислать, одно сообщение.
-    prefer и order — клиенты и протоколы группы (см. build_pack); uid — приставка id полей, если на странице
-    несколько пакетов."""
+    """«Что отправить»: по платформе — клиенты набора (ссылка, версия, за какие протоколы отвечают), что
+    прислать, одно сообщение на платформу. prefer и order — клиенты и протоколы группы (см. build_pack);
+    uid — приставка id полей, если на странице несколько пакетов."""
     if not links:
         return None
     try:
@@ -274,14 +329,21 @@ def handoff_card(links: list[protolib.Link], prefer: dict[str, str] | None = Non
         pack = build_pack(cat, cache, plat, links, mans, prefer, order)
         if pack is None:
             continue
-        unverified = unverified or not pack.client["verified"]["device"]
+        unverified = unverified or any(not s.client["verified"]["device"] for s in pack.sections)
         mid = f"msg-{uid}{plat}"
-        title = [pack.platform_title, " · ", t("strong", pack.client["name"]),
-                 t("span", f" {pack.version}", class_="muted") if pack.version else None]
+        many = len(pack.sections) > 1
+        parts: list[Any] = []
+        for n, s in enumerate(pack.sections, 1):
+            lines = [t("li", "Скачать: ", _link_anchors(s.links)), t("li", "Отправить: ", "; ".join(s.sends))]
+            if many:
+                parts.append(t("p", _section_head(s, n), " — " + s.tiles, class_="pack-app"))
+            parts.append(t("ul", lines, class_="steps"))
+        if many:
+            title = [pack.platform_title, t("span", f" · {len(pack.sections)} приложения", class_="muted")]
+        else:
+            title = [pack.platform_title, " · ", *_section_head(pack.sections[0], None)]
         blocks[plat in MAIN_PLATFORMS].append(t(
-            "div", t("h3", title, class_="sub-h"),
-            t("ul", t("li", "Скачать: ", _link_anchors(pack.links)),
-              t("li", "Отправить: ", "; ".join(pack.sends)), class_="steps"),
+            "div", t("h3", title, class_="sub-h"), parts,
             t("textarea", pack.message, id=mid, hidden=True, readonly=True),
             t("div", t("button", "Скопировать сообщение", type="button", class_="btn", data_copy=mid,
                        title="Инструкция без ключей: QR, ссылку или файл отправьте отдельно"), class_="actions"),

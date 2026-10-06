@@ -57,7 +57,8 @@ def _err(e: Exception) -> str:
 class Draft:
     name: str = ""
     protocols: list[str] = field(default_factory=list)
-    clients: dict[str, str] = field(default_factory=dict)
+    clients: dict[str, list[str]] = field(default_factory=dict)
+    clients_for: str = ""   # протоколы, под которые клиенты уже выбраны на шаге 2 (изменились — набор пересчитывается)
     allow_mode: str = "common"
     allow: dict[str, list[str]] = field(default_factory=lambda: {p: [] for p in allowlist.PLATFORMS})
     new_users: str = ""
@@ -69,7 +70,9 @@ class Draft:
         return cls(
             name=f.get("name", "")[:200].strip(),
             protocols=[p[:40] for p in m.get("proto", [])][:20],
-            clients={k[7:]: v[:40] for k, v in f.items() if k.startswith("client:")},
+            clients={k[7:]: ids for k, vals in m.items() if k.startswith("client:")
+                     if (ids := groups.client_ids([v[:40] for v in vals][:groups.CLIENTS_MAX + 1]))},
+            clients_for=f.get("clients_for", "")[:400],
             allow_mode="own" if f.get("allow_mode") == "own" else "common",
             allow={p: [v[:128] for v in m.get(p, [])][:allowlist.LIST_MAX + 1] for p in allowlist.PLATFORMS},
             new_users=f.get("users_new", "")[:4000],
@@ -77,7 +80,7 @@ class Draft:
 
     @classmethod
     def of_group(cls, g: groups.Group) -> "Draft":
-        d = cls(name=g.name, protocols=list(g.protocols), clients=dict(g.clients))
+        d = cls(name=g.name, protocols=list(g.protocols), clients={p: list(v) for p, v in g.clients.items()})
         if g.allowlist:
             d.allow_mode, d.allow = "own", {p: list(g.allowlist[p]) for p in allowlist.PLATFORMS}
         return d
@@ -101,8 +104,11 @@ def _hidden(d: Draft, shown: int, own_allow: bool = True) -> list[Markup]:
         for p in d.protocols:
             add("proto", p)
     if shown != 2:
-        for plat, cid in d.clients.items():
-            add(f"client:{plat}", cid)
+        if d.clients_for:
+            add("clients_for", d.clients_for)
+        for plat, ids in d.clients.items():
+            for cid in ids:
+                add(f"client:{plat}", cid)
     if shown != 3:
         add("users_new", d.new_users)
         for n in d.existing:
@@ -242,23 +248,43 @@ def _not_selectable(shown: set[str]) -> list[tuple[str, str]]:
 
 # ---------- клиенты (шаг 2) ----------
 
-def _client_option(plat: str, o: dict[str, Any], chosen: str, protocols: list[str], cache: dict[str, Any],
-                   cat: clients.Catalog) -> Markup:
+def _proto_names(cat: clients.Catalog) -> dict[str, str]:
+    """Названия протоколов: как в плитках сервера, для неизвестных серверу — из каталога клиентов."""
+    names = {p: d["title"] for p, d in cat.protocols.items()}
+    names.update({m.id: m.short for m in manifests.load_all()[0]})
+    return names
+
+
+def set_summary(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str],
+                names: dict[str, str]) -> tuple[str, str]:
+    """Строка над платформой: чем набор покрывает протоколы группы. Второе — вид: ok, warn, muted."""
+    if not ids:
+        return "Платформа не нужна: ничего не отмечено", "muted"
+    done, miss = groups.coverage(cat, plat, protocols, ids)
+    label = " + ".join((cat.client(i) or {}).get("name", i) for i in ids)
+    text = f"Набор: {label} — покрывает {len(done)} из {len(done) + len(miss)}"
+    if miss:
+        return text + ": для " + ", ".join(names.get(p, p) for p in miss) + " нет клиента", "warn"
+    return text, "ok"
+
+
+def _client_option(plat: str, o: dict[str, Any], checked: bool, suggested: bool, cache: dict[str, Any],
+                   cat: clients.Catalog, names: dict[str, str]) -> Markup:
     c = o["client"]
     cid = c["id"]
-    caveats = [f"{cat.protocols[p]['title']}: {c['protocols'][p]['note']}" for p in o["covers"]
-               if c["protocols"][p].get("note")]
-    chips = [t("span", f"{len(o['covers'])} из {len(protocols)} протоколов", class_="chip ok" if len(o["covers"]) == len(protocols)
-               else "chip warn", title=", ".join(cat.protocols[p]["title"] for p in o["covers"])),
-             t("span", "приложения: " + cat.raw["per_app"][c["per_app"]], class_="chip")]
+    caveats = [f"{names.get(p, p)}: {c['protocols'][p]['note']}" for p in o["covers"] if c["protocols"][p].get("note")]
+    chips = [t("span", names.get(p, p), class_="chip warn" if c["protocols"][p]["s"] == "warn" else "chip ok",
+               title=c["protocols"][p].get("note") or "умеет этот протокол") for p in o["covers"]]
+    chips.append(t("span", "приложения: " + cat.raw["per_app"][c["per_app"]], class_="chip"))
     if o["no_ru_store"]:
         chips.append(t("span", "нет в App Store РФ", class_="chip warn", title=clientviews.FOREIGN_STORE))
     if not c["verified"]["device"]:
         chips.append(t("span", "на устройстве не проверено", class_="chip", title=clientviews.UNVERIFIED))
     ver = clientviews._version_cell(c, cache, plat)
-    return t("label", t("input", type="radio", name=f"client:{plat}", value=cid, checked=cid == chosen),
+    return t("label", t("input", type="checkbox", name=f"client:{plat}", value=cid, checked=checked,
+                        data_covers=" ".join(o["covers"]), data_name=c["name"]),
              t("span", t("span", t("strong", c["name"]), " ", ver, " ",
-                         badge("рекомендуем", "ok") if o["recommended"] else None, class_="opt-title"),
+                         badge("рекомендуем", "ok") if suggested else None, class_="opt-title"),
                t("div", chips, class_="chips"),
                t("div", clientviews._link_anchors(c["platforms"][plat]), class_="chips"),
                t("span", "; ".join(caveats), class_="hint") if caveats else None,
@@ -272,41 +298,60 @@ def _clients_block(d: Draft, managed: list[str]) -> Markup:
     except clients.ClientsError as e:
         return alert_list([("bad", str(e))])
     cache = clients.load_cache()
+    names = _proto_names(cat)
     protocols = d.resolved(managed)
+    real = [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
     main_, other = [], []
     for plat, title in cat.platforms.items():
-        opts = groups.client_options(cat, plat, protocols)
+        opts = {o["client"]["id"]: o for o in groups.client_options(cat, plat, protocols)}
         if not opts:
             body: Any = t("p", "Нет клиента под выбранные протоколы.", class_="muted small")
+            sum_attrs: dict[str, Any] = {}
         else:
-            chosen = d.clients.get(plat, "")
-            body = t("div", [_client_option(plat, o, chosen, protocols, cache, cat) for o in opts],
-                     t("label", t("input", type="radio", name=f"client:{plat}", value="", checked=not chosen),
-                       t("span", t("span", "Не нужен", class_="opt-title"), class_="opt-body"), class_="opt"),
-                     class_="opts")
-        (main_ if plat in MAIN_PLATFORMS else other).append(t("fieldset", t("legend", title), body, class_="plat"))
+            chosen = [i for i in d.clients.get(plat, []) if i in opts]
+            sugg = groups.suggest_clients(cat, plat, protocols)
+            first = [*sugg, *[i for i in chosen if i not in sugg]]
+            rest = [i for i in opts if i not in first]
+            text, kind = set_summary(cat, plat, protocols, chosen, names)
+
+            def cards(ids: list[str]) -> list[Markup]:
+                return [_client_option(plat, opts[i], i in chosen, i in sugg, cache, cat, names) for i in ids]
+
+            body = t("div", t("p", text, class_="plat-sum " + kind, data_sumtext=True),
+                     t("div", cards(first), class_="opts"),
+                     t("details", t("summary", f"Другие клиенты ({len(rest)})"),
+                       t("div", cards(rest), class_="opts"), class_="more") if rest else None)
+            sum_attrs = {"data_sum": True, "data_protos": " ".join(real),
+                         "data_names": "|".join(names.get(p, p) for p in real)}
+        (main_ if plat in MAIN_PLATFORMS else other).append(
+            t("fieldset", t("legend", title), body, class_="plat", **sum_attrs))
     return t("div", main_,
              t("details", t("summary", "Другие платформы"), other, class_="more") if other else None,
              t("p", clientviews.UNVERIFIED, class_="hint"))
 
 
 def normalize_clients(d: Draft, managed: list[str], fill: bool = True) -> None:
-    """Выбор клиентов под текущие протоколы: подходящий остаётся; остальным — рекомендуемый (fill)
-    или «не нужен»; явное «не нужен» сохраняется."""
+    """Выбор клиентов под текущие протоколы: остаются подходящие. fill (мастер): пока клиенты не выбраны под эти
+    же протоколы (первый показ шага или протоколы сменили) — предлагается набор, покрывающий протоколы;
+    после — отмеченное сохраняется как есть, платформа без отметок — «не нужна»."""
     try:
         cat = clients.load()
     except clients.ClientsError:
         return
     protocols = d.resolved(managed)
-    fixed: dict[str, str] = {}
+    stale = fill and d.clients_for != ",".join(protocols)
+    fixed: dict[str, list[str]] = {}
     for plat in cat.platforms:
         opts = groups.client_options(cat, plat, protocols)
         if not opts:
             continue
-        cur = d.clients.get(plat)
         ids = {o["client"]["id"] for o in opts}
-        fixed[plat] = cur if cur in ids or cur == "" else (opts[0]["client"]["id"] if fill else "")
+        got = groups.suggest_clients(cat, plat, protocols) if stale else [i for i in d.clients.get(plat, []) if i in ids]
+        if got:
+            fixed[plat] = got
     d.clients = fixed
+    if fill:
+        d.clients_for = ",".join(protocols)
 
 
 # ---------- люди и приложения (шаг 3) ----------
@@ -382,8 +427,10 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
         title, hint = "Протоколы", "Первый отмеченный — основной, остальные — запасные (обычно 2–3)."
     elif step == 2:
         normalize_clients(d, managed)
-        body, title = [_clients_block(d, managed)], "Клиенты"
-        hint = "Приложение на устройстве человека — по платформам; нужные отметьте, остальные пропустите."
+        body = [t("input", type="hidden", name="clients_for", value=d.clients_for), _clients_block(d, managed)]
+        title = "Клиенты"
+        hint = ("Ни одно приложение не умеет все протоколы, поэтому отмечен набор, который вместе их покрывает. "
+                "Платформа, где ничего не отмечено, не нужна.")
     else:
         body, title = [_users_block(d), t("h3", "Приложения через VPN", class_="sub-h"), _apps_block(d)], "Люди"
         hint = "Кто подключается и какие приложения идут через VPN."
@@ -500,10 +547,10 @@ def _summary(g: groups.Group) -> Markup:
     titles = {m.id: m.short for m in manifests.load_all()[0]}
     try:
         cat = clients.load()
-        names = {p: (cat.client(c) or {}).get("name", c) for p, c in g.clients.items()}
+        names = {p: " + ".join((cat.client(c) or {}).get("name", c) for c in ids) for p, ids in g.clients.items()}
         plat = cat.platforms
     except clients.ClientsError:
-        names, plat = dict(g.clients), {}
+        names, plat = {p: " + ".join(ids) for p, ids in g.clients.items()}, {}
     chips = [t("span", titles.get(p, p), class_="chip") for p in g.resolve(managed)]
     cl = [t("span", f"{plat.get(p, p)}: {n}", class_="chip info") for p, n in names.items()]
     return t("div", t("div", chips, class_="chips"), t("div", cl, class_="chips") if cl else None,
@@ -550,8 +597,9 @@ def groups_list(app: "App", req: "Request") -> "Response":
     for g in gs.groups:
         mem = groups.members_of(gs, ureg, g.id)
         protos = t("div", [t("span", titles.get(p, p), class_="chip") for p in g.resolve(managed)], class_="chips")
-        cl = t("div", [t("span", f"{(cat.platforms.get(p, p) if cat else p)}: {(cat.client(c) or {}).get('name', c) if cat else c}",
-                         class_="chip") for p, c in g.clients.items()], class_="chips") if g.clients else t("span", "—", class_="muted")
+        cl = t("div", [t("span", f"{(cat.platforms.get(p, p) if cat else p)}: "
+                                 + " + ".join((cat.client(c) or {}).get('name', c) if cat else c for c in ids),
+                         class_="chip") for p, ids in g.clients.items()], class_="chips") if g.clients else t("span", "—", class_="muted")
         people = [[t("a", u.name, href=f"/users/{u.name}"), ", "] for u in mem[:8]]
         if len(mem) > 8:
             people.append(f"и ещё {len(mem) - 8}")

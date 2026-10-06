@@ -549,8 +549,9 @@ def build_parser() -> argparse.ArgumentParser:
         g = p.add_mutually_exclusive_group()
         g.add_argument("--proto", action="append", metavar="ID", help="протокол группы (можно несколько раз; первый — основной)")
         g.add_argument("--all-protocols", action="store_true", help="все включённые протоколы")
-        p.add_argument("--client", action="append", metavar="ПЛАТФОРМА=КЛИЕНТ",
-                       help="клиент платформы из каталога (android=happ; zoo clients)")
+        p.add_argument("--client", action="append", metavar="ПЛАТФОРМА=КЛИЕНТ[,КЛИЕНТ]",
+                       help="набор клиентов платформы из каталога (android=happ,amneziawg; zoo clients); "
+                            "вместе они должны покрывать протоколы группы")
         p.add_argument("--allow", action="append", metavar="ПРИЛОЖЕНИЕ",
                        help="свой список приложений группы (ключ каталога, пакет, процесс); не указанная "
                             "платформа остаётся как есть")
@@ -563,7 +564,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("group", metavar="ГРУППА", help="id или название")
     p.add_argument("--name", help="новое название")
     group_options(p)
-    p.add_argument("--no-client", action="append", metavar="ПЛАТФОРМА", help="убрать клиента платформы")
+    p.add_argument("--no-client", action="append", metavar="ПЛАТФОРМА", help="убрать клиентов платформы (платформа не нужна)")
     p.add_argument("--allow-common", action="store_true", help="вернуть группу на общий список приложений")
     p = gadd("move", groups.cmd_group_move, "перевести пользователя в группу (или вернуть ему настройки группы)")
     p.add_argument("user", metavar="ИМЯ")

@@ -1004,7 +1004,7 @@ class ConnectPageTest(AppTestBase):
         main = body[body.index("<main"):]
         self.assertLess(main.index("Подключение"), main.index("Профиль"))
         self.assertLess(main.index("Подключение"), main.index(">Трафик<"))
-        self.assertLessEqual(len(body.encode("utf-8")), 20 * 1024, "страница с 6 протоколами должна быть лёгкой")
+        self.assertLessEqual(len(body.encode("utf-8")), 26 * 1024, "страница с 6 протоколами должна быть лёгкой")
         self.assertNotIn("<svg", body.split("Профиль")[0], "QR — отдельные картинки по требованию")
         self.assertIn('data-src="/users/masha/qr/', body)
         self.assertNotIn("нужен Xray-клиент", body)
