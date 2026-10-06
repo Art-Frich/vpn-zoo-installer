@@ -9,7 +9,7 @@ API 3x-ui и Xray живы, UFW включён, нет лишних listen, ко
 какие фазы install.sh перезапустить. `zoo upgrade --apply [--pull]` — git pull (по
 желанию), smoke до, `install.sh --phase` по плану, smoke после и подсказка отката.
 
-`zoo upgrade --check-upstream` — раз в сутки (zoo-upstream.timer) спрашивает GitHub releases/latest
+`zoo upgrade --check-upstream` — раз в сутки (zoo-upstream.timer) спрашивает GitHub (свежий релиз, включая pre-release; без релизов — теги)
 и кладёт ответ в /var/lib/vpn-zoo/upstream.json; страница админки и `zoo upgrade` читают только файл.
 Обновлений не ставит: версии меняются через пины репозитория (bump-pins, sha256).
 """
@@ -328,13 +328,25 @@ def _http_json(url: str) -> Any:
         return json.load(r)
 
 
+def _ver(tag: str) -> str:
+    m = re.search(r"v?\d+(?:\.\d+)+[\w.+-]*$", str(tag))
+    return m.group(0) if m else ""
+
+
 def latest_tag(repo: str) -> str:
-    """Тег последнего релиза (без pre-release и черновиков); «app/v2.12.3» → «v2.12.3»."""
-    data = _http_json(f"https://api.github.com/repos/{repo}/releases/latest")
-    m = re.search(r"v?\d+(?:\.\d+)+[\w.+-]*$", str(data.get("tag_name", "")))
-    if not m:
+    """Самая свежая версия среди последних релизов, включая pre-release: Xray выпускает основную
+    линию пре-релизами, и 3x-ui закрепляет их же (releases/latest отдал бы старую v26.3.27).
+    Нет релизов вовсе (amneziawg-go) — по тегам. «app/v2.12.3» → «v2.12.3»."""
+    rels = _http_json(f"https://api.github.com/repos/{repo}/releases?per_page=20")
+    tags = [_ver(r.get("tag_name", "")) for r in rels if isinstance(r, dict) and not r.get("draft")] \
+        if isinstance(rels, list) else []
+    if not any(tags):
+        tags = [_ver(t.get("name", "")) for t in _http_json(f"https://api.github.com/repos/{repo}/tags?per_page=20")
+                if isinstance(t, dict)]
+    tags = [t for t in tags if t]
+    if not tags:
         raise ValueError("в ответе нет версии")
-    return m.group(0)
+    return max(tags, key=_vtuple)
 
 
 def read_upstream() -> dict[str, Any]:

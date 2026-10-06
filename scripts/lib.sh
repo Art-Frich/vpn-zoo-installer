@@ -749,3 +749,23 @@ wait_port() {
     done
     return 1
 }
+
+# journald: потолок объёма системного журнала (фазы 00 и 09 — чтобы доехал и до старых установок)
+journald_limit() {
+    local journald_new
+    local JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-vpn-zoo.conf
+    journald_new="$(mktemp)"
+    printf '%s\n' '# vpn-zoo: потолок объёма системного журнала' '[Journal]' 'SystemMaxUse=500M' > "$journald_new"
+    if cmp -s "$journald_new" "$JOURNALD_DROPIN" 2>/dev/null; then
+        log_info "journald: SystemMaxUse=500M уже задан"
+    else
+        mkdir -p "$(dirname "$JOURNALD_DROPIN")"
+        install -m 0644 "$journald_new" "$JOURNALD_DROPIN"
+        if systemctl restart systemd-journald >/dev/null 2>&1; then
+            log_ok "journald: SystemMaxUse=500M"
+        else
+            log_warn "journald: лимит записан в $JOURNALD_DROPIN, но systemd-journald не перезапустился (подействует после перезагрузки)"
+        fi
+    fi
+    rm -f "$journald_new"
+}

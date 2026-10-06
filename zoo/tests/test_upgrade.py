@@ -149,17 +149,25 @@ class UpstreamTest(unittest.TestCase):
 
     def test_latest_tag_parses_and_uses_timeout(self):
         for raw, want in (("app/v2.12.3", "v2.12.3"), ("v26.9.30", "v26.9.30"), ("1.14.2", "1.14.2")):
-            with mock.patch.object(upgrade, "_http_json", return_value={"tag_name": raw}):
+            with mock.patch.object(upgrade, "_http_json", return_value=[{"tag_name": raw}]):
                 self.assertEqual(upgrade.latest_tag("a/b"), want)
-        with mock.patch.object(upgrade, "_http_json", return_value={"tag_name": "nightly"}):
+        # пре-релиз новее стабильного (линия Xray) — берём его; черновик не считается
+        rels = [{"tag_name": "v26.3.27"}, {"tag_name": "v26.9.30", "prerelease": True},
+                {"tag_name": "v27.0.0", "draft": True}]
+        with mock.patch.object(upgrade, "_http_json", return_value=rels):
+            self.assertEqual(upgrade.latest_tag("a/b"), "v26.9.30")
+        # релизов нет (amneziawg-go) — по тегам
+        with mock.patch.object(upgrade, "_http_json", side_effect=[[], [{"name": "v3.1.20260828"}]]):
+            self.assertEqual(upgrade.latest_tag("a/b"), "v3.1.20260828")
+        with mock.patch.object(upgrade, "_http_json", side_effect=[[{"tag_name": "nightly"}], []]):
             with self.assertRaises(ValueError):
                 upgrade.latest_tag("a/b")
         resp = mock.MagicMock()
-        resp.__enter__.return_value = io.BytesIO(b'{"tag_name": "v1.2.3"}')
+        resp.__enter__.return_value = io.BytesIO(b'[{"tag_name": "v1.2.3"}]')
         with mock.patch("urllib.request.urlopen", return_value=resp) as op:
             self.assertEqual(upgrade.latest_tag("a/b"), "v1.2.3")
         self.assertEqual(op.call_args.kwargs["timeout"], 10)
-        self.assertIn("repos/a/b/releases/latest", op.call_args.args[0].full_url)
+        self.assertIn("repos/a/b/releases?per_page=20", op.call_args.args[0].full_url)
 
     def test_refresh_writes_cache(self):
         with mock.patch.object(upgrade, "latest_tag", side_effect=lambda repo: self.tags[repo]) as lt:

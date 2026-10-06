@@ -145,6 +145,7 @@ ZOO_HOME="$ZOO_HOME" ZOO_STATE_DIR="$ZOO_STATE_DIR" "$ZOO_BIN_LINK" setup \
 config_load
 
 log_step "zoo: коллектор трафика и админка"
+journald_limit
 zoo_install_units
 # копия кода обновилась: работающая админка должна её перечитать
 systemctl try-restart zoo-web.service >/dev/null 2>&1 || true
