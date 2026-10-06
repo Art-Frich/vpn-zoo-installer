@@ -203,3 +203,27 @@ class OutputTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StatusUsersTest(unittest.TestCase):
+    def test_obfs_card_counts_shared_users_and_has_short_name(self):
+        users = {"schema": 1, "users": [
+            {"name": n, "created": "x", "enabled": True, "note": "", "protocols": ["hysteria2"]}
+            for n in ("owner", "masha")]}
+        units = {"x-ui.service": {"load": "loaded", "active": "active"}}
+        with ZooEnv() as env, \
+                mock.patch.object(system, "listening_sockets", return_value=[]), \
+                mock.patch.object(system, "ufw_active", return_value=True), \
+                mock.patch.object(system, "unit_states", side_effect=lambda us: {u: units.get(u, {
+                    "load": "not-found", "active": "inactive"}) for u in us}), \
+                mock.patch.object(system, "component_versions", return_value={}):
+            env.add_proto("hysteria2")
+            env.add_manifest("hysteria2", layer="udp", users_backend="hysteria-command", engine="hysteria")
+            env.add_manifest("hysteria2-obfs", layer="udp", users_backend="hysteria-command", engine="hysteria",
+                             name="Hysteria2 + Salamander", short="HY2 + Salamander")
+            env.add_manifest("ss2022", name="Shadowsocks-2022 (2022-blake3-aes-128-gcm)")
+            (env.etc / "users.json").write_text(json.dumps(users), encoding="utf-8")
+            by_id = {p["id"]: p for p in status.collect(config.load(), cpu_interval=0, with_xui=False)["protocols"]}
+        self.assertEqual((by_id["hysteria2"]["users"], by_id["hysteria2-obfs"]["users"]), (2, 2))
+        self.assertEqual(by_id["hysteria2-obfs"]["short"], "HY2 + Salamander")
+        self.assertEqual(by_id["ss2022"]["short"], "Shadowsocks-2022")

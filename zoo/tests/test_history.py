@@ -534,6 +534,102 @@ class RankTest(unittest.TestCase):
             self.assertEqual(code, 2)
 
 
+class RankPlacesTest(unittest.TestCase):
+    """Меньше 3 прогонов — ориентир, не рейтинг; от 3 — медиана с разбросом."""
+
+    def test_one_run_is_not_a_ranking(self):
+        rows = rows_for([(1, "t", None, "a", "OK", 100.0, 40.0), (1, "t", None, "b", "OK", 200.0, 20.0)])
+        ctx = rank.rank(rows)[0]
+        self.assertFalse(ctx["ranked"])
+        self.assertEqual(ctx["top"], [])
+        self.assertEqual(ctx["protocols"][0]["latency_p25"], None)
+
+    def test_three_runs_rank_with_spread(self):
+        rows = []
+        for i, lat in enumerate([80.0, 100.0, 130.0]):
+            rows += rows_for([(i, "t", None, "a", "OK", lat, 40.0 + i), (i, "t", None, "b", "OK", 300.0, 10.0)])
+        ctx = rank.rank(rows)[0]
+        self.assertTrue(ctx["ranked"])
+        self.assertEqual([p["proto"] for p in ctx["top"]], ["a", "b"])
+        a = ctx["protocols"][0]
+        self.assertEqual((a["latency_ms"], a["latency_p25"], a["latency_p75"]), (100.0, 90.0, 115.0))
+        self.assertEqual(rank.spread_text(a, "latency", ".0f", " мс"), "100 мс (90–115)")
+        self.assertEqual(rank.spread_text({"latency_ms": 5.0}, "latency", ".0f", " мс"), "5 мс")
+        self.assertEqual(rank.spread_text({}, "down", ".1f", ""), "—")
+
+    def test_protocol_with_two_runs_gets_no_place(self):
+        rows = []
+        for i in range(3):
+            rows += rows_for([(i, "t", None, "a", "OK", 100.0, 40.0)])
+        rows += rows_for([(0, "t", None, "new", "OK", 10.0, 90.0), (1, "t", None, "new", "OK", 10.0, 90.0)])
+        ctx = rank.rank(rows)[0]
+        self.assertEqual([p["proto"] for p in ctx["top"]], ["a"])
+
+    def test_plural(self):
+        self.assertEqual([rank.plural_runs(n) for n in (1, 2, 5, 11, 21)],
+                         ["1 замер", "2 замера", "5 замеров", "11 замеров", "21 замер"])
+
+    def test_cli_low_data_block(self):
+        out = io.StringIO()
+        rows = rows_for([(1, "t", None, "a", "OK", 100.0, 40.0)])
+        with contextlib.redirect_stdout(out):
+            rank.render(rank.rank(rows), "30d")
+        self.assertIn("1 замер — ориентир, не рейтинг", out.getvalue())
+        self.assertNotIn("место", out.getvalue())
+
+
+SERVERS = [
+    {"id": "hysteria2", "name": "Hysteria2", "full": "Hysteria2", "enabled": True},
+    {"id": "hysteria2-obfs", "name": "HY2 + Salamander", "full": "Hysteria2 + Salamander", "enabled": True},
+    {"id": "tuic", "name": "TUIC v5", "full": "TUIC v5 (3x-ui native)", "enabled": True},
+    {"id": "ss2022", "name": "Shadowsocks-2022", "full": "Shadowsocks-2022 (x)", "enabled": False},
+]
+
+
+class RankViewTest(unittest.TestCase):
+    def render(self, rows, servers=SERVERS):
+        from zoolib.web import probeviews
+        on, off = probeviews.split_rows(servers, rows)
+        return (str(probeviews.best_card(rank.rank(on), "30d", servers, rank.rank(off))),
+                str(probeviews.trends_card(rows, servers)))
+
+    def test_low_data_block(self):
+        best, trends = self.render(rows_for([(1, "t", None, "hysteria2", "OK", 339.0, 40.0),
+                                             (1, "t", None, "ss2022", "UDP_BLOCKED", None, None)]))
+        self.assertIn("1 замер — ориентир, не рейтинг", best)
+        self.assertEqual(best.count("мало данных</span>"), 1)
+        self.assertNotIn(">место<", best)
+        self.assertNotIn(">оценка<", best)
+        self.assertIn("HY2 + Salamander", best)
+        self.assertIn("TUIC v5", best)
+        self.assertEqual(best.count("нет замеров с устройств"), 2)
+        self.assertNotIn("hysteria2-obfs", best.replace('title="', ""))
+        self.assertIn('class="dim"', best)       # выключенный ss2022 — серым, со старым вердиктом
+        self.assertLess(best.index("TUIC v5"), best.index("Shadowsocks-2022"))
+        self.assertEqual(trends.count("нет замеров с устройств"), 2)
+        self.assertIn('href="#client-probe"', trends)
+
+    def test_ranked_block_with_spread_and_empty_places(self):
+        rows = []
+        for i, lat in enumerate([80.0, 100.0, 130.0]):
+            rows += rows_for([(i, "t", None, "hysteria2", "OK", lat, 50.0), (i, "t", None, "tuic", "OK", 200.0, 20.0)])
+            rows += rows_for([(i, "t", None, "ss2022", "OK", 90.0, 30.0)])
+        best, trends = self.render(rows)
+        self.assertIn(">место<", best)
+        self.assertIn("100 мс (90–115)", best)
+        self.assertIn("100 мс (90–115)", trends)
+        self.assertNotIn(">—<", best)                                      # пустое место, не «—» в колонке мест
+        self.assertNotIn("Shadowsocks-2022", best.split('class="dim"')[0])  # выключенный не занимает место
+        self.assertIn('data-label="место">1</td>', best)
+        self.assertEqual(best.count("мало данных</span>"), 0)
+        self.assertIn("нет замеров с устройств", best)                      # HY2 + Salamander без замеров
+
+    def test_without_manifests_everything_in_history_is_shown(self):
+        best, trends = self.render(rows_for([(1, "t", None, "a", "OK", 100.0, 40.0)]), servers=[])
+        self.assertIn(">a<", best.replace("<strong>", ">").replace("</strong>", "<"))
+        self.assertIn("a", trends)
+
+
 # ---------- анонимизация и экспорт ----------
 
 def has_age():

@@ -612,12 +612,12 @@ _hy2_probe_user() {
 }
 
 _hy2_manifest_json() {
-    local inst="$1" id name port svc u links="[]" link probe="{}" pu notes
+    local inst="$1" id name short port svc u links="[]" link probe="{}" pu notes
     if [ "$inst" = "obfs" ]; then
-        id="$HY2_OBFS_ID"; name="Hysteria2 + Salamander"; port="$HY2_OBFS_PORT"; svc="$HY_OBFS_UNIT"
+        id="$HY2_OBFS_ID"; name="Hysteria2 + Salamander"; short="HY2 + Salamander"; port="$HY2_OBFS_PORT"; svc="$HY_OBFS_UNIT"
         notes="Salamander-обфускация, отдельный UDP-порт, без HTTP/3-маскировки. Клиенты: hysteria, sing-box, mihomo, v2rayN/NG (не gecko). insecure=1 + pinSHA256 обязательны: сертификат self-signed."
     else
-        id="$HY2_ID"; name="Hysteria2"; port="$HY2_PORT"; svc="$HY_UNIT"
+        id="$HY2_ID"; name="Hysteria2"; short="Hysteria2"; port="$HY2_PORT"; svc="$HY_UNIT"
         notes="Self-signed сертификат (SNI ${HY2_SNI}): в ссылке insecure=1 + pinSHA256 (hex). Без пина не работают v2rayN/NG и Happ на новом Xray. Запасной UDP-канал; на части мобильных сетей QUIC режут."
         [ "${HY2_HOP:-0}" = "1" ] && notes="$notes Port hopping: ${HY2_PORT},${HY2_HOP_RANGE} (ссылка hy2hop — только hysteria/sing-box/mihomo)."
     fi
@@ -633,12 +633,12 @@ _hy2_manifest_json() {
     done
     pu="$(_hy2_probe_user)"
     [ -z "$pu" ] || probe="$(proto_hysteria2_probe "$pu" "$inst")"
-    jq -cn --arg id "$id" --arg name "$name" --argjson port "$port" --arg svc "$svc" \
+    jq -cn --arg id "$id" --arg name "$name" --arg short "$short" --argjson port "$port" --arg svc "$svc" \
 \
         --argjson links "$links" --argjson probe "$probe" --arg notes "$notes" \
         --arg en "${ENABLE_HY2:-1}" --arg ver "${HY2_INSTALLED_VERSION:-${HY2_VERSION:-}}" --arg pin "${HY2_PIN:-$(hy2_pin)}" --arg sni "$HY2_SNI" \
         --arg hop "$( [ "$inst" = main ] && [ "${HY2_HOP:-0}" = "1" ] && echo "$HY2_HOP_RANGE")" '
-        {id: $id, name: $name, layer: "udp", port: $port, engine: "hysteria", version: $ver,
+        {id: $id, name: $name, short: $short, layer: "udp", port: $port, engine: "hysteria", version: $ver,
          service: $svc, enabled: ($en == "1"), users_backend: "hysteria-command",
          links: $links, files: [], probe: $probe, notes: $notes,
          tls: {sni: $sni, pinSHA256: $pin, self_signed: true}}
