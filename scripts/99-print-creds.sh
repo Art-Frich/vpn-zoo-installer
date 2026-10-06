@@ -262,7 +262,6 @@ md_escape() { sed 's/|/\\|/g'; }
     echo "- пароль: \`${PANEL_PASS:-?}\`"
     [ "${PANEL_2FA:-0}" != "1" ] || echo "- 2FA: секрет \`PANEL_2FA_SECRET\` в \`$CONFIG_FILE\`"
     [ -z "${ZOO_WEB_PORT:-}" ] || echo "- админка zoo: http://127.0.0.1:$ZOO_WEB_PORT/ (тот же туннель), токен: \`${ZOO_WEB_TOKEN:-?}\`"
-    echo "- SSH ограничен ufw limit (6 подключений за 30 с с одного IP): один туннель на оба порта, а не несколько"
     echo
     echo "## Какие клиенты с чем работают"
     echo

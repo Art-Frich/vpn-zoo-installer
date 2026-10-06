@@ -277,10 +277,10 @@ config_init_defaults() {
     fi
     config_default ENABLE_VLESS 1
     config_default ENABLE_XHTTP 1
-    config_default ENABLE_SS 1
-    config_default ENABLE_TUIC 0
+    config_default ENABLE_SS 0
+    config_default ENABLE_TUIC 1
     config_default ENABLE_HY2 1
-    config_default ENABLE_HY2_OBFS 0
+    config_default ENABLE_HY2_OBFS 1
     config_default ENABLE_AWG 1
     config_default ENABLE_WARP 0
     config_default ENABLE_ZOO 1

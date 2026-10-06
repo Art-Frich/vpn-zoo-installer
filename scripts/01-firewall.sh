@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 01-firewall.sh — UFW (default deny, SSH с limit) + fail2ban для sshd.
+# 01-firewall.sh — UFW (default deny, SSH открыт) + fail2ban для sshd.
 # Порты протоколов здесь не хардкодятся: их открывает фаза-владелец через fw_allow,
 # реестр — /etc/vpn-setup/ports.tsv. Эта фаза переприменяет реестр.
 
@@ -30,10 +30,11 @@ config_set SSH_PORTS "$(IFS=,; echo "${ssh_ports[*]}")"
 
 # Сначала правила SSH, потом default deny: на уже активном UFW с default allow
 # обратный порядок сразу отрезал бы текущую SSH-сессию
-# Старое правило allow 22/tcp удалять не нужно: ufw limit на тот же порт заменяет его
+# Обычный allow, без ufw limit: limit (6 подключений за 30 с) придерживал самого владельца
+# при ssh + scp подряд; от перебора защищает fail2ban. Существующее правило ufw обновляет
 # на месте («Rule updated»), без окна, когда SSH не разрешён
 for p in "${ssh_ports[@]}"; do
-    fw_allow "$p/tcp" "SSH" limit
+    fw_allow "$p/tcp" "SSH"
 done
 
 ufw default deny incoming >/dev/null
@@ -54,7 +55,7 @@ fw_apply_registry
 # Перед enable правило SSH обязано быть в списке, иначе отрежем себе доступ
 added="$(ufw show added 2>/dev/null)"
 for p in "${ssh_ports[@]}"; do
-    grep -qE "ufw limit ${p}/tcp" <<< "$added" || die "правило SSH ${p}/tcp не добавилось — UFW не включаю"
+    grep -qE "ufw (allow|limit) ${p}/tcp" <<< "$added" || die "правило SSH ${p}/tcp не добавилось — UFW не включаю"
 done
 
 if _fw_ufw_active; then
