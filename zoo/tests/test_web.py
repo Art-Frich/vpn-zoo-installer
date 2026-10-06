@@ -1096,7 +1096,7 @@ class ConnectPageTest(AppTestBase):
         self.assertIn("6/6", body)
         self.assertNotIn("Открыть", body)
         self.assertNotIn(">статус<", body)
-        self.assertIn("Сверить", body)
+        self.assertIn("Проверить учётки", body)
         self.assertNotIn("Синхронизировать", body)
         self.assertIn("＋ Добавить пользователя", body)
         self.c.post("/users/masha/disable", {"back": "/users"})
