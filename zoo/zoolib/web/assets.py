@@ -179,6 +179,14 @@ footer .live-btn { margin-left: 10px; }
 .chip.info { color: var(--accent); background: var(--info-soft); border-color: transparent; }
 .chip.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
 .quiet { color: var(--muted); font-size: .85rem; margin: 10px 0 0; }
+.search { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.search input[type=search] { flex: 1 1 220px; width: auto; }
+.filters { margin-bottom: 8px; }
+a.chip { cursor: pointer; }
+a.chip:hover { border-color: var(--accent); text-decoration: none; }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.more { margin: 10px 0 0; }
+button.badge { font: inherit; font-size: .78rem; font-weight: 600; border: 0; cursor: pointer; }
 .quick { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
 .quick img.qr { background: #fff; padding: 8px; border-radius: 10px; width: 160px; height: 160px;
   box-sizing: content-box; display: block; }
@@ -253,7 +261,7 @@ form.inline { display: inline; margin: 0; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field label, .field .label { font-size: .82rem; color: var(--text-2); font-weight: 550; }
 .field.grow { flex: 1 1 220px; }
-input[type=text], input[type=password], textarea, select {
+input[type=text], input[type=password], input[type=search], textarea, select {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 7px 10px; width: 100%; min-width: 0;
 }
@@ -414,6 +422,12 @@ JS = r"""
     if (f.hasAttribute('data-swap')) {
       ev.preventDefault();
       go(f.getAttribute('action') || location.pathname, { method: 'POST', body: new URLSearchParams(new FormData(f)) });
+    } else if (f.hasAttribute('data-get')) {
+      // поиск: форма GET превращается в адрес со всем состоянием, пустые поля в него не попадают
+      ev.preventDefault();
+      var qs = new URLSearchParams();
+      new FormData(f).forEach(function (v, k) { if (v !== '') qs.append(k, v); });
+      go((f.getAttribute('action') || location.pathname) + '?' + qs.toString());
     }
   });
   // обработчики делегированы: страница подменяется целиком (live, переключатель периода)
@@ -530,6 +544,29 @@ JS = r"""
       })
       .then(function () { document.body.classList.remove('busy'); });
   }
+  // «показать ещё»: строки следующей страницы выдачи дописываются в таблицу; адрес не меняется,
+  // пока выдача развёрнута, живое обновление молчит (иначе оно свернуло бы её обратно)
+  document.addEventListener('click', function (ev) {
+    var more = ev.target.closest('a[data-more]');
+    if (!more || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    ev.preventDefault();
+    var box = more.closest('[data-more-box]');
+    if (!box || more.classList.contains('busy')) return;
+    more.classList.add('busy');
+    fetch(more.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
+      .then(function (r) { if (!r.ok || !isHtml(r)) throw new Error('more'); return r.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var fresh = doc.querySelector('[data-more-box]');
+        var body = box.querySelector('tbody'), add = fresh && fresh.querySelectorAll('tbody tr');
+        if (!body || !add || !add.length) throw new Error('more');
+        add.forEach(function (tr) { body.appendChild(document.importNode(tr, true)); });
+        var next = fresh.querySelector('a[data-more]');
+        if (next) { more.href = next.href; more.classList.remove('busy'); } else { more.closest('p').remove(); }
+        box.setAttribute('data-expanded', '');
+      })
+      .catch(function () { location.href = more.href; });
+  });
   document.addEventListener('click', function (ev) {
     var a = ev.target.closest('nav.seg a, a[data-swap]');
     if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || a.origin !== location.origin) return;
@@ -698,7 +735,7 @@ JS = r"""
       var a = document.activeElement;
       if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
       var main = document.querySelector('main');
-      if (!main || main.querySelector('details[open]') || document.querySelector('dialog[open]')) return;
+      if (!main || main.querySelector('details[open], [data-expanded]') || document.querySelector('dialog[open]')) return;
       busy = true;
       var headers = { 'X-Zoo-Live': '1' };
       if (etag && etagUrl === location.href) headers['If-None-Match'] = etag;
