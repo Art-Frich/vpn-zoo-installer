@@ -193,9 +193,6 @@ footer .live.bad::before { background: var(--bad); }
 .chip.info { color: var(--accent); background: var(--info-soft); border-color: transparent; }
 .chip.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
 .quiet { color: var(--muted); font-size: .85rem; margin: 10px 0 0; }
-.pack ul.steps { margin: 6px 0 10px; padding-left: 18px; }
-.pack ul.steps li { margin: 3px 0; }
-.pack + .pack { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .search { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
 .search input[type=search] { flex: 1 1 220px; width: auto; }
 .filters { margin-bottom: 8px; }
@@ -329,7 +326,42 @@ fieldset.plat legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
 .plat-sum.muted { color: var(--muted); }
 fieldset.plat details.more { margin-top: 8px; }
 fieldset.plat details.more > summary { margin-top: 0; }
-.pack .pack-app { margin: 10px 0 0; font-weight: 600; }
+/* «Подключить»: платформа → приложения → ключи человека → текст */
+.conn-pick { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.conn-pick label { font-size: .82rem; color: var(--text-2); font-weight: 550; }
+.conn-pick select { width: auto; min-width: 160px; max-width: 100%; }
+.conn[data-js] .plat-title { display: none; }
+.plat-title { font-size: .95rem; margin: 0 0 10px; font-weight: 600; }
+.conn-plat + .conn-plat { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.conn-plat > * + * { margin-top: 14px; }
+.conn, .conn-plat, .keys { min-width: 0; }
+.app, .msg, .key { grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.app { display: grid; gap: 10px; }
+.app-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.keys { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(210px, 100%), 1fr)); }
+.key { display: grid; gap: 8px; align-content: start; justify-items: start; min-width: 0; padding: 12px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); }
+.key-name { font-weight: 600; font-size: .9rem; }
+.key img.qr { width: 160px; height: 160px; padding: 8px; margin: 0; box-sizing: content-box; max-width: 100%;
+  border-radius: 10px; justify-self: center; }
+.key .link-uri { width: 100%; margin-top: 0; }
+.msg { display: grid; gap: 8px; }
+.msg label { font-size: .82rem; color: var(--text-2); font-weight: 550; }
+.msg textarea, .msg-edit { font-family: inherit; font-size: .9rem; line-height: 1.45; min-height: 0;
+  field-sizing: content; max-height: 26rem; }
+.msg .chk { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; font-size: .88rem; }
+.urows { display: grid; gap: 8px; }
+details.urow { padding: 0 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+details.urow[open] { padding-bottom: 14px; }
+details.urow > summary { display: flex; align-items: baseline; gap: 8px; padding: 11px 0; list-style: none;
+  color: var(--text); font-size: .95rem; }
+details.urow > summary::-webkit-details-marker { display: none; }
+details.urow > summary::before { content: "▸"; color: var(--muted); }
+details.urow[open] > summary::before { content: "▾"; color: var(--accent); }
+details.urow[open] > summary { margin-bottom: 4px; }
+.msg-pre { margin: 8px 0 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit;
+  font-size: .88rem; line-height: 1.45; color: var(--text-2); background: var(--surface-2); border-radius: 8px; }
+details.card.more > summary { margin-top: 0; }
 .wiz-nav { display: flex; flex-wrap: wrap; gap: 8px; }
 .wiz-nav .btn.primary { order: 2; }
 .wiz-nav .btn:not(.primary) { order: 1; }
@@ -481,6 +513,36 @@ JS = r"""
       src.select();
       try { document.execCommand('copy'); done(); } catch (e) { /* выделено — копируйте вручную */ }
     }
+  });
+  // «Подключить»: список платформ оставляет видимой одну панель (без JS видны все подряд),
+  // галочка «добавить ссылки» дописывает их в текст сообщения (и убирает обратно)
+  function showPlat(box) {
+    var sel = box.querySelector('select[data-plat]');
+    if (!sel) return;
+    box.querySelectorAll('[data-pp]').forEach(function (p) { p.hidden = p.getAttribute('data-pp') !== sel.value; });
+  }
+  function initConn() {
+    document.querySelectorAll('.conn').forEach(function (box) {
+      box.setAttribute('data-js', '');
+      box.querySelectorAll('.conn-pick, label[data-links]').forEach(function (e) { e.hidden = false; });
+      showPlat(box);
+    });
+  }
+  document.addEventListener('change', function (ev) {
+    var el = ev.target;
+    if (!el.matches) return;
+    if (el.matches('select[data-plat]')) { showPlat(el.closest('.conn')); return; }
+    if (!el.matches('input[data-addlinks]')) return;
+    var ta = document.getElementById(el.getAttribute('data-addlinks')), panel = el.closest('.conn-plat');
+    if (!ta || !panel) return;
+    var lines = [];
+    panel.querySelectorAll('.key').forEach(function (k) {
+      var inp = k.querySelector('.link-uri input'), name = k.querySelector('.key-name');
+      if (inp && name) lines.push(name.textContent + ': ' + inp.value);
+    });
+    var block = '\n\n' + lines.join('\n');
+    if (el.checked) { if (ta.value.indexOf(block) < 0) ta.value = ta.value.replace(/\s+$/, '') + block; }
+    else ta.value = ta.value.split(block).join('');
   });
   // форма «Добавить пользователя»: выбор группы отмечает её протоколы (data-protos у option)
   document.addEventListener('change', function (ev) {
@@ -674,7 +736,7 @@ JS = r"""
         window.scrollTo(0, y);
         var el = keep && document.getElementById(keep);
         if (el) el.focus({ preventScroll: true });
-        initDrafts();
+        initPage();
         rearm(doc);
       })
       .catch(function (e) {
@@ -769,11 +831,12 @@ JS = r"""
     if (f) boxes(f).forEach(function (i) { if (i.checked !== was(i)) n++; });
     return n > 0;
   }
-  function initDrafts() {
+  function initPage() {
     document.querySelectorAll('form[data-draft]').forEach(function (f) {
       f.querySelectorAll('[data-add]').forEach(function (b) { b.hidden = false; });
       refreshDraft(f);
     });
+    initConn();
   }
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -867,7 +930,7 @@ JS = r"""
   window.addEventListener('beforeunload', function (ev) {
     if (dirty()) { ev.preventDefault(); ev.returnValue = ''; }
   });
-  initDrafts();
+  initPage();
 
   // live: раз в 10 с спросить у сервера отпечаток данных страницы (/api/stamp: несколько os.stat, без
   // SQL); изменился — забрать страницу и подменить <main>. Не трогаем: вкладка скрыта, фокус в поле, открыт
@@ -945,7 +1008,7 @@ JS = r"""
           if (!x || idle() || seq !== navSeq || href !== location.href) return;
           if (!swapMain(document.querySelector('main'), x.html, true, true)) throw new Error('сервер');
           stamp = x.stamp;
-          initDrafts();
+          initPage();
           label();
         })
         .catch(function (e) { if (e.message !== 'auth') label(false); })

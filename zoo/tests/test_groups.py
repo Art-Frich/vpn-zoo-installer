@@ -520,6 +520,30 @@ class ModelTest(GroupsBase):
         groups.update("old", name="Старая 2")
         self.assertEqual(self.groups_json()["groups"][-1]["clients"], saved)
 
+    def test_messages_clean_roundtrip_and_survive_update(self):
+        users.bootstrap()
+        self.assertEqual(groups.clean_message("  a \r\nb\t\x01c \n\n"), "a\nb  c")
+        g = groups.create("Семья", ["vless-reality"], {"android": ["happ"]})
+        self.assertNotIn("messages", self.groups_json()["groups"][-1], "пустых текстов в файле нет")
+        groups.set_message(g.id, "android", "{name}, привет\n\n")
+        self.assertEqual(groups.Groups.load().get(g.id).messages, {"android": "{name}, привет"})
+        self.assertEqual(groups.Groups.load().get(g.id).to_dict()["messages"], {"android": "{name}, привет"})
+        groups.update(g.id, name="Семья 2", protocols=["vless-reality", "hysteria2"], clients={"android": ["happ"]})
+        self.assertEqual(groups.Groups.load().get(g.id).messages, {"android": "{name}, привет"}, "update текст не трогает")
+        groups.set_message(g.id, "android", None)
+        self.assertEqual(groups.Groups.load().get(g.id).messages, {})
+        with self.assertRaises(groups.GroupError):
+            groups.set_message(g.id, "plan9", "x")
+        with self.assertRaises(groups.GroupError):
+            groups.set_message(g.id, "ios", "я" * (groups.MESSAGE_MAX + 1))
+        with self.assertRaises(groups.GroupError):
+            groups.set_message("нет такой", "ios", "x")
+        # мусор в файле не роняет чтение
+        data = self.groups_json()
+        data["groups"][-1]["messages"] = {"android": 5, "ios": "  ok  ", "windows": "   "}
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(groups.Groups.load().get(g.id).messages, {"ios": "ok"})
+
     def test_default_client_follows_first_handoff_protocol(self):
         cat = clients.load()
         # поровну по охвату — рекомендованный каталога для первого по раздаче протокола группы

@@ -1,8 +1,9 @@
-"""Каталог клиентов, версии из GitHub, страница /clients и блок «Что отправить»."""
+"""Каталог клиентов, версии из GitHub, страница /clients и блок «Подключить»."""
 
 import copy
 import json
 import re
+import time
 import unittest
 import urllib.error
 from pathlib import Path
@@ -10,8 +11,8 @@ from unittest import mock
 
 from tests.helpers import REPO, ZooEnv, needs_bash
 from tests.test_cli import run_cli
-from tests.test_web import SIX, AppTestBase
-from zoolib import clients, paths, protolib
+from tests.test_web import SIX, AppTestBase, header
+from zoolib import clients, groups, paths, protolib
 from zoolib.web import clientviews
 
 
@@ -201,6 +202,41 @@ class CheckUpstreamTest(unittest.TestCase):
             self.assertEqual(clients.load_cache()["versions"], {})
 
 
+class RequestTest(unittest.TestCase):
+    def test_request_is_a_file_and_rate_limited(self):
+        with ZooEnv():
+            self.assertEqual(clients.check_state(1000.0), (True, ""))
+            ok, why = clients.request_check(1000.0)
+            self.assertTrue(ok, why)
+            self.assertEqual(clients.req_file().name, "clients-req")
+            ok, why = clients.request_check(1100.0)
+            self.assertFalse(ok)
+            self.assertIn("уже заказана", why)
+            self.assertFalse(clients.check_state(1100.0)[0])
+            # заявку никто не забрал за 15 минут — считаем потерянной и принимаем новую
+            self.assertTrue(clients.check_state(1000.0 + clients.REQ_STALE + 1)[0])
+
+    def test_recent_check_blocks_for_ten_minutes(self):
+        with ZooEnv():
+            clients.check_upstream(fetch=fake_fetch, now=lambda: 5000.0)
+            ok, why = clients.request_check(5000.0 + clients.RATE_LIMIT - 1)
+            self.assertFalse(ok)
+            self.assertIn("10 минут", why)
+            self.assertFalse(clients.req_file().exists(), "отказ заявку не создаёт")
+            self.assertTrue(clients.request_check(5000.0 + clients.RATE_LIMIT + 1)[0])
+
+    def test_check_upstream_command_takes_the_request(self):
+        with ZooEnv(), mock.patch.object(clients, "fetch_latest", side_effect=fake_fetch):
+            clients.request_check(1.0)
+            self.assertTrue(clients.req_file().exists())
+            code, _, _ = run_cli("clients", "--check-upstream", "--json")
+            self.assertEqual(code, 0)
+            self.assertFalse(clients.req_file().exists(), "заявка снята: path-юнит не гоняет сервис по кругу")
+            clients.request_check(2.0)
+            run_cli("clients", "--json")
+            self.assertTrue(clients.req_file().exists(), "просмотр заявку не трогает")
+
+
 class CliTest(unittest.TestCase):
     def test_list_json_and_text(self):
         with ZooEnv():
@@ -255,6 +291,11 @@ class UnitsTest(unittest.TestCase):
         timer = (d / "zoo-clients.timer").read_text(encoding="utf-8")
         self.assertIn("OnCalendar=daily", timer)
         self.assertIn("Persistent=true", timer)
+        # «Проверить сейчас»: файл-заявка → .path → тот же сервис (у админки нет права на systemctl)
+        self.assertIn("zoo-clients.path", enabled)
+        path = (d / "zoo-clients.path").read_text(encoding="utf-8")
+        self.assertIn(f"PathExists=/var/lib/vpn-zoo/{clients.REQ_NAME}", path)
+        self.assertIn("Unit=zoo-clients.service", path)
         for f in d.iterdir():
             self.assertNotIn(b"\r", f.read_bytes(), f"{f.name}: CRLF")
 
@@ -307,6 +348,65 @@ class ClientsPageTest(AppTestBase):
         self.assertRegex(body, r'class="badge bad" title="не работает: [^"]*X25519MLKEM768')
         self.assertIn('class="badge muted" title="не проверено: не проверено (04.10.2026)', body)
 
+    def card(self, body, title):
+        card = body[body.index(f"<h3>{title}</h3>"):]
+        return card[:card.index("</section>")]
+
+    def test_platform_cards_list_every_supported_protocol_and_mark_recommended(self):
+        _, body = self.c.get("/clients")
+        android = self.card(body, "Android")
+        cat = catalog()
+        for cid in ("happ", "v2rayng", "incy", "singbox"):
+            row = android[android.index(f"<strong>{cat.client(cid)['name']}</strong>"):]
+            row = row[:row.index("</tr>")]
+            for pid, st in cat.client(cid)["protocols"].items():
+                if pid not in cat.real_protocols():
+                    continue
+                chip = f">{cat.protocols[pid]['title']}</span>"
+                if st["s"] in ("ok", "warn"):
+                    self.assertIn(chip, row, f"{cid}: {pid}")
+                else:
+                    self.assertNotIn(chip, row, f"{cid}: {pid}")
+        happ = android[android.index("<strong>Happ</strong>"):]
+        happ = happ[:happ.index("</tr>")]
+        incy = android[android.index("<strong>INCY</strong>"):]
+        incy = incy[:incy.index("</tr>")]
+        self.assertIn("рекомендуем</span>", happ)
+        self.assertRegex(happ, r'class="chip ok" title="рекомендуем для этого протокола">VLESS')
+        self.assertNotIn("рекомендуем", incy, "INCY на Android каталог не рекомендует")
+        self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>INCY</strong>"),
+                        "рекомендованные — первыми")
+        self.assertIn("<strong>Karing</strong>", android, "не рекомендованный, но умеющий протокол — в списке")
+        self.assertNotIn("<strong>Hiddify</strong>", android, "Hiddify на Android ничего не умеет: ✕ и ? в список не идут")
+
+    def test_check_now_button_and_request(self):
+        clients.check_upstream(fetch=fake_fetch, now=lambda: time.time() - 7500)
+        _, body = self.c.get("/clients")
+        self.assertIn("версии проверены 2 ч", body)
+        self.assertRegex(body, r'<form method="post" action="/clients/check"[^>]*>.*?Проверить сейчас')
+        resp, _ = self.c.post("/clients/check")
+        self.assertEqual(header(resp, "Location"), ["/clients"])
+        self.assertTrue(clients.req_file().exists(), "заявка — файл для zoo-clients.path")
+        _, body = self.c.get("/clients")
+        self.assertIn("Проверка заказана", body)
+        self.assertNotIn('action="/clients/check"', body, "пока заявка не забрана, кнопка неактивна")
+        self.assertRegex(body, r'<button type="button" class="btn small" disabled title="проверка уже заказана')
+        self.c.post("/clients/check")
+        _, body = self.c.get("/clients")
+        self.assertIn("Проверка уже заказана", body)
+        resp, _ = self.c.post("/clients/check", csrf=False)
+        self.assertEqual(resp.status, 403)
+
+    def test_recent_check_disables_button(self):
+        clients.check_upstream(fetch=fake_fetch)
+        _, body = self.c.get("/clients")
+        self.assertIn("версии проверены только что", body)
+        self.assertIn("версии проверяли меньше 10 минут назад", body)
+        self.c.post("/clients/check")
+        self.assertFalse(clients.req_file().exists())
+        _, body = self.c.get("/clients")
+        self.assertIn("Версии проверяли меньше 10 минут назад", body)
+
     def test_broken_catalog_does_not_break_page(self):
         with mock.patch.object(clients, "load", side_effect=clients.ClientsError("clients.json: нет ключа")):
             resp, body = self.c.get("/clients")
@@ -334,12 +434,11 @@ class PackTest(unittest.TestCase):
         # ни один клиент не умеет всё: AmneziaWG (первым в раздаче) + Happ для VLESS
         self.assertEqual([s.client["id"] for s in p.sections], ["amneziawg", "happ"])
         s = p.sections[0]
-        self.assertEqual((s.proto, s.method, s.tab), ("amneziawg", "qr", "Android"))
-        self.assertIn("QR — плитка «AmneziaWG», вкладка «Android»", s.sends[0])
-        self.assertTrue(s.steps[0].startswith("Скачайте «AmneziaWG»"))
-        self.assertIn("github.com/amnezia-vpn/amneziawg-android", s.steps[0], "проверенные ссылки — раньше")
-        self.assertIn("Brave", s.steps[-1])
-        self.assertIn("2ip.ru", s.steps[-1], "у AWG echo-правила нет: адрес сервера виден")
+        self.assertEqual((s.proto, s.method), ("amneziawg", "qr"))
+        self.assertTrue(s.install.startswith("Установите «AmneziaWG»"))
+        self.assertIn("github.com/amnezia-vpn/amneziawg-android", s.install, "проверенные ссылки — раньше")
+        self.assertIn("Brave", s.check)
+        self.assertIn("2ip.ru", s.check, "у AWG echo-правила нет: адрес сервера виден")
 
     def gpack(self, plat, links, prefer, order=None):
         return clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, plat, links, [], prefer, order)
@@ -371,16 +470,19 @@ class PackTest(unittest.TestCase):
                          [("happ", ["hysteria2", "vless-reality"]), ("amneziawg", ["amneziawg"])])
         self.assertEqual(p.sections[0].tiles, "Hysteria2, VLESS + REALITY")
         msg = p.message
-        self.assertIn("1) Happ — Hysteria2, VLESS + REALITY", msg)
-        self.assertIn("2) AmneziaWG — AmneziaWG", msg)
-        self.assertIn("Скачайте «Happ»", msg)
-        self.assertIn("Скачайте «AmneziaWG»", msg)
-        self.assertLess(msg.index("Скачайте «Happ»"), msg.index("Скачайте «AmneziaWG»"))
+        # одним списком: сначала установка всех приложений, потом импорт каждого
+        self.assertTrue(msg.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
+        self.assertIn("\n2) Установите «AmneziaWG»", msg)
+        self.assertIn("\n3) Happ (Hysteria2, VLESS + REALITY): ", msg)
+        self.assertIn("AmneziaWG (AmneziaWG): ", msg)
+        self.assertLess(msg.index("Установите «AmneziaWG»"), msg.index("Happ (Hysteria2"))
+        self.assertEqual(msg.count("Включите VPN"), 1, "проверка одна, по основному протоколу")
         self.assertNotIn("vless://", msg)
-        # с одним приложением заголовков «1)» нет — сообщение как раньше
+        # с одним приложением названий перед шагами нет
         one = self.gpack("android", [VLESS], {"android": ["happ", "amneziawg"]}, ["vless-reality", "amneziawg"])
         self.assertEqual(len(one.sections), 1, "нет ссылки AWG — второе приложение не нужно")
-        self.assertNotIn("\n1) ", one.message)
+        self.assertNotIn("Happ (", one.message)
+        self.assertNotIn("Happ:", one.message)
 
     def test_protocol_covered_by_earlier_client_is_not_repeated(self):
         hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
@@ -426,15 +528,15 @@ class PackTest(unittest.TestCase):
         # iPhone: приложений через VPN нет, браузер любой
         s = self.gpack("ios", [VLESS], {"ios": ["incy"]}, ["vless-reality"]).sections[0]
         self.assertNotIn("Приложения через VPN", " ".join(s.steps))
-        self.assertIn("любом браузере", s.steps[-1])
+        self.assertIn("любом браузере", s.check)
         # Windows у AmneziaVPN — только исключение приложений: шага «только из списка» нет
         w = self.gpack("windows", [AWG_COMMON, AWG_KEY], {"windows": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertEqual(w.client["id"], "amneziavpn")
         self.assertNotIn("только приложения из списка", " ".join(w.steps))
-        self.assertIn("любом браузере", w.steps[-1])
+        self.assertIn("любом браузере", w.check)
         a = self.gpack("android", [AWG_KEY], {"android": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertIn("только приложения из списка", " ".join(a.steps))
-        self.assertIn("Brave", a.steps[-1])
+        self.assertIn("Brave", a.check)
 
     def test_foreign_apple_id_warning(self):
         p = self.gpack("ios", [VLESS], {"ios": ["happ"]}, ["vless-reality"])
@@ -449,21 +551,19 @@ class PackTest(unittest.TestCase):
         s = p.sections[0]
         self.assertEqual((len(p.sections), s.client["id"], s.method), (1, "happ", "qr"))
         self.assertIn("Приложения через VPN:", " ".join(s.steps))
-        self.assertNotIn("вкладка", s.sends[0])
-        self.assertIn("не откроется", s.steps[-1], "echo-сервисы на сервере блокируются для Xray-протоколов")
+        self.assertIn("не откроется", s.check, "echo-сервисы на сервере блокируются для Xray-протоколов")
 
     def test_windows_link_and_rules_file(self):
         s = self.pack("windows", [VLESS, RULES]).sections[0]
         self.assertEqual((s.client["id"], s.method), ("v2rayn", "link"))
-        self.assertEqual(len(s.sends), 2)
-        self.assertIn("«Приложения через VPN»", s.sends[1])
+        self.assertEqual([i.proto for i in s.extras], ["allowlist"])
         self.assertIn("v2rayn-routing.json", " ".join(s.steps))
-        self.assertEqual(len(self.pack("windows", [VLESS]).sections[0].sends), 1, "без файла правил — один пункт")
+        self.assertEqual(self.pack("windows", [VLESS]).sections[0].extras, [], "без файла правил — шага нет")
 
     def test_ios_and_no_match(self):
         p = self.pack("ios", [VLESS])
         self.assertEqual(p.sections[0].client["id"], "incy")
-        self.assertIn("любом браузере", p.sections[0].steps[-1])
+        self.assertIn("любом браузере", p.sections[0].check)
         self.assertIsNone(self.pack("ios", [link("tuic", "tuic://x")]), "для TUIC на iPhone клиента не выбрано")
         self.assertIsNone(self.pack("macos", [VLESS]), "на macOS для VLESS проверенного клиента нет")
         self.assertIsNone(self.pack("android", []))
@@ -471,7 +571,6 @@ class PackTest(unittest.TestCase):
     def test_amneziavpn_takes_vpn_key_not_conf_qr(self):
         s = self.pack("macos", [AWG_COMMON, AWG_KEY]).sections[0]
         self.assertEqual((s.client["id"], s.method), ("amneziavpn", "link"))
-        self.assertEqual(s.tab, "Компьютер, iPhone")
         # без vpn:// остаётся файл
         self.assertEqual(self.pack("macos", [AWG_COMMON]).sections[0].method, "file")
 
@@ -481,17 +580,48 @@ class PackTest(unittest.TestCase):
 
     def test_version_only_for_github_clients(self):
         cache = {"checked": 1.0, "versions": {"amneziawg": {"version": "2.1"}, "incy": {"version": "7"}}}
-        self.assertIn("(версия 2.1)", self.pack("android", [AWG_ANDROID], cache).sections[0].steps[0])
-        self.assertNotIn("версия", self.pack("ios", [VLESS], cache).sections[0].steps[0])
+        self.assertIn("(версия 2.1)", self.pack("android", [AWG_ANDROID], cache).sections[0].install)
+        self.assertNotIn("версия", self.pack("ios", [VLESS], cache).sections[0].install)
 
     def test_message_has_no_secrets(self):
         p = self.pack("android", [VLESS, AWG_ANDROID])
         self.assertNotIn("vless://", p.message)
         self.assertNotIn(".conf", p.message)
-        self.assertTrue(p.message.startswith("VPN на Android: что сделать\n"))
-        self.assertIn("\n1) AmneziaWG — AmneziaWG\n1. Скачайте", p.message, "два приложения — заголовки и своя нумерация шагов")
+        self.assertNotIn("плитк", p.message, "ссылок на плитки в тексте нет")
+        self.assertTrue(p.message.startswith("{name}, VPN на Android: что сделать\n1) Установите «AmneziaWG»"))
+        self.assertIn("\n3) AmneziaWG (AmneziaWG): ", p.message, "два приложения — установка, затем шаги с названием")
         one = self.pack("android", [VLESS]).message
-        self.assertTrue(one.startswith("VPN на Android: что сделать\n1. "), "одно приложение — без заголовков")
+        self.assertTrue(one.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
+        self.assertNotIn("Happ (", one, "одно приложение — названий перед шагами нет")
+
+
+class PickLinkTest(unittest.TestCase):
+    def test_android_gets_android_conf_others_common_one(self):
+        awg, links = catalog().client("amneziawg"), [AWG_COMMON, AWG_ANDROID, AWG_KEY]
+        self.assertEqual(clientviews.pick_link("amneziawg", awg, "android", links, "qr"), 1)
+        self.assertEqual(clientviews.pick_link("amneziawg", awg, "android", links, "file"), 1)
+        tun = catalog().client("wgtunnel")
+        self.assertEqual(clientviews.pick_link("amneziawg", tun, "ios", links, "file"), 0)
+        vpn = catalog().client("amneziavpn")
+        self.assertEqual(clientviews.pick_link("amneziawg", vpn, "windows", links, "link"), 2, "vpn:// — только AmneziaVPN")
+        self.assertIsNone(clientviews.pick_link("amneziawg", awg, "android", links, "link"))
+
+    def test_first_uri_wins(self):
+        a, b = link("hysteria2", "hysteria2://a@h:443#a"), link("hysteria2", "hysteria2://b@h:443?obfs=salamander#b")
+        happ = catalog().client("happ")
+        self.assertEqual(clientviews.pick_link("hysteria2", happ, "android", [VLESS, a, b], "link"), 1)
+        self.assertEqual(clientviews.pick_link("hysteria2", happ, "android", [VLESS, a, b], "qr"), 1)
+
+
+class SynthLinksTest(unittest.TestCase):
+    def test_group_pack_has_no_user_keys(self):
+        links = clientviews.synth_links(["vless-reality", "amneziawg"])
+        self.assertEqual({ln.proto_id for ln in links}, {"vless-reality", "amneziawg", "allowlist"})
+        self.assertTrue(all("@" not in ln.uri for ln in links), "ключей в заглушках нет")
+        cat = catalog()
+        p = clientviews.build_pack(cat, {"checked": None, "versions": {}}, "android", links, [],
+                                   {"android": ["happ", "amneziawg"]}, ["vless-reality", "amneziawg"])
+        self.assertEqual([s.client["id"] for s in p.sections], ["happ", "amneziawg"])
 
 
 @needs_bash
@@ -505,36 +635,74 @@ class HandoffPageTest(AppTestBase):
         users.add_user("masha")
         self.c.login()
 
-    def test_block_on_user_page(self):
+    def msg(self, body, plat="android", uid=""):
+        return re.search(rf'<textarea id="msg-{uid}{plat}"[^>]*>(.*?)</textarea>', body, re.S).group(1)
+
+    def test_connect_block_is_first_and_per_user(self):
         clients.check_upstream(fetch=fake_fetch)
         resp, body = self.c.get("/users/masha")
         self.assertEqual(resp.status, 200, body[-300:])
         main = body[body.index("<main"):]
-        self.assertLess(main.index("Подключение"), main.index("Что отправить"))
-        self.assertLess(main.index("Что отправить"), main.index(">Профиль<"))
-        self.assertIn("Скопировать сообщение", body)
+        self.assertLess(main.index(">Подключить<"), main.index("Все ссылки и QR"))
+        self.assertLess(main.index("Все ссылки и QR"), main.index(">Профиль<"))
+        # платформа — список; без JS он скрыт, а панели всех платформ видны
+        self.assertRegex(body, r'<div class="conn-pick" hidden><label for="pl-">Платформа</label><select id="pl-" data-plat>')
+        self.assertRegex(body, r'<option value="android" selected>Android</option><option value="ios">iPhone</option>')
+        for plat in ("android", "ios", "windows", "macos", "linux"):
+            self.assertIn(f'data-pp="{plat}"', body)
+            self.assertIn(f'id="msg-{plat}"', body)
+        android = body[body.index('data-pp="android"'):body.index('data-pp="ios"')]
+        # приложение с версией и ссылкой, QR и ссылка этого человека
+        self.assertIn("<strong>Happ</strong>", android)
+        self.assertIn('href="https://github.com/Happ-proxy/happ-android/releases"', android)
+        self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+" loading="lazy"')
+        self.assertRegex(android, r'<input type="text" id="k-android-happ-0" value="vless://masha@')
+        self.assertIn('data-copy="k-android-happ-0">Копировать</button>', android)
+        # текст — один на группу, с именем человека; ключей в нём нет
+        msg = self.msg(body)
+        self.assertTrue(msg.startswith("masha, VPN на Android: что сделать\n1) Установите «"), msg)
+        self.assertNotIn("{name}", body)
+        self.assertNotIn("vless://", msg)
+        self.assertIn("Скопировать текст", body)
         self.assertIn('data-copy="msg-android"', body)
-        self.assertIn('data-copy="msg-windows"', body)
-        self.assertLess(body.index("Другие платформы"), body.index('data-copy="msg-macos"'))
-        self.assertLess(body.index('data-copy="msg-windows"'), body.index("Другие платформы"))
+        self.assertRegex(body, r'<label class="chk" data-links hidden><input type="checkbox" data-addlinks="msg-android">')
+        self.assertNotIn("Скопировать сообщение", body)
+        self.assertNotIn("плитках выше", body)
+        self.assertNotIn("Другие платформы", body)
         self.assertIn("не отправляйте через MAX и VK", body)
         self.assertNotIn("style=", body)
-        msg = re.search(r'<textarea id="msg-android"[^>]*>(.*?)</textarea>', body, re.S).group(1)
-        self.assertIn("1. Скачайте", msg)
-        self.assertNotIn("vless://", msg, "в сообщении только инструкция, ключи — отдельно")
-        # плитки протоколов по-прежнему со списком клиентов из каталога
-        self.assertIn("Клиенты: ", body)
+        self.assertNotRegex(body, r"\son\w+=")
 
-    def test_disabled_catalog_hides_block_only(self):
+    def test_windows_panel_offers_link_not_qr(self):
+        _, body = self.c.get("/users/masha")
+        win = body[body.index('data-pp="windows"'):body.index('data-pp="macos"')]
+        self.assertIn("<strong>v2rayN</strong>", win)
+        self.assertIn('id="k-windows-v2rayn-0" value="vless://masha@', win)
+        self.assertNotIn('<img class="qr"', win.split('class="msg"')[0], "v2rayN QR не принимает")
+
+    def test_group_text_with_name_is_what_user_gets(self):
+        groups.set_message("main", "android", "Привет, {name}!\nСтавь Happ, дальше по QR.")
+        _, body = self.c.get("/users/masha")
+        self.assertEqual(self.msg(body), "Привет, masha!\nСтавь Happ, дальше по QR.")
+        self.assertTrue(self.msg(body, "windows").startswith("masha, VPN на Windows"), "остальные — по умолчанию")
+        self.assertIn('href="/groups/main#texts"', body)
+
+    def test_tiles_stay_as_advanced_block(self):
+        _, body = self.c.get("/users/masha")
+        self.assertRegex(body, r'<details class="card more"><summary>Все ссылки и QR</summary>')
+        self.assertIn("Клиенты: ", body, "плитки по-прежнему со списком клиентов из каталога")
+        self.assertIn("Быстрый старт", body)
+
+    def test_disabled_catalog_keeps_tiles_open(self):
         with mock.patch.object(clients, "load", side_effect=clients.ClientsError("x")):
             resp, body = self.c.get("/users/masha")
         self.assertEqual(resp.status, 200)
-        self.assertNotIn("Что отправить", body)
-        self.assertIn("Подключение", body)
+        self.assertNotIn(">Подключить<", body)
+        self.assertRegex(body, r'<details class="card more" open><summary>Все ссылки и QR</summary>')
 
     def test_page_stays_light(self):
         _, body = self.c.get("/users/masha")
-        self.assertLessEqual(len(body.encode("utf-8")), 26 * 1024)
+        self.assertLessEqual(len(body.encode("utf-8")), 30 * 1024)
 
 
 if __name__ == "__main__":
