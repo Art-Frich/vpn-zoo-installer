@@ -757,6 +757,14 @@ wait_port() {
 journald_limit() {
     local journald_new
     local JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-vpn-zoo.conf
+    if command -v systemd-analyze >/dev/null 2>&1 \
+        && systemd-analyze cat-config systemd/journald.conf 2>/dev/null | awk '
+            /^# / { own = ($0 ~ /50-vpn-zoo\.conf$/); next }
+            /^[[:space:]]*SystemMaxUse=/ && !own { found = 1 }
+            END { exit !found }'; then
+        log_info "journald: SystemMaxUse уже задан чужой настройкой — свой потолок не добавляю"
+        return 0
+    fi
     journald_new="$(mktemp)"
     printf '%s\n' '# vpn-zoo: потолок объёма системного журнала' '[Journal]' 'SystemMaxUse=500M' > "$journald_new"
     if cmp -s "$journald_new" "$JOURNALD_DROPIN" 2>/dev/null; then

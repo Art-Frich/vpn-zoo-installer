@@ -1,8 +1,10 @@
 # Раз в сутки; Persistent — если сервер был выключен, проверка пройдёт после включения.
+# OnActiveSec — один раз через 5 минут после включения: кэш версий заполняется сразу после установки.
 [Unit]
 Description=vpn-zoo: проверка свежих версий раз в сутки
 
 [Timer]
+OnActiveSec=5min
 OnCalendar=daily
 RandomizedDelaySec=1h
 Persistent=true
