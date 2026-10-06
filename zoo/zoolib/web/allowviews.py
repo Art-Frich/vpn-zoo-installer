@@ -142,12 +142,16 @@ def _who_nav(reg: users.Registry, user: str | None) -> Markup:
 
 
 def _diff(al: allowlist.Allowlist, user: str) -> tuple[int, int]:
-    """(+добавлено, −убрано) относительно общего списка."""
+    """(+добавлено, −убрано) относительно списка без своего: группы или общего."""
     add = rem = 0
     for p in allowlist.PLATFORMS:
-        cur, com = {i.lower() for i in al.effective(p, user)}, {i.lower() for i in al.common(p)}
-        add, rem = add + len(cur - com), rem + len(com - cur)
+        cur, base = {i.lower() for i in al.effective(p, user)}, {i.lower() for i in al.baseline(p, user)}
+        add, rem = add + len(cur - base), rem + len(base - cur)
     return add, rem
+
+
+def baseline_name(al: allowlist.Allowlist, user: str) -> str:
+    return "как у группы" if al.from_group(user) else "как общий"
 
 
 def _page(app: "App", req: "Request", user: str | None, err: str = "", draft: dict[str, list[str]] | None = None,
@@ -170,12 +174,14 @@ def _page(app: "App", req: "Request", user: str | None, err: str = "", draft: di
     if user:
         own = al.own(user)
         add, rem = _diff(al, user)
-        reset = post_button("/apps", "Вернуть общий", csrf, "btn small", {"action": "reset", "user": user},
-                            title="Удалить свой список: пользователь снова на общем",
-                            confirm=f"Вернуть {user} общий список? Его свой список будет удалён.",
+        grp = al.from_group(user)
+        reset = post_button("/apps", "Вернуть как у группы" if grp else "Вернуть общий", csrf, "btn small",
+                            {"action": "reset", "user": user},
+                            title="Удалить свой список: пользователь снова на списке " + ("группы" if grp else "общем"),
+                            confirm=f"Вернуть {user} список {'группы' if grp else 'общий'}? Его свой список будет удалён.",
                             swap=True) if own else None
         parts.append(t("div", badge(f"свой (отличается: +{add} −{rem})", "info") if own and (add or rem)
-                       else badge("как общий", "muted"), reset,
+                       else badge(baseline_name(al, user), "muted"), reset,
                        t("a", f"Ссылки и QR {user} →", href=f"/users/{user}"), class_="actions"))
     merged = {**al.titles, **{k.lower(): allowlist.clean_title(v) for k, v in (titles or {}).items()}}
     parts.append(_list_form(al, user, csrf, draft, merged, pending or {}))
@@ -183,7 +189,7 @@ def _page(app: "App", req: "Request", user: str | None, err: str = "", draft: di
         own_rows = [[t("a", n, href=_url(n), data_swap=True), "+{} −{}".format(*_diff(al, n))]
                     for n in sorted(al.users)]
         parts.append(card("Свои списки пользователей",
-                          table(["пользователь", "отличия от общего"], own_rows, stack=True),
+                          table(["пользователь", "отличия от списка группы или общего"], own_rows, stack=True),
                           extra=post_button("/apps", "Сбросить к пресету", csrf, "btn small", {"action": "reset"},
                                             title="Общий список снова как в пресете", swap=True,
                                             confirm="Сбросить общий список к пресету? Свой список придётся собирать заново.")))

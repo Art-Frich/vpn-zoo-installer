@@ -186,6 +186,10 @@ class Allowlist:
     def own(self, user: str) -> bool:
         return user in self.users
 
+    def from_group(self, user: str) -> bool:
+        """Пользователь без своего списка идёт по списку группы (а не общему)."""
+        return self.members.get(user, "") in self.groups
+
     def to_dict(self) -> dict[str, Any]:
         return {"path": str(self.path), "exists": self.exists, "android": self.android,
                 "windows": self.windows, "users": self.users}
@@ -318,7 +322,7 @@ def set_lists(lists: dict[str, list[str]], user: str | None = None, titles: dict
               apply_now: bool = True) -> Change:
     """Админка: список целиком (обе платформы) одним действием — одна запись и одна пересборка
     файлов. Порядок id сохраняется, новые — в конец. Свой список пользователя хранит только те
-    платформы, где он отличается от общего; совпал с общим — снова общий. titles: id → название
+    платформы, где он отличается от списка группы (или общего); совпал — снова без своего. titles: id → название
     для приложений не из каталога."""
     from . import users
     check_user(user)
@@ -392,7 +396,7 @@ def change(op: str, items: list[str], user: str | None = None, platform: str | N
 
 
 def reset(user: str | None = None, apply_now: bool = True) -> Change:
-    """Общий список — к пресету; пользователь — на общий список (свой список удаляется)."""
+    """Общий список — к пресету; пользователь — на список группы или общий (свой список удаляется)."""
     from . import users
     check_user(user)
     with users._lock():
@@ -404,7 +408,7 @@ def reset(user: str | None = None, apply_now: bool = True) -> Change:
             al.android, al.windows = d["android"], d["windows"]
             ch.message = "сброшен на пресет по умолчанию"
         elif al.users.pop(user, None) is not None:
-            ch.message = "сброшен на общий список"
+            ch.message = "сброшен на список группы" if al.from_group(user) else "сброшен на общий список"
         else:
             ch.message = "без изменений: своего списка не было"
             return ch

@@ -247,20 +247,26 @@ def check_members(new: list[tuple[str, str]], existing: list[str]) -> None:
 # ---------- каталог клиентов под протоколы группы ----------
 
 def client_options(cat: clientcat.Catalog, platform: str, protocols: list[str]) -> list[dict[str, Any]]:
-    """Клиенты платформы, которые заявлены для выбранных протоколов (ok/warn); охватившие больше
-    протоколов — выше, при равенстве — рекомендованный каталогом (по порядку протоколов). Первый в списке —
-    рекомендуемый (recommended=True)."""
+    """Клиенты платформы, которые заявлены для выбранных протоколов (ok/warn). Порядок: клиенты, которых нет
+    в российском магазине платформы, — в конце (первым их не предлагаем, пока есть другие); затем охватившие
+    больше протоколов; при равенстве — рекомендованный каталогом для первого протокола группы по порядку
+    раздачи, затем остальные рекомендованные. recommended=True — у первого, если его рекомендует каталог."""
     real = [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
     rec = [c["id"] for c in (cat.recommended(platform, p) for p in real) if c]
+    lead = next((p for p in cat.raw["handoff"].get(platform, []) if p in real), None)
+    lead_rec = cat.recommended(platform, lead) if lead else None
+    lead_id = lead_rec["id"] if lead_rec else None
     opts = []
     for c in cat.clients:
         if platform not in c["platforms"]:
             continue
         covers = [p for p in real if c["protocols"].get(p, {}).get("s") in ("ok", "warn")]
         if covers:
-            opts.append({"client": c, "covers": covers, "recommended": False})
-    opts.sort(key=lambda o: (-len(o["covers"]), rec.index(o["client"]["id"]) if o["client"]["id"] in rec else 99))
-    if opts:
+            opts.append({"client": c, "covers": covers, "recommended": False,
+                         "no_ru_store": cat.no_ru_store(c, platform)})
+    opts.sort(key=lambda o: (o["no_ru_store"], -len(o["covers"]), o["client"]["id"] != lead_id,
+                             rec.index(o["client"]["id"]) if o["client"]["id"] in rec else 99))
+    if opts and opts[0]["client"]["id"] in rec:
         opts[0]["recommended"] = True
     return opts
 
@@ -305,6 +311,8 @@ class GroupReport:
     skipped: list[str] = field(default_factory=list)   # «свой набор»: протоколы не тронуты
     errors: list[str] = field(default_factory=list)
     allow: dict[str, Any] = field(default_factory=dict)
+    crashed: bool = False   # добавление людей упало исключением: часть могла примениться
+    removed: bool = False   # мастер удалил созданную пустую группу
 
     @property
     def ok(self) -> bool:
@@ -313,7 +321,7 @@ class GroupReport:
     def to_dict(self) -> dict[str, Any]:
         return {"group": self.group.to_dict(), "ok": self.ok, "message": self.message, "created": self.created,
                 "moved": self.moved, "needs_qr": self.needs_qr, "skipped": self.skipped,
-                "errors": self.errors, "allow": self.allow}
+                "errors": self.errors, "allow": self.allow, "removed": self.removed}
 
 
 def _errors(reports: list[users.OpReport]) -> list[str]:
@@ -339,11 +347,15 @@ def _migrate(gs: Groups, ureg: users.Registry) -> bool:
     main = gs.get(MAIN_ID)
     if main is not None and ureg.exists:
         managed, _ = users.managed_protocols()
+        vis = ureg.visible()
+        # протокол, заведённый только у owner, — новый: фаза включила его владельцу, остальным его
+        # доведёт zoo user sync; отсутствие такого протокола не делает набор «своим»
+        fresh = {p for p in managed if {u.name for u in vis if p in u.protocols} <= {users.OWNER}}
         assigned = False
-        for u in ureg.visible():
+        for u in vis:
             if not u.group or gs.get(u.group) is None:
                 u.group = main.id
-                u.custom = bool(u.protocols) and not set(managed) <= set(u.protocols)
+                u.custom = bool(u.protocols) and not (set(managed) - fresh) <= set(u.protocols)
                 assigned = True
         if assigned:
             ureg.save()
@@ -524,13 +536,37 @@ def add_members(ref: str, new: list[tuple[str, str]], existing: list[str]) -> Gr
 
 def connect(name: str, protocols: list[str], clients: dict[str, str] | None,
             allow: dict[str, list[str]] | None, new: list[tuple[str, str]], existing: list[str]) -> GroupReport:
-    """Мастер «Новое подключение»: группа + пользователи, всё проверено до первого изменения."""
+    """Мастер «Новое подключение»: группа + пользователи, всё проверено до первого изменения.
+    Исключение при добавлении людей не бросается наружу (rep.crashed): отчёт с ошибками и тем, что
+    успело примениться. Если не добавлен никто, созданная пустая группа удаляется (rep.removed):
+    повтор мастера с тем же названием не должен упереться в «уже есть». Обычные отказы по отдельным
+    людям (rep.errors без исключения) группу оставляют — её видно на странице группы."""
     if not new and not existing:
         raise GroupError("добавьте хотя бы одного пользователя")
     check_members(new, existing)
     g = create(name, protocols, clients, allow)
-    rep = add_members(g.id, new, existing)
-    rep.message = "подключение создано" if rep.ok else "подключение создано с ошибками"
+    try:
+        rep = add_members(g.id, new, existing)
+    except Exception as e:  # noqa: BLE001 — отчёт важнее причины: частичное состояние нужно показать
+        rep = GroupReport(g, errors=[f"{type(e).__name__}: {e}"])
+        rep.crashed = True
+    try:
+        have = {u.name for u in members_of(Groups.load(), users.list_users(), g.id)}
+    except Exception as e:  # noqa: BLE001
+        rep.errors.append(f"реестр не прочитан: {e}")
+        have = set()
+    if rep.crashed:
+        rep.created = [n for n, _ in new if n in have]
+        rep.moved = [n for n in existing if n in have]
+        rep.needs_qr = list(rep.created + rep.moved)
+    if rep.crashed and not have:
+        try:
+            remove(g.id)
+            rep.removed = True
+        except Exception as e:  # noqa: BLE001
+            rep.errors.append(f"пустая группа «{g.name}» не удалена: {e}")
+    rep.message = ("подключение создано" if rep.ok else
+                   "подключение не создано" if rep.removed else "подключение создано с ошибками")
     return rep
 
 
