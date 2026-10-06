@@ -218,6 +218,7 @@ proto_vless_xhttp_manifest_refresh() {
         --argjson port "$pport" --arg placement "${XHTTP_PLACEMENT:-port}" --arg notes "$notes" '
         ($ib.streamSettings | if type == "string" then fromjson else . end) as $st |
         {id:"vless-xhttp", name:"VLESS + XHTTP + REALITY", layer:"tcp", port:$port, engine:"xray",
+         phase:"04b-vless-xhttp", enable_var:"ENABLE_XHTTP",
          service:"x-ui", enabled:($ib.enable == true), users_backend:"xui",
          links:$links, files:[], probe:$probe,
          params:{placement:$placement, inbound_id:$ib.id, inbound_port:$ib.port, listen:$ib.listen,

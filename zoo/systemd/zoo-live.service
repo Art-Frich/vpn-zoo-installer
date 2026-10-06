@@ -1,0 +1,22 @@
+# zoo-live — лёгкий замер каждого включённого протокола (zoo live run): рукопожатие + малые
+# запросы → задержка и джиттер, раз в час ещё и загрузка ~1 МБ → Мбит/с. Запускает zoo-live.timer.
+# Результат — таблица live в probe-history.sqlite (7 суток, в history/ не выгружается).
+# Песочницы нет по той же причине, что у пробника из админки (web/jobs.py, outside_sandbox):
+# клиент AmneziaWG поднимает TUN и сетевой неймспейс, остальные — свои процессы; запускается
+# от root так же, как `sudo zoo probe --local`. Нагрузку держат Nice, CPUQuota и таймаут.
+[Unit]
+Description=vpn-zoo: лёгкий замер протоколов (задержка, джиттер, скорость)
+After=network-online.target x-ui.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zoo live run
+Nice=10
+CPUQuota=30%
+IOSchedulingClass=idle
+TimeoutStartSec=10min
+# Environment=ZOO_LIVE_SPEED_BYTES=524288   # загрузка 512 КБ вместо 1 МБ: вдвое меньше трафика, скорость занижена
+UMask=0077
+PrivateTmp=yes
+ProtectHome=yes

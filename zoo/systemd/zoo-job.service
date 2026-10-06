@@ -1,0 +1,14 @@
+# zoo-job — выполнить заявки админки на вкл/выкл протокола (zoo job run): ключ ENABLE_* в
+# config.env и install.sh --phase <фаза протокола>. Запускает zoo-job.path, когда в
+# /var/lib/vpn-zoo/jobs появляется заявка *.json. Root и без песочницы: фазы install.sh ставят
+# пакеты, правят /etc, ufw, юниты и перезапускают сервисы — это тот же путь, что у владельца в
+# консоли. Админка (zoo-web.service) при этом ничего не запускает, только кладёт файл. Одна
+# задача за раз (flock в zoo job run); вывод фазы — jobs/state/<id>.log (0600).
+[Unit]
+Description=vpn-zoo: вкл/выкл протокола по заявке из админки
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zoo job run
+TimeoutStartSec=45min

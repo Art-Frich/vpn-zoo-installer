@@ -1,0 +1,13 @@
+# Заявка ↻ с карточки протокола: админка кладёт файл в live-req (у неё нет права на systemctl),
+# systemd запускает замер. Каталог пуст — юнит ждёт.
+[Unit]
+Description=vpn-zoo: заявки на замер протокола из админки
+
+[Path]
+DirectoryNotEmpty=/var/lib/vpn-zoo/live-req
+Unit=zoo-live-req.service
+MakeDirectory=yes
+DirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target
