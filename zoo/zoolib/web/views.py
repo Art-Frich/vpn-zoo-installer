@@ -16,7 +16,7 @@ from .. import probe as probe_mod
 from .. import journal, manifests, paths, status, storage, system, traffic, upgrade
 from ..config import config_set
 from ..output import human_bytes, human_duration
-from . import charts, logs, probeviews
+from . import charts, logs, probeviews, protoviews
 from .html import Markup, badge, card, csrf_input, empty, join, kv, post_button, t, table
 from .jobs import Job, outside_sandbox, zoo_argv
 
@@ -169,6 +169,7 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
             out.append(("warn", t("span", "Нужна перезагрузка сервера", title=pkgs or None)))
     if traffic.last_run() is None:
         out.append(("warn", "Трафик ещё не собирался: первое снятие — в течение 5 минут после установки"))
+    out += protoviews.alerts()
     out += app.cached("journal-alerts", 60, journal.alerts)
     out += app.cached("storage-alerts", 60, lambda: storage.alerts(app.cfg()))
     return out
@@ -176,6 +177,8 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
 
 def overview(app: "App", req: "Request") -> "Response":
     csrf = req.session.csrf if req.session else ""
+    pctx = protoviews.context()
+    protoviews.note_finished(app, pctx)
     st = status_data(app)
     host = st["host"]
     today_p = traffic.today("protocol")
@@ -211,7 +214,7 @@ def overview(app: "App", req: "Request") -> "Response":
     cards, off = [], []
     for i, p in enumerate(st["protocols"]):
         if not p["enabled"]:
-            off.append(p["id"])
+            off.append(p)
             continue
         # короткое имя — в заголовок, полное — в title (на 380 px длинные имена переносились)
         about = f"{p['id']} · {p['engine'] or '—'}"
@@ -220,12 +223,15 @@ def overview(app: "App", req: "Request") -> "Response":
         cards.append(card(
             p.get("short") or p["name"].partition(" (")[0],
             t("div", t("span", f"{p['port']}/{p['layer']}", class_="chip", title=about), problems, class_="chips"),
+            protoviews.metrics_row(p, pctx, csrf),
             t("div",
-              t("div", t("div", human_bytes(today_p.get(p["id"], 0)), class_="num-big", title="сегодня"),
+              t("div", t("div", human_bytes(protoviews.today_bytes(pctx, p["id"])), class_="num-big",
+                         title="сегодня, без служебных замеров"),
                 t("div", f"пользователей: {'—' if p['users'] is None else p['users']}", class_="muted small")),
               charts.sparkline(spark.get(p["id"], []), charts.series_class(i)),
               class_="row"),
-            cls="proto", tip=p["name"], extra=badge("работает", "ok") if p["ok"] else badge("сбой", "bad")))
+            protoviews.switch_row(p, pctx, csrf),
+            cls="proto", tip=p["name"], extra=protoviews.head_badge(p, pctx)))
     if cards:
         protos: Any = t("div", cards, class_="grid")
     else:
@@ -255,8 +261,8 @@ def overview(app: "App", req: "Request") -> "Response":
     sys_card = card("Сервер", kv(rows), table(["файл", "до", ""], certs) if certs else None)
     body = [page_head("Обзор", None, None if alerts else badge("✓ всё в порядке", "ok")),
             alert_list(alerts) if alerts else None,
-            tiles, t("h2", "Протоколы"), protos,
-            t("p", "выключены: " + ", ".join(off), class_="quiet") if off else None,
+            tiles, t("h2", "Протоколы"), protoviews.caption(pctx), protos,
+            protoviews.off_block(off, pctx, csrf),
             t("div", users_card, sys_card, class_="cols")]
     return app.render(req, "Обзор", body, active="/")
 

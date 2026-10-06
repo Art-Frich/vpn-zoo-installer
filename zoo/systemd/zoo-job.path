@@ -1,0 +1,13 @@
+# Заявка на вкл/выкл протокола: админка кладёт /var/lib/vpn-zoo/jobs/<uuid>.json,
+# исполнитель забирает её в jobs/state/ и выполняет (zoo-job.service).
+[Unit]
+Description=vpn-zoo: заявки на вкл/выкл протокола из админки
+
+[Path]
+PathExistsGlob=/var/lib/vpn-zoo/jobs/*.json
+Unit=zoo-job.service
+MakeDirectory=yes
+DirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

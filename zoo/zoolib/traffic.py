@@ -675,6 +675,55 @@ def today(group: str = "protocol", now: float | None = None, include_hidden: boo
     return {r["key"]: int(r["t"] or 0) for r in rows}
 
 
+def first_run_since(ts: float) -> int | None:
+    """Время первого снятия счётчиков не раньше ts (его приращение — база, не трафик) или None."""
+    con = _con()
+    if con is None:
+        return None
+    try:
+        r = con.execute("SELECT MIN(ts) FROM runs WHERE ts >= ?", (int(ts),)).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        con.close()
+    return int(r[0]) if r and r[0] is not None else None
+
+
+def today_split(own_down: dict[str, int] | None = None, now: float | None = None) -> dict[str, tuple[int, int]]:
+    """Трафик протоколов за текущие сутки без служебного zoo-probe: {протокол: (↑ от клиента, ↓ к клиенту)}.
+
+    Где у протокола есть серия служебного пользователя (Hysteria, AmneziaWG), она вычитается из итога
+    точно. У Xray-протоколов 3x-ui считает клиента одним счётчиком на все inbound, служебного там
+    не отделить: из ↓ вычитается own_down[протокол] — байты, которые скачали замеры live (без
+    накладных расходов TLS, поэтому цифра чуть выше настоящей).
+    """
+    now = time.time() if now is None else now
+    con = _con()
+    if con is None:
+        return {}
+    try:
+        rows = con.execute("SELECT proto, user, up, down FROM traffic WHERE res = ? AND ts = ? AND proto != ?",
+                           (RES_1D, align(now, RES_1D), HOST)).fetchall()
+    finally:
+        con.close()
+    hidden = users.hidden_names()
+    totals = {r["proto"]: [int(r["up"]), int(r["down"])] for r in rows if r["user"] == ""}
+    sub: dict[str, list[int]] = {}
+    for r in rows:
+        if r["user"] in hidden and r["proto"] != XRAY:
+            acc = sub.setdefault(r["proto"], [0, 0])
+            acc[0] += int(r["up"])
+            acc[1] += int(r["down"])
+    out: dict[str, tuple[int, int]] = {}
+    for proto, (up, down) in totals.items():
+        if proto in sub:
+            up, down = up - sub[proto][0], down - sub[proto][1]
+        else:
+            down -= (own_down or {}).get(proto, 0)
+        out[proto] = (max(up, 0), max(down, 0))
+    return out
+
+
 def last_seen() -> dict[str, int]:
     """{пользователь: unix-время последней активности} по всем его сериям."""
     con = _con()

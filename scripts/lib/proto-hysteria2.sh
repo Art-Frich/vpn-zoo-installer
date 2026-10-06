@@ -612,9 +612,9 @@ _hy2_probe_user() {
 }
 
 _hy2_manifest_json() {
-    local inst="$1" id name short port svc u links="[]" link probe="{}" pu notes
+    local inst="$1" id name short port svc u links="[]" link probe="{}" pu notes evar=ENABLE_HY2
     if [ "$inst" = "obfs" ]; then
-        id="$HY2_OBFS_ID"; name="Hysteria2 + Salamander"; short="HY2 + Salamander"; port="$HY2_OBFS_PORT"; svc="$HY_OBFS_UNIT"
+        id="$HY2_OBFS_ID"; name="Hysteria2 + Salamander"; short="HY2 + Salamander"; port="$HY2_OBFS_PORT"; svc="$HY_OBFS_UNIT"; evar=ENABLE_HY2_OBFS
         notes="Salamander-обфускация, отдельный UDP-порт, без HTTP/3-маскировки. Клиенты: hysteria, sing-box, mihomo, v2rayN/NG (не gecko). insecure=1 + pinSHA256 обязательны: сертификат self-signed."
     else
         id="$HY2_ID"; name="Hysteria2"; short="Hysteria2"; port="$HY2_PORT"; svc="$HY_UNIT"
@@ -636,10 +636,10 @@ _hy2_manifest_json() {
     jq -cn --arg id "$id" --arg name "$name" --arg short "$short" --argjson port "$port" --arg svc "$svc" \
 \
         --argjson links "$links" --argjson probe "$probe" --arg notes "$notes" \
-        --arg en "${ENABLE_HY2:-1}" --arg ver "${HY2_INSTALLED_VERSION:-${HY2_VERSION:-}}" --arg pin "${HY2_PIN:-$(hy2_pin)}" --arg sni "$HY2_SNI" \
+        --arg en "${ENABLE_HY2:-1}" --arg evar "$evar" --arg ver "${HY2_INSTALLED_VERSION:-${HY2_VERSION:-}}" --arg pin "${HY2_PIN:-$(hy2_pin)}" --arg sni "$HY2_SNI" \
         --arg hop "$( [ "$inst" = main ] && [ "${HY2_HOP:-0}" = "1" ] && echo "$HY2_HOP_RANGE")" '
         {id: $id, name: $name, short: $short, layer: "udp", port: $port, engine: "hysteria", version: $ver,
-         service: $svc, enabled: ($en == "1"), users_backend: "hysteria-command",
+         phase: "05-hysteria2", enable_var: $evar, service: $svc, enabled: ($en == "1"), users_backend: "hysteria-command",
          links: $links, files: [], probe: $probe, notes: $notes,
          tls: {sni: $sni, pinSHA256: $pin, self_signed: true}}
         + (if $hop != "" then {hop_ports: $hop} else {} end)'

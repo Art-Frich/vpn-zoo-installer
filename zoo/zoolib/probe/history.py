@@ -4,6 +4,7 @@
 (`zoo history add FILE`, страница «Проверка» админки). Таблицы:
     reports   один отчёт целиком (raw — JSON как есть, с IP: файл 0600) и его контекст
     results   по строке на протокол: вердикт и числа (задержка, p90, джиттер, потери, скорости)
+    live      лёгкие замеры раз в 10 мин (probe/live.py): 7 суток, в выгрузку и рейтинг не попадают
 По этим данным считаются «Лучшие протоколы» (rank.py), тренды в админке и выгрузка в репо (export.py).
 Один и тот же отчёт дважды не записывается (uid = sha256 содержимого).
 """
@@ -44,6 +45,11 @@ CREATE TABLE IF NOT EXISTS results (
     down_mbps REAL, up_mbps REAL, PRIMARY KEY (report_id, proto)
 );
 CREATE INDEX IF NOT EXISTS results_proto ON results (proto);
+CREATE TABLE IF NOT EXISTS live (
+    ts INTEGER NOT NULL, proto TEXT NOT NULL, ok INTEGER NOT NULL, rtt_ms REAL, jitter_ms REAL, mbps REAL,
+    verdict TEXT NOT NULL, bytes INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS live_proto_ts ON live (proto, ts);
 """
 
 
