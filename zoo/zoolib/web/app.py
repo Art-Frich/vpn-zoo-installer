@@ -33,6 +33,8 @@ SECURITY_HEADERS = [
 ]
 NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/traffic", "Трафик"),
        ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Журнал"), ("/settings", "Настройки")]
+# Страницы без форм ввода: обновляются сами (app.js подменяет <main> раз в 10 с)
+LIVE_PAGES = {"/", "/traffic", "/journal"}
 
 
 @dataclass
@@ -279,8 +281,11 @@ class App:
                        class_="top")
             flash = t("ul", [t("li", t("span", {"ok": "✓", "bad": "✕"}.get(k, "!"), class_="ico"), msg, class_=k)
                              for k, msg in flashes], class_="alerts flash") if flashes else None
-            content = [header, t("main", flash, body),
-                       t("footer", f"zoo {__version__} · данные обновляются при открытии страницы")]
+            live = active in LIVE_PAGES
+            footer = t("footer", f"zoo {__version__} · ",
+                       t("span", "live: обновляется каждые 10 с", id="live", data_live="10") if live
+                       else t("span", "данные обновляются при открытии страницы"))
+            content = [header, t("main", flash, body), footer]
         doc = Markup("<!doctype html>") + t("html", t("head", head), t("body", content), lang="ru")
         return Response(status, doc.encode("utf-8"))
 

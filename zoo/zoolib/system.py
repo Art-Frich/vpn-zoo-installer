@@ -41,10 +41,23 @@ def _cpu_times() -> tuple[int, int]:
     return idle, sum(values[:8])
 
 
+_cpu_last: tuple[float, float, float] | None = None   # (monotonic, idle, total) прошлого замера
+
+
 def cpu_percent(interval: float = 0.2) -> float:
-    idle1, total1 = _cpu_times()
-    time.sleep(interval)
+    """Загрузка CPU. В долгоживущем процессе (веб-админка) — по разнице с прошлым замером,
+    без сна; первый замер (и CLI) — с паузой interval."""
+    global _cpu_last
+    now = time.monotonic()
     idle2, total2 = _cpu_times()
+    if _cpu_last and now - _cpu_last[0] >= 0.5:
+        _, idle1, total1 = _cpu_last
+    else:
+        idle1, total1 = idle2, total2
+        time.sleep(interval)
+        idle2, total2 = _cpu_times()
+        now = time.monotonic()
+    _cpu_last = (now, idle2, total2)
     dt = total2 - total1
     return round(100.0 * (1 - (idle2 - idle1) / dt), 1) if dt > 0 else 0.0
 
@@ -157,13 +170,20 @@ def unit_states(units: list[str]) -> dict[str, dict[str, str]]:
     return result
 
 
+_ufw_cache: tuple[float, bool | None] | None = None
+
+
 def ufw_active() -> bool | None:
     """Включён ли UFW. Не по ufw.service: тот oneshot и остаётся inactive, если
-    `ufw enable` выполнили после загрузки. None — ufw не установлен."""
+    `ufw enable` выполнили после загрузки. None — ufw не установлен.
+    `ufw status` стоит ~70 мс, поэтому результат кэшируется на 30 с."""
+    global _ufw_cache
+    if _ufw_cache and time.monotonic() - _ufw_cache[0] < 30:
+        return _ufw_cache[1]
     rc, out, _ = run(["ufw", "status"])
-    if rc == 127:
-        return None
-    return out.strip().startswith("Status: active")
+    value = None if rc == 127 else out.strip().startswith("Status: active")
+    _ufw_cache = (time.monotonic(), value)
+    return value
 
 
 # ---------- сокеты ----------
@@ -300,8 +320,24 @@ def _hysteria_version() -> str:
 SINGBOX_PROBE_BIN = "/usr/local/lib/vpn-zoo/bin/sing-box"
 
 
+_versions_cache: tuple[tuple[Any, ...], dict[str, str]] | None = None
+
+
 def component_versions() -> dict[str, str]:
-    """Установленные версии компонентов (пусто — компонента нет)."""
+    """Установленные версии компонентов (пусто — компонента нет). Запуск четырёх бинарников
+    стоит ~110 мс — кэш, пока не изменился ни один из них (mtime): обновление сбрасывает кэш."""
+    global _versions_cache
+    paths = ["/usr/local/x-ui/x-ui", "/usr/local/x-ui/bin/xray-linux-amd64", "/usr/local/x-ui/bin/xray-linux-arm64",
+             shutil.which("hysteria") or "", shutil.which("awg") or "", SINGBOX_PROBE_BIN]
+    key = tuple((p, os.stat(p).st_mtime if p and os.path.exists(p) else None) for p in paths)
+    if _versions_cache and _versions_cache[0] == key:
+        return dict(_versions_cache[1])
+    value = _component_versions_uncached()
+    _versions_cache = (key, value)
+    return dict(value)
+
+
+def _component_versions_uncached() -> dict[str, str]:
     xui_bin = Path("/usr/local/x-ui/x-ui")
     xray = ""
     for arch in ("amd64", "arm64"):
