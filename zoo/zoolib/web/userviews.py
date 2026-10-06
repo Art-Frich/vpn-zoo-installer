@@ -205,8 +205,8 @@ def users_list(app: "App", req: "Request") -> "Response":
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
     head_actions = t("div", t("a", "Новое подключение", href="/connect/new", class_="btn small primary", data_swap=True,
                               title="Группа, клиенты, люди и пакеты раздачи за четыре шага"),
-                     t("a", "Сверить", href="/users?verify=1", class_="btn small", data_swap=True,
-                              title="Сверить реестр с тем, что есть в протоколах"),
+                     t("a", "Проверить учётки", href="/users?verify=1", class_="btn small", data_swap=True,
+                              title="Есть ли у каждого пользователя учётка во всех включённых протоколах. Если чего-то не хватает, появится «Синхронизировать»"),
                      post_button("/users/sync", "Синхронизировать", csrf, "btn small",
                                  title="Завести креды в протоколах, включённых после создания") if missing else None,
                      class_="actions")
