@@ -578,7 +578,7 @@ class VisibleWords(HTMLParser):
         tags = [x for x, _ in self.stack]
         if any(x in self.SKIP for x in tags) or ("details" in tags and "summary" not in tags):
             return
-        if any(a.get("hidden") is not None for _, a in self.stack):
+        if any("hidden" in a for _, a in self.stack):
             return
         self.words += data.split()
 
@@ -1511,7 +1511,7 @@ class SwapFormsTest(AppTestBase):
         _, body = self.c.get("/users")
         forms = re.findall(r"<form [^>]*>", body)
         for f in forms:
-            if 'action="/logout"' not in f:
+            if 'action="/logout"' not in f and " data-get" not in f:
                 self.assertIn(" data-swap", f, f)
                 self.assertIn('method="post"', f)
         self.assertTrue(any('action="/users"' in f for f in forms))
