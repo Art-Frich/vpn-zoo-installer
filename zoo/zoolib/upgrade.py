@@ -8,6 +8,10 @@ API 3x-ui и Xray живы, UFW включён, нет лишних listen, ко
 (установленные бинарники и разница versions.env рабочей копии и копии в /opt/vpn-zoo),
 какие фазы install.sh перезапустить. `zoo upgrade --apply [--pull]` — git pull (по
 желанию), smoke до, `install.sh --phase` по плану, smoke после и подсказка отката.
+
+`zoo upgrade --check-upstream` — раз в сутки (zoo-upstream.timer) спрашивает GitHub releases/latest
+и кладёт ответ в /var/lib/vpn-zoo/upstream.json; страница админки и `zoo upgrade` читают только файл.
+Обновлений не ставит: версии меняются через пины репозитория (bump-pins, sha256).
 """
 
 from __future__ import annotations
@@ -20,17 +24,28 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 from . import output, paths, protolib, status, system, traffic
 from . import probe as probe_mod
 from .config import Config
+from .fsutil import atomic_write_json
 
 # префикс ключа versions.env → фаза, которая ставит компонент
 VERSION_PHASES = (("XUI_", "03-3xui"), ("HY2_", "05-hysteria2"), ("AWG_", "06-amneziawg"),
                   ("GO_", "06-amneziawg"), ("GEO_", "07-routing"), ("SINGBOX_", "04d-tuic"),
                   ("AGE_", "09-zoo"))
+UPSTREAM_FILE = "upstream.json"
+UPSTREAM_TIMEOUT = 10
+# компонент → репозиторий GitHub; hysteria — по HY2_ENGINE (HY2_REPOS)
+UPSTREAM_REPOS = {"x-ui": "MHSanaei/3x-ui", "xray": "XTLS/Xray-core",
+                  "amneziawg-tools": "amnezia-vpn/amneziawg-tools", "amneziawg-go": "amnezia-vpn/amneziawg-go",
+                  "sing-box": "SagerNet/sing-box"}
+# apernet/hysteria переехал в HyNetworks/hysteria: versions.env качает оттуда
+HY2_REPOS = {"apernet": "HyNetworks/hysteria", "hynetworks": "HyNetworks/hysteria"}
 PHASE_ORDER = ("03-3xui", "04-vless-reality", "04b-vless-xhttp", "04c-ss2022", "04d-tuic",
                "05-hysteria2", "06-amneziawg", "07-routing", "08-warp", "09-zoo", "99-print-creds")
 
@@ -255,6 +270,8 @@ def check(cfg: Config, repo: str | None = None, fetch: bool = False) -> dict[str
             data["version_diff"] = sorted(k for k in set(old) | set(pinned) if old.get(k) != pinned.get(k))
         if paths.zoo_home().is_dir():
             data["changed"] = changed_files(rdir, paths.zoo_home())
+    with_upstream(comp, read_upstream(), cfg)
+    data["upstream_ts"] = read_upstream().get("ts")
     data["phases"] = plan_phases(comp, data["version_diff"], data["changed"])
     return data
 
@@ -263,8 +280,10 @@ def _render_check(d: dict[str, Any]) -> None:
     rows = []
     for name, c in d["components"].items():
         state = "—" if c["outdated"] is None else ("УСТАРЕЛ" if c["outdated"] else "ok")
-        rows.append([name, c["installed"] or "—", c["pinned"] or "—", state])
-    print(output.table(rows, ["компонент", "установлен", "закреплён", ""]))
+        rows.append([name, c["installed"] or "—", c["pinned"] or "—", c.get("label", "—"), state])
+    print(output.table(rows, ["компонент", "установлен", "закреплён", "доступно", ""]))
+    print(output.color("доступно — из кэша GitHub (zoo upgrade --check-upstream); обновление — через пины "
+                       "репозитория (bump-pins, sha256), не автоматом", "dim"))
     print(f"\nversions.env: {d['versions_file']}")
     if d["repo"]:
         g = d.get("git") or {}
@@ -288,6 +307,94 @@ def _render_check(d: dict[str, Any]) -> None:
     else:
         print()
         output.ok("всё актуально")
+
+
+# ---------- upstream: свежие версии ----------
+
+def upstream_file() -> Path:
+    return paths.state_dir() / UPSTREAM_FILE
+
+
+def upstream_repos(cfg: Config) -> dict[str, str | None]:
+    repos: dict[str, str | None] = dict(UPSTREAM_REPOS)
+    repos["hysteria"] = HY2_REPOS.get((cfg.get("HY2_ENGINE") or "apernet").lower())
+    return repos
+
+
+def _http_json(url: str) -> Any:
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
+                                               "User-Agent": "vpn-zoo-upstream-check"})
+    with urllib.request.urlopen(req, timeout=UPSTREAM_TIMEOUT) as r:
+        return json.load(r)
+
+
+def latest_tag(repo: str) -> str:
+    """Тег последнего релиза (без pre-release и черновиков); «app/v2.12.3» → «v2.12.3»."""
+    data = _http_json(f"https://api.github.com/repos/{repo}/releases/latest")
+    m = re.search(r"v?\d+(?:\.\d+)+[\w.+-]*$", str(data.get("tag_name", "")))
+    if not m:
+        raise ValueError("в ответе нет версии")
+    return m.group(0)
+
+
+def read_upstream() -> dict[str, Any]:
+    try:
+        data = json.loads(upstream_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) and isinstance(data.get("items"), dict) else {}
+
+
+def refresh_upstream(cfg: Config, now: int | None = None) -> dict[str, Any]:
+    """Спросить GitHub по каждому компоненту (таймаут 10 с на запрос) и записать upstream.json.
+    Сбой одного — прежняя версия остаётся, рядом ошибка: остальные не страдают."""
+    old = read_upstream().get("items", {})
+    items: dict[str, Any] = {}
+    for name, repo in upstream_repos(cfg).items():
+        prev = old.get(name) if isinstance(old.get(name), dict) else {}
+        if repo is None:
+            items[name] = {"repo": "", "tag": "", "error": f"HY2_ENGINE={cfg.get('HY2_ENGINE')}: источник неизвестен"}
+            continue
+        try:
+            items[name] = {"repo": repo, "tag": latest_tag(repo), "error": ""}
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            items[name] = {"repo": repo, "tag": prev.get("tag", ""), "error": str(e)[:200] or type(e).__name__}
+    data = {"ts": int(time.time()) if now is None else now, "items": items}
+    atomic_write_json(upstream_file(), data)
+    return data
+
+
+def _vtuple(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in re.findall(r"\d+", v))
+
+
+def with_upstream(comp: dict[str, dict[str, Any]], up: dict[str, Any], cfg: Config) -> None:
+    """Добавить в компоненты «available» (свежий тег или ""), «newer» (True/False/None),
+    «unused» (почему версия неважна) и «label» (текст колонки «Доступно»)."""
+    kernel = cfg.get("AWG_ENGINE_ACTIVE") == "kernel"
+    items = up.get("items", {})
+    for name, c in comp.items():
+        item = items.get(name) if isinstance(items.get(name), dict) else {}
+        c["available"], c["newer"], c["unused"] = item.get("tag") or "", None, ""
+        if name == "amneziawg-go" and kernel:
+            c["unused"], c["label"] = "kernel", "не используется (ядро)"
+            continue
+        base = _vtuple(c.get("pinned") or c.get("installed") or "")
+        if c["available"] and base:
+            c["newer"] = _vtuple(c["available"]) > base
+        c["label"] = (f"{c['available']} ↑" if c["newer"] else "—") if c["available"] else "не проверено"
+
+
+def cmd_check_upstream(cfg: Config, as_json: bool) -> int:
+    data = refresh_upstream(cfg)
+
+    def render(d: dict[str, Any]) -> None:
+        rows = [[n, i["repo"] or "—", i["tag"] or "—", i["error"] or ""] for n, i in d["items"].items()]
+        print(output.table(rows, ["компонент", "репозиторий", "последний релиз", "ошибка"]))
+        print(f"\nзаписано: {upstream_file()}")
+
+    output.emit(data, as_json, render)
+    return 0 if any(not i["error"] for i in data["items"].values()) else 1
 
 
 # ---------- upgrade: применение ----------
@@ -386,9 +493,13 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--phase", action="append", metavar="ФАЗА", help="перезапустить именно эту фазу")
     p.add_argument("--repo", metavar="DIR", help="рабочая копия репо (по умолчанию из INSTALL.json)")
     p.add_argument("--no-smoke", action="store_true", help="без smoke до и после")
+    p.add_argument("--check-upstream", action="store_true",
+                   help="спросить GitHub о свежих версиях и записать кэш (раз в сутки это делает zoo-upstream.timer)")
 
 
 def cmd_upgrade(args: argparse.Namespace, cfg: Config) -> int:
+    if args.check_upstream:
+        return cmd_check_upstream(cfg, args.json)
     if not args.apply:
         if args.pull:
             output.error("--pull меняет рабочую копию: используй вместе с --apply")

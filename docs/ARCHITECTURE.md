@@ -78,6 +78,8 @@ research/YYYY-MM-DD/          исследования
 | 07 маршрутизация | `RU_EGRESS`, `HY2_RU_EGRESS`, `AWG_RU_EGRESS` (D21), `ENABLE_BITTORRENT` (D20), `ROUTING_ECHO_EXTRA` (домены через запятую) |
 | 08 WARP | пишет `WARP_*`; разовый `WARP_REREGISTER=1` не сохраняется |
 
+`ZOO_DATA_LIMIT` (бюджет данных zoo, D39) пишут админка и `zoo storage --limit`, фазы его не владеют.
+
 Разовые переключатели `ZOO_*` (`ZOO_FORCE`, `ZOO_VLESS_REPICK`, `ZOO_AWG_TOOLS_SRC`, `ZOO_TEST_ENV`, `ZOO_SELFTEST`, `ZOO_KEEP_LOGS`, `ZOO_KEEP_BACKUPS`, …) в config.env не попадают.
 
 ## 4. Манифест протокола
@@ -146,8 +148,9 @@ research/YYYY-MM-DD/          исследования
 - `zoo probe --rank [--tag X] [--period 30d] [--by context|tag|isp|device|net] [--with-local]` — «лучшие протоколы» по истории проб (§7.1).
 - `zoo history add FILE… [--tag] [--device]` | `list` | `export [--recipients FILE|--no-raw] [--out DIR|--tar] [--since 30d]` — история проб: запись клиентских отчётов, журнал, выгрузка для `history/` в репо (анонимный jsonl + сырые отчёты под age).
 - `zoo web [--info|--link|--new-token]` — веб-админка на `127.0.0.1:$ZOO_WEB_PORT`; вход по токену или одноразовой ссылке, сессии — `/var/lib/vpn-zoo/web-sessions.json` (D38); доступ через `ssh -L`.
-- `zoo upgrade [--apply] [--pull]`/`zoo smoke` — обновление закреплённых версий с проверкой до и после; `zoo version --all` — версии компонентов и пины.
-- Коллектор трафика — `zoo-collector.timer` (каждые 5 минут, `zoo traffic --collect`, затем `ExecStartPost` — `zoo journal --collect`: сбой журнала атак трафик не ломает) под песочницей systemd; админка — `zoo-web.service` (страницы, среди них «Атаки»). Юниты — `zoo/systemd/`, ставит фаза 09.
+- `zoo upgrade [--apply] [--pull]`/`zoo smoke` — обновление закреплённых версий с проверкой до и после; `zoo version --all` — версии компонентов и пины. `zoo upgrade --check-upstream` (раз в сутки — `zoo-upstream.timer`) кладёт свежие релизы GitHub в `/var/lib/vpn-zoo/upstream.json`, страницы читают только его.
+- `zoo storage [--enforce|--clear РАЗДЕЛ|--limit РАЗМЕР]` — объём данных zoo и чистка по лимиту (D39, `zoolib/storage.py`).
+- Коллектор трафика — `zoo-collector.timer` (каждые 5 минут, `zoo traffic --collect`, затем `ExecStartPost`: `zoo journal --collect` и `zoo storage --enforce` — сбой любого трафик не ломает) под песочницей systemd; админка — `zoo-web.service` (страницы, среди них «Атаки»). Юниты — `zoo/systemd/`, ставит фаза 09.
 
 ## 7. Пробник
 

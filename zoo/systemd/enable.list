@@ -2,3 +2,4 @@
 # Файлы юнитов лежат рядом: zoo/systemd/<юнит>. По одному имени в строке, # — комментарий.
 zoo-collector.timer
 zoo-web.service
+zoo-upstream.timer
