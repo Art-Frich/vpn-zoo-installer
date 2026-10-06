@@ -17,6 +17,7 @@ import time
 import unittest
 import urllib.parse
 from html.parser import HTMLParser
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -1199,8 +1200,14 @@ class QuietPagesTest(AppTestBase):
         self.assertIn('value="http://127.0.0.1:24680/supersecretpath/"', body)
         self.assertIn('data-copy="panel-url"', body)
         self.assertNotIn("abcdef123456", body)
-        self.assertIn("ENABLE_TUIC", body.split("<summary>config.env ·")[0], "ENABLE_* видны сразу")
-        self.assertIn("<summary>config.env · ключей: 2", body)
+        cfg_html = body[body.index("Настройки сервера"):]
+        self.assertIn("только чтение · ключей: 7", cfg_html)
+        self.assertLess(cfg_html.index("Основное"), cfg_html.index("Протоколы"))
+        self.assertLess(cfg_html.index("Протоколы"), cfg_html.index("Технические"))
+        self.assertLess(cfg_html.index("Протоколы"), cfg_html.index("ENABLE_TUIC"))
+        self.assertLess(cfg_html.index("ENABLE_TUIC"), cfg_html.index("Технические"))
+        self.assertLess(cfg_html.index("Технические"), cfg_html.index("HY2_STATS_SECRET"), "секреты — в технических")
+        self.assertIn("••••", cfg_html)
 
     def test_restart_asks_confirmation(self):
         self.env.add_manifest("vless-reality")
@@ -1342,6 +1349,132 @@ class LiveTest(AppTestBase):
         self.assertIn("<footer>zoo ", body)
         self.assertIn(">Логи<", body)
         self.assertNotIn(">Журнал<", body)
+
+
+class DataBlockTest(AppTestBase):
+    """Блок «Данные» на странице настроек (BACKLOG п. 13) и версии «Доступно» (п. 3)."""
+
+    def setUp(self):
+        super().setUp()
+        from tests import test_storage as ts
+        self.ts = ts
+        self.logs = self.env.root / "logs"
+        self.logs.mkdir()
+        p = mock.patch.dict("os.environ", {"LOG_DIR": self.logs.as_posix()})
+        p.start()
+        self.addCleanup(p.stop)
+        p = mock.patch("zoolib.storage.JOURNALD_DIRS", (str(self.env.root / "no-journal"),))
+        p.start()
+        self.addCleanup(p.stop)
+        self.c.login()
+
+    def test_block_summary_and_sections(self):
+        self.ts.fill_traffic(300, 30, 5)
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "ZOO_DATA_LIMIT": "1G"})
+        _, body = self.c.get("/settings")
+        block = body[body.index("<h3>Данные</h3>"):]
+        block = block[:block.index("</section>")]
+        self.assertRegex(block, r"занято [\d.]+ (Б|КБ|МБ) из 1\.0 ГБ · свободно на диске")
+        for title in ("Трафик", "Журнал атак", "История проб", "Логи установки"):
+            self.assertIn(title, block)
+        self.assertNotIn("Live-замеры", block)
+        self.assertIn("хранится с", block)
+        self.assertIn(datetime.fromtimestamp(self.ts.NOW - 4 * 86400).strftime("%d.%m.%Y"), block)
+        self.assertEqual(block.count("storage-clear"), 1, "кнопка только у непустого раздела")
+        self.assertIn('data-confirm="Очистить раздел «Трафик»?', block)
+        self.assertIn('class="meter"', block)
+        self.assertIn('value="1G"', block)
+
+    def test_outside_budget_listed(self):
+        prev = self.env.root / "state" / "geo" / "prev"
+        prev.mkdir(parents=True)
+        (prev / "geosite.dat").write_bytes(b"0" * 2048)
+        _, body = self.c.get("/settings")
+        self.assertIn("Вне бюджета: geo/prev (откат geo-файлов) 2.0 КБ", body)
+
+    def test_clear_runs_as_job_after_post(self):
+        self.ts.fill_traffic(300, 30, 5)
+        resp, _ = self.c.post("/settings/action", {"action": "storage-clear", "section": "traffic"})
+        self.assertEqual(resp.status, 303)
+        job = self.app.jobs.recent(1)[0]
+        self.app.jobs.wait(job, 60)
+        self.assertEqual(job.rc, 0, job.stderr)
+        self.assertEqual(self.ts.count(traffic.connect, "SELECT COUNT(*) FROM traffic"), 0)
+        _, body = self.c.get(f"/jobs/{job.id}")
+        self.assertIn("удалено записей", body)
+
+    def test_clear_rejects_unknown_and_placeholder(self):
+        for sid in ("nope", "live", ""):
+            resp, _ = self.c.post("/settings/action", {"action": "storage-clear", "section": sid})
+            self.assertEqual((resp.status, header(resp, "Location")), (303, ["/settings"]))
+        self.assertEqual(self.app.jobs.recent(1), [])
+
+    def test_clear_needs_csrf_and_post(self):
+        resp, _ = self.c.post("/settings/action", {"action": "storage-clear", "section": "traffic"}, csrf=False)
+        self.assertEqual(resp.status, 403)
+        resp, _ = self.c.get("/settings/action?action=storage-clear&section=traffic")
+        self.assertEqual(resp.status, 405)
+
+    def test_limit_saved_to_config(self):
+        resp, _ = self.c.post("/settings/action", {"action": "storage-limit", "limit": "2 ГБ"})
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(config.load().get("ZOO_DATA_LIMIT"), "2G")
+        _, body = self.c.get("/settings")
+        self.assertIn("из 2.0 ГБ", body)
+        self.assertIn('value="2G"', body)
+        for bad in ("мусор", "1K", "0"):
+            self.c.post("/settings/action", {"action": "storage-limit", "limit": bad})
+            self.assertEqual(config.load().get("ZOO_DATA_LIMIT"), "2G", bad)
+
+    def test_low_disk_alert_on_overview(self):
+        du = {"total": 100 << 30, "free": 5 << 30, "used": 95 << 30}
+        self.app.invalidate("storage-alerts")
+        with mock.patch("zoolib.storage.disk", return_value=du):
+            _, body = self.c.get("/")
+        self.assertIn("Мало места на диске", body)
+        with mock.patch("zoolib.storage.disk", return_value={**du, "free": 60 << 30}):
+            self.app.invalidate("storage-alerts")
+            _, body = self.c.get("/")
+        self.assertNotIn("Мало места на диске", body)
+
+    def upstream(self, **items):
+        (self.env.root / "state" / "upstream.json").write_text(json.dumps(
+            {"ts": 1, "items": {k: {"tag": v} for k, v in items.items()}}), encoding="utf-8")
+        self.app.invalidate("upgrade")
+
+    def test_versions_column_available(self):
+        pins = self.env.root / "opt" / "scripts"
+        pins.mkdir(parents=True)
+        (pins / "versions.env").write_text("XUI_VERSION=v3.9.0\nHY2_VERSION=v2.12.3\n", encoding="utf-8")
+        _, body = self.c.get("/settings")
+        self.assertIn("доступно", body)
+        self.assertIn("не проверено", body)
+        self.upstream(**{"x-ui": "v99.0.0", "hysteria": "v2.12.3"})
+        _, body = self.c.get("/settings")
+        self.assertIn("v99.0.0 ↑", body)
+        self.assertIn("обновление — через пины репозитория (bump-pins, sha256), не автоматом", body)
+
+    def test_settings_page_makes_no_network_calls(self):
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("сеть")):
+            resp, _ = self.c.get("/settings")
+        self.assertEqual(resp.status, 200)
+
+    def test_kernel_engine_hides_amneziawg_go(self):
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "AWG_ENGINE_ACTIVE": "kernel"})
+        self.upstream(**{"amneziawg-go": "v99.0.0"})
+        _, body = self.c.get("/settings")
+        self.assertIn("не используется (ядро)", body)
+        self.assertNotIn("v99.0.0", body)
+
+    def test_config_groups(self):
+        from zoolib.web import views
+        for key, group in (("LABEL", "Основное"), ("SSH_PORTS", "Основное"), ("RU_EGRESS", "Основное"),
+                           ("ENABLE_TUIC", "Протоколы"), ("HY2_PORT", "Протоколы"), ("AWG_ENGINE", "Протоколы"),
+                           ("AWG_ENGINE_ACTIVE", "Технические"), ("AWG_H1", "Технические"),
+                           ("AWG_JC", "Технические"), ("VLESS_PRIV", "Технические"),
+                           ("HY2_PASSWORD", "Технические"), ("SOME_NEW_KEY", "Технические"),
+                           ("ZOO_DATA_LIMIT", "Основное")):
+            self.assertEqual(views.config_group(key), group, key)
 
 
 class ServerSpeedTest(unittest.TestCase):

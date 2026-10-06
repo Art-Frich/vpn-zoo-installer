@@ -69,6 +69,11 @@ def state_dir() -> Path:
     return _env_path("ZOO_STATE_DIR", Path("/var/lib/vpn-zoo"))
 
 
+def log_dir() -> Path:
+    """Журналы установки (install-*.log): тот же LOG_DIR, что в lib.sh."""
+    return _env_path("LOG_DIR", Path("/var/log/vpn-zoo"))
+
+
 def lock_file() -> Path:
     """Блокировка изменяющих операций zoo (пользователи, конфиги протоколов)."""
     default = Path("/run/lock/vpn-zoo.lock")
