@@ -477,6 +477,23 @@ class UsersViewTest(AppTestBase):
         self.assertIn("petya", self.env.proto_users("amneziawg"))
         self.assertNotIn("petya", self.env.proto_users("vless-reality"))
 
+    def test_nojs_other_group_with_default_group_checkboxes_is_not_custom(self):
+        from zoolib import groups, users
+        g = groups.create("Семья", ["amneziawg"])
+        main = groups.Groups.load().get(groups.MAIN_ID).resolve(users.managed_protocols()[0])
+        # без JS галочки остались от «Основной»: набор группы, а не «свой»
+        self.c.post("/users", {"name": "petya", "group": g.id},
+                    multi={"proto": main, "name": ["petya"], "group": [g.id], "csrf": [self.c.csrf]})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((reg["petya"]["group"], reg["petya"]["protocols"]), (g.id, ["amneziawg"]))
+        self.assertNotIn("custom", reg["petya"])
+        # осознанно другой набор — по-прежнему «свой»
+        self.c.post("/users", {"name": "vasya", "group": g.id},
+                    multi={"proto": ["vless-reality"], "name": ["vasya"], "group": [g.id], "csrf": [self.c.csrf]})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual(reg["vasya"]["protocols"], ["vless-reality"])
+        self.assertTrue(reg["vasya"]["custom"])
+
     def test_owner_not_deletable(self):
         _, body = self.c.get("/users/owner/delete")
         self.assertIn("owner не удаляется", body)

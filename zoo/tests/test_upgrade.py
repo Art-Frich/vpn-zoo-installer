@@ -185,6 +185,18 @@ class UpstreamTest(unittest.TestCase):
         with mock.patch.object(upgrade, "_http_json", return_value=list(reversed(rels))):
             self.assertEqual(upgrade.latest_tag("a/b"), "v1.2.3")
 
+    def test_release_marker_does_not_collide_with_version_numbers(self):
+        v = upgrade._vtuple
+        self.assertGreater(v("2.0.1"), v("2.0.0"))
+        self.assertGreater(v("1.0.1"), v("1.0"))
+        self.assertGreater(v("v26.0.1"), v("v26.0"))
+        self.assertLess(v("26.1.1-rc2"), v("26.1.1"))
+        self.assertGreater(v("26.1.1-rc2"), v("26.1.0"))
+        self.assertGreater(v("1.2.0.1"), v("1.2"))
+        self.assertLess(v("1.2.0-rc1"), v("1.2"))
+        self.assertEqual(v("2.0.0"), v("2"))
+        self.assertEqual(max(["2.0.0", "2.0.1", "1.9"], key=v), "2.0.1")
+
     def test_prerelease_of_pinned_is_not_newer(self):
         comp = self.comps(up={"items": {"x-ui": {"tag": "v3.9.0-rc.2"}, "xray": {"tag": "v26.9.30-beta"}}})
         self.assertFalse(comp["x-ui"]["newer"])

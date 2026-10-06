@@ -188,23 +188,28 @@ def _pick(platform: str, links: list[protolib.Link], proto: str, c: dict[str, An
 def _choose(cat: clients.Catalog, platform: str, links: list[protolib.Link], have: set[str],
             prefer: dict[str, str] | None, order: list[str] | None) -> tuple[str, dict[str, Any], str] | None:
     """(протокол, клиент, способ передачи). Клиент, выбранный в группе, главнее рекомендованного: берём
-    первый протокол группы (порядок группы, первый — основной), который он умеет и для которого есть что
-    отправить. Группа выбрала клиентов, а для платформы — «не нужен» (нет записи): пакета нет."""
+    первый протокол группы (порядок группы, первый — основной; у «всех включённых» — порядок раздачи
+    каталога, затем остальные включённые), который он умеет и для которого есть что отправить. Группа
+    выбрала клиентов, а для платформы — «не нужен» (нет записи): пакета нет. Если выбранный клиент
+    устарел (убран из каталога или платформы) или не покрывает ничего включённого — рекомендованный
+    клиент (если клиент группы был выбран — только в рамках протоколов группы)."""
+    handoff = cat.raw["handoff"].get(platform, [])
     if prefer:
         cid = prefer.get(platform, "")
-        c = cat.client(cid) if cid else None
-        if c is None or platform not in c["platforms"]:
+        if not cid:
             return None
-        for proto in order or cat.raw["handoff"].get(platform, []):
-            if c["protocols"].get(proto, {}).get("s") in ("ok", "warn"):
-                got = _pick(platform, links, proto, c, have)
-                if got:
-                    return got
-        return None
-    for proto in cat.raw["handoff"].get(platform, []):
-        got = _pick(platform, links, proto, cat.recommended(platform, proto), have)
-        if got:
-            return got
+        c = cat.client(cid)
+        if c is not None and platform in c["platforms"]:
+            for proto in order or [*handoff, *sorted(have - set(handoff))]:
+                if c["protocols"].get(proto, {}).get("s") in ("ok", "warn"):
+                    got = _pick(platform, links, proto, c, have)
+                    if got:
+                        return got
+    for proto in handoff:
+        if not (prefer and order) or proto in order:
+            got = _pick(platform, links, proto, cat.recommended(platform, proto), have)
+            if got:
+                return got
     return None
 
 

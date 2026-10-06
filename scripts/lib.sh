@@ -759,7 +759,7 @@ journald_limit() {
     local JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-vpn-zoo.conf
     if command -v systemd-analyze >/dev/null 2>&1 \
         && systemd-analyze cat-config systemd/journald.conf 2>/dev/null | awk '
-            /^# / { own = ($0 ~ /50-vpn-zoo\.conf$/); next }
+            /^# \// { own = ($0 ~ /50-vpn-zoo\.conf$/); next }
             /^[[:space:]]*SystemMaxUse=/ && !own { found = 1 }
             END { exit !found }'; then
         log_info "journald: SystemMaxUse уже задан чужой настройкой — свой потолок не добавляю"

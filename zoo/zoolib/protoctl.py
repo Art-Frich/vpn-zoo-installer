@@ -13,8 +13,9 @@
 из неё. Манифест пишет proto-<id>.sh, но его каталог читает и веб-процесс, поэтому phase/enable_var
 оттуда принимаются, лишь когда пара равна STATIC[id], — то есть ничего нового не дают; из манифеста
 берутся имя и enabled. Фаза проверяется по файлу в установленной копии (zoo_home()/scripts/<фаза>.sh),
-оттуда же запускается install.sh. Перед фазой config.env обязан целиком лежать в формате config_set
-(KEY='значение'): исполнитель — root, и install.sh делает source этого файла. Одна задача за раз
+оттуда же запускается install.sh. Перед фазой config.env приводится к формату config_set (KEY='значение'):
+исполнитель — root, и install.sh делает source этого файла, так что любая строка, кроме простого
+присваивания, — отказ. Одна задача за раз
 (flock), последний включённый протокол выключить нельзя.
 """
 
@@ -25,6 +26,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -131,6 +133,10 @@ def check(proto: str, action: str, ctls: dict[str, Ctl] | None = None) -> Ctl:
         return ctl
     if not ctl.enabled:
         raise JobError(f"{ctl.name} уже выключен")
+    if proto == "vless-reality":
+        child = next((c for c in ctls.values() if c.id == "vless-xhttp" and c.requires == proto and c.enabled), None)
+        if child:
+            raise JobError(f"Выключить {ctls[proto].name} нельзя: сначала выключите VLESS XHTTP (он работает через VLESS).")
     gone = {proto} | _dependents(ctls, proto)
     if not any(c.enabled and c.id not in gone for c in ctls.values()):
         raise JobError("Это последний включённый протокол: выключив его, вы потеряете доступ. Сначала включите другой.")
@@ -269,27 +275,111 @@ def _prune() -> None:
                 pass
 
 
-def check_config_file() -> None:
-    """config.env читает root-овый install.sh через source: каждая строка должна быть ровно такой,
-    какую пишет config_set (KEY='значение'). Иначе JobError, ничего не запускается."""
+def _bash_value(rest: str) -> str:
+    r"""Значение присваивания KEY=<rest> так, как его прочтёт bash при source. ValueError — если это не
+    одно простое слово: подстановка ($, `, $( ), метасимвол (; & | < > ( )), тильда, команда после
+    значения, незакрытая кавычка. Ни shlex, ни parse_line тут не годятся: они иначе режут слова
+    (\r, \x0c — не пробел для bash, а `a;id` — две команды, не одно слово)."""
+    out: list[str] = []
+    i, n = 0, len(rest)
+    while i < n:
+        c = rest[i]
+        if c == "'":
+            j = rest.find("'", i + 1)
+            if j < 0:
+                raise ValueError("незакрытая кавычка")
+            out.append(rest[i + 1:j])
+            i = j + 1
+        elif c == '"':
+            i += 1
+            while True:
+                if i >= n:
+                    raise ValueError("незакрытая кавычка")
+                c = rest[i]
+                if c == '"':
+                    i += 1
+                    break
+                if c in "$`":
+                    raise ValueError("подстановка команды или переменной")
+                if c == "\\" and i + 1 < n and rest[i + 1] in ('$', '`', '"', "\\"):
+                    out.append(rest[i + 1])
+                    i += 2
+                    continue
+                out.append(c)
+                i += 1
+        elif c == "\\":
+            if i + 1 >= n:
+                raise ValueError("перенос строки через \\")
+            out.append(rest[i + 1])
+            i += 2
+        elif c in " \t":
+            tail = rest[i:].lstrip(" \t")
+            if tail and not tail.startswith("#"):
+                raise ValueError("после значения что-то ещё (команда?)")
+            break
+        elif c in "$`;&|<>()~":
+            raise ValueError(f"спецсимвол {c!r} вне кавычек")
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _normalise_line(line: str) -> str:
+    """Строка config.env → строка в формате config_set. Комментарии и пустые — как есть."""
+    s = line.lstrip(" \t")
+    if not s or s.startswith("#"):
+        return line
+    if "\0" in line:
+        raise ValueError("нулевой байт")
+    if s.startswith(("export ", "export\t")):
+        s = s[len("export"):].lstrip(" \t")
+    key, sep, rest = s.partition("=")
+    if not sep or not config.KEY_RE.match(key):
+        raise ValueError("не KEY=значение")
+    return f"{key}={config.quote(_bash_value(rest))}"
+
+
+def normalise_config_file() -> None:
+    r"""config.env читает root-овый install.sh через source, а файл можно править руками (v1: SERVER_IP="1.2.3.4",
+    ENABLE_SS=1). Перед фазой каждая строка приводится к формату config_set (KEY='значение') под той же
+    блокировкой, что у config_set в lib.sh; значение — ровно то, что дал бы bash. Строка, которая не простое
+    присваивание или содержит подстановку, — JobError, файл не меняется, ничего не запускается.
+    Строки делятся только по \n: \r, \x0c, U+0085, U+2028 внутри значения не разрывают строку."""
     path = paths.config_file()
     try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return
+        with file_lock(paths.config_lock_file()):
+            try:
+                with open(path, encoding="utf-8", newline="") as f:
+                    text = f.read()
+            except FileNotFoundError:
+                return
+            lines = text.split("\n")
+            out: list[str] = []
+            for n, line in enumerate(lines, 1):
+                try:
+                    out.append(_normalise_line(line))
+                except ValueError as e:
+                    raise JobError(f"config.env, строка {n}: {e} — это не простое присваивание KEY='значение', "
+                                   "задачу не запускаю. Поправьте файл руками на сервере.") from None
+            new = "\n".join(out)
+            if new != text:
+                fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                        f.write(new)
+                    os.chmod(tmp, 0o600)
+                    os.replace(tmp, path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+    except LockTimeout as e:
+        raise JobError(f"config.env занят: {e}") from None
     except (OSError, UnicodeDecodeError) as e:
         raise JobError(f"config.env не прочитать: {e}") from None
-    for n, line in enumerate(text.splitlines(), 1):
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        try:
-            kv = config.parse_line(line)
-        except ValueError:
-            kv = None
-        if kv is None or line != f"{kv[0]}={config.quote(kv[1])}":
-            raise JobError(f"config.env, строка {n}: не в формате KEY='значение' как пишет config_set — "
-                           "задачу не запускаю. Поправьте файл руками на сервере.")
 
 
 def _run_phase(phase: str, log: Path, extra_env: dict[str, str] | None = None) -> int:
@@ -338,7 +428,7 @@ def _run_one(req: Path) -> None:
         _write_state(jid, st)
         fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.close(fd)
-        check_config_file()
+        normalise_config_file()
         # ключ едет в окружении: install.sh сам сохранит его в config.env под своей блокировкой;
         # при сбое фазы возвращаем прежнее значение, чтобы файл не расходился с реальным состоянием
         value = "1" if action == "enable" else "0"

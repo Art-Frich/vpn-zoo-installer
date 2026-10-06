@@ -419,7 +419,8 @@ def sync_users(names: list[str] | None = None, include_custom: bool = False) -> 
     """Довести пользователей до текущего набора протоколов: завести креды в новых
     протоколах (например, включили TUIC после установки), забыть удалённые. Участнику группы
     (без «своего» набора) — только протоколы группы; «свой» набор (custom) не расширяется,
-    пока не передан include_custom (иначе протоколы, которых владелец ему не давал, вернулись бы)."""
+    пока не передан include_custom (иначе протоколы, которых владелец ему не давал, вернулись бы).
+    Владелец (OWNER) получает все включённые протоколы всегда."""
     from . import groups
     with _lock():
         reg = _load_registry()
@@ -434,9 +435,10 @@ def sync_users(names: list[str] | None = None, include_custom: bool = False) -> 
             for pid in [p for p in user.protocols if p not in known]:
                 user.protocols.remove(pid)
                 rep.steps.append(Step(pid, "forget", True, "манифеста больше нет"))
-            grp = gs.get(user.group) if user.group and not user.custom else None
+            owner = user.name == OWNER   # владельцу — все включённые протоколы, группа и custom его не ограничивают
+            grp = gs.get(user.group) if user.group and not user.custom and not owner else None
             lacking = [p for p in (grp.resolve(targets) if grp else targets) if p not in user.protocols]
-            if user.custom and not include_custom:
+            if user.custom and not include_custom and not owner:
                 rep.skipped.update({p: "свой набор протоколов (--include-custom, чтобы добавить)" for p in lacking})
                 lacking = []
             for pid in lacking:
