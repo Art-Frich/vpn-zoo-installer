@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
-from . import journal, storage, traffic, upgrade
+from . import clients, journal, storage, traffic, upgrade
 from . import probe as probe_mod
 from . import web as web_mod
 from .config import Config, ConfigError
@@ -525,6 +525,8 @@ def build_parser() -> argparse.ArgumentParser:
     probe_mod.add_export_arguments(p)
     p = add("history", probe_mod.history.cmd_history, "история проб: add, list, export (для history/ в репо)")
     probe_mod.history.add_arguments(p)
+    p = add("clients", clients.cmd_clients, "клиентские приложения: каталог и последние версии (--check-upstream)")
+    clients.add_arguments(p)
     p = add("web", web_mod.cmd_web, "веб-админка на 127.0.0.1 (доступ через ssh -L)")
     web_mod.add_arguments(p)
     p = add("upgrade", upgrade.cmd_upgrade, "обновление закреплённых версий")

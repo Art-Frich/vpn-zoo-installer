@@ -1,0 +1,13 @@
+# Раз в сутки со случайным сдвигом до часа (GitHub не получает всех в одну секунду) и один раз
+# через 5 минут после включения: кэш версий заполняется сразу после установки.
+[Unit]
+Description=vpn-zoo: версии клиентских приложений раз в сутки
+
+[Timer]
+OnActiveSec=5min
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

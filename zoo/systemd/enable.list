@@ -3,3 +3,4 @@
 zoo-collector.timer
 zoo-web.service
 zoo-upstream.timer
+zoo-clients.timer

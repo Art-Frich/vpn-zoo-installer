@@ -32,7 +32,7 @@ SECURITY_HEADERS = [
     ("Cross-Origin-Resource-Policy", "same-origin"),
     ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
 ]
-NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/traffic", "Трафик"),
+NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/clients", "Клиенты"), ("/traffic", "Трафик"),
        ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
 MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
@@ -89,7 +89,7 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import allowviews, journalviews, userviews, views  # маршруты ссылаются на App: импорт здесь
+        from . import allowviews, clientviews, journalviews, userviews, views  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -114,6 +114,7 @@ class App:
             ("GET", rf"/users/{name}/qr/(?P<idx>\d+)", userviews.user_qr, True),
             ("GET", r"/apps", allowviews.apps_page, True),
             ("POST", r"/apps", allowviews.apps_post, True),
+            ("GET", r"/clients", clientviews.clients_page, True),
             ("GET", r"/traffic", views.traffic_page, True),
             ("GET", r"/probe", views.probe_page, True),
             ("POST", r"/probe/run", views.probe_run, True),
