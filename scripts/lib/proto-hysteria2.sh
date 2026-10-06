@@ -647,7 +647,7 @@ _hy2_manifest_json() {
 
 proto_hysteria2_manifest_refresh() {
     manifest_write "$HY2_ID" "$(_hy2_manifest_json main)"
-    if hy2_obfs_enabled; then
+    if [ "${ENABLE_HY2:-1}" = "1" ] && hy2_obfs_enabled; then
         manifest_write "$HY2_OBFS_ID" "$(_hy2_manifest_json obfs)"
     else
         manifest_del "$HY2_OBFS_ID"
