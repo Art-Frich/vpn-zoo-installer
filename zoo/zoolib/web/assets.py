@@ -103,8 +103,17 @@ main > h2 { margin-top: 28px; }
 .tile .hint { color: var(--muted); font-size: .8rem; }
 
 /* протокол */
+/* карточка протокола: шапка — сетка «название | статус» (статус не переносится вниз),
+   низ (сегодня, пользователи, график) прижат ко дну — в ряду всё на одной линии */
+.card.proto { display: flex; flex-direction: column; }
+.proto .card-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.proto .card-head h3 { margin: 0; overflow-wrap: anywhere; line-height: 1.3; }
 .proto .meta { color: var(--text-2); font-size: .88rem; margin-bottom: 8px; }
-.proto .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; }
+.proto .chips { margin-bottom: 12px; }
+.proto .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; margin-top: auto; }
+footer .live { display: inline-flex; align-items: center; gap: 6px; }
+footer .live.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+footer .live-btn { margin-left: 10px; }
 .proto .num-big { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { font-size: .78rem; padding: 1px 7px; border-radius: 999px; background: var(--surface-2);
@@ -299,6 +308,49 @@ JS = r"""
   document.querySelectorAll('input[data-select]').forEach(function (inp) {
     inp.addEventListener('focus', function () { inp.select(); });
   });
+  // live: раз в N секунд забрать ту же страницу и подменить <main>; пауза — вкладка
+  // скрыта, фокус в поле ввода, открыт <details> или выключено кнопкой (запоминается)
+  var live = document.getElementById('live');
+  if (live) {
+    var every = (parseInt(live.getAttribute('data-live'), 10) || 10) * 1000;
+    var paused = false;
+    try { paused = localStorage.getItem('zoo-live') === 'off'; } catch (e) { /* без хранилища */ }
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'btn small live-btn';
+    var label = function (extra) {
+      live.textContent = paused ? 'live на паузе' : 'live · обновлено ' + (extra || new Date().toLocaleTimeString('ru-RU'));
+      btn.textContent = paused ? 'Включить' : 'Пауза';
+      live.className = paused ? 'live off' : 'live on';
+    };
+    btn.addEventListener('click', function () {
+      paused = !paused;
+      try { localStorage.setItem('zoo-live', paused ? 'off' : 'on'); } catch (e) { /* без хранилища */ }
+      label();
+    });
+    live.after(btn);
+    label();
+    var busy = false;
+    setInterval(function () {
+      if (paused || busy || document.hidden) return;
+      var a = document.activeElement;
+      if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+      var main = document.querySelector('main');
+      if (!main || main.querySelector('details[open]')) return;
+      busy = true;
+      fetch(location.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
+        .then(function (r) {
+          if (r.redirected || !r.ok) { paused = true; label(); throw new Error('сессия или сервер'); }
+          return r.text();
+        })
+        .then(function (html) {
+          var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
+          if (fresh) { fresh.querySelectorAll('.alerts.flash').forEach(function (el) { el.remove(); }); main.innerHTML = fresh.innerHTML; }
+          label();
+        })
+        .catch(function () { /* следующая попытка через интервал */ })
+        .then(function () { busy = false; });
+    }, every);
+  }
 })();
 """
 

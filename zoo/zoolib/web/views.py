@@ -147,9 +147,12 @@ def overview(app: "App", req: "Request") -> "Response":
         svc = [t("span", f"{u}: {s}", class_="chip") for u, s in p["services"].items()]
         listen = [t("span", f"{p['port']}/{k}" + ("" if v else " — не слушает"), class_="chip")
                   for k, v in p["listening"].items()]
+        # «Shadowsocks-2022 (2022-blake3-aes-128-gcm)» → заголовок «Shadowsocks-2022», уточнение — в строку ниже
+        name, _, detail = p["name"].partition(" (")
         cards.append(card(
-            p["name"],
-            t("div", f"{p['id']} · {p['engine'] or '—'}", class_="meta"),
+            name,
+            t("div", f"{p['id']} · {p['engine'] or '—'}" + (f" · {detail.rstrip(')')}" if detail else ""),
+              class_="meta"),
             t("div", svc, listen, class_="chips"),
             t("div",
               t("div", t("div", "сегодня", class_="muted small"),

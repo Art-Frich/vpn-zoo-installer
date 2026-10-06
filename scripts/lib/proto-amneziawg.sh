@@ -392,7 +392,7 @@ _awg_manifest_refresh() {
         [ "${AWG_RT:-0}" != "1" ] || name="AmneziaWG 3.1 (HeaderProtection + RandomTrailers)"
         notes="Профиль 3.x: нужен клиент 3.1 — AmneziaVPN ≥5.0.1.5, AmneziaWG 3.1, WG Tunnel ≥5.6.0, mihomo ≥1.19.30. Клиенты 2.0 не подключатся."
     else
-        name="AmneziaWG 2.0"
+        name="AmneziaWG 3.1 (профиль 2.0 — для клиентов AWG 2.0+)"
         notes="Клиенты AWG 2.0+: AmneziaVPN (vpn:// или .conf с 5.0.1.5), AmneziaWG ≥2.0, WG Tunnel ≥4.2.0, mihomo ≥1.19.14. UDP: там, где режут UDP, не работает — нужен TCP-протокол."
     fi
     notes="$notes Android: amneziawg-android.conf и его QR — через VPN только приложения из списка (zoo allow list). Приложение из списка, которого нет на телефоне, Android по коду пропускает; свой список — zoo allow … --user ИМЯ."
