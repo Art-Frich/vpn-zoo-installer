@@ -17,6 +17,7 @@ from .. import journal, manifests, paths, status, storage, system, traffic, upgr
 from ..config import config_set
 from ..output import human_bytes, human_duration
 from . import charts, logs, probeviews, protoviews
+from . import table as tbl
 from .html import Markup, badge, card, csrf_input, empty, join, kv, post_button, t, table
 from .jobs import Job, outside_sandbox, zoo_argv
 
@@ -281,7 +282,21 @@ TH_DOWN = ("↓", "к клиенту: скачивание с сервера")
 TH_SUM = ("Σ", "всего")
 
 
-def _traffic_body(period: str) -> list[Any] | None:
+def _traffic_users_spec(period: str, mx: int) -> tbl.Spec:
+    def num(key: str, head: tuple[str, str], **kw: Any) -> tbl.Col:
+        return tbl.Col(key, head[0], hint=head[1], cell=lambda r: human_bytes(r[key]), value=lambda r: r[key],
+                       num=True, sort=True, first_desc=True, **kw)
+
+    cols = [tbl.Col("key", "пользователь", cell=lambda r: t("a", r["key"], href=f"/users/{r['key']}?period={period}"),
+                    sort=True, search=True),
+            num("up", TH_UP, secondary=True), num("down", TH_DOWN, secondary=True), num("total", TH_SUM),
+            tbl.Col("bar", "", cell=lambda r: charts.bar(r["total"], mx), secondary=True, export=False)]
+    return tbl.Spec(path="/traffic", cols=cols, sort="total", desc=True, id_key="key", paged=False,
+                    keep=[("period", period)], empty="трафика не было", placeholder="пользователь",
+                    href=lambda r: f"/users/{r['key']}?period={period}", name=f"traffic-users-{period}")
+
+
+def _traffic_body(period: str, st: tbl.State | None = None) -> list[Any] | None:
     """Страница без форм и без данных сессии, поэтому её можно держать в кэше. None — данных нет."""
     rep_u = traffic.report(period=period, by="user")
     if rep_u.get("empty"):
@@ -302,10 +317,9 @@ def _traffic_body(period: str) -> list[Any] | None:
               class_="tiles")
     mx_u = max((r["total"] for r in rep_u["rows"]), default=0)
     mx_p = max((r["total"] for r in rep_p["rows"]), default=0)
-    users_tbl = table(["пользователь", TH_UP, TH_DOWN, TH_SUM, ""],
-                      [[t("a", r["key"], href=f"/users/{r['key']}?period={period}"), human_bytes(r["up"]),
-                        human_bytes(r["down"]), human_bytes(r["total"]), charts.bar(r["total"], mx_u)]
-                       for r in rep_u["rows"]], num=[1, 2, 3], empty="трафика не было", stack=True)
+    uspec = _traffic_users_spec(period, mx_u)
+    ust = st or tbl.parse(uspec, {})
+    users_tbl = tbl.render(uspec, ust, tbl.memory_page(uspec, ust, rep_u["rows"]))
     proto_tbl = table(["протокол", TH_UP, TH_DOWN, TH_SUM, ""],
                       [[r["title"], human_bytes(r["up"]), human_bytes(r["down"]), human_bytes(r["total"]),
                         charts.bar(r["total"], mx_p, "s2")] for r in rep_p["rows"]],
@@ -334,10 +348,15 @@ def traffic_page(app: "App", req: "Request") -> "Response":
     period = get_period(req)
     head = page_head("Трафик", None, period_selector("/traffic", period))
     run = traffic.last_run()
-    key = ("traffic", period, run["ts"] if run else None)  # данные меняются только с разбором коллектора
+    uspec = _traffic_users_spec(period, 0)
+    ex = tbl.export_request(uspec, req.query)
+    if ex is not None:
+        return tbl.memory_export(uspec, req.query, traffic.report(period=period, by="user").get("rows", []))
+    st = tbl.parse(uspec, req.query)
+    key = ("traffic", period, run["ts"] if run else None, st.key)  # данные меняются только с разбором коллектора
     body = app.cache_get(key, 600)
     if body is None:
-        body = _traffic_body(period)
+        body = _traffic_body(period, st)
         if body is None:
             csrf = req.session.csrf if req.session else ""
             return app.render(req, "Трафик", [head, card("Трафик", no_history_hint(csrf))], active="/traffic")
@@ -401,6 +420,12 @@ def verdict_legend(results: list[dict[str, Any]]) -> Markup | None:
 
 def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | None = None,
                report_text: str = "", error: str = "", notice: str = "") -> "Response":
+    ex = probeviews.export_runs(app, req)
+    if ex is not None:
+        return ex
+    run = probeviews.run_param(req)
+    if run is not None:
+        return probeviews.run_page(app, req, run)
     csrf = req.session.csrf if req.session else ""
     running = app.jobs.running("probe")
     last = load_selftest()
@@ -453,7 +478,7 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
         rows = [[t("strong", r["id"]), verdict_badge(r.get("server")), verdict_badge(r.get("client")),
                  badge(r.get("verdict", ""), CATEGORY.get(r.get("category", ""), "muted"))] for r in compare_rows]
         cmp_body += [t("h3", "Сравнение"), table(["протокол", "сервер", "клиент", "вывод"], rows, stack=True)]
-    body = [page_head("Проверка"), local, *probeviews.cards(req),
+    body = [page_head("Проверка"), local, *probeviews.cards(app, req),
             card("Сравнить с клиентом", *cmp_body, help=cmp_help, id_=probeviews.HOW_ANCHOR)]
     return app.render(req, "Проверка", body, active="/probe")
 
@@ -566,7 +591,23 @@ def _available_cell(c: dict[str, Any]) -> Markup:
     return badge(label, "warn") if c.get("newer") else t("span", label, class_="muted")
 
 
-def _versions_card(app: "App", cfg: Any) -> Markup:
+def _version_status(c: dict[str, Any]) -> str:
+    return "—" if c["outdated"] is None else ("устарел" if c["outdated"] else "актуален")
+
+
+def _versions_spec() -> tbl.Spec:
+    cols = [tbl.Col("name", "компонент", sort=True),
+            tbl.Col("installed", "установлен", secondary=True),
+            tbl.Col("pinned", "закреплён", secondary=True),
+            tbl.Col("avail", "доступно", cell=lambda r: _available_cell(r["c"]), value=lambda r: r["c"].get("label", ""),
+                    secondary=True),
+            tbl.Col("status", "", cell=lambda r: badge("—", "muted") if r["c"]["outdated"] is None else
+                    (badge("устарел", "warn") if r["c"]["outdated"] else badge("актуален", "ok")), chip=True)]
+    return tbl.Spec(path="/settings", cols=cols, sort="name", id_key="name", prefix="v_", paged=False, export=False,
+                    empty="нет данных", name="versions")
+
+
+def _versions_card(app: "App", req: "Request", cfg: Any) -> Markup:
     help_ = join(t("p", "«Доступно» — свежий релиз на GitHub: проверка раз в сутки (", t("code", "zoo upgrade --check-upstream"),
                    "), страница читает только кэш. ", UPSTREAM_HINT.capitalize(), "."),
                  t("p", "Обновление версий — из консоли: ", t("code", "sudo zoo upgrade"), " (план) и ",
@@ -574,16 +615,17 @@ def _versions_card(app: "App", cfg: Any) -> Markup:
     try:
         up = app.cached("upgrade", 60, lambda: upgrade.check(cfg))
         comps, plan = up["components"], up["phases"]
-        ver_rows = [[name, c["installed"] or "—", c["pinned"] or "—", _available_cell(c),
-                     badge("—", "muted") if c["outdated"] is None else
-                     (badge("устарел", "warn") if c["outdated"] else badge("актуален", "ok"))]
-                    for name, c in comps.items()]
-        tbl = table(["компонент", "установлен", "закреплён", "доступно", ""], ver_rows, stack=True)
+        ver_rows = [{"name": name, "installed": c["installed"], "pinned": c["pinned"], "c": c,
+                     "status": _version_status(c)} for name, c in comps.items()]
+        vspec = _versions_spec()
+        vopts = tbl.options_from_rows(vspec, ver_rows)
+        vst = tbl.parse(vspec, req.query, vopts)
+        vtbl = tbl.render(vspec, vst, tbl.memory_page(vspec, vst, ver_rows, vopts))
         hint = t("p", UPSTREAM_HINT, class_="hint") if any(c.get("newer") for c in comps.values()) else None
         if comps and not plan and all(c["outdated"] is False for c in comps.values()):
             return card("Версии", badge("✓ всё актуально", "ok"),
-                        t("details", t("summary", "компоненты"), tbl, class_="more"), hint, help=help_)
-        return card("Версии", tbl, t("p", "План: " + " → ".join(plan), class_="hint") if plan else None, hint,
+                        t("details", t("summary", "компоненты"), vtbl, class_="more"), hint, help=help_)
+        return card("Версии", vtbl, t("p", "План: " + " → ".join(plan), class_="hint") if plan else None, hint,
                     help=help_)
     except Exception as e:  # сводка версий не должна ломать страницу
         return card("Версии", alert_list([("warn", f"не удалось сравнить версии: {e}")]), help=help_)
@@ -701,7 +743,7 @@ def settings_page(app: "App", req: "Request") -> "Response":
         post_button("/settings/action", "Снять трафик", csrf, "btn", COLLECT_ACTION),
         post_button("/settings/action", "Обновить geo-файлы", csrf, "btn", {"action": "geo"}),
         class_="btn-grid"))
-    versions = _versions_card(app, cfg)
+    versions = _versions_card(app, req, cfg)
     data = _data_card(app, cfg, csrf)
 
     jobs = app.jobs.recent(8)
