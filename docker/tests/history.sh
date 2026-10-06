@@ -261,7 +261,7 @@ page="$(srv bash -s "$url" "$token" <<'EOS' || true
 set -e
 base="${1%/}"; token="$2"; jar="$(mktemp)"; trap 'rm -f "$jar"' EXIT
 curl -s -o /dev/null -c "$jar" "$base/login"
-lc="$(awk '$6 == "zoo_login" {print $7}' "$jar")"
+lc="$(awk -v n="zoo_login_${base##*:}" '$6 == n {print $7}' "$jar")"
 curl -s -o /dev/null -b "$jar" -c "$jar" --data-urlencode "token=$token" -d "lc=$lc" "$base/login"
 curl -s -b "$jar" "$base/probe?rp=all"
 EOS

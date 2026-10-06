@@ -11,9 +11,9 @@ import platform
 from pathlib import Path
 from typing import Any
 
-from . import __version__, manifests, output, paths, system, traffic
+from . import __version__, manifests, output, paths, protolib, system, traffic
 from .config import Config
-from .users import Registry, UserError
+from .users import Registry, UserError, users_module
 from .xui import XuiClient, XuiError
 
 # ufw проверяется через `ufw status` (system.ufw_active), а не по юниту
@@ -41,6 +41,14 @@ def _manifest_certs(m: manifests.Manifest) -> list[str]:
 
 
 def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> dict[str, Any]:
+    data = collect_slow(cfg, with_xui)
+    data["host"] = system.host_metrics(cpu_interval)
+    return data
+
+
+def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
+    """Всё, кроме метрик хоста (/proc): системные вызовы, сокеты, сертификаты, API 3x-ui.
+    Веб-админка кэширует эту часть на минуту, а метрики считает на каждый запрос."""
     problems: list[str] = []
     good, bad = manifests.load_all()
     for b in bad:
@@ -69,6 +77,7 @@ def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> di
         problems.append(f"users.json: {e}")
 
     protocols = []
+    libs = set(protolib.list_libs())
     for m in good:
         svc = {u: states.get(_unit(u), {}).get("active", "unknown") for u in m.services}
         listening = {p: (p, m.port) in listen for p in m.protos}
@@ -89,7 +98,7 @@ def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> di
         protocols.append({
             "id": m.id, "name": m.name, "port": m.port, "layer": m.layer, "engine": m.engine,
             "services": svc, "enabled": m.enabled, "listening": listening, "ok": ok,
-            "users": sum(1 for u in reg.visible() if m.id in u.protocols) if reg else None,
+            "users": sum(1 for u in reg.visible() if users_module(m, libs) in u.protocols) if reg else None,
         })
 
     for u in BASE_UNITS:
@@ -151,7 +160,6 @@ def collect(cfg: Config, cpu_interval: float = 0.2, with_xui: bool = True) -> di
         "certs": certs,
         "versions": {"installed": system.component_versions(),
                      "pinned": system.pinned_versions(paths.scripts_dir() / "versions.env")},
-        "host": system.host_metrics(cpu_interval),
         "users": user_counts,
         "problems": problems,
     }

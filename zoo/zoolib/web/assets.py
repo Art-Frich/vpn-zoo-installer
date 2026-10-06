@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 
 CSS = r"""
+[hidden] { display: none !important; }
 :root {
   color-scheme: light;
   --bg: #f5f5f3; --surface: #ffffff; --surface-2: #f0efec; --border: #e2e1dc;
@@ -71,6 +73,7 @@ code, pre, .mono { font-family: var(--mono); font-size: .86em; }
 }
 .nav a:hover { background: var(--surface-2); text-decoration: none; }
 .nav a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav a { text-align: center; }
 .top form { margin: 0; }
 
 main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 48px; min-width: 0; }
@@ -90,17 +93,39 @@ main > h2 { margin-top: 28px; }
 .stack > .card + .card { margin-top: 16px; }
 .card-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
 .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(270px, 100%), 1fr)); }
-.cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+.cols { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+.cols > .card { display: flex; flex-direction: column; }
 .card h3.sub-h { margin: 16px 0 6px; }
+.head-end { display: flex; align-items: center; gap: 8px; }
+details.help { position: relative; }
+details.help > summary { list-style: none; width: 22px; height: 22px; border-radius: 50%; display: grid;
+  place-content: center; font-size: .8rem; font-weight: 700; color: var(--muted); border: 1px solid var(--border);
+  cursor: pointer; user-select: none; }
+details.help > summary::-webkit-details-marker { display: none; }
+details.help[open] > summary { color: var(--accent); border-color: var(--accent); }
+details.help > .hint { position: absolute; right: 0; top: 28px; z-index: 5; width: min(360px, 80vw);
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); color: var(--text-2); font-size: .85rem; }
+details.help > .hint p { margin: 0 0 6px; } details.help > .hint ul { margin: 0 0 6px; padding-left: 18px; }
+.empty-state { min-height: 96px; display: grid; place-content: center; justify-items: center; gap: 6px;
+  text-align: center; color: var(--muted); }
+.empty-state p { margin: 0; }
+.btn-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }
+.btn-grid form.inline { display: block; }
+.btn-grid .btn { width: 100%; justify-content: center; }
 @media (min-width: 960px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .stack > * + * { margin-top: 16px; }
 
-/* показатели */
-.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); }
-.tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
-.tile .label { color: var(--muted); font-size: .82rem; }
-.tile .value { font-size: 1.35rem; font-weight: 650; margin: 2px 0 4px; font-variant-numeric: tabular-nums; }
-.tile .hint { color: var(--muted); font-size: .8rem; }
+/* показатели: плитка — сетка из строк, место под полоску занято всегда, подписи в одну строку */
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr)); }
+.tile { display: grid; grid-template-rows: auto auto 14px auto; align-content: start; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
+.tile .label, .tile .hint { color: var(--muted); font-size: .82rem; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.tile .value { font-size: 1.35rem; font-weight: 650; margin: 2px 0 0; font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .meter-slot { align-self: center; }
+.tile .hint { font-size: .8rem; }
 
 /* протокол */
 /* карточка протокола: шапка — сетка «название | статус» (статус не переносится вниз),
@@ -113,16 +138,16 @@ main > h2 { margin-top: 28px; }
 .proto .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; margin-top: auto; }
 /* «Подключение»: плитки протоколов и окно протокола */
 .ptiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); }
-.ptile { display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer; font: inherit; color: inherit;
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px;
-  border-left: 4px solid var(--accent); transition: transform .08s, border-color .08s; }
-.ptile:hover { border-color: var(--accent); transform: translateY(-1px); }
+.ptile { --acc: var(--accent); display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer;
+  font: inherit; color: inherit; background: var(--surface-2); border: 1px solid var(--border);
+  border-left: 4px solid var(--acc); border-radius: var(--radius); padding: 14px;
+  transition: transform .08s, border-color .08s; }
+.ptile:hover { border-color: var(--acc); transform: translateY(-1px); }
 .ptile-name { font-weight: 600; font-size: 1rem; }
 .ptile-sub { color: var(--muted); font-size: .85rem; }
-.ptile .warnchip, .warnchip { justify-self: start; color: var(--warn); background: var(--warn-soft); }
-.ptile.s1 { border-left-color: #2f8f5b; } .ptile.s2 { border-left-color: #b8860b; } .ptile.s3 { border-left-color: #8a63d2; }
-.ptile.s4 { border-left-color: #c2410c; } .ptile.s5 { border-left-color: #0e7490; } .ptile.s6 { border-left-color: #be185d; }
-.ptile.s7 { border-left-color: #4d7c0f; }
+.acc1 { --acc: var(--series-1); } .acc2 { --acc: var(--series-2); } .acc3 { --acc: var(--series-3); }
+.acc4 { --acc: var(--series-4); } .acc5 { --acc: var(--series-5); } .acc6 { --acc: var(--series-6); }
+.acc7 { --acc: var(--series-7); } .acc8 { --acc: var(--series-8); }
 dialog.pdlg { width: min(460px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
   background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius);
   padding: 18px; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
@@ -132,20 +157,35 @@ dialog.pdlg::backdrop { background: rgba(0,0,0,.55); backdrop-filter: blur(2px);
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
 .tab { font: inherit; font-size: .85rem; padding: 5px 12px; border-radius: 999px; cursor: pointer;
   background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
-.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.tab.active { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .variant { display: grid; gap: 12px; justify-items: center; margin-top: 8px; }
-.variant .qr { background: #fff; padding: 10px; border-radius: 12px; }
-.variant .qr svg { width: 260px; height: 260px; display: block; }
+.variant img.qr { background: #fff; padding: 10px; border-radius: 12px; width: 240px; height: 240px;
+  box-sizing: content-box; display: block; max-width: 100%; }
 .variant .link-uri { width: 100%; }
 .pdlg details { margin-top: 14px; color: var(--muted); font-size: .85rem; }
 main.loading { opacity: .55; transition: opacity .15s; }
-footer .live { display: inline-flex; align-items: center; gap: 6px; }
+footer .live { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
 footer .live.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
 footer .live-btn { margin-left: 10px; }
 .proto .num-big { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip { font-size: .78rem; padding: 1px 7px; border-radius: 999px; background: var(--surface-2);
   color: var(--text-2); border: 1px solid var(--border); white-space: nowrap; }
+
+.chip.bad { color: var(--bad); background: var(--bad-soft); border-color: transparent; }
+.chip.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.chip.info { color: var(--accent); background: var(--info-soft); border-color: transparent; }
+.chip.ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.quiet { color: var(--muted); font-size: .85rem; margin: 10px 0 0; }
+.quick { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 16px; align-items: center; }
+.quick img.qr { background: #fff; padding: 8px; border-radius: 10px; width: 160px; height: 160px;
+  box-sizing: content-box; display: block; }
+.quick .actions { margin-top: 10px; }
+tr.off td { opacity: .55; }
+tr.off td:last-child, tr.off td:first-child { opacity: 1; }
+details.more > summary { margin-top: 12px; }
+details.more[open] > summary { margin-bottom: 10px; }
+.top-inner .brand { flex: none; }
 
 /* значки */
 .badge { display: inline-block; font-size: .78rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
@@ -170,6 +210,12 @@ footer .live-btn { margin-left: 10px; }
 .alerts li.bad .ico { color: var(--bad); }
 .alerts li.warn .ico { color: var(--warn); }
 .alerts li.ok .ico { color: var(--ok); }
+.alerts li .msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.alerts li .acts { margin-left: auto; display: inline-flex; gap: 10px; align-items: center; flex: none; }
+.alerts li .acts form { margin: 0; }
+.alerts li .acts button { font: inherit; font-size: .85rem; padding: 0; border: 0; background: none;
+  color: var(--accent); cursor: pointer; text-decoration: underline; }
+.alerts li.info { background: var(--info-soft); } .alerts li.info .ico { color: var(--accent); }
 .flash { margin-bottom: 16px; }
 
 /* таблицы */
@@ -196,7 +242,7 @@ td.bar-cell { width: 28%; min-width: 90px; }
 .btn.primary:hover { filter: brightness(1.07); }
 .btn.danger { color: var(--bad); border-color: var(--bad); }
 .btn.danger:hover { background: var(--bad-soft); }
-.btn.danger-solid { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn.danger-solid { background: var(--bad); border-color: var(--bad); color: var(--accent-ink); }
 .btn.small { padding: 4px 9px; font-size: .82rem; }
 .btn:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, a:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -215,7 +261,7 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .hint { color: var(--muted); font-size: .82rem; }
 
 /* сегменты (период) */
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .seg a { padding: 6px 12px; color: var(--text-2); font-size: .88rem; border-left: 1px solid var(--border); }
 .seg a:first-child { border-left: 0; }
 .seg a:hover { background: var(--surface-2); text-decoration: none; }
@@ -228,10 +274,14 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .chart .axis { fill: var(--muted); font-size: 12px; font-family: inherit; font-variant-numeric: tabular-nums; }
 .chart .hit { fill: transparent; }
 .chart .hit:hover { fill: var(--text); fill-opacity: .05; }
-.s1 { fill: var(--series-1); background: var(--series-1); } .s2 { fill: var(--series-2); background: var(--series-2); }
-.s3 { fill: var(--series-3); background: var(--series-3); } .s4 { fill: var(--series-4); background: var(--series-4); }
-.s5 { fill: var(--series-5); background: var(--series-5); } .s6 { fill: var(--series-6); background: var(--series-6); }
-.s7 { fill: var(--series-7); background: var(--series-7); } .s8 { fill: var(--series-8); background: var(--series-8); }
+.chart .s1, .spark .s1, .hbar .s1 { fill: var(--series-1); } .chart .s2, .spark .s2, .hbar .s2 { fill: var(--series-2); }
+.chart .s3, .spark .s3, .hbar .s3 { fill: var(--series-3); } .chart .s4, .spark .s4, .hbar .s4 { fill: var(--series-4); }
+.chart .s5, .spark .s5, .hbar .s5 { fill: var(--series-5); } .chart .s6, .spark .s6, .hbar .s6 { fill: var(--series-6); }
+.chart .s7, .spark .s7, .hbar .s7 { fill: var(--series-7); } .chart .s8, .spark .s8, .hbar .s8 { fill: var(--series-8); }
+.swatch.s1 { background: var(--series-1); } .swatch.s2 { background: var(--series-2); }
+.swatch.s3 { background: var(--series-3); } .swatch.s4 { background: var(--series-4); }
+.swatch.s5 { background: var(--series-5); } .swatch.s6 { background: var(--series-6); }
+.swatch.s7 { background: var(--series-7); } .swatch.s8 { background: var(--series-8); }
 .track { fill: var(--track); }
 .fill-ok { fill: var(--ok); } .fill-warn { fill: var(--warn); } .fill-bad { fill: var(--bad); }
 .legend { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .86rem; }
@@ -285,18 +335,34 @@ dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 footer { max-width: 1200px; margin: 0 auto; padding: 0 16px 24px; color: var(--muted); font-size: .8rem; }
 @media (max-width: 600px) {
   body { font-size: 14px; }
-  .top-inner { gap: 10px; }
+  .top-inner { gap: 6px 10px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
+  .brand { flex: 1; }
   .brand span { display: none; }
+  .nav { order: 3; flex: 1 1 100%; display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; overflow: visible; }
+  .nav a { padding: 6px 0; font-size: .8rem; overflow: hidden; text-overflow: ellipsis; }
   main { padding-top: 14px; }
   .card { padding: 13px; }
   th, td { padding: 7px 8px; }
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody { display: block; }
+  table.stack tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  table.stack tbody tr:last-child { border-bottom: 0; }
+  table.stack td { display: flex; justify-content: space-between; align-items: center; gap: 12px; border: 0;
+    padding: 3px 0; text-align: right; }
+  table.stack td::before { content: attr(data-label); color: var(--muted); font-size: .8rem; text-align: left;
+    flex: none; }
+  table.stack td[data-label=""]::before, table.stack td:first-child::before { display: none; }
+  table.stack td:first-child { justify-content: flex-start; text-align: left; font-weight: 600; }
+  table.stack tbody tr:hover td { background: none; }
+  td.bar-cell, table.stack td .hbar { width: 40%; }
+  .quick { grid-template-columns: 1fr; justify-items: center; }
 }
 """
 
 JS = r"""
 (function () {
   'use strict';
-  // копирование ссылки в буфер
+  // копирование в буфер: data-copy="id" — поле, значение которого берём
   document.addEventListener('click', function (ev) {
     var btn = ev.target.closest('[data-copy]');
     if (!btn) return;
@@ -320,68 +386,117 @@ JS = r"""
     var msg = ev.target.getAttribute('data-confirm');
     if (msg && !window.confirm(msg)) ev.preventDefault();
   });
-  // файл отчёта пробника → в поле формы
-  document.querySelectorAll('input[type=file][data-fill]').forEach(function (inp) {
-    inp.addEventListener('change', function () {
-      var target = document.getElementById(inp.getAttribute('data-fill'));
-      var f = inp.files && inp.files[0];
-      if (!target || !f) return;
-      if (f.size > 4 * 1024 * 1024) { alert('Файл больше 4 МБ'); return; }
-      var r = new FileReader();
-      r.onload = function () { target.value = r.result; };
-      r.readAsText(f);
-    });
+  // обработчики делегированы: страница подменяется целиком (live, переключатель периода)
+  document.addEventListener('focusin', function (ev) {
+    var inp = ev.target;
+    if (inp.matches && inp.matches('input[data-select]')) inp.select();
   });
-  // выделить содержимое поля ссылки по клику
-  document.querySelectorAll('input[data-select]').forEach(function (inp) {
-    inp.addEventListener('focus', function () { inp.select(); });
+  document.addEventListener('change', function (ev) {
+    var inp = ev.target;
+    if (!inp.matches || !inp.matches('input[type=file][data-fill]')) return;
+    var target = document.getElementById(inp.getAttribute('data-fill'));
+    var f = inp.files && inp.files[0];
+    if (!target || !f) return;
+    if (f.size > 4 * 1024 * 1024) { alert('Файл больше 4 МБ'); return; }
+    var r = new FileReader();
+    r.onload = function () { target.value = r.result; };
+    r.readAsText(f);
   });
+  // QR берётся с сервера по требованию: только у варианта, который виден в окне
+  function showQr(box) {
+    var v = box.querySelector('.variant:not([hidden])');
+    var img = v && v.querySelector('img[data-src]');
+    if (img) { img.src = img.getAttribute('data-src'); img.removeAttribute('data-src'); }
+  }
+  document.addEventListener('error', function (ev) {
+    var img = ev.target;
+    if (img.tagName !== 'IMG' || !img.classList.contains('qr')) return;
+    var p = document.createElement('p');
+    p.className = 'muted small';
+    p.textContent = 'QR не построился';
+    img.replaceWith(p);
+  }, true);
   // окна протоколов: плитка [data-dialog] открывает <dialog>, ✕ или клик по фону — закрыть,
   // вкладки вариантов [data-tab] — показать один вариант
   document.addEventListener('click', function (ev) {
     var open = ev.target.closest('[data-dialog]');
-    if (open) { var d = document.getElementById(open.getAttribute('data-dialog')); if (d && d.showModal) d.showModal(); return; }
+    if (open) {
+      var d = document.getElementById(open.getAttribute('data-dialog'));
+      if (d && d.showModal) { d.showModal(); showQr(d); }
+      return;
+    }
     var close = ev.target.closest('[data-close]');
     if (close) { close.closest('dialog').close(); return; }
-    if (ev.target.tagName === 'DIALOG') { ev.target.close(); return; }
+    if (ev.target.tagName === 'DIALOG') {
+      // закрывает только клик по фону: по полям окна (padding) target тоже DIALOG
+      var r = ev.target.getBoundingClientRect();
+      if (ev.clientX < r.left || ev.clientX > r.right || ev.clientY < r.top || ev.clientY > r.bottom) ev.target.close();
+      return;
+    }
     var tab = ev.target.closest('[data-tab]');
     if (tab) {
       var box = tab.closest('dialog') || document;
       box.querySelectorAll('[data-tab]').forEach(function (b) { b.classList.toggle('active', b === tab); });
       box.querySelectorAll('.variant').forEach(function (v) { v.hidden = v.id !== tab.getAttribute('data-tab'); });
+      showQr(box);
     }
   });
+  // форма входа по одноразовой ссылке отправляется сама
+  document.querySelectorAll('form[data-autosubmit]').forEach(function (f) { f.submit(); });
+
+  // подмена <main> новой страницей; сообщение (flash) остаётся, пока человек не уйдёт со страницы
+  function swapMain(main, html) {
+    var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
+    if (!fresh) return false;
+    var flash = main.querySelector(':scope > .alerts.flash');
+    main.innerHTML = fresh.innerHTML;
+    if (flash) main.insertBefore(flash, main.firstChild);
+    return true;
+  }
+  function isHtml(r) { return (r.headers.get('content-type') || '').indexOf('text/html') === 0; }
+
   // переключатель периода — без перезагрузки: забрать страницу, подменить <main>, обновить адрес
   document.addEventListener('click', function (ev) {
     var a = ev.target.closest('nav.seg a');
-    if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    if (!a || ev.ctrlKey || ev.metaKey || ev.shiftKey || a.origin !== location.origin) return;
     ev.preventDefault();
     var main = document.querySelector('main');
     if (main) main.classList.add('loading');
-    fetch(a.href, { credentials: 'same-origin', cache: 'no-store' })
-      .then(function (r) { if (r.redirected || !r.ok) throw new Error('nav'); return r.text(); })
+    fetch(a.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
+      .then(function (r) { if (r.redirected || !r.ok || !isHtml(r)) throw new Error('nav'); return r.text(); })
       .then(function (html) {
-        var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
-        if (!fresh || !main) throw new Error('nav');
-        main.innerHTML = fresh.innerHTML;
+        if (!main || !swapMain(main, html)) throw new Error('nav');
         history.replaceState(null, '', a.href);
       })
       .catch(function () { location.href = a.href; })
       .then(function () { if (main) main.classList.remove('loading'); });
   });
-  // live: раз в N секунд забрать ту же страницу и подменить <main>; пауза — вкладка
-  // скрыта, фокус в поле ввода, открыт <details> или выключено кнопкой (запоминается)
+
+  // live: раз в N секунд забрать ту же страницу и подменить <main>; пауза — вкладка скрыта,
+  // фокус в поле ввода, открыт <details> или окно, либо выключено кнопкой (запоминается).
+  // Запрос с If-None-Match: страница не изменилась — сервер отвечает 304, разметку не трогаем
   var live = document.getElementById('live');
   if (live) {
     var every = (parseInt(live.getAttribute('data-live'), 10) || 10) * 1000;
-    var paused = false;
+    var paused = false, dead = false, etag = '', etagUrl = '';
     try { paused = localStorage.getItem('zoo-live') === 'off'; } catch (e) { /* без хранилища */ }
     var btn = document.createElement('button');
     btn.type = 'button'; btn.className = 'btn small live-btn';
     var label = function (extra) {
+      if (dead) return;
       live.textContent = paused ? 'live на паузе' : 'live · обновлено ' + (extra || new Date().toLocaleTimeString('ru-RU'));
       btn.textContent = paused ? 'Включить' : 'Пауза';
       live.className = paused ? 'live off' : 'live on';
+    };
+    var expired = function (text) {
+      dead = true; paused = true; btn.hidden = true;
+      var a = document.createElement('a');
+      a.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+      a.textContent = text;
+      if (text === 'Войти') a.className = 'btn small';
+      live.className = 'live off';
+      live.textContent = '';
+      live.appendChild(a);
     };
     btn.addEventListener('click', function () {
       paused = !paused;
@@ -396,17 +511,21 @@ JS = r"""
       var a = document.activeElement;
       if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
       var main = document.querySelector('main');
-      if (!main || main.querySelector('details[open]')) return;
+      if (!main || main.querySelector('details[open]') || document.querySelector('dialog[open]')) return;
       busy = true;
-      fetch(location.href, { credentials: 'same-origin', cache: 'no-store', headers: { 'X-Zoo-Live': '1' } })
+      var headers = { 'X-Zoo-Live': '1' };
+      if (etag && etagUrl === location.href) headers['If-None-Match'] = etag;
+      fetch(location.href, { credentials: 'same-origin', cache: 'no-store', headers: headers })
         .then(function (r) {
-          if (r.redirected || !r.ok) { paused = true; label(); throw new Error('сессия или сервер'); }
+          if (r.status === 401) { expired('Войти'); throw new Error('сессия'); }
+          if (r.redirected && new URL(r.url).pathname === '/login') { expired('сессия истекла — войти'); throw new Error('сессия'); }
+          if (r.status === 304) { label(); return null; }
+          if (!r.ok || !isHtml(r)) { paused = true; label(); throw new Error('сервер'); }
+          etag = r.headers.get('ETag') || ''; etagUrl = location.href;
           return r.text();
         })
         .then(function (html) {
-          var fresh = new DOMParser().parseFromString(html, 'text/html').querySelector('main');
-          if (fresh) { fresh.querySelectorAll('.alerts.flash').forEach(function (el) { el.remove(); }); main.innerHTML = fresh.innerHTML; }
-          label();
+          if (html !== null && html !== undefined) { swapMain(main, html); label(); }
         })
         .catch(function () { /* следующая попытка через интервал */ })
         .then(function () { busy = false; });
@@ -422,3 +541,6 @@ def _ver(s: str) -> str:
 
 CSS_VERSION = _ver(CSS)
 JS_VERSION = _ver(JS)
+# статика сжимается один раз: сервер отдаёт готовый gzip тем, кто его принимает
+CSS_GZ = gzip.compress(CSS.encode(), 9, mtime=0)
+JS_GZ = gzip.compress(JS.encode(), 9, mtime=0)

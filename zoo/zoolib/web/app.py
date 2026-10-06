@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 import threading
@@ -12,11 +13,11 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .. import __version__
+from .. import __version__, paths, qr
 from ..config import Config
 from ..config import load as load_config
-from . import assets
-from .auth import LOGIN_COOKIE, SESSION_COOKIE, Auth, Session, cookie, host_allowed, new_token, same
+from . import assets, logs
+from .auth import ABSOLUTE_TTL, Auth, Session, cookie, cookie_names, host_allowed, new_token, same
 from .html import Markup, csrf_input, t
 from .jobs import Jobs
 
@@ -32,9 +33,12 @@ SECURITY_HEADERS = [
     ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
 ]
 NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/apps", "Приложения"), ("/traffic", "Трафик"),
-       ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Журнал"), ("/settings", "Настройки")]
+       ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
 # Страницы без форм ввода: обновляются сами (app.js подменяет <main> раз в 10 с)
 LIVE_PAGES = {"/", "/traffic", "/journal"}
+MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
+LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
+ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
 
 
 @dataclass
@@ -51,6 +55,15 @@ class Request:
     def header(self, name: str) -> str:
         return self.headers.get(name.lower(), "")
 
+    @property
+    def live(self) -> bool:
+        """Фоновое обновление страницы (app.js): не тратит сообщения и не продлевает сессию."""
+        return bool(self.header("x-zoo-live"))
+
+    def cookie_names(self) -> tuple[str, str]:
+        """(сессия, форма входа): имена несут порт, cookie общие для всех портов 127.0.0.1."""
+        return cookie_names(self.header("host"))
+
 
 @dataclass
 class Response:
@@ -59,6 +72,7 @@ class Response:
     content_type: str = "text/html; charset=utf-8"
     headers: list[tuple[str, str]] = field(default_factory=list)
     cache: bool = False
+    gz: bytes | None = None  # то же тело, сжатое заранее (статика)
 
 
 def redirect(location: str, status: int = 303) -> Response:
@@ -69,15 +83,19 @@ def text(body: str, status: int = 200, content_type: str = "text/plain; charset=
     return Response(status, body.encode("utf-8"), content_type)
 
 
+def clip(msg: str, limit: int = MSG_MAX) -> str:
+    return msg if len(msg) <= limit else msg[:limit - 1].rstrip() + "…"
+
+
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
         from . import allowviews, journalviews, userviews, views  # маршруты ссылаются на App: импорт здесь
-        self.auth = Auth(token)
+        self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
         self.extra_hosts = extra_hosts or set()
-        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache: dict[Any, tuple[float, Any, float]] = {}  # ключ → (когда, значение, ttl)
         self._cache_lock = threading.Lock()
         name = r"(?P<name>[a-z0-9][a-z0-9_-]{0,31})"
         self.routes: list[tuple[str, re.Pattern[str], Callable[..., Response], bool]] = []
@@ -93,7 +111,8 @@ class App:
             ("POST", rf"/users/{name}/(?P<action>enable|disable)", userviews.user_toggle, True),
             ("GET", rf"/users/{name}/delete", userviews.user_delete_confirm, True),
             ("POST", rf"/users/{name}/delete", userviews.user_delete, True),
-            ("GET", rf"/users/{name}/file/(?P<idx>\d+)", userviews.user_file, True),
+            ("GET", rf"/users/{name}/file/(?P<fname>[A-Za-z0-9._-]{{1,64}})", userviews.user_file, True),
+            ("GET", rf"/users/{name}/qr/(?P<idx>\d+)", userviews.user_qr, True),
             ("GET", r"/apps", allowviews.apps_page, True),
             ("POST", r"/apps", allowviews.apps_post, True),
             ("GET", r"/traffic", views.traffic_page, True),
@@ -113,7 +132,7 @@ class App:
     def cfg(self) -> Config:
         return self.cfg_loader()
 
-    def cached(self, key: str, ttl: float, fn: Callable[[], Any]) -> Any:
+    def cached(self, key: Any, ttl: float, fn: Callable[[], Any]) -> Any:
         """Дорогие сводки (status.collect) не чаще раза в ttl секунд."""
         now = time.monotonic()
         with self._cache_lock:
@@ -121,19 +140,49 @@ class App:
             if hit and now - hit[0] < ttl:
                 return hit[1]
         value = fn()
-        with self._cache_lock:
-            self._cache[key] = (time.monotonic(), value)
+        self.cache_put(key, value, ttl)
         return value
 
-    def invalidate(self, *keys: str) -> None:
+    def cache_get(self, key: Any, ttl: float) -> Any:
         with self._cache_lock:
-            for k in keys or list(self._cache):
-                self._cache.pop(k, None)
+            hit = self._cache.get(key)
+            return hit[1] if hit and time.monotonic() - hit[0] < ttl else None
+
+    def cache_put(self, key: Any, value: Any, ttl: float) -> None:
+        """Запись в кэш; заодно уходят все просроченные (иначе ключи со временем копятся)."""
+        now = time.monotonic()
+        with self._cache_lock:
+            for k in [k for k, (ts, _, life) in self._cache.items() if now - ts >= life]:
+                del self._cache[k]
+            self._cache[key] = (now, value, ttl)
+
+    def invalidate(self, *keys: str) -> None:
+        """Без аргументов — весь кэш. «status» — обе половины сводки: быстрая и медленная."""
+        with self._cache_lock:
+            if not keys:
+                self._cache.clear()
+            for k in keys:
+                for key in (("status", "status-slow") if k == "status" else (k,)):
+                    self._cache.pop(key, None)
+
+    def invalidate_links(self, name: str | None = None) -> None:
+        """Ссылки и QR пользователя (или всех): после удаления, отключения, смены списка приложений."""
+        with self._cache_lock:
+            for k in [k for k in self._cache if isinstance(k, str) and k.startswith("links:")
+                      and (name is None or k == f"links:{name}")]:
+                del self._cache[k]
+        qr.clear_cache()
 
     # ---------- обработка ----------
 
     def handle(self, req: Request) -> Response:
         resp = self._handle(req)
+        if (resp.status == 200 and req.method in ("GET", "HEAD") and resp.body
+                and resp.content_type.startswith("text/html")):
+            etag = '"' + hashlib.sha1(resp.body).hexdigest()[:20] + '"'
+            if req.header("if-none-match") == etag:
+                resp = Response(304, b"", resp.content_type)
+            resp.headers.append(("ETag", etag))
         resp.headers += SECURITY_HEADERS
         if not resp.cache:
             resp.headers.append(("Cache-Control", "no-store"))
@@ -147,7 +196,7 @@ class App:
             return self.static(req.path)
         if req.path == "/healthz":
             return text("ok")
-        req.session = self.auth.session(req.cookies.get(SESSION_COOKIE))
+        req.session = self.auth.session(req.cookies.get(req.cookie_names()[0]), touch=not req.live)
         allowed: list[str] = []
         for method, rx, handler, need_auth in self.routes:
             m = rx.match(req.path)
@@ -189,9 +238,9 @@ class App:
     def static(self, path: str) -> Response:
         name = path.split("?", 1)[0]
         if name == "/static/app.css":
-            r = Response(200, assets.CSS.encode(), "text/css; charset=utf-8", cache=True)
+            r = Response(200, assets.CSS.encode(), "text/css; charset=utf-8", cache=True, gz=assets.CSS_GZ)
         elif name == "/static/app.js":
-            r = Response(200, assets.JS.encode(), "text/javascript; charset=utf-8", cache=True)
+            r = Response(200, assets.JS.encode(), "text/javascript; charset=utf-8", cache=True, gz=assets.JS_GZ)
         else:
             return text("нет такого файла", 404)
         r.headers.append(("Cache-Control", "public, max-age=86400, immutable"))
@@ -201,52 +250,88 @@ class App:
 
     def login_page(self, app: "App", req: Request, error: str = "", status: int = 200) -> Response:
         if req.session and not error:
-            return redirect("/")
-        nonce = new_token(16)
+            return redirect(_safe_next(req.query.get("next")))
+        login_cookie = req.cookie_names()[1]
+        have = req.cookies.get(login_cookie, "")
+        nonce = have if LOGIN_NONCE_RE.fullmatch(have) else new_token(16)  # вторая вкладка не ломает первую
+        once = req.query.get("once") or req.form.get("once") or ""
+        once = once if ONCE_RE.fullmatch(once) else ""
+        # автоотправка — только на чистой странице: после ошибки форма отправлялась бы по кругу
+        autosubmit = bool(once) and not error and status == 200
         locked = self.auth.locked()
-        msg = error or (f"Слишком много неудачных попыток. Вход закрыт ещё {int(locked) + 1} с." if locked else "")
+        msg = error or (f"Подождите {int(locked) + 1} с." if locked and not once else "")
+        try:
+            cfg = self.cfg()
+            who = "zoo " + (cfg.get("LABEL") or cfg.get("SERVER_IP") or "server")
+        except Exception:  # страница входа открывается и при битом config.env
+            who = "zoo"
         form = t("form",
                  t("input", type="hidden", name="lc", value=nonce),
                  t("input", type="hidden", name="next", value=_safe_next(req.query.get("next") or req.form.get("next"))),
-                 t("div", t("label", "Токен администратора", for_="token"),
+                 t("input", type="hidden", name="once", value=once) if once else None,
+                 # скрытое имя: менеджер паролей сохраняет токен как пару «zoo <метка> / токен»
+                 t("input", type="text", name="username", value=who, autocomplete="username", hidden=True,
+                   readonly=True),
+                 t("div", t("label", "Токен", for_="token"),
                    t("input", type="password", name="token", id="token", autocomplete="current-password",
-                     required=True, autofocus=True), class_="field"),
+                     required=not once, autofocus=not once), class_="field"),
                  t("button", "Войти", type="submit", class_="btn primary"),
-                 method="post", action="/login")
+                 method="post", action="/login", data_autosubmit=True if autosubmit else None)
         body = t("div", t("section",
                           t("h1", "vpn-zoo"),
-                          t("p", "Админка сервера. Токен — в CREDENTIALS.md или: ", t("code", "sudo zoo web --info"),
-                            class_="muted small"),
                           t("ul", t("li", t("span", "!", class_="ico"), msg), class_="alerts") if msg else None,
-                          form, class_="card"), class_="login")
+                          t("p", "Входим по ссылке…", class_="muted small") if autosubmit else None,
+                          form,
+                          t("p", "Токен: ", t("code", "sudo zoo web --link"), class_="muted small"),
+                          class_="card"), class_="login")
         resp = self.render(req, "Вход", body, bare=True, status=status)
-        resp.headers.append(("Set-Cookie", cookie(LOGIN_COOKIE, nonce, max_age=1800, path="/login")))
+        resp.headers.append(("Set-Cookie", cookie(login_cookie, nonce, max_age=1800, path="/login")))
         return resp
 
     def login_post(self, app: "App", req: Request) -> Response:
-        if not same(req.form.get("lc", ""), req.cookies.get(LOGIN_COOKIE, "")):
+        sid_cookie, login_cookie = req.cookie_names()
+        if not same(req.form.get("lc", ""), req.cookies.get(login_cookie, "")):
             return self.login_page(app, req, "Форма входа устарела — попробуйте ещё раз.", 400)
-        if self.auth.locked():
-            return self.login_page(app, req, "", 429)
-        s = self.auth.login(req.form.get("token", ""))
+        s = None
+        once = req.form.get("once", "")
+        if once:
+            s = self.auth.login_once(once)  # ссылка работает и во время блокировки
         if s is None:
-            time.sleep(0.5)  # перебор вслепую дороже
-            return self.login_page(app, req, "Неверный токен.", 401)
+            req.form.pop("once", None)  # ссылка не подошла: в форме её больше нет, ждём токен
+            req.query.pop("once", None)
+            if self.auth.locked():
+                return self.login_page(app, req, "", 429)
+            token = req.form.get("token", "")
+            if once and not token:
+                time.sleep(0.5)
+                return self.login_page(app, req, "Ссылка устарела. Новая: sudo zoo web --link", 401)
+            s = self.auth.login(token)
+            if s is None:
+                time.sleep(0.5)  # перебор вслепую дороже
+                return self.login_page(app, req, "Неверный токен.", 401)
         resp = redirect(_safe_next(req.form.get("next")))
-        resp.headers.append(("Set-Cookie", cookie(SESSION_COOKIE, s.sid)))
-        resp.headers.append(("Set-Cookie", cookie(LOGIN_COOKIE, "", max_age=0, path="/login")))
+        resp.headers.append(("Set-Cookie", cookie(sid_cookie, s.sid, max_age=ABSOLUTE_TTL)))
         return resp
 
     def logout(self, app: "App", req: Request) -> Response:
-        self.auth.logout(req.cookies.get(SESSION_COOKIE))
+        sid_cookie = req.cookie_names()[0]
+        self.auth.logout(req.cookies.get(sid_cookie))
         resp = redirect("/login")
-        resp.headers.append(("Set-Cookie", cookie(SESSION_COOKIE, "", max_age=0)))
+        resp.headers.append(("Set-Cookie", cookie(sid_cookie, "", max_age=0)))
         return resp
 
     # ---------- страницы ----------
 
+    def safe_msg(self, msg: Any) -> str:
+        """Сообщение об ошибке для браузера: без секретов конфигурации, не длиннее MSG_MAX."""
+        try:
+            cfg = self.cfg()
+        except Exception:
+            cfg = None
+        return clip(logs.sanitize(str(msg), cfg))
+
     def error(self, req: Request, status: int, title: str, message: str) -> Response:
-        body = t("section", t("h1", title), t("p", message, class_="muted"),
+        body = t("section", t("h1", title), t("p", self.safe_msg(message), class_="muted"),
                  t("p", t("a", "← на главную", href="/")), class_="card")
         return self.render(req, title, body, bare=req.session is None, status=status)
 
@@ -270,21 +355,23 @@ class App:
         if bare:
             content = body
         else:
-            flashes = req.session.pop_flashes() if req.session else []
+            # фоновое обновление сообщений не забирает: их увидит человек, а не app.js
+            flashes = [] if req.live or not req.session else req.session.pop_flashes()
             nav = t("nav", [t("a", label, href=href, class_="active" if href == active else None,
                               aria_current="page" if href == active else None) for href, label in NAV],
                     class_="nav", aria_label="Разделы")
             logout = t("form", csrf_input(req.session.csrf if req.session else ""),
-                       t("button", "Выйти", type="submit", class_="btn small"), method="post", action="/logout")
+                       t("button", "Выйти", type="submit", class_="btn small"), method="post", action="/logout",
+                       data_confirm="Выйти из админки?")
             header = t("header", t("div", t("a", "vpn-zoo", t("span", cfg_label) if cfg_label else None,
                                             href="/", class_="brand"), nav, logout, class_="top-inner"),
                        class_="top")
-            flash = t("ul", [t("li", t("span", {"ok": "✓", "bad": "✕"}.get(k, "!"), class_="ico"), msg, class_=k)
+            flash = t("ul", [t("li", t("span", {"ok": "✓", "bad": "✕"}.get(k, "!"), class_="ico"),
+                               self.safe_msg(msg) if k in ("bad", "warn") else msg, class_=k)
                              for k, msg in flashes], class_="alerts flash") if flashes else None
             live = active in LIVE_PAGES
-            footer = t("footer", f"zoo {__version__} · ",
-                       t("span", "live: обновляется каждые 10 с", id="live", data_live="10") if live
-                       else t("span", "данные обновляются при открытии страницы"))
+            footer = t("footer", f"zoo {__version__}",
+                       t("span", " · live", id="live", data_live="10") if live else None)
             content = [header, t("main", flash, body), footer]
         doc = Markup("<!doctype html>") + t("html", t("head", head), t("body", content), lang="ru")
         return Response(status, doc.encode("utf-8"))

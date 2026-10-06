@@ -734,7 +734,7 @@ class WebHistoryTest(unittest.TestCase):
                 resp, body = c.get("/probe")
                 self.assertEqual(resp.status, 200)
                 self.assertIn("Лучшие протоколы", body)
-                self.assertIn("Пока нет клиентских проб", body)
+                self.assertIn("Нет клиентских проб", body)
                 rep = report([result("hysteria2", lat=40, down=30), result("vless-reality", "FREEZE_16K", down=None)],
                              ts=datetime.now(timezone.utc).replace(microsecond=0).isoformat())
                 resp, body = c.post("/probe/compare", {"report": json.dumps(rep), "tag": "cafe-wifi", "device": ""})

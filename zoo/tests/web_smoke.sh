@@ -52,16 +52,16 @@ check "/healthz → 200" test "$(code /healthz)" = 200
 
 echo "-- вход"
 code /login >/dev/null
-lc="$(awk '$6 == "zoo_login" {print $7}' "$JAR")"
-check "форма входа ставит zoo_login" test -n "$lc"
+lc="$(awk -v n="zoo_login_$PORT" '$6 == n {print $7}' "$JAR")"
+check "форма входа ставит zoo_login_$PORT" test -n "$lc"
 check "неверный токен → 401" test "$(code /login --data-urlencode token=wrong -d "lc=$lc")" = 401
 code /login >/dev/null
-lc="$(awk '$6 == "zoo_login" {print $7}' "$JAR")"
+lc="$(awk -v n="zoo_login_$PORT" '$6 == n {print $7}' "$JAR")"
 check "вход без double-submit → 400" test "$(code /login --data-urlencode "token=$ZOO_WEB_TOKEN" -d lc=forged)" = 400
 code /login >/dev/null
-lc="$(awk '$6 == "zoo_login" {print $7}' "$JAR")"
+lc="$(awk -v n="zoo_login_$PORT" '$6 == n {print $7}' "$JAR")"
 check "верный токен → 303" test "$(code /login --data-urlencode "token=$ZOO_WEB_TOKEN" -d "lc=$lc")" = 303
-check "cookie сессии HttpOnly; SameSite=Strict" grep -qi '^set-cookie: zoo_sid=.*HttpOnly.*SameSite=Strict' "$TMP/head"
+check "cookie сессии HttpOnly; SameSite=Strict" grep -qi "^set-cookie: zoo_sid_$PORT=.*HttpOnly.*SameSite=Strict" "$TMP/head"
 
 echo "-- страницы"
 for p in / /users "/users?verify=1" /traffic "/traffic?period=1h" "/traffic?period=7d" "/traffic?period=30d" \
@@ -96,11 +96,14 @@ if [ "$WITH_USERS" = 1 ]; then
     check "добавить $U → 303 /users/$U" test "$(code /users -d "name=$U" --data-urlencode 'note=проверка веба' -d "csrf=$TOKEN_CSRF")" = 303
     check "redirect на страницу пользователя" grep -qi "^location: /users/$U" "$TMP/head"
     check "zoo user list видит $U" bash -c "zoo user list --json | jq -e '.users[] | select(.name == \"$U\")' >/dev/null"
-    check "страница $U: ссылки и QR" bash -c "[ \"\$(curl -s -b '$JAR' '$BASE/users/$U' | grep -c 'class=\"link\"')\" -ge 1 ]"
-    check "QR встроен как SVG" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q '<div class=\"qr\"><svg'"
+    check "страница $U: плитки подключения" bash -c "[ \"\$(curl -s -b '$JAR' '$BASE/users/$U' | grep -c 'class=\"ptile ')\" -ge 1 ]"
+    check "страница $U лёгкая: QR не встроен в HTML" bash -c "! curl -s -b '$JAR' '$BASE/users/$U' | grep -q '<svg'"
+    qrpath="$(curl -s -b "$JAR" "$BASE/users/$U" | grep -o 'data-src="/users/[^"]*/qr/[0-9]*"' | head -1 | sed 's/^data-src="//; s/"$//')"
+    check "QR отдаётся по требованию как SVG ($qrpath)" bash -c "curl -s -b '$JAR' -D - -o /dev/null '$BASE$qrpath' | grep -qi '^content-type: image/svg+xml'"
     check "страница $U: правила v2rayN" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q 'v2rayn-routing.json'"
     if [ -f /etc/vpn-setup/protocols.d/amneziawg.json ]; then
         check "страница $U: Android-вариант AmneziaWG" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q 'amneziawg-android.conf'"
+        check "файл скачивается по имени" bash -c "curl -s -b '$JAR' -D - -o /dev/null '$BASE/users/$U/file/amneziawg-android.conf' | grep -qi '^content-disposition: attachment'"
     fi
     check "страница «Приложения» для $U" test "$(code "/apps?user=$U")" = 200
     check "отключить" test "$(code "/users/$U/disable" -d "csrf=$TOKEN_CSRF")" = 303

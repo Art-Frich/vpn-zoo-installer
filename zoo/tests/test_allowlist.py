@@ -8,7 +8,7 @@ from unittest import mock
 
 from tests.helpers import BASH, REPO, ZooEnv, needs_bash
 from tests.test_cli import run_cli
-from tests.test_web import AppTestBase, header
+from tests.test_web import AppTestBase, header, visible_words
 from zoolib import allowlist, paths, users
 
 JQ = shutil.which("jq")
@@ -294,7 +294,7 @@ class AllowWebTest(AppTestBase):
         self.assertEqual(al.users["masha"]["windows"][-1], "Discord.exe")
         _, body = self.c.get("/apps?user=masha")
         self.assertIn("свой список", body)
-        self.assertIn("Вернуть общий список", body)
+        self.assertIn("Вернуть общий", body)
         self.c.post("/apps", {"action": "del", "platform": "android", "app": "org.telegram.messenger"})
         self.assertNotIn("org.telegram.messenger", allowlist.Allowlist.load().android)
         # ошибки: мусор, чужой пользователь, пустой список
@@ -319,19 +319,42 @@ class AllowWebTest(AppTestBase):
         resp, _ = self.c.post("/apps", {"action": "add", "app": "youtube"}, csrf=False)
         self.assertEqual(resp.status, 403)
 
+    def test_page_is_short_and_resets_ask_confirmation(self):
+        self.c.post("/apps", {"action": "add", "platform": "windows", "custom": "Discord.exe", "user": "masha"})
+        for path in ("/apps", "/apps?user=masha"):
+            _, body = self.c.get(path)
+            self.assertLessEqual(visible_words(body), 100, path)
+            self.assertNotIn("Как это работает", body)
+            self.assertIn("остальное — напрямую (банки, Госуслуги, MAX)", body)
+            self.assertIn('aria-label="Чей список"', body)
+            self.assertNotIn(">Показать<", body)
+            self.assertIn('aria-label="Убрать com.brave.browser"', body)
+        _, body = self.c.get("/apps?user=masha")
+        self.assertRegex(body, r'data-confirm="[^"]+"[^>]*>(<input[^>]*>)*<input type="hidden" name="action" '
+                               r'value="reset"')
+        _, body = self.c.get("/apps")
+        self.assertIn("Сбросить к пресету", body)
+        self.assertIn("masha ★", body)
+        # после правки флеш короткий, а кэш ссылок сброшен
+        self.app.cache_put("links:masha", ("stamp", ([], {})), 3600)
+        self.c.post("/apps", {"action": "add", "platform": "android", "app": "com.google.android.youtube"})
+        self.assertIsNone(self.app.cache_get("links:masha", 3600))
+        _, body = self.c.get("/apps")
+        self.assertIn("Разошлите новый QR / файл v2rayN", body)
+
     def test_user_page_offers_v2rayn_file(self):
         with mock.patch("zoolib.qr.svg", return_value="<svg></svg>"):
             resp, body = self.c.get("/users/masha")
         self.assertEqual(resp.status, 200)
-        self.assertIn("Импорт правил из файла", body)
+        self.assertIn("v2rayN → Маршрутизация → Импорт из файла", body)
         self.assertIn('href="/apps?user=masha"', body)
-        idx = [m for m in re.findall(r'href="/users/masha/file/(\d+)"', body)]
+        idx = [m for m in re.findall(r'href="/users/masha/file/([\w.-]+)"', body)]
         downloads = {}
         for i in idx:
             resp, data = self.c.get(f"/users/masha/file/{i}")
             self.assertEqual(resp.status, 200)
-            downloads[header(resp, "Content-Disposition")[0]] = data
-        name = 'attachment; filename="masha-v2rayn-routing.json"'
+            downloads[header(resp, "Content-Disposition")[0].split(";")[1].strip()] = data
+        name = 'filename="masha-v2rayn-routing.json"'
         self.assertIn(name, downloads)
         self.assertEqual(json.loads(downloads[name])[3]["process"], ["brave.exe", "Telegram.exe"])
 

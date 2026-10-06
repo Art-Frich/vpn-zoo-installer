@@ -41,25 +41,29 @@ def _cpu_times() -> tuple[int, int]:
     return idle, sum(values[:8])
 
 
-_cpu_last: tuple[float, float, float] | None = None   # (monotonic, idle, total) прошлого замера
+_cpu_last: tuple[float, float, float, float] | None = None   # (monotonic, idle, total, %) прошлого замера
 
 
 def cpu_percent(interval: float = 0.2) -> float:
     """Загрузка CPU. В долгоживущем процессе (веб-админка) — по разнице с прошлым замером,
-    без сна; первый замер (и CLI) — с паузой interval."""
+    без сна; слишком частые запросы (< 0.5 с) получают прошлое значение. Первый замер
+    (и CLI) — с паузой interval."""
     global _cpu_last
     now = time.monotonic()
+    if _cpu_last and now - _cpu_last[0] < 0.5:
+        return _cpu_last[3]
     idle2, total2 = _cpu_times()
-    if _cpu_last and now - _cpu_last[0] >= 0.5:
-        _, idle1, total1 = _cpu_last
+    if _cpu_last:
+        _, idle1, total1, _ = _cpu_last
     else:
         idle1, total1 = idle2, total2
         time.sleep(interval)
         idle2, total2 = _cpu_times()
         now = time.monotonic()
-    _cpu_last = (now, idle2, total2)
     dt = total2 - total1
-    return round(100.0 * (1 - (idle2 - idle1) / dt), 1) if dt > 0 else 0.0
+    pct = round(100.0 * (1 - (idle2 - idle1) / dt), 1) if dt > 0 else 0.0
+    _cpu_last = (now, idle2, total2, pct)
+    return pct
 
 
 def meminfo() -> dict[str, int]:
@@ -290,8 +294,23 @@ def cert_expiry(path: str | Path) -> datetime | None:
         return None
 
 
+_cert_cache: dict[tuple[str, float], datetime | None] = {}
+
+
 def cert_info(path: str | Path) -> dict[str, Any]:
-    exp = cert_expiry(path)
+    """notAfter меняется только вместе с файлом: openssl (≈20 мс) — раз на (путь, mtime)."""
+    try:
+        key: tuple[str, float] | None = (str(path), os.stat(path).st_mtime)
+    except OSError:
+        key = None
+    if key is not None and key in _cert_cache:
+        exp = _cert_cache[key]
+    else:
+        exp = cert_expiry(path)
+        if key is not None:
+            if len(_cert_cache) > 64:
+                _cert_cache.clear()
+            _cert_cache[key] = exp
     days = None
     if exp:
         days = int((exp - datetime.now(timezone.utc)).total_seconds() // 86400)

@@ -144,7 +144,7 @@ research/YYYY-MM-DD/          исследования
 - `zoo export-probe` — пакет для клиентского пробника (креды `zoo-probe` + итог последней самопроверки).
 - `zoo probe --rank [--tag X] [--period 30d] [--by context|tag|isp|device|net] [--with-local]` — «лучшие протоколы» по истории проб (§7.1).
 - `zoo history add FILE… [--tag] [--device]` | `list` | `export [--recipients FILE|--no-raw] [--out DIR|--tar] [--since 30d]` — история проб: запись клиентских отчётов, журнал, выгрузка для `history/` в репо (анонимный jsonl + сырые отчёты под age).
-- `zoo web` — веб-админка на `127.0.0.1:$ZOO_WEB_PORT` с токеном; доступ через `ssh -L`.
+- `zoo web [--info|--link|--new-token]` — веб-админка на `127.0.0.1:$ZOO_WEB_PORT`; вход по токену или одноразовой ссылке, сессии — `/var/lib/vpn-zoo/web-sessions.json` (D38); доступ через `ssh -L`.
 - `zoo upgrade [--apply] [--pull]`/`zoo smoke` — обновление закреплённых версий с проверкой до и после; `zoo version --all` — версии компонентов и пины.
 - Коллектор трафика — `zoo-collector.timer` (каждые 5 минут, `zoo traffic --collect`, затем `ExecStartPost` — `zoo journal --collect`: сбой журнала атак трафик не ломает) под песочницей systemd; админка — `zoo-web.service` (страницы, среди них «Атаки»). Юниты — `zoo/systemd/`, ставит фаза 09.
 

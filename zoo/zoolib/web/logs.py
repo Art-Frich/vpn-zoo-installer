@@ -13,6 +13,8 @@ MASK = "•••"
 SECRET_KEY_RE = re.compile(r"(PASS|SECRET|TOKEN|KEY|PSK|UUID|PRIV|SALT|AUTH|PIN|SHORT_?ID|_SID$|_USER$|SUB_?PATH|PANEL_PATH)",
                            re.I)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# QR из блочных символов (qrencode -t UTF8 в журнале установки): три строки подряд — уже ключ доступа
+_QR_RE = re.compile(r"(?:^(?=[ █▀▄]*[█▀▄])[ █▀▄]+(?:\n|\Z)){3,}", re.M)  # без двух * подряд: линейно
 _PATTERNS = [
     # ссылки протоколов целиком: в них ключи и пароли
     (re.compile(r"\b(vless|vmess|trojan|ss|hysteria2|hy2|tuic|vpn|wireguard|awg)://[^\s\"'<>]+", re.I), r"\1://" + MASK),
@@ -33,6 +35,7 @@ def secret_values(cfg: Config) -> list[str]:
 
 def sanitize(text: str, cfg: Config | None = None) -> str:
     text = _ANSI_RE.sub("", text)
+    text = _QR_RE.sub("[QR скрыт]\n", text)
     for v in secret_values(cfg) if cfg else ():
         text = text.replace(v, MASK)
     for rx, repl in _PATTERNS:
