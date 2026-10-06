@@ -25,7 +25,9 @@ if TYPE_CHECKING:
 
 STEPS = ("Протоколы", "Клиенты", "Люди", "Раздача")
 LAYER = {"tcp": "TCP", "udp": "UDP", "tcp+udp": "TCP+UDP"}
-DEFAULT_PROTOS = ("vless-reality", "hysteria2", "amneziawg")
+# Полевой тест 05.10.2026 (находка 7): у VLESS+Vision новые соединения рвутся на части путей,
+# Hysteria2 и XHTTP устойчивы — основной Hysteria2, запасные XHTTP и AmneziaWG
+DEFAULT_PROTOS = ("hysteria2", "vless-xhttp", "amneziawg")
 # ориентиры из PLAN-builder и каталога клиентов, не замеры: на странице подписаны как ориентир
 TIPS = {
     "vless-reality": "TCP: подходит там, где режут UDP.",
@@ -202,6 +204,9 @@ def _protocols_block(facts: list[Fact], selected: list[str]) -> Markup:
         f = by_id[pid]
         chips = [t("span", f.layer, class_="chip") if f.layer else None, f.live_chip(), f.rank_chip()]
         tip = TIPS.get(pid)
+        extra = _variants(pid)
+        if extra:
+            tip = (tip + " " if tip else "") + "В той же учётке: " + ", ".join(extra) + "."
         items.append(t("label", t("input", type="checkbox", name="proto", value=pid, checked=pid in selected),
                        t("span", t("span", t("strong", f.title), " ",
                                    badge("основной", "info") if pid == first else None,
@@ -211,7 +216,28 @@ def _protocols_block(facts: list[Fact], selected: list[str]) -> Markup:
                        class_="opt"))
     if not items:
         return alert_list([("warn", "Нет включённых протоколов с пользователями.")])
+    for title, why in _not_selectable(set(by_id)):
+        items.append(t("div", t("span", t("span", t("strong", title), class_="opt-title"),
+                                t("span", why, class_="hint"), class_="opt-body"), class_="opt off"))
     return t("div", t("div", items, class_="opts"), t("p", TIPS_NOTE, class_="hint"))
+
+
+def _variants(pid: str) -> list[str]:
+    """Включённые варианты с общими учётками (hysteria2-obfs у hysteria2): выбираются вместе с ним."""
+    libs = set(protolib.list_libs())
+    return [m.short for m in manifests.load_all()[0]
+            if m.enabled and m.id != pid and users.shared_module(m, libs) == pid]
+
+
+def _not_selectable(shown: set[str]) -> list[tuple[str, str]]:
+    """Протоколы сервера, которых нет среди выбираемых: выключенные — серой строкой, чтобы были видны все."""
+    libs = set(protolib.list_libs())
+    out = []
+    for m in manifests.load_all()[0]:
+        if m.id in shown or (m.enabled and users.shared_module(m, libs)):
+            continue
+        out.append((m.short, "выключен на сервере — включается на «Обзоре»" if not m.enabled else "без учёток пользователей"))
+    return out
 
 
 # ---------- клиенты (шаг 2) ----------
