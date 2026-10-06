@@ -1,6 +1,6 @@
 """Объём данных zoo: разделы, общий бюджет, чистка по лимиту (docs/PLAN-admin.md §13).
 
-Разделы: трафик, журнал атак, история проб, логи установки, live-замеры (пока заглушка).
+Разделы: трафик, журнал атак, история проб (в ней же таблица live), логи установки.
 Бюджет — `ZOO_DATA_LIMIT` в config.env (по умолчанию 1 ГБ, но не больше 5 % диска), у каждого
 раздела своя доля. Чистка начинается, только когда превышен общий бюджет: режется раздел,
 который сильнее всех вылез за свою долю, самые старые записи (у трафика и журнала сначала
@@ -33,7 +33,7 @@ MIN_LIMIT = 16 << 20        # меньше — чистка съест всё п
 MAX_DISK_SHARE = 0.05       # умолчание не больше 5 % диска
 LOW_DISK = 0.10             # меньше свободного — тревога
 HYSTERESIS = 0.9            # режем до 90 % бюджета, чтобы не чистить каждые 5 минут
-SHARES = {"traffic": 30, "journal": 30, "probe": 25, "live": 5, "logs": 10}
+SHARES = {"traffic": 30, "journal": 30, "probe": 30, "logs": 10}
 JOURNALD_DIRS = ("/var/log/journal", "/run/log/journal")
 STATE_FILE = "storage.json"
 KEEP_TRIMS = 7 * 86400
@@ -90,7 +90,7 @@ def _size(path: Path) -> int:
 class Section:
     id = ""
     title = ""
-    available = True        # False — раздела ещё нет (live-замеры): не режем и не очищаем
+    available = True        # False — раздела нет: не режем и не очищаем
     lock_name: str | None = None
 
     @property
@@ -126,7 +126,7 @@ class SqliteSection(Section):
     то, что можно потерять без вреда (детальные разрешения), последним — самое долгоживущее."""
 
     def __init__(self, id_: str, title: str, db: Callable[[], Path], connect: Callable[..., Any],
-                 lock_name: str | None, oldest_sql: str, rows_sql: str, steps: list[tuple[str, tuple]]):
+                 lock_name: str | None, oldest_sql: str, rows_sql: str | tuple[str, ...], steps: list[tuple[str, tuple]]):
         self.id, self.title, self.lock_name = id_, title, lock_name
         self._db, self._connect = db, connect
         self._oldest_sql, self._rows_sql, self._steps = oldest_sql, rows_sql, steps
@@ -155,7 +155,8 @@ class SqliteSection(Section):
         return int(v) if v else None
 
     def rows(self) -> int:
-        return int(self._query(self._rows_sql) or 0)
+        sqls = (self._rows_sql,) if isinstance(self._rows_sql, str) else self._rows_sql
+        return sum(int(self._query(q) or 0) for q in sqls)    # нет таблицы (старая база) — 0
 
     def delete_oldest(self, n: int) -> int:
         con = self._connect(create=False)
@@ -167,7 +168,11 @@ class SqliteSection(Section):
                 for sql, params in self._steps:
                     if done >= n:
                         break
-                    done += con.execute(sql, (*params, n - done)).rowcount
+                    try:
+                        done += con.execute(sql, (*params, n - done)).rowcount
+                    except sqlite3.OperationalError as e:
+                        if "no such table" not in str(e):
+                            raise
         finally:
             con.close()
         return done
@@ -218,15 +223,6 @@ class LogsSection(Section):
         return done
 
 
-class LiveSection(Section):
-    """Live-замеры (BACKLOG п. 1) ещё не ведутся: долю держим, файла нет."""
-    id, title = "live", "Live-замеры"
-    available = False
-
-    def files(self) -> list[Path]:
-        return [paths.state_dir() / "live.sqlite"]
-
-
 def sections() -> list[Section]:
     steps_t = [("DELETE FROM traffic WHERE rowid IN (SELECT rowid FROM traffic WHERE res = ? "
                 "ORDER BY ts LIMIT ?)", (res,)) for res in traffic.RESOLUTIONS]
@@ -240,9 +236,11 @@ def sections() -> list[Section]:
                       "SELECT MIN(ts) FROM hits",
                       "SELECT (SELECT COUNT(*) FROM hits) + (SELECT COUNT(*) FROM ips)", steps_j),
         SqliteSection("probe", "История проб", history.db_path, history.connect, None,
-                      "SELECT MIN(ts) FROM reports", "SELECT COUNT(*) FROM reports",
-                      [("DELETE FROM reports WHERE id IN (SELECT id FROM reports ORDER BY ts LIMIT ?)", ())]),
-        LiveSection(),
+                      "SELECT MIN(ts) FROM reports",
+                      ("SELECT COUNT(*) FROM reports", "SELECT COUNT(*) FROM live"),
+                      # live — таблица той же базы (D41): дешевле всего терять её, отчёты — после
+                      [("DELETE FROM live WHERE rowid IN (SELECT rowid FROM live ORDER BY ts LIMIT ?)", ()),
+                       ("DELETE FROM reports WHERE id IN (SELECT id FROM reports ORDER BY ts LIMIT ?)", ())]),
         LogsSection(),
     ]
 
@@ -265,14 +263,16 @@ def disk(path: Path | None = None) -> dict[str, int] | None:
 
 
 def budget(cfg: Config) -> dict[str, Any]:
-    """{limit, configured, capped}: заданный лимит как есть, умолчание — не больше 5 % диска."""
+    """{limit, configured, capped, too_small}: заданный лимит как есть, умолчание — не больше 5 % диска.
+    Заданный меньше MIN_LIMIT не принимается (чистка съела бы всё полезное): берём умолчание."""
     configured = parse_size(cfg.get(LIMIT_KEY))
-    if configured:
-        return {"limit": configured, "configured": True, "capped": False}
+    too_small = bool(configured) and configured < MIN_LIMIT
+    if configured and not too_small:
+        return {"limit": configured, "configured": True, "capped": False, "too_small": False}
     d = disk()
     cap = int(d["total"] * MAX_DISK_SHARE) if d else None
     limit = min(DEFAULT_LIMIT, cap) if cap else DEFAULT_LIMIT
-    return {"limit": limit, "configured": False, "capped": limit < DEFAULT_LIMIT}
+    return {"limit": limit, "configured": False, "capped": limit < DEFAULT_LIMIT, "too_small": too_small}
 
 
 def outside() -> list[dict[str, Any]]:
@@ -329,6 +329,9 @@ def report(cfg: Config, with_oldest: bool = True) -> dict[str, Any]:
 def alerts(cfg: Config, now: float | None = None) -> list[tuple[str, str]]:
     now = time.time() if now is None else now
     out: list[tuple[str, str]] = []
+    if budget(cfg)["too_small"]:
+        out.append(("warn", f"{LIMIT_KEY}={cfg.get(LIMIT_KEY)} меньше {output.human_bytes(MIN_LIMIT)} — "
+                            f"не применён, действует умолчание ({output.human_bytes(budget(cfg)['limit'])})"))
     d = disk()
     if d and d["total"] and d["free"] / d["total"] < LOW_DISK:
         pct = d["free"] / d["total"] * 100
