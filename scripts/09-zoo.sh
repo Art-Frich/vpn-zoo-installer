@@ -6,6 +6,7 @@
 #   /opt/vpn-zoo/INSTALL.json                когда и из какого коммита поставлено
 #   /usr/local/bin/zoo                       симлинк на /opt/vpn-zoo/zoo/zoo
 #   /etc/vpn-setup/users.json                реестр пользователей с owner (zoo setup)
+#   /etc/vpn-setup/groups.json               группы: «Основная» со всеми пользователями (zoo setup)
 #   /var/lib/vpn-zoo                         данные zoo: traffic.sqlite (история трафика),
 #                                            probe-history.sqlite (история проб)
 #   /usr/local/lib/vpn-zoo/bin/age           закреплённый age (AGE_* в versions.env): шифрует сырые

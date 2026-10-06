@@ -1333,7 +1333,7 @@ class LiveTest(AppTestBase):
     def test_partial_navigation_contract(self):
         # ссылки и формы с data-swap — без перезагрузки: прокрутка и фокус остаются, без дёрганий вёрстки
         for needle in ("a[data-swap]", "nav.seg a", "form[data-draft]", "hasAttribute('data-swap')",
-                       "window.scrollTo(0, y)", "new URLSearchParams(new FormData(f))", "getAttribute('action')"):
+                       "window.scrollTo(0, y)", "new URLSearchParams(fd)", "getAttribute('action')"):
             self.assertIn(needle, assets.JS)
         self.assertIn("scrollbar-gutter: stable", assets.CSS)
         self.assertNotRegex(assets.JS, r"\.style\.|setAttribute\('style'|on(click|change|submit)=")

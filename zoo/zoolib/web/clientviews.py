@@ -178,11 +178,19 @@ def _tile_title(cat: clients.Catalog, mans: list[Any], proto: str) -> str:
     return (m.name if m else cat.protocols[proto]["title"]).partition(" (")[0]
 
 
+def _client_for(cat: clients.Catalog, platform: str, proto: str, prefer: dict[str, str] | None) -> dict[str, Any] | None:
+    """Клиент, выбранный в группе для платформы (если он умеет этот протокол), иначе рекомендованный."""
+    c = cat.client(prefer.get(platform, "")) if prefer else None
+    if c and platform in c["platforms"] and c["protocols"].get(proto, {}).get("s") in ("ok", "warn"):
+        return c
+    return cat.recommended(platform, proto)
+
+
 def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links: list[protolib.Link],
-               mans: list[Any]) -> Pack | None:
+               mans: list[Any], prefer: dict[str, str] | None = None) -> Pack | None:
     have = {ln.proto_id for ln in links}
     for proto in cat.raw["handoff"].get(platform, []):
-        c = cat.recommended(platform, proto) if proto in have else None
+        c = _client_for(cat, platform, proto, prefer) if proto in have else None
         method = pick_method(proto, c, platform, links) if c else None
         if not c or not method:
             continue
@@ -207,8 +215,10 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     return None
 
 
-def handoff_card(links: list[protolib.Link]) -> Markup | None:
-    """«Что отправить»: по платформе — клиент (ссылка, версия), что прислать, одно сообщение."""
+def handoff_card(links: list[protolib.Link], prefer: dict[str, str] | None = None, uid: str = "",
+                 heading: str = "Что отправить") -> Markup | None:
+    """«Что отправить»: по платформе — клиент (ссылка, версия), что прислать, одно сообщение.
+    prefer — клиенты группы по платформам; uid — приставка id полей, если на странице несколько пакетов."""
     if not links:
         return None
     try:
@@ -220,11 +230,11 @@ def handoff_card(links: list[protolib.Link]) -> Markup | None:
     blocks: dict[bool, list[Markup]] = {True: [], False: []}
     unverified = False
     for plat in cat.platforms:
-        pack = build_pack(cat, cache, plat, links, mans)
+        pack = build_pack(cat, cache, plat, links, mans, prefer)
         if pack is None:
             continue
         unverified = unverified or not pack.client["verified"]["device"]
-        mid = f"msg-{plat}"
+        mid = f"msg-{uid}{plat}"
         title = [pack.platform_title, " · ", t("strong", pack.client["name"]),
                  t("span", f" {pack.version}", class_="muted") if pack.version else None]
         blocks[plat in MAIN_PLATFORMS].append(t(
@@ -238,6 +248,6 @@ def handoff_card(links: list[protolib.Link]) -> Markup | None:
     if not blocks[True] and not blocks[False]:
         return None
     other = t("details", t("summary", "Другие платформы"), blocks[False], class_="more") if blocks[False] else None
-    return card("Что отправить", blocks[True], other, t("p", SEND_WARN, class_="hint"),
+    return card(heading, blocks[True], other, t("p", SEND_WARN, class_="hint"),
                 t("p", UNVERIFIED, class_="hint") if unverified else None,
                 help="Сообщение — только инструкция, без ключей. Сами QR, ссылки и файлы — в плитках выше.")

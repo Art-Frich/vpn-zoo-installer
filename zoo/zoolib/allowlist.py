@@ -9,6 +9,9 @@
      "windows": ["brave.exe", ...],              процессы Windows → правила v2rayN
                                                   clients/<имя>/v2rayn-routing.json
      "users": {"masha": {"android": [...]}},     свой список пользователя (вместо общего)
+     "groups": {"main": {"android": [...]}},     списки групп со своим списком (groups.json — источник,
+     "members": {"masha": "main"},               здесь зеркало для lib.sh: её читает только allowlist.json);
+                                                  порядок: свой список → список группы → общий
      "titles": {"com.example.app": "Название"}}  названия своих приложений (не из каталога), только для админки
 
 Пока реестра нет, действует пресет scripts/allowlist-default.json (его же читает lib.sh).
@@ -122,6 +125,8 @@ class Allowlist:
     users: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     exists: bool = False
     titles: dict[str, str] = field(default_factory=dict)  # id в нижнем регистре → название
+    groups: dict[str, dict[str, list[str]]] = field(default_factory=dict)  # зеркало groups.json
+    members: dict[str, str] = field(default_factory=dict)  # пользователь → id группы со своим списком
 
     @classmethod
     def load(cls) -> "Allowlist":
@@ -147,23 +152,36 @@ class Allowlist:
         raw_titles = data.get("titles")
         titles = {k.lower(): clean_title(v) for k, v in (raw_titles.items() if isinstance(raw_titles, dict) else ())
                   if isinstance(k, str) and isinstance(v, str) and clean_title(v)}
+        raw_groups = data.get("groups")
+        groups = {str(g): {p: _clean(o[p], p) for p in PLATFORMS if isinstance(o.get(p), list)}
+                  for g, o in (raw_groups.items() if isinstance(raw_groups, dict) else ()) if isinstance(o, dict)}
+        raw_members = data.get("members")
+        members = {str(u): g for u, g in (raw_members.items() if isinstance(raw_members, dict) else ())
+                   if isinstance(g, str)}
         return cls(path, _clean(data.get("android"), "android"), _clean(data.get("windows"), "windows"),
-                   users, True, titles)
+                   users, True, titles, groups, members)
 
     def save(self) -> None:
         data: dict[str, Any] = {"schema": SCHEMA, "android": self.android, "windows": self.windows,
                                 "users": self.users}
         if self.titles:
             data["titles"] = self.titles
+        if self.groups:
+            data["groups"], data["members"] = self.groups, self.members
         atomic_write_json(self.path, data)
         self.exists = True
 
     def common(self, platform: str) -> list[str]:
         return getattr(self, platform)
 
+    def baseline(self, platform: str, user: str | None = None) -> list[str]:
+        """Список без своего: у пользователя в группе со своим списком — список группы, иначе общий."""
+        grp = self.groups.get(self.members.get(user or "", ""), {}).get(platform)
+        return list(grp if grp is not None else self.common(platform))
+
     def effective(self, platform: str, user: str | None = None) -> list[str]:
         own = self.users.get(user or "", {}).get(platform)
-        return list(own if own is not None else self.common(platform))
+        return list(own if own is not None else self.baseline(platform, user))
 
     def own(self, user: str) -> bool:
         return user in self.users
@@ -322,7 +340,7 @@ def set_lists(lists: dict[str, list[str]], user: str | None = None, titles: dict
             merged = [x for x in cur if x.lower() in want] + [x for x in new[p] if x.lower() not in have]
             if user is None:
                 setattr(al, p, merged)
-            elif want == {x.lower() for x in al.common(p)}:
+            elif want == {x.lower() for x in al.baseline(p, user)}:
                 al.users.get(user, {}).pop(p, None)
             else:
                 al.users.setdefault(user, {})[p] = merged
@@ -447,7 +465,8 @@ def forget_user(name: str) -> None:
     """Удаление пользователя (под блокировкой users): свой список и файл v2rayN."""
     try:
         al = Allowlist.load()
-        if al.users.pop(name, None) is not None:
+        gone = [al.users.pop(name, None) is not None, al.members.pop(name, None) is not None]
+        if any(gone):
             al.save()
     except AllowlistError:
         pass

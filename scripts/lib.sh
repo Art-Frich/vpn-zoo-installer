@@ -388,10 +388,10 @@ zoo_client_file_del() {
 ALLOWLIST_FILE="${ALLOWLIST_FILE:-$VPN_ETC/allowlist.json}"
 ALLOWLIST_DEFAULT="${ALLOWLIST_DEFAULT:-$SCRIPTS_DIR/allowlist-default.json}"
 
-# zoo_allowlist android|windows [ИМЯ] — список через «, »: свой список пользователя или
-# общий. Пусто — список пуст (вариант конфига не строится). Невалидные id отбрасываются:
-# строка уходит в .conf как есть. Якоря \A…\z: «$» в jq (Oniguruma) пропускает
-# завершающий перевод строки. Разбор тот же, что Allowlist.load в zoolib/allowlist.py
+# zoo_allowlist android|windows [ИМЯ] — список через «, »: свой список пользователя, затем
+# список его группы (зеркало groups/members в allowlist.json), затем общий. Пусто — список
+# пуст (вариант конфига не строится). Невалидные id отбрасываются: строка уходит в .conf как
+# есть. Якоря \A…\z: «$» в jq (Oniguruma) пропускает завершающий перевод строки. Разбор тот же, что Allowlist.load в zoolib/allowlist.py
 zoo_allowlist() {
     local plat="${1:-}" user="${2:-}" src="$ALLOWLIST_FILE" re
     case "$plat" in
@@ -404,7 +404,10 @@ zoo_allowlist() {
     jq -r --arg p "$plat" --arg u "$user" --arg re "$re" '
         def obj: if type == "object" then . else {} end;
         def arr: if type == "array" then . else null end;
-        (obj | .users | obj | .[$u] | obj | .[$p] | arr) // (obj | .[$p] | arr) // []
+        (obj | .members | obj | .[$u] | if type == "string" then . else "" end) as $g
+        | (obj | .users | obj | .[$u] | obj | .[$p] | arr)
+          // (obj | .groups | obj | .[$g] | obj | .[$p] | arr)
+          // (obj | .[$p] | arr) // []
         | map(select(type == "string" and test($re)))
         | reduce .[] as $x ([]; if index([$x]) then . else . + [$x] end) | join(", ")' "$src"
 }

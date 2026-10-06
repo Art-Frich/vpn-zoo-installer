@@ -36,6 +36,11 @@ def users_file() -> Path:
     return _env_path("ZOO_USERS_FILE", etc() / "users.json")
 
 
+def groups_file() -> Path:
+    """Группы пользователей (zoo group): рядом с users.json."""
+    return _env_path("ZOO_GROUPS_FILE", users_file().with_name("groups.json"))
+
+
 def clients_dir() -> Path:
     """Файлы пользователей: /etc/vpn-setup/clients/<name>/ (.conf AWG и т. п.)."""
     return _env_path("ZOO_CLIENTS_DIR", etc() / "clients")

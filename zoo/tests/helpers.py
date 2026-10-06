@@ -109,8 +109,8 @@ def manifest(pid: str, **kw) -> dict:
 class ZooEnv:
     """Временное окружение zoo. Использование: with ZooEnv() as env: ..."""
 
-    ENV_KEYS = ("VPN_ETC", "CONFIG_FILE", "MANIFEST_DIR", "PORTS_FILE", "ZOO_USERS_FILE", "ZOO_CLIENTS_DIR",
-                "ZOO_PROBE_EXPORT", "XUI_HDR_FILE", "ZOO_HOME", "ZOO_STATE_DIR", "ZOO_LOCK_FILE",
+    ENV_KEYS = ("VPN_ETC", "CONFIG_FILE", "MANIFEST_DIR", "PORTS_FILE", "ZOO_USERS_FILE", "ZOO_GROUPS_FILE",
+                "ZOO_CLIENTS_DIR", "ZOO_PROBE_EXPORT", "XUI_HDR_FILE", "ZOO_HOME", "ZOO_STATE_DIR", "ZOO_LOCK_FILE",
                 "ZOO_SCRIPTS_DIR", "FAKE_STATE", "FAKE_FAIL", "FAKE_SLOW", "FAKE_HALF", "ZOO_BASH",
                 "ZOO_PROBE_KEEP_DAYS")
 
@@ -133,7 +133,8 @@ class ZooEnv:
         env = {
             "VPN_ETC": self.etc, "CONFIG_FILE": self.etc / "config.env",
             "MANIFEST_DIR": self.etc / "protocols.d", "PORTS_FILE": self.etc / "ports.tsv",
-            "ZOO_USERS_FILE": self.etc / "users.json", "ZOO_CLIENTS_DIR": self.etc / "clients",
+            "ZOO_USERS_FILE": self.etc / "users.json", "ZOO_GROUPS_FILE": self.etc / "groups.json",
+            "ZOO_CLIENTS_DIR": self.etc / "clients",
             "ZOO_PROBE_EXPORT": self.etc / "probe-export.json", "XUI_HDR_FILE": self.etc / "xui-auth.hdr",
             "ZOO_HOME": self.root / "opt", "ZOO_STATE_DIR": self.root / "state",
             "ZOO_LOCK_FILE": self.root / "state" / "zoo.lock", "ZOO_SCRIPTS_DIR": self.scripts,
