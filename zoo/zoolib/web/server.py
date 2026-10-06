@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import ipaddress
 import socket
 import sys
@@ -12,6 +13,8 @@ from .app import App, Request, Response, text
 from .auth import parse_cookies
 
 MAX_BODY = 5 * 1024 * 1024
+GZIP_MIN = 1000  # короче — выигрыш меньше заголовков
+GZIP_LEVEL = 5
 
 
 def is_loopback(host: str) -> bool:
@@ -23,7 +26,8 @@ def is_loopback(host: str) -> bool:
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "zoo-web"
-    timeout = 60
+    protocol_version = "HTTP/1.1"  # keep-alive: через ssh-туннель каждое новое соединение — лишний RTT
+    timeout = 15
     app: App  # задаётся в make_server
 
     def version_string(self) -> str:
@@ -55,11 +59,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            return text("неверный Content-Length", 400)
+            return _closing(text("неверный Content-Length", 400))
         if length < 0:  # read(-1) читал бы до закрытия соединения без предела
-            return text("неверный Content-Length", 400)
+            return _closing(text("неверный Content-Length", 400))
         if length > MAX_BODY:
-            return text("слишком большой запрос", 413)
+            return _closing(text("слишком большой запрос", 413))
         ctype = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         body = self.rfile.read(length) if length else b""
         if body and ctype != "application/x-www-form-urlencoded":
@@ -69,16 +73,32 @@ class Handler(BaseHTTPRequestHandler):
         req.form = {k: v[-1] for k, v in multi.items()}
         return None
 
+    def _accepts_gzip(self) -> bool:
+        for part in (self.headers.get("Accept-Encoding") or "").split(","):
+            name, _, q = part.strip().partition(";")
+            if name.strip().lower() == "gzip":
+                return q.replace(" ", "").lower() not in ("q=0", "q=0.0", "q=0.00", "q=0.000")
+        return False
+
     def _send(self, resp: Response, head: bool = False) -> None:
+        body, headers = resp.body, list(resp.headers)
+        ctype = resp.content_type.split(";", 1)[0].strip().lower()
+        compressible = ctype.startswith("text/") or "javascript" in ctype or ctype == "image/svg+xml"
+        if compressible and (len(body) > GZIP_MIN or resp.gz is not None):
+            headers.append(("Vary", "Accept-Encoding"))
+            if self._accepts_gzip():
+                body = resp.gz if resp.gz is not None else gzip.compress(body, GZIP_LEVEL, mtime=0)
+                headers.append(("Content-Encoding", "gzip"))
         self.send_response(resp.status)
-        self.send_header("Content-Type", resp.content_type)
-        self.send_header("Content-Length", str(len(resp.body)))
-        for k, v in resp.headers:
+        if resp.status != 304:  # 304 без тела и без длины: клиент берёт своё
+            self.send_header("Content-Type", resp.content_type)
+            self.send_header("Content-Length", str(len(body)))
+        for k, v in headers:
             self.send_header(k, v)
         self.end_headers()
-        if not head and resp.body:
+        if not head and body and resp.status != 304:
             try:
-                self.wfile.write(resp.body)
+                self.wfile.write(body)
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
@@ -91,6 +111,12 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/static/") or path == "/healthz":
             return
         sys.stderr.write(f"zoo-web: {self.command} {path} {code}\n")
+
+
+def _closing(resp: Response) -> Response:
+    """Тело запроса не прочитано: следующий запрос в этом соединении разобрать нельзя."""
+    resp.headers.append(("Connection", "close"))
+    return resp
 
 
 class Server(ThreadingHTTPServer):

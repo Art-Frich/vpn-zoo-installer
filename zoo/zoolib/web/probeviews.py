@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from .. import probe as probe_mod
 from ..probe import history, rank
 from . import charts
-from .html import Markup, badge, card, t, table
+from .html import Markup, badge, card, empty, t, table
 
 if TYPE_CHECKING:
     from .app import Request
@@ -51,11 +51,13 @@ def _num(v: float | None, fmt: str, unit: str = "") -> str:
 
 
 def best_card(ranking: list[dict[str, Any]], period: str) -> Markup:
+    help_ = t("p", "Из накопленных клиентских проб, отдельно по условиям (метка пробы, без неё — провайдер): "
+                   "мобильная сеть и домашний Wi-Fi не смешиваются. Оценка = 100 × успех × (0,6 × скорость к "
+                   "лучшей + 0,4 × лучшая задержка к своей) — сравнима только внутри блока. Пробы на устройство: ",
+              t("code", "zoo-probe --tag mobile-mts --device pixel7"), "; отчёт ", t("code", "probe/probe-report.json"),
+              " вставьте в форму ниже или отправьте командой ", t("code", "scripts/history.sh push"), ".")
     if not ranking:
-        body: list[Any] = [t("p", "Пока нет клиентских проб в истории. Запустите пробник на устройстве, из той сети, "
-                                  "которая важна, с метками: ", t("code", "zoo-probe --tag mobile-mts --device pixel7"),
-                             "; отчёт ", t("code", "probe/probe-report.json"), " вставьте в форму ниже или "
-                             "отправьте командой ", t("code", "scripts/history.sh push"), ".", class_="muted")]
+        body: list[Any] = [empty("Нет клиентских проб", t("code", "zoo-probe --tag mobile-mts --device pixel7"))]
     else:
         body = []
         for c in ranking:
@@ -70,12 +72,8 @@ def best_card(ranking: list[dict[str, Any]], period: str) -> Markup:
             body += [t("h3", c["context"], t("span", f" · прогонов: {c['reports']}" + (f" · {sub}" if sub else ""),
                                               class_="sub")),
                      table(["место", "протокол", "оценка", "успех", "задержка", "скорость", "данных"], rows,
-                           num=[2, 4, 5])]
-    return card("Лучшие протоколы",
-                t("p", "Из накопленных клиентских проб, отдельно по условиям (метка пробы, без неё — провайдер): "
-                       "мобильная сеть и домашний Wi-Fi не смешиваются. Оценка = 100 × успех × (0,6 × скорость к "
-                       "лучшей + 0,4 × лучшая задержка к своей) — сравнима только внутри блока.", class_="hint"),
-                *body, extra=_period_nav(period))
+                           num=[2, 4, 5], stack=True)]
+    return card("Лучшие протоколы", *body, extra=_period_nav(period), help=help_)
 
 
 def trends_card(rows: list[dict[str, Any]]) -> Markup:
@@ -96,10 +94,10 @@ def trends_card(rows: list[dict[str, Any]]) -> Markup:
                     _num(speeds[len(speeds) // 2] if speeds else None, ".1f", " Мбит/с"), spark,
                     t("span", [_verdict_badge(r["verdict"]) for r in rs[-6:]], class_="small")])
     return card("Тренды по протоколам",
-                t("p", "Все клиентские прогоны за период: медианы по удачным, столбики — скорость в каждом прогоне "
-                       "(слева старые), справа — последние вердикты.", class_="hint"),
                 table(["протокол", "прогонов", "успех", "задержка", "скорость", "динамика скорости", "последние"],
-                      out, num=[1, 3, 4], empty="нет данных"))
+                      out, num=[1, 3, 4], empty="нет данных", stack=True),
+                help="Все клиентские прогоны за период: медианы по удачным, столбики — скорость в каждом прогоне "
+                     "(слева старые), справа — последние вердикты.")
 
 
 def journal_card(con: Any, since: int | None) -> Markup:
@@ -115,11 +113,11 @@ def journal_card(con: Any, since: int | None) -> Markup:
                      badge(f"{r['working']}/{tested}", "ok" if tested and r["working"] == tested else "warn")])
     total = history.counts(con)["reports"] if con else 0
     return card("История прогонов",
-                t("p", f"Записано прогонов: {total}. Прогоны сервера и присланные клиентские отчёты хранятся в ",
-                  t("code", str(history.db_path())), "; выгрузка в репозиторий — ", t("code", "zoo history export"),
-                  " (README, «История проб»).", class_="hint"),
                 table(["когда", "кто", "метка", "провайдер", "страна", "устройство", "сеть", "работает"], rows,
-                      empty="прогонов ещё нет"))
+                      empty="прогонов ещё нет", stack=True),
+                extra=t("span", str(total), class_="chip", title="записано прогонов"),
+                help=t("p", "Прогоны сервера и присланные клиентские отчёты хранятся в ", t("code", str(history.db_path())),
+                       "; выгрузка в репозиторий — ", t("code", "zoo history export"), " (README, «История проб»)."))
 
 
 def cards(req: "Request") -> list[Markup]:

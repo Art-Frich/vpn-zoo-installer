@@ -16,6 +16,7 @@ AmneziaWG у телефона владельца (роуминг WireGuard) и �
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -160,6 +161,11 @@ def shared_module(m: manifests.Manifest, libs: set[str]) -> str | None:
         if m.id.startswith(other + "-"):
             return other
     return None
+
+
+def users_module(m: manifests.Manifest, libs: set[str]) -> str:
+    """id, под которым пользователь записан в реестре: свой модуль или общий (hysteria2-obfs → hysteria2)."""
+    return m.id if m.id in libs else (shared_module(m, libs) or m.id)
 
 
 def managed_protocols(only: list[str] | None = None) -> tuple[list[str], dict[str, str]]:
@@ -552,19 +558,36 @@ def user_links(name: str, protocols: list[str] | None = None) -> tuple[list[prot
             # второй инстанс модуля (hysteria2-obfs): его ссылки отдаёт сам модуль
             protocols = [p for p in protocols
                          if not (p in by_id and p not in libs and shared_module(by_id[p], libs) in protocols)]
-    result: list[protolib.Link] = []
-    errors: dict[str, str] = {}
-    for pid in protocols:
+
+    def one(pid: str) -> tuple[list[protolib.Link], str]:
         try:
-            result += protolib.links(pid, name)
-            continue
+            return protolib.links(pid, name), ""
         except protolib.ProtoError as e:
             err = _err(e)
         m = by_id.get(pid)
         fallback = [protolib.Link(uri, "", pid) for uri in (m.links_for(name) if m else [])]
         fallback += [protolib.Link(f, "", pid, "file") for f in (m.files_for(name) if m else [])]
-        result += fallback
-        if not fallback:
+        return fallback, ("" if fallback else err)
+
+    # модули — отдельные bash-процессы (≈50 мс каждый): параллельно, порядок ссылок прежний.
+    # Первым — один Xray-модуль в одиночку: xui_hdr создаёт файл заголовка без блокировки,
+    # две параллельные первые попытки перетёрли бы друг друга
+    done: dict[str, tuple[list[protolib.Link], str]] = {}
+    first = next((p for p in protocols if by_id.get(p) is not None and by_id[p].users_backend == "xui"), None)
+    if first is not None:
+        done[first] = one(first)
+    rest = [p for p in protocols if p not in done]
+    if len(rest) > 1:
+        with ThreadPoolExecutor(max_workers=min(8, len(rest))) as pool:
+            done.update(zip(rest, pool.map(one, rest)))
+    else:
+        done.update((p, one(p)) for p in rest)
+    result: list[protolib.Link] = []
+    errors: dict[str, str] = {}
+    for pid in protocols:
+        found, err = done[pid]
+        result += found
+        if err:
             errors[pid] = err
     if protocols_arg is None or allowlist.V2RAYN_PROTO in protocols_arg:
         result += allowlist.links_for(name)

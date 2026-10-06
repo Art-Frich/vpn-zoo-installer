@@ -1,19 +1,22 @@
-"""Страницы админки: обзор, трафик, проверка, журнал, настройки, задачи.
-Пользователи — в userviews.py. Данные — те же функции zoolib, что у CLI."""
+"""Страницы админки: обзор, трафик, проверка, логи, настройки, задачи.
+Пользователи — в userviews.py. Данные — те же функции zoolib, что у CLI.
+
+Правило текста: на странице видна одна строка, пояснение — в «?» (card(help=)) или в title=."""
 
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import probe as probe_mod
-from .. import journal, paths, status, system, traffic, upgrade
+from .. import journal, manifests, paths, status, system, traffic, upgrade
 from ..output import human_bytes, human_duration
 from . import charts, logs, probeviews
-from .html import Markup, badge, card, csrf_input, join, kv, post_button, t, table
+from .html import Markup, badge, card, csrf_input, empty, join, kv, post_button, t, table
 from .jobs import Job, outside_sandbox, zoo_argv
 
 if TYPE_CHECKING:
@@ -21,6 +24,7 @@ if TYPE_CHECKING:
 
 REBOOT_FLAG = Path("/var/run/reboot-required")
 GEO_UNIT = "vpn-zoo-geo-update.service"
+COLLECT_ACTION = {"action": "collect"}
 
 
 # ---------- общие куски ----------
@@ -58,111 +62,165 @@ def fmt_time(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%d.%m.%Y %H:%M") if ts else "—"
 
 
-def alert_list(items: list[tuple[str, Any]]) -> Markup:
+def alert_list(items: list[tuple[Any, ...]]) -> Markup:
+    """(вид, текст) или (вид, текст, действия): действия — ссылки справа в строке тревоги."""
     icons = {"bad": "✕", "warn": "!", "ok": "✓", "info": "i"}
-    return t("ul", [t("li", t("span", icons.get(k, "!"), class_="ico"), t("span", msg), class_=k)
-                    for k, msg in items], class_="alerts")
+    return t("ul", [t("li", t("span", icons.get(it[0], "!"), class_="ico"), t("span", it[1], class_="msg"),
+                      t("span", it[2], class_="acts") if len(it) > 2 and it[2] else None, class_=it[0])
+                    for it in items], class_="alerts")
 
 
-def chart_block(ts: dict[str, Any], label: str, empty: str = "Нет данных за период", wide: bool = False) -> Markup:
+def chart_block(ts: dict[str, Any], label: str, empty_text: str = "Нет данных за период",
+                wide: bool = False) -> Markup:
     """График в карточке: wide — на всю ширину, иначе — в половину (свой viewBox, чтобы
     подписи осей были одного размера)."""
     if not ts["series"] or not any(sum(s["values"]) for s in ts["series"]):
-        return t("p", empty, class_="muted")
+        return empty(empty_text)
     width, height = (1100, 280) if wide else (560, 260)
     return join(charts.columns(ts["buckets"], ts["step"], ts["series"], label, width, height),
                 charts.legend(ts["series"]) if len(ts["series"]) > 1 else None)
 
 
 def status_data(app: "App") -> dict[str, Any]:
-    return app.cached("status", 5, lambda: status.collect(app.cfg(), cpu_interval=0.3))
+    """Метрики /proc — на каждый запрос (дёшево), остальное (юниты, сокеты, 3x-ui) — раз в минуту."""
+    slow = app.cached("status-slow", 60, lambda: status.collect_slow(app.cfg()))
+    return {**slow, "host": system.host_metrics(0.3)}
 
 
-def no_history_hint() -> Markup:
-    return t("p", "Истории трафика пока нет: коллектор снимает счётчики раз в 5 минут "
-                  "(zoo-collector.timer). Снять сейчас — в ", t("a", "настройках", href="/settings"), ".",
-             class_="muted")
+def no_history_hint(csrf: str = "") -> Markup:
+    return empty("Нет данных · сбор каждые 5 мин",
+                 post_button("/settings/action", "Снять сейчас", csrf, "btn small", COLLECT_ACTION) if csrf else None)
+
+
+def _tile(label: str, value: str, hint: str = "", extra: Any = None, title: str | None = None) -> Markup:
+    """Плитка-сетка: подпись, значение, место под полоску (занято всегда), подсказка — всё в одну строку."""
+    return t("div", t("div", label, class_="label", title=label), t("div", value, class_="value", title=value),
+             t("div", extra, class_="meter-slot"),
+             t("div", hint, class_="hint", title=title or hint or None), class_="tile")
 
 
 # ---------- обзор ----------
 
-def collect_alerts(st: dict[str, Any]) -> list[tuple[str, Any]]:
-    out: list[tuple[str, Any]] = []
+def _unit_name(name: str) -> str:
+    return name if "." in name else name + ".service"
+
+
+def restart_confirm(unit: str) -> str:
+    if unit.startswith("x-ui"):
+        return "x-ui держит VLESS и TUIC: соединения оборвутся на несколько секунд. Перезапустить?"
+    return f"Перезапустить {unit}?"
+
+
+def _down_units(st: dict[str, Any]) -> dict[str, str]:
+    """{имя из текста проблемы: юнит} для включённых и загруженных, но неактивных юнитов."""
+    down: dict[str, str] = {}
+    loaded = {u for u, s in st["services"].items() if s.get("load") == "loaded"}
+    for p in st["protocols"]:
+        if p["enabled"]:
+            for raw, state in p["services"].items():
+                if state != "active" and _unit_name(raw) in loaded:
+                    down[raw] = _unit_name(raw)
+    for u in (*status.BASE_UNITS, *status.ZOO_UNITS):
+        s = st["services"].get(u, {})
+        if u in loaded and s.get("active") != "active":
+            down[u] = u
+    return down
+
+
+def _unit_actions(unit: str, csrf: str) -> list[Markup]:
+    return [t("a", "журнал", href=f"/logs?src=unit:{unit}"),
+            post_button("/settings/action", "перезапустить", csrf, "", {"action": "restart", "unit": unit},
+                        confirm=restart_confirm(unit))]
+
+
+def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple[Any, ...]]:
+    out: list[tuple[Any, ...]] = []
+    down = _down_units(st)
+    seen: set[str] = set()
     for p in st["problems"]:
-        out.append(("warn" if p.startswith("сертификат") else "bad", p))
+        unit = next((u for name, u in down.items() if u not in seen
+                     and re.search(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])", p)), None)
+        if unit:
+            seen.add(unit)
+        out.append(("warn" if p.startswith("сертификат") else "bad", p, _unit_actions(unit, csrf) if unit else None))
     # таймер коллектора, его задержки и ошибки источников уже в problems (status.collect)
     for unit in status.ZOO_UNITS:
         s = st["services"].get(unit, {})
-        if unit == "zoo-collector.timer":
+        if unit == "zoo-collector.timer" or unit in seen:
             continue
         if s.get("load") == "loaded" and s.get("enabled") == "enabled" and s.get("active") != "active":
-            out.append(("bad", f"{unit} — {s.get('active')}"))
+            out.append(("bad", f"{unit} — {s.get('active')}", _unit_actions(unit, csrf)))
     if REBOOT_FLAG.exists():
         pkgs = ""
         try:
             names = Path(str(REBOOT_FLAG) + ".pkgs").read_text(encoding="utf-8").split()
-            pkgs = f" (обновлены: {', '.join(sorted(set(names))[:6])})" if names else ""
+            pkgs = ", ".join(sorted(set(names)))
         except OSError:
             pass
-        out.append(("warn", f"Нужна перезагрузка сервера{pkgs}"))
+        cfg = app.cfg()
+        if cfg.get("AUTO_REBOOT") == "1":
+            out.append(("info", t("span", f"Перезагрузится сам в {cfg.get('AUTO_REBOOT_TIME') or '04:00'}",
+                                  title=pkgs or None)))
+        else:
+            out.append(("warn", t("span", "Нужна перезагрузка сервера", title=pkgs or None)))
     if traffic.last_run() is None:
-        out.append(("warn", "Трафик ещё не собирался: zoo-collector.timer снимает счётчики раз в 5 минут, "
-                            "первое снятие — в течение 5 минут после установки"))
-    out += journal.alerts()
+        out.append(("warn", "Трафик ещё не собирался: первое снятие — в течение 5 минут после установки"))
+    out += app.cached("journal-alerts", 60, journal.alerts)
     return out
 
 
 def overview(app: "App", req: "Request") -> "Response":
+    csrf = req.session.csrf if req.session else ""
     st = status_data(app)
     host = st["host"]
     today_p = traffic.today("protocol")
     today_u = traffic.today("user")
     spark = {s["key"]: s["values"] for s in traffic.timeseries("24h", "protocol", top=50)["series"]}
 
-    alerts = collect_alerts(st) or [("ok", "Проблем не найдено")]
+    alerts = collect_alerts(app, st, csrf)
     mem, disk = host.get("mem") or {}, host.get("disk") or {}
     load = host.get("load")
     swap_used = (mem.get("swap_total") or 0) - (mem.get("swap_free") or 0)
+    active_users = sum(1 for v in today_u.values() if v)
     tiles = t("div",
-              _tile("CPU", f"{host.get('cpu_percent', '—')} %",
-                    f"ядер {host.get('cpu_count')} · load {' '.join(f'{x:.2f}' for x in load) if load else '—'}"),
-              _tile("Память", f"{human_bytes(mem.get('used'))}", f"из {human_bytes(mem.get('total'))}"
-                    + (f" · swap {human_bytes(swap_used)}" if mem.get("swap_total") else ""),
-                    charts.meter(mem.get("used") or 0, mem.get("total") or 0)),
-              _tile("Диск /", f"{human_bytes(disk.get('used'))}", f"свободно {human_bytes(disk.get('free'))}",
+              _tile("CPU", f"{host.get('cpu_percent', '—')} %", f"load {load[0]:.2f}" if load else "",
+                    title=f"ядер {host.get('cpu_count')} · load {' '.join(f'{x:.2f}' for x in load)}" if load else None),
+              _tile("Память", human_bytes(mem.get("used")), f"из {human_bytes(mem.get('total'))}",
+                    charts.meter(mem.get("used") or 0, mem.get("total") or 0),
+                    title=f"swap {human_bytes(swap_used)}" if mem.get("swap_total") else None),
+              _tile("Диск /", human_bytes(disk.get("used")), f"{human_bytes(disk.get('free'))} своб.",
                     charts.meter(disk.get("used") or 0, disk.get("total") or 0, 0.85, 0.95)),
-              _tile("Трафик сервера сегодня", human_bytes(today_p.get(traffic.HOST)), "приём + отдача"),
-              _tile("Пользователи сегодня", human_bytes(sum(today_u.values())),
-                    f"активных {sum(1 for v in today_u.values() if v)} из {st['users']['total']}"),
+              _tile("Трафик сегодня", human_bytes(today_p.get(traffic.HOST)), "сервер",
+                    title="интерфейс сервера: приём + отдача"),
+              _tile("Пользователи", human_bytes(sum(today_u.values())), f"{active_users}/{st['users']['total']} активны",
+                    title="трафик пользователей сегодня"),
               _tile("Аптайм", human_duration(host.get("uptime")),
-                    f"Xray {st['xray'].get('state') or '—'}" if st["xray"] else "API 3x-ui не опрашивался"),
+                    f"Xray {st['xray'].get('state') or '—'}" if st["xray"] else ""),
               class_="tiles")
 
-    cards = []
+    cards, off = [], []
     for i, p in enumerate(st["protocols"]):
         if not p["enabled"]:
-            state = badge("выключен", "muted")
-        else:
-            state = badge("работает", "ok") if p["ok"] else badge("сбой", "bad")
-        svc = [t("span", f"{u}: {s}", class_="chip") for u, s in p["services"].items()]
-        listen = [t("span", f"{p['port']}/{k}" + ("" if v else " — не слушает"), class_="chip")
-                  for k, v in p["listening"].items()]
-        # «Shadowsocks-2022 (2022-blake3-aes-128-gcm)» → заголовок «Shadowsocks-2022», уточнение — в строку ниже
+            off.append(p["id"])
+            continue
+        # «Shadowsocks-2022 (2022-blake3-aes-128-gcm)» → заголовок «Shadowsocks-2022», уточнение — в title
         name, _, detail = p["name"].partition(" (")
+        about = f"{p['id']} · {p['engine'] or '—'}" + (f" · {detail.rstrip(')')}" if detail else "")
+        problems = [t("span", f"{u}: {s}", class_="chip bad") for u, s in p["services"].items() if s != "active"]
+        problems += [t("span", f"{k} не слушает", class_="chip bad") for k, v in p["listening"].items() if not v]
         cards.append(card(
             name,
-            t("div", f"{p['id']} · {p['engine'] or '—'}" + (f" · {detail.rstrip(')')}" if detail else ""),
-              class_="meta"),
-            t("div", svc, listen, class_="chips"),
+            t("div", t("span", f"{p['port']}/{p['layer']}", class_="chip", title=about), problems, class_="chips"),
             t("div",
-              t("div", t("div", "сегодня", class_="muted small"),
-                t("div", human_bytes(today_p.get(p["id"], 0)), class_="num-big"),
+              t("div", t("div", human_bytes(today_p.get(p["id"], 0)), class_="num-big", title="сегодня"),
                 t("div", f"пользователей: {'—' if p['users'] is None else p['users']}", class_="muted small")),
               charts.sparkline(spark.get(p["id"], []), charts.series_class(i)),
               class_="row"),
-            cls="proto", extra=state))
-    protos = t("div", cards, class_="grid") if cards else t("p", "Манифестов протоколов нет: фазы 04–06 не "
-                                                                  "выполнены?", class_="muted")
+            cls="proto", extra=badge("работает", "ok") if p["ok"] else badge("сбой", "bad")))
+    if cards:
+        protos: Any = t("div", cards, class_="grid")
+    else:
+        protos = empty("Манифестов протоколов нет: фазы 04–06 не выполнены?") if not off else None
 
     top_users = sorted(today_u.items(), key=lambda kv_: -kv_[1])[:6]
     mx = max((v for _, v in top_users), default=0)
@@ -172,27 +230,22 @@ def overview(app: "App", req: "Request") -> "Response":
                              for n, v in top_users],
                             num=[1], empty="трафика сегодня ещё не было"),
                       extra=t("a", "все →", href="/users", class_="small"))
+    expiring = [c for c in st["certs"] if c["days_left"] is None or c["days_left"] < status.CERT_WARN_DAYS]
     certs = [[c["path"], fmt_time(_iso_ts(c["not_after"])),
-              badge("не читается", "bad") if c["days_left"] is None else
-              badge(f"{c['days_left']} дн.", "ok" if c["days_left"] >= status.CERT_WARN_DAYS else "warn")]
-             for c in st["certs"]]
-    sys_card = card("Сервер",
-                    kv([("адрес", st["server"]["ip"] or "—"), ("имя", st["server"]["hostname"]),
-                        ("UFW", {None: "не установлен", True: "включён", False: "ВЫКЛЮЧЕН"}[st["firewall"]["ufw_active"]]),
-                        ("Xray", f"{st['xray'].get('state', '')} {st['xray'].get('version', '')}".strip() or "—"),
-                        ("лишние открытые порты", ", ".join(f"{e['port']}/{e['proto']}" for e in st["exposed"]) or "нет")]),
-                    t("h3", "Сертификаты", class_="sub-h") if certs else None,
-                    table(["файл", "до", ""], certs) if certs else None)
-    body = [page_head("Обзор", f"обновлено {datetime.now().strftime('%H:%M:%S')}",
-                      t("a", "Обновить", href="/", class_="btn small")),
-            alert_list(alerts), t("h2", "Хост"), tiles, t("h2", "Протоколы"), protos,
-            t("h2", "Сводка"), t("div", users_card, sys_card, class_="cols")]
+              badge("не читается", "bad") if c["days_left"] is None else badge(f"{c['days_left']} дн.", "warn")]
+             for c in expiring]
+    rows = [("адрес", st["server"]["ip"] or "—"), ("имя", st["server"]["hostname"]),
+            ("UFW", {None: "не установлен", True: "включён", False: "ВЫКЛЮЧЕН"}[st["firewall"]["ufw_active"]]),
+            ("Xray", f"{st['xray'].get('state', '')} {st['xray'].get('version', '')}".strip() or "—")]
+    if st["exposed"]:
+        rows.append(("лишние открытые порты", ", ".join(f"{e['port']}/{e['proto']}" for e in st["exposed"])))
+    sys_card = card("Сервер", kv(rows), table(["файл", "до", ""], certs) if certs else None)
+    body = [page_head("Обзор", None, None if alerts else badge("✓ всё в порядке", "ok")),
+            alert_list(alerts) if alerts else None,
+            tiles, t("h2", "Протоколы"), protos,
+            t("p", "выключены: " + ", ".join(off), class_="quiet") if off else None,
+            t("div", users_card, sys_card, class_="cols")]
     return app.render(req, "Обзор", body, active="/")
-
-
-def _tile(label: str, value: str, hint: str = "", extra: Any = None) -> Markup:
-    return t("div", t("div", label, class_="label"), t("div", value, class_="value"), extra,
-             t("div", hint, class_="hint") if hint else None, class_="tile")
 
 
 def _iso_ts(value: str | None) -> float | None:
@@ -204,13 +257,16 @@ def _iso_ts(value: str | None) -> float | None:
 
 # ---------- трафик ----------
 
-def traffic_page(app: "App", req: "Request") -> "Response":
-    period = get_period(req)
+TH_UP = ("↑", "от клиента: загрузка на сервер")
+TH_DOWN = ("↓", "к клиенту: скачивание с сервера")
+TH_SUM = ("Σ", "всего")
+
+
+def _traffic_body(period: str) -> list[Any] | None:
+    """Страница без форм и без данных сессии, поэтому её можно держать в кэше. None — данных нет."""
     rep_u = traffic.report(period=period, by="user")
-    head = page_head("Трафик", f"{traffic.PERIOD_TITLES[period]}, с {fmt_time(rep_u['since'])}",
-                     period_selector("/traffic", period))
     if rep_u.get("empty"):
-        return app.render(req, "Трафик", [head, card("Нет данных", no_history_hint())], active="/traffic")
+        return None
     rep_p = traffic.report(period=period, by="protocol")
     ts_p = traffic.timeseries(period, "protocol", top=8)
     ts_u = traffic.timeseries(period, "user", top=8)
@@ -218,36 +274,56 @@ def traffic_page(app: "App", req: "Request") -> "Response":
     host_total = sum(sum(s["values"]) for s in ts_h["series"])
     tot = rep_u["total"]
     tiles = t("div",
-              _tile("Пользователи, всего", human_bytes(tot["total"]),
-                    f"↑ {human_bytes(tot['up'])} от клиентов · ↓ {human_bytes(tot['down'])} к клиентам"),
-              _tile("Сервер целиком", human_bytes(host_total), "приём + отдача интерфейса"),
-              _tile("Активных пользователей", str(sum(1 for r in rep_u["rows"] if r["total"])),
-                    traffic.PERIOD_TITLES[period]),
+              _tile("Пользователи", human_bytes(tot["total"]),
+                    f"↑ {human_bytes(tot['up'])} · ↓ {human_bytes(tot['down'])}",
+                    title=f"↑ {human_bytes(tot['up'])} от клиентов · ↓ {human_bytes(tot['down'])} к клиентам"),
+              _tile("Сервер целиком", human_bytes(host_total), "приём + отдача"),
+              _tile("Активных", str(sum(1 for r in rep_u["rows"] if r["total"])), traffic.PERIOD_TITLES[period],
+                    title="пользователей с трафиком"),
               class_="tiles")
     mx_u = max((r["total"] for r in rep_u["rows"]), default=0)
     mx_p = max((r["total"] for r in rep_p["rows"]), default=0)
-    users_tbl = table(["пользователь", "↑ от клиента", "↓ к клиенту", "всего", ""],
+    users_tbl = table(["пользователь", TH_UP, TH_DOWN, TH_SUM, ""],
                       [[t("a", r["key"], href=f"/users/{r['key']}?period={period}"), human_bytes(r["up"]),
                         human_bytes(r["down"]), human_bytes(r["total"]), charts.bar(r["total"], mx_u)]
-                       for r in rep_u["rows"]], num=[1, 2, 3], empty="трафика не было")
-    proto_tbl = table(["протокол", "↑ от клиентов", "↓ к клиентам", "всего", ""],
+                       for r in rep_u["rows"]], num=[1, 2, 3], empty="трафика не было", stack=True)
+    proto_tbl = table(["протокол", TH_UP, TH_DOWN, TH_SUM, ""],
                       [[r["title"], human_bytes(r["up"]), human_bytes(r["down"]), human_bytes(r["total"]),
                         charts.bar(r["total"], mx_p, "s2")] for r in rep_p["rows"]],
-                      num=[1, 2, 3], empty="трафика не было")
+                      num=[1, 2, 3], empty="трафика не было", stack=True)
+    chips = [t("span", "ⓘ", class_="chip", title="Xray-протоколы (VLESS, XHTTP, SS-2022, TUIC) считаются по "
+               "счётчикам inbound 3x-ui. У пользователя их трафик общий — строка «Xray (общий счётчик)»: "
+               "3x-ui считает клиента одним счётчиком на все его inbound.")]
+    if rep_p["total"]["total"] > tot["total"]:
+        chips.append(t("span", "в т.ч. самопроверка", class_="chip", title="В протоколах учтён и трафик служебного "
+                       "пользователя пробника (zoo-probe): в списке пользователей его нет."))
     host_series = [{"title": "принято", "values": s["up"]} for s in ts_h["series"]] + \
                   [{"title": "отправлено", "values": s["down"]} for s in ts_h["series"]]
     host_ts = {"buckets": ts_h["buckets"], "step": ts_h["step"], "series": host_series}
-    body = [head, tiles,
+    return [tiles,
             t("div", card("По протоколам", chart_block(ts_p, "Трафик по протоколам")),
               card("По пользователям", chart_block(ts_u, "Трафик по пользователям")), class_="cols"),
-            t("div", card("Пользователи", users_tbl), card("Протоколы", proto_tbl), class_="cols"),
+            t("div", card("Пользователи", users_tbl), card("Протоколы", proto_tbl, extra=t("div", chips, class_="chips")),
+              class_="cols"),
             card("Сервер целиком", chart_block(host_ts, "Трафик интерфейса сервера", wide=True),
-                 t("p", "Всё, что прошло через сетевой интерфейс сервера: трафик клиентов учитывается дважды "
-                        "(от клиента и в интернет), плюс обновления и служебный трафик.", class_="hint")),
-            t("p", "Xray-протоколы (VLESS, XHTTP, SS-2022, TUIC) в разбивке по протоколам считаются по счётчикам "
-                   "inbound 3x-ui. У пользователя их трафик общий — строка «Xray (общий счётчик)»: 3x-ui считает "
-                   "клиента одним счётчиком на все его inbound.", class_="hint")]
-    return app.render(req, "Трафик", body, active="/traffic")
+                 extra=t("span", "×2", class_="chip", title="Всё, что прошло через сетевой интерфейс сервера: "
+                         "трафик клиентов учитывается дважды (от клиента и в интернет), плюс обновления и "
+                         "служебный трафик."))]
+
+
+def traffic_page(app: "App", req: "Request") -> "Response":
+    period = get_period(req)
+    head = page_head("Трафик", None, period_selector("/traffic", period))
+    run = traffic.last_run()
+    key = ("traffic", period, run["ts"] if run else None)  # данные меняются только с разбором коллектора
+    body = app.cache_get(key, 600)
+    if body is None:
+        body = _traffic_body(period)
+        if body is None:
+            csrf = req.session.csrf if req.session else ""
+            return app.render(req, "Трафик", [head, card("Трафик", no_history_hint(csrf))], active="/traffic")
+        app.cache_put(key, body, 600)
+    return app.render(req, "Трафик", [head, *body], active="/traffic")
 
 
 # ---------- проверка ----------
@@ -290,7 +366,7 @@ def results_table(results: list[dict[str, Any]]) -> Markup:
                      "—" if r.get("speed_mbps") is None else f"{r['speed_mbps']:.1f} Мбит/с",
                      r.get("egress_ip") or "—", t("span", why, class_="small")])
     return table(["протокол", "итог", "RTT", "задержка", "скорость", "IP выхода", "причина"], rows,
-                 num=[2, 3, 4], empty="протоколов для проверки нет")
+                 num=[2, 3, 4], empty="протоколов для проверки нет", stack=True)
 
 
 def verdict_legend(results: list[dict[str, Any]]) -> Markup | None:
@@ -313,22 +389,23 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
     if last:
         names = {"public": "публичный IP", "loopback": "loopback"}
         targets = sorted({names.get(r.get("target"), r.get("target")) for r in last["results"] if r.get("target")})
-        local_body += [t("p", f"Последний прогон: {_gen_time(last.get('generated'))}, сервер "
-                              f"{last.get('server_ip') or '?'}"
-                              + (f", адрес проверки: {', '.join(targets)}" if targets else ""), class_="muted small"),
-                       results_table(last["results"]), verdict_legend(last["results"])]
+        local_body += [t("p", f"{_gen_time(last.get('generated'))} · {last.get('server_ip') or '?'}"
+                              + (f" · {', '.join(targets)}" if targets else ""), class_="muted small"),
+                       results_table(last["results"])]
     elif not running:
-        local_body.append(t("p", "Самопроверка ещё не запускалась.", class_="muted"))
-    local = card("Самопроверка с сервера",
-                 t("p", "Сервер поднимает клиента каждого протокола у себя и идёт на свой публичный IP: "
-                        "работает ли протокол в принципе (1–3 минуты).", class_="hint"),
-                 *local_body, extra=post_button("/probe/run", "Запустить", csrf, "btn primary small"))
+        local_body.append(empty("Самопроверка ещё не запускалась"))
+    run_btn = t("form", csrf_input(csrf),
+                t("button", "Запустить", type="submit", class_="btn primary small",
+                  title="Сервер поднимает клиента каждого протокола у себя и идёт на свой публичный IP: "
+                        "работает ли протокол в принципе (1–3 минуты)."),
+                method="post", action="/probe/run", class_="inline")
+    local = card("Самопроверка с сервера", *local_body, extra=run_btn,
+                 help=verdict_legend(last["results"]) if last else None)
+    cmp_help = t("p", "Отчёт клиентского пробника — файл ", t("code", "probe/probe-report.json"),
+                 " после запуска контейнера zoo-probe на машине пользователя (README, «Блокирует ли ваш "
+                 "провайдер»). Пакет для пробника: ", t("code", str(paths.probe_export_file())),
+                 " (его создаёт самопроверка; в нём ключи — передавайте по scp и удалите после).")
     cmp_body: list[Any] = [
-        t("p", "Отчёт клиентского пробника — файл ", t("code", "probe/probe-report.json"),
-          " после запуска контейнера zoo-probe на машине пользователя (README, «Блокирует ли ваш провайдер»). "
-          "Пакет для пробника: ", t("code", str(paths.probe_export_file())),
-          " (его создаёт самопроверка; в нём ключи — передавайте по scp и удалите после).",
-          class_="hint"),
         t("form", csrf_input(csrf),
           t("div", t("label", "JSON-отчёт клиента", for_="report"),
             t("textarea", report_text, name="report", id="report", spellcheck="false",
@@ -337,12 +414,14 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
           t("div", t("div", t("label", "или файл", for_="report-file"),
                      t("input", type="file", id="report-file", accept=".json,application/json", data_fill="report"),
                      class_="field grow"),
-            t("div", t("label", "метка (необязательно)", for_="tag"),
-              t("input", type="text", name="tag", id="tag", maxlength="40", placeholder="mobile-mts"), class_="field"),
+            t("div", t("label", "метка", for_="tag"),
+              t("input", type="text", name="tag", id="tag", maxlength="40", placeholder="mobile-mts",
+                title="необязательно: сеть, из которой снят отчёт"), class_="field"),
             t("div", t("label", "устройство", for_="device"),
               t("input", type="text", name="device", id="device", maxlength="40", placeholder="pixel7"),
               class_="field"),
-            t("button", "Сравнить и записать в историю", type="submit", class_="btn primary"), class_="form-row"),
+            t("button", "Сравнить", type="submit", class_="btn primary",
+              title="Сравнить с самопроверкой и записать в историю"), class_="form-row"),
           method="post", action="/probe/compare", class_="stack")]
     if error:
         cmp_body.insert(0, alert_list([("bad", error)]))
@@ -351,9 +430,8 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
     if compare_rows is not None:
         rows = [[t("strong", r["id"]), verdict_badge(r.get("server")), verdict_badge(r.get("client")),
                  badge(r.get("verdict", ""), CATEGORY.get(r.get("category", ""), "muted"))] for r in compare_rows]
-        cmp_body += [t("h3", "Сравнение"), table(["протокол", "сервер", "клиент", "вывод"], rows)]
-    body = [page_head("Проверка", "работает ли протокол в принципе и блокируется ли он у пользователя"),
-            local, *probeviews.cards(req), card("Сравнить с клиентом", *cmp_body)]
+        cmp_body += [t("h3", "Сравнение"), table(["протокол", "сервер", "клиент", "вывод"], rows, stack=True)]
+    body = [page_head("Проверка"), local, *probeviews.cards(req), card("Сравнить с клиентом", *cmp_body, help=cmp_help)]
     return app.render(req, "Проверка", body, active="/probe")
 
 
@@ -396,25 +474,32 @@ def probe_compare(app: "App", req: "Request") -> "Response":
     return probe_page(app, req, probe_mod.report.compare(local, remote), report_text=raw, notice=notice)
 
 
-# ---------- журнал ----------
+# ---------- логи ----------
 
-def log_sources(app: "App") -> list[tuple[str, str, str]]:
-    """[(группа, ключ, подпись)] — только эти источники можно открыть."""
+def service_units() -> list[str]:
+    """Юниты зоопарка по манифестам (без status.collect: он тянет сокеты, сертификаты и API 3x-ui)."""
+    units = list(status.BASE_UNITS)
+    for m in manifests.load_all()[0]:
+        units += [_unit_name(u) for u in m.services]
+    units.append("zoo-collector.timer")
+    return list(dict.fromkeys(units))
+
+
+def log_sources(app: "App") -> tuple[list[tuple[str, str, str]], dict[str, dict[str, str]]]:
+    """([(группа, ключ, подпись)], состояния юнитов) — только эти источники можно открыть."""
     out = [("Установка", f"file:{f.name}", f.name) for f in logs.log_files()]
-    st = status_data(app)
-    units = ["zoo-web.service", "zoo-collector.service"]
-    for p in st["protocols"]:
-        units += [u if "." in u else u + ".service" for u in p["services"]]
-    units += ["x-ui.service", GEO_UNIT]
-    loaded = {u for u, s in system.unit_states(units).items() if s.get("load") == "loaded"}
-    out += [("Сервисы", f"unit:{u}", u) for u in dict.fromkeys(units) if u in loaded]
-    return out
+    units = ["zoo-web.service", "zoo-collector.service", *service_units(), GEO_UNIT]
+    states = system.unit_states(units)
+    loaded = {u for u, s in states.items() if s.get("load") == "loaded"}
+    out += [("Сервисы", f"unit:{u}", u) for u in dict.fromkeys(units) if u in loaded and u != "zoo-collector.timer"]
+    return out, states
 
 
 def logs_page(app: "App", req: "Request") -> "Response":
-    sources = log_sources(app)
+    sources, states = log_sources(app)
     keys = {k for _, k, _ in sources}
-    src = req.query.get("src") or (sources[0][1] if sources else "")
+    failed = [k for g, k, label in sources if g == "Сервисы" and states.get(label, {}).get("active") == "failed"]
+    src = req.query.get("src") or (failed[0] if failed else sources[0][1] if sources else "")
     try:
         lines = max(50, min(2000, int(req.query.get("lines", "300"))))
     except ValueError:
@@ -433,13 +518,13 @@ def logs_page(app: "App", req: "Request") -> "Response":
         content = t("pre", logs.sanitize(raw, app.cfg()) or "пусто", class_="log")
         title = name
     else:
-        content, title = t("p", "Выберите журнал слева." if sources else "Журналов нет.", class_="muted"), ""
+        content, title = empty("Выберите лог слева" if sources else "Логов нет"), ""
     sizes = t("nav", [t("a", str(n), href=f"/logs?src={src}&lines={n}", class_="active" if n == lines else None)
                       for n in (100, 300, 1000)], class_="seg", aria_label="Строк")
-    body = [page_head("Журнал", "последние строки; ключи, пароли и ссылки скрыты", sizes),
+    body = [page_head("Логи", None, sizes),
             t("div", card("Источники", t("ul", nav, class_="list")),
-              card(title or "Журнал", content), class_="side")]
-    return app.render(req, "Журнал", body, active="/logs")
+              card(title or "Лог", content, help="Последние строки; ключи, пароли и ссылки скрыты."), class_="side")]
+    return app.render(req, "Логи", body, active="/logs")
 
 
 # ---------- настройки ----------
@@ -449,80 +534,95 @@ SHOW_KEYS_FIRST = ("LABEL", "SERVER_IP", "DOMAIN", "SSH_PORTS", "RU_EGRESS", "AW
 
 
 def restartable_units(app: "App") -> list[str]:
-    st = status_data(app)
-    units = list(status.BASE_UNITS)
-    for p in st["protocols"]:
-        units += [u if "." in u else u + ".service" for u in p["services"]]
-    units.append("zoo-collector.timer")
-    loaded = {u for u, s in st["services"].items() if s.get("load") == "loaded"}
-    return [u for u in dict.fromkeys(units) if u in loaded]
+    units = service_units()
+    states = system.unit_states(units)
+    return [u for u in units if states.get(u, {}).get("load") == "loaded"]
+
+
+def _versions_card(app: "App", cfg: Any) -> Markup:
+    help_ = t("p", "Обновление версий — из консоли: ", t("code", "sudo zoo upgrade"), " (план) и ",
+              t("code", "sudo zoo upgrade --apply"), ": фазы перезапускают сервисы, в том числе эту админку.")
+    try:
+        up = app.cached("upgrade", 60, lambda: upgrade.check(cfg))
+        comps, plan = up["components"], up["phases"]
+        ver_rows = [[name, c["installed"] or "—", c["pinned"] or "—",
+                     badge("—", "muted") if c["outdated"] is None else
+                     (badge("устарел", "warn") if c["outdated"] else badge("актуален", "ok"))]
+                    for name, c in comps.items()]
+        tbl = table(["компонент", "установлен", "закреплён", ""], ver_rows, stack=True)
+        if comps and not plan and all(c["outdated"] is False for c in comps.values()):
+            return card("Версии", badge("✓ всё актуально", "ok"),
+                        t("details", t("summary", "компоненты"), tbl, class_="more"), help=help_)
+        return card("Версии", tbl, t("p", "План: " + " → ".join(plan), class_="hint") if plan else None, help=help_)
+    except Exception as e:  # сводка версий не должна ломать страницу
+        return card("Версии", alert_list([("warn", f"не удалось сравнить версии: {e}")]), help=help_)
 
 
 def settings_page(app: "App", req: "Request") -> "Response":
     cfg = app.cfg()
     csrf = req.session.csrf if req.session else ""
-    st = status_data(app)
     from . import access_info
-    info = access_info(cfg)
-    ssh = info["ssh"]
-    panel = ""
-    if cfg.get("PANEL_PORT"):
-        panel = (f"ssh -N -L {cfg.get('PANEL_PORT')}:127.0.0.1:{cfg.get('PANEL_PORT')} {ssh}\n"
-                 f"http://127.0.0.1:{cfg.get('PANEL_PORT')}/{cfg.get('PANEL_PATH')}/")
-    access = card("Доступ",
-                  t("p", "Админка zoo:", class_="small muted"), t("code", f"{info['tunnel']}\n{info['url']}", class_="cmd"),
-                  t("p", "Панель 3x-ui (логин и пароль — в CREDENTIALS.md):", class_="small muted") if panel else None,
-                  t("code", panel, class_="cmd") if panel else None,
-                  t("p", "Новый токен админки: ", t("code", "sudo zoo web --new-token"), " (все сессии закроются).",
-                    class_="hint"))
+    ssh = access_info(cfg)["ssh"]
 
-    units = restartable_units(app)
+    units = service_units()
+    states = system.unit_states(units)
     unit_rows = []
     for u in units:
-        s = st["services"].get(u) or system.unit_states([u]).get(u, {})
+        s = states.get(u) or {}
+        if s.get("load") != "loaded":
+            continue
         active = s.get("active", "")
-        unit_rows.append([t("code", u), badge(active or "?", "ok" if active == "active" else "bad"),
-                          s.get("enabled", ""), s.get("restarts", ""),
-                          post_button("/settings/action", "Перезапустить", csrf, "btn small",
-                                      {"action": "restart", "unit": u})])
-    services = card("Сервисы", table(["юнит", "состояние", "автозапуск", "рестартов", ""], unit_rows))
+        restarts = int(s["restarts"]) if str(s.get("restarts", "")).isdigit() else 0
+        unit_rows.append([
+            t("code", u, title=f"автозапуск: {s.get('enabled') or '—'}"),
+            t("span", badge(active or "?", "ok" if active == "active" else "bad"),
+              t("span", f" ↻ {restarts}", class_="muted small", title="рестартов") if restarts > 0 else None),
+            post_button("/settings/action", "Перезапустить", csrf, "btn small", {"action": "restart", "unit": u},
+                        confirm=restart_confirm(u))])
+    services = card("Сервисы", table(["юнит", "состояние", ""], unit_rows, stack=True))
 
     actions = card("Обслуживание", t("div",
         post_button("/settings/action", "Smoke-проверка", csrf, "btn", {"action": "smoke"}),
-        post_button("/settings/action", "Снять трафик сейчас", csrf, "btn", {"action": "collect"}),
+        post_button("/settings/action", "Снять трафик", csrf, "btn", COLLECT_ACTION),
         post_button("/settings/action", "Обновить geo-файлы", csrf, "btn", {"action": "geo"}),
-        t("a", "Сверить пользователей", href="/users?verify=1", class_="btn"),
-        class_="actions"),
-        t("p", "Обновление версий — из консоли: ", t("code", "sudo zoo upgrade"), " (план) и ",
-          t("code", "sudo zoo upgrade --apply"), ": фазы перезапускают сервисы, в том числе эту админку.",
-          class_="hint"))
+        class_="btn-grid"))
+    versions = _versions_card(app, cfg)
 
-    try:
-        up = app.cached("upgrade", 60, lambda: upgrade.check(cfg))
-        ver_rows = [[name, c["installed"] or "—", c["pinned"] or "—",
-                     badge("—", "muted") if c["outdated"] is None else
-                     (badge("устарел", "warn") if c["outdated"] else badge("актуален", "ok"))]
-                    for name, c in up["components"].items()]
-        plan = up["phases"]
-        versions = card("Версии", table(["компонент", "установлен", "закреплён", ""], ver_rows),
-                        t("p", ("План обновления: " + " → ".join(plan)) if plan else "Всё совпадает с versions.env.",
-                          class_="hint"))
-    except Exception as e:  # сводка версий не должна ломать страницу
-        versions = card("Версии", alert_list([("warn", f"не удалось сравнить версии: {e}")]))
-
-    secret_keys = {k for k in cfg.values if logs.SECRET_KEY_RE.search(k)}
-    ordered = [k for k in SHOW_KEYS_FIRST if k in cfg.values] + sorted(k for k in cfg.values if k not in SHOW_KEYS_FIRST)
-    cfg_rows = [[t("code", k), badge("скрыто", "muted") if k in secret_keys else t("span", cfg.get(k), class_="mono")]
-                for k in ordered]
-    config = card("config.env", t("p", f"{cfg.path} · только просмотр; правка — config_set или install.sh",
-                                       class_="hint"), table(["ключ", "значение"], cfg_rows))
     jobs = app.jobs.recent(8)
     jobs_card = card("Последние задачи", table(["задача", "начата", "итог"], [
         [t("a", j.title, href=f"/jobs/{j.id}"), fmt_time(j.started), job_badge(j)] for j in jobs],
-        empty="задач не было")) if jobs else None
-    body = [page_head("Настройки", "просмотр конфигурации и обслуживание"),
-            t("div", access, actions, class_="cols"), services, jobs_card,
-            t("div", versions, config, class_="cols")]
+        empty="задач не было", stack=True)) if jobs else None
+
+    access = None
+    if cfg.get("PANEL_PORT"):
+        port, path = cfg.get("PANEL_PORT"), cfg.get("PANEL_PATH")
+        full = f"http://127.0.0.1:{port}/" + (f"{path}/" if path else "")
+        shown = f"http://127.0.0.1:{port}/" + ("•••/" if path else "")
+        access = card("Доступ к 3x-ui",
+                      t("code", f"ssh -N -L {port}:127.0.0.1:{port} {ssh}", class_="cmd"),
+                      t("div", t("code", shown), t("input", type="hidden", id="panel-url", value=full),
+                        t("button", "Копировать", type="button", class_="btn small", data_copy="panel-url"),
+                        class_="actions"),
+                      help=t("p", "Логин и пароль панели — в CREDENTIALS.md. Новый токен админки: ",
+                             t("code", "sudo zoo web --new-token"), " (все сессии закроются). Вход по ссылке: ",
+                             t("code", "sudo zoo web --link"), "."))
+
+    secret_keys = {k for k in cfg.values if logs.SECRET_KEY_RE.search(k)}
+    top = [k for k in SHOW_KEYS_FIRST if k in cfg.values] + sorted(
+        k for k in cfg.values if k.startswith("ENABLE_") and k not in SHOW_KEYS_FIRST)
+    rest = sorted(k for k in cfg.values if k not in top)
+
+    def cfg_table(keys: list[str]) -> Markup:
+        return table(["ключ", "значение"],
+                     [[t("code", k), badge("скрыто", "muted") if k in secret_keys else t("span", cfg.get(k), class_="mono")]
+                      for k in keys], stack=True)
+
+    config = card("config.env", cfg_table(top) if top else None,
+                  t("details", t("summary", f"config.env · ключей: {len(rest)}"), cfg_table(rest), class_="more")
+                  if rest else None,
+                  help=f"{cfg.path} · только просмотр; правка — config_set или install.sh")
+    body = [page_head("Настройки"), services, t("div", actions, versions, class_="cols"), jobs_card,
+            t("div", access, config, class_="cols") if access else config]
     return app.render(req, "Настройки", body, active="/settings")
 
 
@@ -553,6 +653,10 @@ def settings_action(app: "App", req: "Request") -> "Response":
 
 # ---------- задачи ----------
 
+# откуда запущена задача: туда ведёт «назад» и там подсвечен пункт меню
+JOB_ORIGIN = {"probe": ("/probe", "← проверка"), "collect": ("/traffic", "← трафик")}
+
+
 def job_badge(j: Job) -> Markup:
     if j.running:
         return badge("идёт", "info")
@@ -577,7 +681,7 @@ def job_page(app: "App", req: "Request", job: str) -> "Response":
                             ("длительность", f"{j.duration:.1f} с"),
                             ("команда", t("code", logs.sanitize(command_line(j.argv), cfg)))])]
     if j.error:
-        parts.append(alert_list([("bad", j.error)]))
+        parts.append(alert_list([("bad", app.safe_msg(j.error))]))
     data = None
     if not j.running and j.stdout.strip().startswith(("{", "[")):
         try:
@@ -588,13 +692,13 @@ def job_page(app: "App", req: "Request", job: str) -> "Response":
         rows = [[c["name"], badge("—", "muted") if c["ok"] is None else badge("OK" if c["ok"] else "сбой",
                                                                               "ok" if c["ok"] else "bad"),
                  c["detail"]] for c in data["checks"]]
-        parts += [t("h3", "Результат"), table(["проверка", "", "подробности"], rows)]
+        parts += [t("h3", "Результат"), table(["проверка", "", "подробности"], rows, stack=True)]
     elif j.kind == "probe" and isinstance(data, dict) and isinstance(data.get("results"), list):
-        parts += [t("h3", "Результат"), results_table(data["results"]), verdict_legend(data["results"]),
-                  t("p", t("a", "К странице проверки →", href="/probe"))]
+        parts += [t("h3", "Результат"), results_table(data["results"])]
     out = (j.stdout if data is None else "") + j.stderr
     if out.strip() or j.running:
         parts += [t("h3", "Вывод"), t("pre", logs.sanitize(out, cfg) or "…", class_="log")]
+    origin, back = JOB_ORIGIN.get(j.kind, ("/settings", "← настройки"))
     body = [page_head(j.title, "обновляется автоматически, пока идёт" if j.running else None,
-                      t("a", "← настройки", href="/settings", class_="btn small")), card("Задача", *parts)]
-    return app.render(req, j.title, body, active="/settings", refresh=2 if j.running else None)
+                      t("a", back, href=origin, class_="btn small")), card("Задача", *parts)]
+    return app.render(req, j.title, body, active=origin, refresh=2 if j.running else None)

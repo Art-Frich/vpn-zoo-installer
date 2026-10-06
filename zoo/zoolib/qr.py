@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
+from collections import OrderedDict
 
 # Предел QR версии 40 с уровнем L — 2953 байта; AWG .conf и ссылки заметно меньше
 MAX_BYTES = 2900
@@ -39,21 +41,31 @@ def utf8(text: str, invert: bool = False) -> str:
     return _encode(text, "UTF8i" if invert else "UTF8", ["-m", "2"])
 
 
-_svg_cache: dict[tuple[str, int], str] = {}
+SVG_CACHE_SIZE = 64
+_svg_cache: "OrderedDict[tuple[str, int], str]" = OrderedDict()
+_svg_lock = threading.Lock()
+
+
+def clear_cache() -> None:
+    with _svg_lock:
+        _svg_cache.clear()
 
 
 def svg(text: str, size: int = 6) -> str:
     """SVG-разметка (для веб-админки и файлов). --svg-path (qrencode >= 4.1) рисует модули
-    одним path: файл в десятки раз меньше. Результат кэшируется по содержимому: запуск
-    qrencode на каждый QR при каждой отрисовке страницы делал её медленной."""
+    одним path, --rle склеивает соседние модули: файл в десятки раз меньше. Результат
+    кэшируется по содержимому (LRU на 64): запуск qrencode на каждый показ был медленным."""
     key = (text, size)
-    if key in _svg_cache:
-        return _svg_cache[key]
+    with _svg_lock:
+        if key in _svg_cache:
+            _svg_cache.move_to_end(key)
+            return _svg_cache[key]
     try:
-        out = _encode(text, "SVG", ["-s", str(size), "-m", "2", "--svg-path"])
+        out = _encode(text, "SVG", ["-s", str(size), "-m", "2", "--svg-path", "--rle"])
     except QrError:
-        out = _encode(text, "SVG", ["-s", str(size), "-m", "2"])
-    if len(_svg_cache) > 256:
-        _svg_cache.clear()
-    _svg_cache[key] = out
+        out = _encode(text, "SVG", ["-s", str(size), "-m", "2", "--rle"])
+    with _svg_lock:
+        _svg_cache[key] = out
+        while len(_svg_cache) > SVG_CACHE_SIZE:
+            _svg_cache.popitem(last=False)
     return out

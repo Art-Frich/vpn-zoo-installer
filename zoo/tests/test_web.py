@@ -1,25 +1,38 @@
+import argparse
+import contextlib
+import copy
+import gzip
 import http.client
+import io
+import ipaddress
+import json
 import os
 import re
+import shutil
+import stat
 import sys
+import tempfile
 import threading
 import time
 import unittest
 import urllib.parse
+from html.parser import HTMLParser
+from pathlib import Path
 from unittest import mock
 
 from tests.helpers import ZooEnv, needs_bash
 from zoolib import config, traffic
 from zoolib import web as web_mod
-from zoolib.web import auth, charts, logs
+from zoolib.web import assets, auth, charts, logs
 from zoolib.web.app import App, Request, _safe_next
-from zoolib.web.html import Markup, t
+from zoolib.web.html import Markup, card, post_button, t, table
 from zoolib.web.jobs import Jobs
 from zoolib.web.server import make_server
 from zoolib.web.userviews import clean_qr_svg
 
 TOKEN = "test-token-0123456789abcdef"
 HOST = "127.0.0.1:8999"
+SID_COOKIE, LOGIN_COOKIE = auth.cookie_names(HOST)
 
 FAKE_STATUS = {
     "server": {"ip": "10.0.0.1", "label": "test", "hostname": "box"},
@@ -32,7 +45,8 @@ FAKE_STATUS = {
          "ok": False, "users": 1},
     ],
     "services": {"x-ui.service": {"load": "loaded", "active": "active", "enabled": "enabled", "restarts": "0"},
-                 "zoo-web.service": {"load": "loaded", "active": "active", "enabled": "enabled"}},
+                 "zoo-web.service": {"load": "loaded", "active": "active", "enabled": "enabled"},
+                 "hysteria-server.service": {"load": "loaded", "active": "failed", "enabled": "enabled"}},
     "firewall": {"ufw_active": True},
     "xray": {"state": "running", "version": "26.9.30"},
     "exposed": [{"port": 2096, "proto": "tcp", "process": "x-ui", "public": True}],
@@ -97,7 +111,7 @@ class Client:
 
     def login(self):
         self.get("/login")
-        resp, _ = self.post("/login", {"token": TOKEN, "lc": self.cookies.get(auth.LOGIN_COOKIE, "")}, csrf=False)
+        resp, _ = self.post("/login", {"token": TOKEN, "lc": self.cookies.get(LOGIN_COOKIE, "")}, csrf=False)
         assert resp.status == 303, resp.status
         self.get("/")
         return resp
@@ -254,12 +268,22 @@ class WebSetupTest(unittest.TestCase):
                 make_server(app, bind, 0)
 
 
+FAKE_SLOW = {k: v for k, v in FAKE_STATUS.items() if k != "host"}
+
+
+def patch_status(test: unittest.TestCase) -> None:
+    """Статус хоста подменён: медленная часть (юниты, сокеты) и метрики /proc — по отдельности."""
+    for target, value in (("zoolib.status.collect_slow", FAKE_SLOW),
+                          ("zoolib.system.host_metrics", FAKE_STATUS["host"])):
+        m = mock.patch(target, return_value=value)
+        m.start()
+        test.addCleanup(m.stop)
+
+
 class AppTestBase(unittest.TestCase):
     def setUp(self):
         self.env = ZooEnv().__enter__()
-        patcher = mock.patch("zoolib.status.collect", return_value=FAKE_STATUS)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        patch_status(self)
         for p in ("zoolib.system.unit_states", "zoolib.web.views.system.unit_states"):
             m = mock.patch(p, side_effect=lambda units: {u: {"load": "loaded", "active": "active"} for u in units})
             m.start()
@@ -287,15 +311,15 @@ class RoutingTest(AppTestBase):
         resp, body = self.c.post("/login", {"token": TOKEN}, csrf=False)
         self.assertEqual(resp.status, 400, "без double-submit cookie вход не принимается")
         self.c.get("/login")
-        resp, body = self.c.post("/login", {"token": "nope", "lc": self.c.cookies[auth.LOGIN_COOKIE]}, csrf=False)
+        resp, body = self.c.post("/login", {"token": "nope", "lc": self.c.cookies[LOGIN_COOKIE]}, csrf=False)
         self.assertEqual(resp.status, 401)
         self.assertIn("Неверный токен", body)
         self.c.get("/login?next=/traffic")
-        resp, _ = self.c.post("/login", {"token": TOKEN, "lc": self.c.cookies[auth.LOGIN_COOKIE],
+        resp, _ = self.c.post("/login", {"token": TOKEN, "lc": self.c.cookies[LOGIN_COOKIE],
                                          "next": "/traffic"}, csrf=False)
         self.assertEqual(resp.status, 303)
         self.assertEqual(header(resp, "Location"), ["/traffic"])
-        sid = [v for v in header(resp, "Set-Cookie") if v.startswith("zoo_sid=")][0]
+        sid = [v for v in header(resp, "Set-Cookie") if v.startswith(SID_COOKIE + "=")][0]
         self.assertIn("HttpOnly", sid)
         self.assertIn("SameSite=Strict", sid)
         resp, body = self.c.get("/")
@@ -390,31 +414,33 @@ class UsersViewTest(AppTestBase):
         self.assertEqual(resp.status, 303)
         self.assertEqual(header(resp, "Location"), ["/users/masha"])
         self.assertEqual(set(self.env.proto_users("amneziawg")), {"owner", "masha"})
-        with mock.patch("zoolib.qr.svg", return_value=SAMPLE_QR):
-            resp, body = self.c.get("/users/masha")
+        resp, body = self.c.get("/users/masha")
         self.assertEqual(resp.status, 200)
         self.assertIn("пользователь создан", body)
         self.assertIn("сестра &lt;3", body)
         self.assertIn('value="vless://masha@', body)
         self.assertIn("data-copy=", body)
-        self.assertIn('stroke="#000000"', body)
+        self.assertNotIn("<svg", body, "QR отдельной картинкой, не в странице")
         self.assertNotIn("style=", body)
-        m = re.search(r'href="(/users/masha/file/\d+)"', body)
+        m = re.search(r'href="(/users/masha/file/[\w.-]+)"', body)
         self.assertIsNotNone(m, "ссылка на скачивание .conf")
-        resp, data = self.c.get(m.group(1))
+        # файл отдаётся по имени и без вызова bash-модулей
+        from zoolib import protolib
+        with mock.patch("zoolib.protolib.call", side_effect=AssertionError("модуль не должен вызываться")):
+            resp, data = self.c.get(m.group(1))
         self.assertEqual(resp.status, 200)
-        self.assertIn("attachment", header(resp, "Content-Disposition")[0])
+        disp = header(resp, "Content-Disposition")[0]
+        self.assertIn('attachment; filename="masha-amneziawg.conf"', disp)
+        self.assertIn("filename*=UTF-8''masha-amneziawg.conf", disp)
         self.assertIn("[Interface]", data)
         resp, _ = self.c.get("/users/masha/file/99")
         self.assertEqual(resp.status, 404)
-        # модуль вернул путь вне clients/masha/ или не .conf — не отдаём
-        from zoolib import protolib
-        for bad in (self.env.etc / "config.env", self.env.etc / "clients" / "masha" / "amneziawg.key",
-                    self.env.etc / "clients" / "owner" / "amneziawg.conf"):
-            fake = [protolib.Link(str(bad), "", "amneziawg", "file")]
-            with mock.patch("zoolib.users.user_links", return_value=(fake, {})):
-                resp, _ = self.c.get("/users/masha/file/0")
+        # чужое по имени не отдаём: ключи модулей, не .conf, выход из каталога, чужой каталог
+        for bad in ("amneziawg.key", "..", "config.env", "amneziawg-owner.conf"):
+            resp, _ = self.c.get(f"/users/masha/file/{bad}")
             self.assertEqual(resp.status, 404, bad)
+        resp, _ = self.c.get("/users/masha/file/%2e%2e%2fconfig.env")
+        self.assertEqual(resp.status, 404)
 
         resp, _ = self.c.post("/users/masha/disable", {"back": "/users"})
         self.assertEqual(header(resp, "Location"), ["/users"])
@@ -478,14 +504,12 @@ class ProbeViewTest(AppTestBase):
         self.assertIn("SERVER_DOWN", body)
 
 
-class SocketServerTest(unittest.TestCase):
+class SocketBase(unittest.TestCase):
     """Настоящий сокет: сервер на 127.0.0.1:0, запросы http.client."""
 
     def setUp(self):
         self.env = ZooEnv().__enter__()
-        m = mock.patch("zoolib.status.collect", return_value=FAKE_STATUS)
-        m.start()
-        self.addCleanup(m.stop)
+        patch_status(self)
         self.httpd = make_server(App(TOKEN, config.load), "127.0.0.1", 0)
         self.port = self.httpd.server_address[1]
         self.th = threading.Thread(target=self.httpd.serve_forever, daemon=True)
@@ -504,6 +528,8 @@ class SocketServerTest(unittest.TestCase):
         conn.close()
         return r, data
 
+
+class SocketServerTest(SocketBase):
     def test_over_socket(self):
         r, _ = self.request("GET", "/")
         self.assertEqual(r.status, 303)
@@ -515,7 +541,7 @@ class SocketServerTest(unittest.TestCase):
         r, _ = self.request("POST", "/login", form, {"Content-Type": "application/x-www-form-urlencoded",
                                                      "Cookie": lc})
         self.assertEqual(r.status, 303)
-        sid = [c for c in r.headers.get_all("Set-Cookie") if c.startswith("zoo_sid=")][0].split(";")[0]
+        sid = [c for c in r.headers.get_all("Set-Cookie") if c.startswith("zoo_sid_")][0].split(";")[0]
         r, body = self.request("GET", "/", headers={"Cookie": sid})
         self.assertEqual(r.status, 200)
         self.assertIn("Обзор".encode(), body)
@@ -526,6 +552,854 @@ class SocketServerTest(unittest.TestCase):
         self.assertEqual(r.status, 413)
         r, _ = self.request("POST", "/login", "", {"Content-Length": "-1"})
         self.assertEqual(r.status, 400)
+
+
+# ---------- вёрстка: общие куски ----------
+
+class VisibleWords(HTMLParser):
+    """Слова, которые человек видит сразу: без шапки, подвала, картинок SVG и свёрнутого (<details>, окна)."""
+    SKIP = {"head", "nav", "footer", "script", "style", "select", "textarea", "svg", "dialog"}
+
+    def __init__(self):
+        super().__init__()
+        self.stack: list[tuple[str, dict]] = []
+        self.words: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag not in ("input", "img", "br", "meta", "link", "hr"):
+            self.stack.append((tag, dict(attrs)))
+
+    def handle_endtag(self, tag):
+        while self.stack and self.stack.pop()[0] != tag:
+            pass
+
+    def handle_data(self, data):
+        tags = [x for x, _ in self.stack]
+        if any(x in self.SKIP for x in tags) or ("details" in tags and "summary" not in tags):
+            return
+        if any(a.get("hidden") is not None for _, a in self.stack):
+            return
+        self.words += data.split()
+
+
+def visible_words(html: str) -> int:
+    p = VisibleWords()
+    p.feed(html)
+    return len(p.words)
+
+
+class HtmlPartsTest(unittest.TestCase):
+    def test_table_stack_and_headers(self):
+        out = table([("↑", "от клиента"), "имя"], [["1", "a"], ["2", "b"]], num=[0], stack=True)
+        self.assertIn('data-label="↑"', out)
+        self.assertIn('data-label="имя"', out)
+        self.assertIn('title="от клиента"', out)
+        self.assertIn('class="stack"', out)
+        self.assertNotIn("data-label", table(["a"], [["1"]]))
+
+    def test_table_empty_is_state_not_table(self):
+        out = table(["a", "b"], [], empty="пусто тут")
+        self.assertIn("empty-state", out)
+        self.assertNotIn("<table", out)
+
+    def test_card_help_and_confirm(self):
+        out = card("Заголовок", "тело", help="пояснение")
+        self.assertIn('<details class="help"><summary aria-label="Пояснение">?</summary>', out)
+        self.assertNotIn("<details", card("Без", "тела"))
+        self.assertIn('data-confirm="Точно?"', post_button("/x", "Да", "csrf", confirm="Точно?"))
+        self.assertNotIn("data-confirm", post_button("/x", "Да", "csrf"))
+
+    def test_css_fixes(self):
+        css = assets.CSS
+        self.assertIn("[hidden] { display: none !important; }", css)
+        self.assertNotIn(".ptile.s1", css)
+        self.assertNotRegex(css, r"\n\.s1 \{")  # цвета рядов — только у графиков и маркеров
+        self.assertIn(".chart .s1", css)
+        self.assertIn(".swatch.s1", css)
+        self.assertRegex(css, r"@media \(max-width: 600px\) \{[^@]*\.nav \{[^}]*display: grid")
+        self.assertRegex(css, r"table\.stack td::before")
+        for rule in (".tab.active", ".btn.danger-solid"):
+            line = next(x for x in css.splitlines() if x.startswith(rule))
+            self.assertNotIn("#fff", line)
+
+    def test_js_contract(self):
+        js = assets.JS
+        for needle in ("dialog[open]", "focusin", "If-None-Match", "X-Zoo-Live", "a.origin", "form[data-autosubmit]",
+                       "img[data-src]", "сессия истекла"):
+            self.assertIn(needle, js)
+        self.assertEqual(gzip.decompress(assets.JS_GZ).decode(), js)
+        self.assertEqual(gzip.decompress(assets.CSS_GZ).decode(), assets.CSS)
+
+    def test_sanitize_hides_qr_blocks(self):
+        qr_text = "\n".join(["████ ▄▄ ████", "█  █ ▀▀ █  █", "████ ▄  ████", "     ▀▄     "])
+        out = logs.sanitize("до\n" + qr_text + "\nпосле")
+        self.assertIn("[QR скрыт]", out)
+        self.assertNotIn("█", out)
+        self.assertIn("до", out)
+        self.assertIn("после", out)
+        # две строки — ещё не QR
+        self.assertIn("█", logs.sanitize("█ █\n▄▄ █\nтекст"))
+        # длинная строка блоков без конца строки: регулярка линейная (была квадратичной — зависала)
+        t0 = time.monotonic()
+        logs.sanitize("█" * 200_000 + "x")
+        self.assertLess(time.monotonic() - t0, 2)
+
+
+# ---------- вход и сессии ----------
+
+class AuthStoreTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="zoo-auth-")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.store = Path(self.dir) / "web-sessions.json"
+
+    def test_session_survives_new_auth(self):
+        a = auth.Auth(TOKEN, store=self.store)
+        s = a.login(TOKEN)
+        b = auth.Auth(TOKEN, store=self.store)  # рестарт админки
+        got = b.session(s.sid)
+        self.assertIsNotNone(got)
+        self.assertEqual(got.csrf, s.csrf)
+
+    def test_other_token_has_no_sessions(self):
+        s = auth.Auth(TOKEN, store=self.store).login(TOKEN)
+        self.assertIsNone(auth.Auth("another-token-0123456789", store=self.store).session(s.sid))
+
+    def test_file_is_private_and_has_no_plain_sid(self):
+        s = auth.Auth(TOKEN, store=self.store).login(TOKEN)
+        text = self.store.read_text(encoding="utf-8")
+        self.assertNotIn(s.sid, text)
+        self.assertIn(auth.sid_hash(s.sid), text)
+        data = json.loads(text)
+        self.assertEqual(data["fp"], auth.token_fp(TOKEN))
+        self.assertNotIn(TOKEN, text)
+        if os.name == "posix":
+            self.assertEqual(stat.S_IMODE(self.store.stat().st_mode), 0o600)
+
+    def test_flash_is_not_stored(self):
+        a = auth.Auth(TOKEN, store=self.store)
+        s = a.login(TOKEN)
+        s.flash("bad", "секретное сообщение")
+        a.login(TOKEN)  # любая запись на диск
+        self.assertNotIn("секретное", self.store.read_text(encoding="utf-8"))
+        self.assertEqual(auth.Auth(TOKEN, store=self.store).session(s.sid).flashes, [])
+
+    def test_live_request_does_not_extend_idle(self):
+        now = [1000.0]
+        a = auth.Auth(TOKEN, clock=lambda: now[0], store=self.store)
+        s = a.login(TOKEN)
+        now[0] += 100
+        a.session(s.sid, touch=False)
+        self.assertEqual(s.last, 1000.0)
+        a.session(s.sid)
+        self.assertEqual(s.last, 1100.0)
+        # одна открытая вкладка с live не держит сессию вечно
+        now[0] += auth.IDLE_TTL - 50
+        self.assertIsNotNone(a.session(s.sid, touch=False))
+        now[0] += 100
+        self.assertIsNone(a.session(s.sid, touch=False))
+
+    def test_ttl_and_throttled_disk_writes(self):
+        self.assertEqual((auth.IDLE_TTL, auth.ABSOLUTE_TTL), (14 * 86400, 30 * 86400))
+        now = [1000.0]
+        a = auth.Auth(TOKEN, clock=lambda: now[0], store=self.store)
+        s = a.login(TOKEN)
+        now[0] += 60
+        a.session(s.sid)
+        self.assertEqual(json.loads(self.store.read_text())["s"][auth.sid_hash(s.sid)]["last"], 1000.0)
+        now[0] += auth.DISK_TOUCH
+        a.session(s.sid)
+        self.assertEqual(json.loads(self.store.read_text())["s"][auth.sid_hash(s.sid)]["last"], now[0])
+        # абсолютный срок
+        for _ in range(35):
+            now[0] += 86400
+            a.session(s.sid)
+        self.assertIsNone(a.session(s.sid))
+
+    def test_logout_removes_from_file(self):
+        a = auth.Auth(TOKEN, store=self.store)
+        s = a.login(TOKEN)
+        a.logout(s.sid)
+        self.assertIsNone(auth.Auth(TOKEN, store=self.store).session(s.sid))
+        self.assertNotIn(auth.sid_hash(s.sid), self.store.read_text(encoding="utf-8"))
+
+    def test_broken_store_is_ignored(self):
+        self.store.write_text("{не json", encoding="utf-8")
+        a = auth.Auth(TOKEN, store=self.store)
+        self.assertIsNotNone(a.login(TOKEN))
+
+    def test_new_token_removes_sessions_file(self):
+        with ZooEnv() as env:
+            with mock.patch("zoolib.system.listening_sockets", return_value=[]):
+                web_mod.setup(config.load())
+            store = web_mod.sessions_file()
+            store.parent.mkdir(parents=True, exist_ok=True)
+            store.write_text("{}", encoding="utf-8")
+            args = argparse.Namespace(new_token=True, info=False, link=False, json=True, bind="127.0.0.1", port=None)
+            with mock.patch("zoolib.system.unit_states", return_value={}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(web_mod.cmd_web(args, config.load()), 0)
+            self.assertFalse(store.exists())
+
+
+class LoginFormTest(AppTestBase):
+    def test_form_has_username_hint_and_label(self):
+        _, body = self.c.get("/login")
+        self.assertIn('name="username"', body)
+        self.assertIn('autocomplete="username"', body)
+        self.assertIn('value="zoo test"', body)  # метка из config.env
+        self.assertIn(">Токен</label>", body)
+        self.assertIn("sudo zoo web --link", body)
+        self.assertNotIn("data-autosubmit", body)
+
+    def test_lockout_message_and_threshold(self):
+        self.assertEqual(auth.FAIL_LIMIT, 50)
+        for _ in range(auth.FAIL_LIMIT):
+            self.app.auth.login("nope")
+        resp, body = self.c.get("/login")
+        self.assertRegex(body, r"Подождите \d+ с")
+        self.c.get("/login")
+        resp, body = self.c.post("/login", {"token": TOKEN, "lc": self.c.cookies[LOGIN_COOKIE]}, csrf=False)
+        self.assertEqual(resp.status, 429)
+
+    def test_cookie_names_carry_port(self):
+        self.assertEqual(auth.cookie_names("127.0.0.1:8999"), ("zoo_sid_8999", "zoo_login_8999"))
+        self.assertEqual(auth.cookie_names("[::1]:24305"), ("zoo_sid_24305", "zoo_login_24305"))
+        self.assertEqual(auth.cookie_names("localhost"), ("zoo_sid_80", "zoo_login_80"))
+        self.c.login()
+        self.assertIn("zoo_sid_8999", self.c.cookies)
+        resp, _ = self.c.post("/logout")
+        self.assertIn("Max-Age=0", [v for v in header(resp, "Set-Cookie") if v.startswith("zoo_sid_8999")][0])
+
+    def test_session_cookie_max_age(self):
+        self.c.get("/login")
+        resp, _ = self.c.post("/login", {"token": TOKEN, "lc": self.c.cookies[LOGIN_COOKIE]}, csrf=False)
+        sid = [v for v in header(resp, "Set-Cookie") if v.startswith(SID_COOKIE + "=")][0]
+        self.assertIn(f"Max-Age={auth.ABSOLUTE_TTL}", sid)
+
+    def test_second_login_tab_does_not_break_first(self):
+        self.c.get("/login")
+        first = self.c.cookies[LOGIN_COOKIE]
+        _, body2 = self.c.get("/login")  # вторая вкладка
+        self.assertEqual(self.c.cookies[LOGIN_COOKIE], first)
+        self.assertIn(f'name="lc" value="{first}"', body2)
+        resp, _ = self.c.post("/login", {"token": TOKEN, "lc": first}, csrf=False)
+        self.assertEqual(resp.status, 303)
+
+
+class OnceLinkTest(AppTestBase):
+    def open_form(self, value):
+        resp, body = self.c.get("/login?" + urllib.parse.urlencode({"once": value}))
+        return resp, body
+
+    def submit(self, value, **kw):
+        self.c.get("/login")
+        form = {"lc": self.c.cookies[LOGIN_COOKIE], "once": value, "next": "/", **kw}
+        return self.c.post("/login", form, csrf=False)
+
+    def test_link_logs_in_once(self):
+        value = auth.make_once(TOKEN)
+        resp, body = self.open_form(value)
+        self.assertEqual(resp.status, 200)
+        self.assertIn("data-autosubmit", body)
+        self.assertIn(f'name="once" value="{value}"', body)
+        resp, _ = self.submit(value)
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(self.c.get("/")[0].status, 200)
+        # повторное использование — отказ
+        other = Client(self.app)
+        other.get("/login")
+        resp, body = other.post("/login", {"lc": other.cookies[LOGIN_COOKIE], "once": value}, csrf=False)
+        self.assertEqual(resp.status, 401)
+        self.assertIn("Ссылка устарела", body)
+
+    def test_get_does_not_consume_link(self):
+        value = auth.make_once(TOKEN)
+        for _ in range(3):
+            self.open_form(value)
+        self.assertEqual(self.submit(value)[0].status, 303)
+
+    def test_expired_and_forged(self):
+        old = auth.make_once(TOKEN, now=time.time() - auth.ONCE_TTL - 5)
+        self.assertEqual(self.submit(old)[0].status, 401)
+        n, e, sig = auth.make_once(TOKEN).split(".")
+        forged = f"{n}.{e}.{'0' * len(sig)}"
+        self.assertEqual(self.submit(forged)[0].status, 401)
+        later = f"{n}.{int(e) + 3600}.{sig}"  # срок продлили, подпись осталась старой
+        self.assertEqual(self.submit(later)[0].status, 401)
+        self.assertEqual(self.submit("мусор")[0].status, 401)
+        self.assertEqual(self.submit(auth.make_once("a-different-token-0123456789"))[0].status, 401)
+        self.assertEqual(self.c.get("/")[0].status, 303, "ни одна попытка не пустила")
+
+    def test_link_works_during_lockout(self):
+        for _ in range(auth.FAIL_LIMIT):
+            self.app.auth.login("nope")
+        self.assertGreater(self.app.auth.locked(), 0)
+        self.assertEqual(self.submit(auth.make_once(TOKEN))[0].status, 303)
+
+    def test_failed_link_does_not_autosubmit_again(self):
+        """Иначе страница с ошибкой отправляла бы форму сама по кругу (в блокировке — без паузы)."""
+        old = auth.make_once(TOKEN, now=time.time() - auth.ONCE_TTL - 5)
+        resp, body = self.submit(old)
+        self.assertEqual(resp.status, 401)
+        self.assertNotIn("data-autosubmit", body)
+        self.assertNotIn('name="once"', body)
+        for _ in range(auth.FAIL_LIMIT):
+            self.app.auth.login("nope")
+        resp, body = self.submit(old)
+        self.assertEqual(resp.status, 429)
+        self.assertNotIn("data-autosubmit", body)
+        self.assertIn("Подождите", body)
+
+    def test_link_not_reusable_after_restart(self):
+        value = auth.make_once(TOKEN)
+        self.assertEqual(self.submit(value)[0].status, 303)
+        self.app = App(TOKEN, config.load)  # рестарт админки: тот же файл сессий
+        self.c = Client(self.app)
+        self.assertEqual(self.submit(value)[0].status, 401)
+
+    def test_token_typed_by_hand_still_works_with_link_form(self):
+        resp, _ = self.submit("мусор", token=TOKEN)
+        self.assertEqual(resp.status, 303)
+
+    def test_info_prints_link(self):
+        with ZooEnv():
+            with mock.patch("zoolib.system.listening_sockets", return_value=[]):
+                web_mod.setup(config.load())
+            cfg = config.load()
+            info = web_mod.access_info(cfg)
+            m = re.fullmatch(rf"http://127\.0\.0\.1:{info['port']}/login\?once=([\w-]+)\.(\d+)\.([0-9a-f]{{32}})",
+                             info["link"])
+            self.assertIsNotNone(m, info["link"])
+            self.assertAlmostEqual(int(m.group(2)), time.time() + auth.ONCE_TTL, delta=5)
+            a = auth.Auth(cfg.get("ZOO_WEB_TOKEN"))
+            self.assertIsNotNone(a.login_once(info["link"].split("once=")[1]))
+
+
+# ---------- сервер: keep-alive и gzip ----------
+
+class TransportTest(SocketBase):
+    def conn(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(c.close)
+        return c
+
+    def test_keep_alive_two_requests_one_connection(self):
+        c = self.conn()
+        c.request("GET", "/healthz")
+        r1 = c.getresponse()
+        self.assertEqual((r1.status, r1.read(), r1.version), (200, b"ok", 11))
+        sock = c.sock
+        c.request("GET", "/")  # 303 с пустым телом не зависает
+        r2 = c.getresponse()
+        r2.read()
+        self.assertEqual(r2.status, 303)
+        c.request("GET", "/healthz")
+        r3 = c.getresponse()
+        self.assertEqual((r3.status, r3.read()), (200, b"ok"))
+        self.assertIs(c.sock, sock, "соединение не переоткрывалось")
+
+    def test_gzip_matches_plain(self):
+        c = self.conn()
+        c.request("GET", "/static/app.css")
+        plain = c.getresponse()
+        raw = plain.read()
+        self.assertIsNone(plain.getheader("Content-Encoding"))
+        self.assertEqual(plain.getheader("Vary"), "Accept-Encoding")
+        c.request("GET", "/static/app.css", headers={"Accept-Encoding": "gzip, deflate"})
+        z = c.getresponse()
+        body = z.read()
+        self.assertEqual(z.getheader("Content-Encoding"), "gzip")
+        self.assertLess(len(body), len(raw) // 2)
+        self.assertEqual(gzip.decompress(body), raw)
+        c.request("GET", "/static/app.css", headers={"Accept-Encoding": "gzip;q=0"})
+        r = c.getresponse()
+        r.read()
+        self.assertIsNone(r.getheader("Content-Encoding"))
+
+    def test_gzip_dynamic_page_and_small_bodies(self):
+        c = self.conn()
+        c.request("GET", "/login", headers={"Accept-Encoding": "gzip"})
+        r = c.getresponse()
+        html = gzip.decompress(r.read())
+        self.assertEqual(r.getheader("Content-Encoding"), "gzip")
+        self.assertIn("Токен".encode(), html)
+        c.request("GET", "/healthz", headers={"Accept-Encoding": "gzip"})
+        r = c.getresponse()
+        r.read()
+        self.assertIsNone(r.getheader("Content-Encoding"), "короткое тело не сжимается")
+
+    def test_bad_content_length_closes_connection(self):
+        for length, status in (("-1", 400), ("abc", 400), (str(10 ** 8), 413)):
+            c = self.conn()
+            c.request("POST", "/login", "", {"Content-Length": length})
+            r = c.getresponse()
+            r.read()
+            self.assertEqual(r.status, status)
+            self.assertEqual(r.getheader("Connection"), "close", length)
+
+
+# ---------- страницы: подключение, список, тексты ----------
+
+SIX = ("vless-reality", "vless-xhttp", "hysteria2", "amneziawg", "tuic", "ss2022")
+
+
+@needs_bash
+class ConnectPageTest(AppTestBase):
+    def setUp(self):
+        super().setUp()
+        for pid in SIX:
+            self.env.add_protocol(pid)
+        from zoolib import users
+        users.bootstrap()
+        users.add_user("masha", note="сестра")
+        self.c.login()
+
+    def test_connect_first_light_and_without_qr_inside(self):
+        resp, body = self.c.get("/users/masha")
+        self.assertEqual(resp.status, 200)
+        main = body[body.index("<main"):]
+        self.assertLess(main.index("Подключение"), main.index("Профиль"))
+        self.assertLess(main.index("Подключение"), main.index(">Трафик<"))
+        self.assertLessEqual(len(body.encode("utf-8")), 20 * 1024, "страница с 6 протоколами должна быть лёгкой")
+        self.assertNotIn("<svg", body.split("Профиль")[0], "QR — отдельные картинки по требованию")
+        self.assertIn('data-src="/users/masha/qr/', body)
+        self.assertNotIn("нужен Xray-клиент", body)
+        self.assertNotIn("Для:", body)
+        self.assertIn("Быстрый старт", body)
+        self.assertIn("Скопировать всё", body)
+        self.assertNotIn("class=\"ptile s", body)
+        self.assertRegex(body, r'class="ptile acc[1-8]"')
+
+    def test_profile_is_short(self):
+        _, body = self.c.get("/users/masha")
+        profile = body[body.index(">Профиль<"):]
+        self.assertNotIn(">протоколы<", profile)
+        self.assertIn(">создан<", profile)
+        self.users_disable()
+        _, body = self.c.get("/users/masha")
+        self.assertIn('class="badge muted" title="креды сохранены, доступ закрыт">отключён', body)
+        self.assertNotIn("Пользователь отключён: ссылки сохранены", body)
+
+    def users_disable(self):
+        self.c.post("/users/masha/disable")
+
+    def test_copy_all_has_every_uri(self):
+        _, body = self.c.get("/users/masha")
+        block = re.search(r'<textarea id="copy-all"[^>]*>(.*?)</textarea>', body, re.S).group(1)
+        self.assertEqual(len([x for x in block.split("\n") if x.startswith("vless://")]), len(SIX))
+
+    def test_qr_route_needs_session_and_has_no_style(self):
+        _, body = self.c.get("/users/masha")
+        url = re.search(r'data-src="(/users/masha/qr/\d+)"', body).group(1)
+        anon = Client(self.app)
+        resp, _ = anon.get(url)
+        self.assertEqual(resp.status, 303)
+        self.assertTrue(header(resp, "Location")[0].startswith("/login"))
+        with mock.patch("zoolib.qr.svg", return_value=SAMPLE_QR) as svg:
+            resp, data = self.c.get(url)
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(resp.content_type, "image/svg+xml")
+        self.assertEqual(header(resp, "Cache-Control"), ["no-store"])
+        self.assertTrue(data.startswith("<svg"))
+        self.assertNotIn("style=", data)
+        self.assertIn('stroke="#000000"', data)
+        self.assertIn("vless://masha@", svg.call_args[0][0])
+        for bad in ("/users/masha/qr/999", "/users/nobody/qr/0"):
+            self.assertEqual(self.c.get(bad)[0].status, 404, bad)
+
+    def test_qr_cache_cleared_with_links(self):
+        from zoolib import qr
+        qr._svg_cache[("x", 6)] = "<svg/>"
+        self.app.cache_put("links:masha", ("s", ([], {})), 3600)
+        self.c.post("/users/masha/disable")
+        self.assertNotIn(("x", 6), qr._svg_cache)
+        self.assertIsNone(self.app.cache_get("links:masha", 3600))
+
+    def test_links_cached_and_expired_entries_dropped(self):
+        self.c.get("/users/masha")
+        calls = len([x for x in self.env.calls() if " links " in x])
+        self.c.get("/users/masha")
+        self.assertEqual(len([x for x in self.env.calls() if " links " in x]), calls, "второй раз — из кэша")
+        self.app.cache_put("old", 1, 0.0)
+        self.app.cache_put("new", 2, 100)
+        self.assertNotIn("old", self.app._cache)
+
+    def test_user_links_keep_order(self):
+        from zoolib import users
+        links, errors = users.user_links("masha")
+        self.assertEqual(errors, {})
+        registry = users.list_users().get("masha").protocols
+        self.assertEqual([l.proto_id for l in links if l.proto_id != "allowlist"],
+                         [p for p in registry for _ in range(2 if p == "amneziawg" else 1)])
+
+    def test_list_has_chips_no_open_button(self):
+        resp, body = self.c.get("/users")
+        self.assertIn("6/6", body)
+        self.assertNotIn("Открыть", body)
+        self.assertNotIn(">статус<", body)
+        self.assertIn("Сверить", body)
+        self.assertNotIn("Синхронизировать", body)
+        self.assertIn("＋ Добавить пользователя", body)
+        self.c.post("/users/masha/disable", {"back": "/users"})
+        _, body = self.c.get("/users")
+        self.assertIn('class="off"', body)
+        self.assertIn(">откл.<", body)
+        self.assertIn("data-confirm", body)  # отключение — с подтверждением
+
+    def test_list_shows_missing_protocols_and_sync_only_on_mismatch(self):
+        from zoolib import users
+        # протокол включили после создания пользователей: в реестре его у них нет
+        self.env.add_protocol("trojan-x", users=())
+        resp, body = self.c.get("/users")
+        self.assertIn("нет: trojan-x", body)
+        _, body = self.c.get("/users?verify=1")
+        self.assertIn("Расхождений нет", body)
+        self.assertNotIn("Синхронизировать", body)
+        # а в протоколе пользователь пропал — «Синхронизировать» появляется
+        (self.env.fake / "tuic.users").write_text("owner true\n", encoding="utf-8")
+        _, body = self.c.get("/users?verify=1")
+        self.assertIn("masha есть в реестре, но нет в протоколе", body)
+        self.assertIn("Синхронизировать", body)
+
+    def test_add_user_name_lowercased(self):
+        resp, _ = self.c.post("/users", {"name": "  Petya "})
+        self.assertEqual(header(resp, "Location"), ["/users/petya"])
+
+    def test_job_page_origin(self):
+        j = self.app.jobs.start("probe", "Самопроверка", [sys.executable, "-c", "print('{}')"])
+        self.app.jobs.wait(j)
+        _, body = self.c.get(f"/jobs/{j.id}")
+        self.assertRegex(body, r'<a href="/probe" class="active" aria-current="page">')
+        self.assertIn("← проверка", body)
+        c = self.app.jobs.start("collect", "Снятие", [sys.executable, "-c", "pass"])
+        self.app.jobs.wait(c)
+        _, body = self.c.get(f"/jobs/{c.id}")
+        self.assertRegex(body, r'<a href="/traffic" class="active" aria-current="page">')
+        r = self.app.jobs.start("restart:x", "Перезапуск", [sys.executable, "-c", "pass"])
+        self.app.jobs.wait(r)
+        _, body = self.c.get(f"/jobs/{r.id}")
+        self.assertRegex(body, r'<a href="/settings" class="active" aria-current="page">')
+
+
+class TilesTest(unittest.TestCase):
+    def test_awg_dialog_opens_on_android_file(self):
+        from zoolib import protolib
+        from zoolib.web.userviews import connect_tiles
+        links = [protolib.Link("vpn://abc", "ключ", "amneziawg", "uri"),
+                 protolib.Link("/etc/clients/masha/amneziawg.conf", "", "amneziawg", "file"),
+                 protolib.Link("/etc/clients/masha/amneziawg-android.conf", "", "amneziawg", "file")]
+        out = str(connect_tiles(links, [], "masha"))
+        tabs = re.findall(r'<button type="button" data-tab="dlg-0-v(\d)"[^>]*>([^<]*)</button>', out)
+        self.assertEqual([t_[1] for t_ in tabs], ["Android", "Компьютер, iPhone", "Ключ AmneziaVPN"])
+        first = re.search(r'<div class="variant" id="dlg-0-v0">(.*?)</div>', out, re.S).group(1)
+        self.assertIn("/qr/2", first, "первым — android.conf (третья ссылка)")
+        self.assertIn('class="tab active">Android', out)
+        self.assertNotIn(' s0"', out)
+
+    def test_variant_names_and_titles(self):
+        from zoolib import protolib
+        from zoolib.web.userviews import connect_tiles
+        links = [protolib.Link("hysteria2://a@h:443?sni=x", "", "hysteria2"),
+                 protolib.Link("hysteria2://a@h:443?obfs=salamander&obfs-password=p", "", "hysteria2"),
+                 protolib.Link("hysteria2://a@h:20000,20100?sni=x", "", "hysteria2")]
+        out = str(connect_tiles(links, [], "masha"))
+        self.assertIn(">Обычная</button>", out)
+        self.assertIn(">Запасная 2</button>", out)
+        self.assertIn(">Запасная 3</button>", out)
+        self.assertIn('title="Salamander: обфускация Hysteria2"', out)
+        self.assertIn('title="Port hopping: порт меняется"', out)
+        self.assertNotIn("Для:", out)
+        self.assertNotIn("нужен Xray-клиент", out)
+
+
+# ---------- объём текста, подтверждения, ошибки ----------
+
+HEALTHY = copy.deepcopy(FAKE_SLOW)
+HEALTHY["protocols"][1].update(services={"hysteria-server.service": "active"}, listening={"udp": True}, ok=True)
+HEALTHY["services"] = {**FAKE_SLOW["services"],
+                       "hysteria-server.service": {"load": "loaded", "active": "active", "enabled": "enabled"}}
+HEALTHY.update(problems=[], exposed=[])
+
+
+class QuietPagesTest(AppTestBase):
+    def test_healthy_overview_is_quiet(self):
+        with mock.patch("zoolib.status.collect_slow", return_value=HEALTHY):
+            self.c.login()
+            _, body = self.c.get("/")
+        self.assertNotIn("не слушает", body)
+        self.assertNotIn('class="chip bad"', body)
+        self.assertNotIn(">active<", body)
+        self.assertNotIn("лишние открытые порты", body)
+        self.assertNotIn("Сертификаты", body)
+        self.assertNotIn(">Хост<", body)
+        self.assertNotIn(">Сводка<", body)
+        self.assertNotIn("Обновить", body)
+        self.assertIn("443/tcp", body)
+
+    def test_overview_alert_actions_for_failed_unit(self):
+        self.c.login()
+        _, body = self.c.get("/")
+        self.assertIn('href="/logs?src=unit:hysteria-server.service"', body)
+        self.assertIn('name="unit" value="hysteria-server.service"', body)
+        self.assertIn("data-confirm=\"Перезапустить hysteria-server.service?\"", body)
+        self.assertIn("443/udp", body)
+        self.assertIn("не слушает", body, "при сбое чипы показываются")
+
+    def test_all_good_badge(self):
+        self._seed_run()
+        with mock.patch("zoolib.status.collect_slow", return_value=HEALTHY):
+            self.c.login()
+            _, body = self.c.get("/")
+        self.assertIn("✓ всё в порядке", body)
+
+    def _seed_run(self):
+        from zoolib import users
+        users.bootstrap()
+        now = int(time.time())
+        con = traffic.connect()
+        with con:
+            samples = [traffic.Sample("xray", "owner", 1, 1)]
+            deltas, new = traffic.compute_deltas(traffic.load_counters(con), samples, now)
+            traffic.store(con, deltas, new, now)
+            con.execute("INSERT OR REPLACE INTO runs VALUES (?, 1, 1, 0, 0, 0.1, '{}')", (now,))
+        con.close()
+
+    def test_auto_reboot_message(self):
+        with mock.patch("zoolib.web.views.REBOOT_FLAG") as flag:
+            flag.exists.return_value = True
+            self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "AUTO_REBOOT": "1",
+                                   "AUTO_REBOOT_TIME": "04:30"})
+            self.c.login()
+            _, body = self.c.get("/")
+        self.assertIn("Перезагрузится сам в 04:30", body)
+
+    def test_settings_is_short(self):
+        self.env.add_manifest("vless-reality")
+        self.c.login()
+        _, body = self.c.get("/settings")
+        self.assertLessEqual(visible_words(body), 120)
+        self.assertLess(body.index("Сервисы"), body.index("Обслуживание"))
+        self.assertLess(body.index("Обслуживание"), body.index("Версии"))
+        self.assertLess(body.index("Версии"), body.index("config.env"))
+        self.assertNotIn("Сверить пользователей", body)
+        self.assertIn("btn-grid", body)
+
+    def test_settings_masks_panel_path_and_copies_full_url(self):
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "PANEL_PORT": "24680",
+                               "PANEL_PATH": "supersecretpath", "ENABLE_TUIC": "1", "SSH_PORTS": "22",
+                               "HY2_STATS_SECRET": "abcdef123456"})
+        self.c.login()
+        _, body = self.c.get("/settings")
+        visible = re.sub(r"<input[^>]*>", "", body)
+        self.assertIn("http://127.0.0.1:24680/•••/", visible)
+        self.assertNotIn("supersecretpath", visible)
+        self.assertIn('value="http://127.0.0.1:24680/supersecretpath/"', body)
+        self.assertIn('data-copy="panel-url"', body)
+        self.assertNotIn("abcdef123456", body)
+        self.assertIn("ENABLE_TUIC", body.split("<summary>config.env ·")[0], "ENABLE_* видны сразу")
+        self.assertIn("<summary>config.env · ключей: 2", body)
+
+    def test_restart_asks_confirmation(self):
+        self.env.add_manifest("vless-reality")
+        self.c.login()
+        _, body = self.c.get("/settings")
+        self.assertIn("оборвутся", body)  # x-ui: про VLESS и TUIC
+        self.assertIn('data-confirm="Перезапустить fail2ban.service?"', body)
+
+    def test_logout_and_reset_confirm(self):
+        self.c.login()
+        _, body = self.c.get("/apps")
+        self.assertIn('action="/logout"', body)
+        self.assertIn('data-confirm="Выйти из админки?"', body)
+        self.assertRegex(body, r'data-confirm="[^"]+"[^>]*>(<input[^>]*>)*<input type="hidden" name="action" value="reset"')
+
+    def test_error_page_hides_secrets_and_is_short(self):
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "PANEL_PASS": "s3cretPanelPass"})
+        self.c.login()
+        with mock.patch("zoolib.web.views.status_data", side_effect=RuntimeError("упало: s3cretPanelPass " + "x" * 600)):
+            with contextlib.redirect_stderr(io.StringIO()):
+                resp, body = self.c.get("/")
+        self.assertEqual(resp.status, 500)
+        self.assertNotIn("s3cretPanelPass", body)
+        self.assertLess(len(body), 4000)
+        text = re.search(r'<p class="muted">(.*?)</p>', body).group(1)
+        self.assertLessEqual(len(text), 300)
+
+    def test_flash_errors_are_sanitized(self):
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "PANEL_PASS": "s3cretPanelPass"})
+        self.c.login()
+        self.app.auth.session(self.c.cookies[SID_COOKIE]).flash("bad", "ошибка s3cretPanelPass " + "y" * 500)
+        _, body = self.c.get("/users")
+        self.assertNotIn("s3cretPanelPass", body)
+        self.assertIn("•••", body)
+
+    def test_traffic_empty_state_has_collect_button(self):
+        self.c.login()
+        _, body = self.c.get("/traffic")
+        self.assertIn("Нет данных · сбор каждые 5 мин", body)
+        self.assertIn("Снять сейчас", body)
+        self.assertIn('name="action" value="collect"', body)
+
+    def test_probe_page_is_short(self):
+        from zoolib import probe
+        from zoolib.fsutil import atomic_write_json
+        atomic_write_json(probe.selftest_file(), {"generated": "2026-10-04T00:00:00+00:00", "server_ip": "10.0.0.1",
+                                                 "results": [{"id": "vless-reality", "verdict": "OK", "port": 443},
+                                                             {"id": "hysteria2", "verdict": "SERVER_DOWN"}]})
+        self.c.login()
+        _, body = self.c.get("/probe")
+        self.assertLessEqual(visible_words(body), 150)
+        self.assertIn("Сравнить</button>", body)
+        self.assertNotIn("необязательно", body.replace('title="необязательно', ""))
+
+    def test_traffic_page_cached_until_next_collect(self):
+        self._seed_run()
+        self._seed_more()
+        self.c.login()
+        resp, first = self.c.get("/traffic")
+        self.assertEqual(resp.status, 200)
+        with mock.patch.object(traffic, "report", wraps=traffic.report) as spy:
+            _, again = self.c.get("/traffic")
+        self.assertEqual(spy.call_count, 0, "второй раз — из кэша")
+        self.assertEqual(first, again)
+
+    def _seed_more(self):
+        now = int(time.time())
+        con = traffic.connect()
+        with con:
+            samples = [traffic.Sample("xray", "owner", 100, 100), traffic.Sample("vless-reality", "", 100, 100),
+                       traffic.Sample(traffic.HOST, "", 100, 100)]
+            deltas, new = traffic.compute_deltas(traffic.load_counters(con), samples, now + 1)
+            traffic.store(con, deltas, new, now + 1)
+        con.close()
+
+
+class LiveTest(AppTestBase):
+    def test_live_does_not_eat_flash(self):
+        self.c.login()
+        self.c.post("/users", {"name": "Bad Name!"})
+        _, live = self.c.get("/traffic", headers={"X-Zoo-Live": "1"})
+        self.assertNotIn("недопустимое имя", live)
+        _, page = self.c.get("/users")
+        self.assertIn("недопустимое имя", page, "обычный запрос получает сообщение")
+        _, again = self.c.get("/users")
+        self.assertNotIn("недопустимое имя", again, "и тратит его")
+
+    def test_period_switch_also_live(self):
+        # переключатель периода шлёт X-Zoo-Live (app.js), поэтому тоже не забирает сообщения
+        self.assertRegex(assets.JS, r"headers: \{ 'X-Zoo-Live': '1' \}")
+
+    def test_second_live_request_gets_304(self):
+        self.c.login()
+        r1, b1 = self.c.get("/probe", headers={"X-Zoo-Live": "1"})
+        etag = header(r1, "ETag")[0]
+        self.assertRegex(etag, r'^"[0-9a-f]{20}"$')
+        r2, b2 = self.c.get("/probe", headers={"X-Zoo-Live": "1", "If-None-Match": etag})
+        self.assertEqual((r2.status, b2), (304, ""))
+        self.assertEqual(header(r2, "ETag"), [etag])
+        r3, b3 = self.c.get("/probe", headers={"X-Zoo-Live": "1", "If-None-Match": '"другой"'})
+        self.assertEqual(r3.status, 200)
+        self.assertEqual(b3, b1)
+
+    def test_live_request_does_not_extend_session(self):
+        self.c.login()
+        s = self.app.auth.session(self.c.cookies[SID_COOKIE], touch=False)
+        before = s.last
+        time.sleep(0.02)
+        self.c.get("/probe", headers={"X-Zoo-Live": "1"})
+        self.assertEqual(s.last, before)
+        self.c.get("/probe")
+        self.assertGreater(s.last, before)
+
+    def test_login_page_is_not_live_and_footer_is_short(self):
+        self.c.login()
+        _, body = self.c.get("/")
+        self.assertIn('id="live"', body)
+        self.assertNotIn("данные обновляются при открытии", body)
+        _, body = self.c.get("/settings")
+        self.assertNotIn('id="live"', body)
+        self.assertIn("<footer>zoo ", body)
+        self.assertIn(">Логи<", body)
+        self.assertNotIn(">Журнал<", body)
+
+
+class ServerSpeedTest(unittest.TestCase):
+    def test_scope_of_checks_own_first_and_caches(self):
+        from zoolib import journal
+        journal._addr.cache_clear()
+        with mock.patch("zoolib.journal.ipaddress.ip_address", wraps=ipaddress.ip_address) as parse:
+            self.assertEqual(journal.scope_of("8.8.8.8", {"8.8.8.8"}, []), "own")
+            self.assertEqual(parse.call_count, 0, "свой адрес — без разбора")
+            for _ in range(3):
+                self.assertEqual(journal.scope_of("8.8.4.4", set(), []), "public")
+            self.assertEqual(parse.call_count, 1)
+        self.assertEqual(journal.scope_of("10.0.0.5", set(), []), "local")
+        self.assertEqual(journal.scope_of("не-адрес", set(), []), "local")
+        self.assertEqual(journal.scope_of("9.9.9.9", set(), [ipaddress.ip_network("9.9.9.0/24")]), "own")
+
+    def test_status_split_and_cert_cache(self):
+        from zoolib import status, system
+        with ZooEnv():
+            cfg = config.load()
+            with mock.patch.object(system, "listening_sockets", return_value=[]), \
+                    mock.patch.object(system, "ufw_active", return_value=True), \
+                    mock.patch.object(system, "unit_states", return_value={}), \
+                    mock.patch.object(system, "host_metrics") as host:
+                slow = status.collect_slow(cfg, with_xui=False)
+                self.assertNotIn("host", slow)
+                host.assert_not_called()
+                full = status.collect(cfg, cpu_interval=0, with_xui=False)
+                self.assertIn("host", full)
+        with tempfile.TemporaryDirectory() as d:
+            crt = Path(d) / "c.pem"
+            crt.write_text("x", encoding="utf-8")
+            system._cert_cache.clear()
+            with mock.patch.object(system, "cert_expiry", return_value=None) as exp:
+                system.cert_info(crt)
+                system.cert_info(crt)
+                self.assertEqual(exp.call_count, 1)
+                os.utime(crt, (1, 1))
+                system.cert_info(crt)
+                self.assertEqual(exp.call_count, 2, "изменился файл — читаем заново")
+
+    def test_cpu_percent_does_not_sleep_when_called_often(self):
+        from zoolib import system
+        with mock.patch.object(system, "_cpu_last", (time.monotonic(), 10.0, 100.0, 12.5)), \
+                mock.patch.object(system.time, "sleep") as sleep:
+            self.assertEqual(system.cpu_percent(0.3), 12.5)
+            sleep.assert_not_called()
+
+    def test_logs_and_settings_do_not_collect_status(self):
+        with ZooEnv() as env:
+            env.add_manifest("vless-reality")
+            m = mock.patch("zoolib.system.unit_states",
+                           side_effect=lambda units: {u: {"load": "loaded", "active": "active"} for u in units})
+            m.start()
+            self.addCleanup(m.stop)
+            app = App(TOKEN, config.load)
+            c = Client(app)
+            c.login()
+            with mock.patch("zoolib.status.collect_slow", side_effect=AssertionError("статус не нужен")), \
+                    mock.patch("zoolib.status.collect", side_effect=AssertionError("статус не нужен")):
+                for path in ("/logs", "/settings"):
+                    self.assertEqual(c.get(path)[0].status, 200, path)
+
+    def test_logs_open_failed_unit_by_default(self):
+        with ZooEnv() as env:
+            env.add_manifest("vless-reality")
+
+            def states(units):
+                return {u: {"load": "loaded", "active": "failed" if u == "fail2ban.service" else "active"}
+                        for u in units}
+            with mock.patch("zoolib.system.unit_states", side_effect=states), \
+                    mock.patch("zoolib.web.logs.journal", return_value="fail2ban упал"):
+                app = App(TOKEN, config.load)
+                c = Client(app)
+                c.login()
+                _, body = c.get("/logs")
+        self.assertIn("fail2ban упал", body)
+        self.assertIn('class="active" title="fail2ban.service"', body)
 
 
 if __name__ == "__main__":

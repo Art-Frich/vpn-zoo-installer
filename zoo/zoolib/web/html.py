@@ -75,16 +75,37 @@ def state_badge(ok: bool | None, yes: str = "работает", no: str = "сб�
     return badge(yes, "ok") if ok else badge(no, "bad")
 
 
+def _hdr(h: Any) -> tuple[Any, str | None]:
+    """Заголовок колонки: «текст» или («текст», «подсказка в title»)."""
+    return (h[0], h[1]) if isinstance(h, tuple) else (h, None)
+
+
+def empty(text: Any, hint: Any = None) -> Markup:
+    """Единое пустое состояние: строка и, если нужно, подсказка или кнопка под ней."""
+    return t("div", t("p", text), t("div", hint, class_="hint") if hint else None, class_="empty-state")
+
+
+_empty = empty  # в table() параметр empty заслоняет функцию
+
+
 def table(headers: list[Any], rows: list[list[Any]], num: Iterable[int] = (), cls: str = "",
-          empty: str = "пусто") -> Markup:
-    """Таблица в прокручиваемой обёртке; num — индексы числовых колонок (вправо)."""
+          empty: Any = "пусто", stack: bool = False, row_cls: list[str | None] | None = None) -> Markup:
+    """Таблица в прокручиваемой обёртке; num — индексы числовых колонок (вправо).
+    Заголовок — текст или (текст, title). stack=True: на телефоне строки складываются в карточки
+    (подписи берутся из заголовков, data-label). Без строк вместо таблицы — пустое состояние."""
+    if not rows:
+        return _empty(empty)
     num = set(num)
-    head = t("tr", [t("th", h, class_="num" if i in num else None, scope="col") for i, h in enumerate(headers)])
-    if rows:
-        body = [t("tr", [t("td", c, class_="num" if i in num else None) for i, c in enumerate(r)]) for r in rows]
-    else:
-        body = [t("tr", t("td", empty, colspan=len(headers), class_="empty"))]
-    return t("div", t("table", t("thead", head), t("tbody", body), class_=cls or None), class_="table-wrap")
+    hs = [_hdr(h) for h in headers]
+    head = t("tr", [t("th", label, class_="num" if i in num else None, scope="col", title=title)
+                    for i, (label, title) in enumerate(hs)])
+    labels = [(str(label) if isinstance(label, str) else "") for label, _ in hs]
+    body = [t("tr", [t("td", c, class_="num" if i in num else None,
+                       data_label=labels[i] if stack and i < len(labels) else None)
+                     for i, c in enumerate(r)], class_=(row_cls[n] if row_cls else None))
+            for n, r in enumerate(rows)]
+    klass = " ".join(x for x in (cls, "stack" if stack else "") if x)
+    return t("div", t("table", t("thead", head), t("tbody", body), class_=klass or None), class_="table-wrap")
 
 
 def csrf_input(token: str) -> Markup:
@@ -92,15 +113,19 @@ def csrf_input(token: str) -> Markup:
 
 
 def post_button(action: str, label: str, csrf: str, cls: str = "btn", fields: dict[str, str] | None = None,
-                title: str | None = None) -> Markup:
-    """Кнопка-форма POST (действие без JS)."""
+                title: str | None = None, confirm: str | None = None) -> Markup:
+    """Кнопка-форма POST (действие без JS). confirm — вопрос окна подтверждения (data-confirm)."""
     hidden = [t("input", type="hidden", name=k, value=v) for k, v in (fields or {}).items()]
     return t("form", csrf_input(csrf), hidden, t("button", label, type="submit", class_=cls, title=title),
-             method="post", action=action, class_="inline")
+             method="post", action=action, class_="inline", data_confirm=confirm)
 
 
-def card(title: Any, *body: Any, cls: str = "", extra: Any = None) -> Markup:
-    head = t("div", t("h3", title), extra, class_="card-head")
+def card(title: Any, *body: Any, cls: str = "", extra: Any = None, help: Any = None) -> Markup:
+    """help — пояснение в свёрнутом «?» у заголовка: на карточке видна одна строка, остальное тут."""
+    tail = [extra, t("details", t("summary", "?", aria_label="Пояснение"), t("div", help, class_="hint"),
+                     class_="help") if help else None]
+    head = t("div", t("h3", title), t("div", tail, class_="head-end") if extra or help else None,
+             class_="card-head")
     return t("section", head, *body, class_=f"card {cls}".strip())
 
 

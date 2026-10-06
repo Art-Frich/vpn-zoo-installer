@@ -33,6 +33,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -300,16 +301,32 @@ def load_ignore(path: Path | None = None) -> list[Any]:
     return nets
 
 
+@lru_cache(maxsize=1 << 16)
+def _addr(ip: str) -> Any:
+    """Разбор адреса (None — не адрес): на странице за 90 дней их десятки тысяч, разбор дорогой."""
+    try:
+        return ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=1 << 16)
+def _is_global(ip: str) -> bool:
+    a = _addr(ip)
+    return a is not None and a.is_global
+
+
 def scope_of(ip: str, own: set[str], nets: list[Any]) -> str:
     """own — адрес успешного входа по ключу или из journal-ignore.txt; local — не из публичного
     интернета (loopback, частные сети, контейнеры и тесты); public — остальное."""
-    try:
-        a = ipaddress.ip_address(ip)
-    except ValueError:
-        return "local"
-    if ip in own or any(a in n for n in nets if n.version == a.version):
+    if ip in own:
         return "own"
-    return "public" if a.is_global else "local"
+    a = _addr(ip)
+    if a is None:
+        return "local"
+    if nets and any(a in n for n in nets if n.version == a.version):
+        return "own"
+    return "public" if _is_global(ip) else "local"
 
 
 # ---------- база ----------
@@ -634,25 +651,34 @@ def resolve_period(period: str) -> str:
     return p
 
 
-def _hidden_ips(con: sqlite3.Connection, since: int, res: int, include_local: bool) -> tuple[set[str], dict[str, int]]:
-    """Адреса, которые скрываем (свои и локальные), и сколько событий они дали."""
-    own = {r[0] for r in con.execute("SELECT ip FROM own")}
+def _scope_split(rows: Any, own: set[str], include_local: bool) -> tuple[set[str], dict[str, int]]:
+    """По строкам (адрес, событий): адреса, которые скрываем (свои и локальные), и сколько событий они дали."""
     nets = load_ignore()
     hidden: set[str] = set()
     counts = {"own": 0, "local": 0}
-    for r in con.execute("SELECT ip, SUM(n) AS n FROM hits WHERE res = ? AND ts >= ? AND kind NOT IN "
-                         "(%s) GROUP BY ip" % ",".join("?" * len(DEFENCE_KINDS)), (res, since, *DEFENCE_KINDS)):
-        sc = scope_of(r["ip"], own, nets)
+    for ip, n in rows:
+        sc = scope_of(ip, own, nets)
         if sc != "public":
-            counts[sc] += int(r["n"])
+            counts[sc] += int(n)
             if not include_local:
-                hidden.add(r["ip"])
+                hidden.add(ip)
     return hidden, counts
+
+
+def _hidden_ips(con: sqlite3.Connection, since: int, res: int, include_local: bool) -> tuple[set[str], dict[str, int]]:
+    """Адреса, которые скрываем (свои и локальные), и сколько событий они дали."""
+    own = {r[0] for r in con.execute("SELECT ip FROM own")}
+    return _scope_split(con.execute("SELECT ip, SUM(n) FROM hits WHERE res = ? AND ts >= ? AND kind NOT IN "
+                                    "(%s) GROUP BY ip" % ",".join("?" * len(DEFENCE_KINDS)),
+                                    (res, since, *DEFENCE_KINDS)), own, include_local)
 
 
 def report(period: str = "24h", now: float | None = None, include_local: bool = False,
            top: int = 15) -> dict[str, Any]:
-    """Сводка за период. include_local — показать и свои/локальные адреса (контейнеры, тесты)."""
+    """Сводка за период. include_local — показать и свои/локальные адреса (контейнеры, тесты).
+
+    Суммы считает SQLite (десятки тысяч адресов за 90 суток в Python-цикле — сотни миллисекунд),
+    подробности (виды, порты, страна) берутся только для адресов из верхушки списка."""
     period = resolve_period(period)
     since, step, n, res = traffic.window(period, now)
     out: dict[str, Any] = {
@@ -666,72 +692,86 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
     if con is None:
         out["empty"] = True
         return out
+    kinds = tuple(KINDS)
+    attack = tuple(k for k in KINDS if k not in DEFENCE_KINDS)
+    marks, amarks = ",".join("?" * len(kinds)), ",".join("?" * len(attack))
     try:
-        hidden, out["hidden"] = _hidden_ips(con, since, res, include_local)
-        rows = con.execute("SELECT ts, kind, ip, port, n FROM hits WHERE res = ? AND ts >= ?", (res, since)).fetchall()
-        info = {r["ip"]: (r["cc"] or "", r["first"], r["last"])
-                for r in con.execute("SELECT ip, cc, first, last FROM ips")}
         own = {r["ip"]: r["ts"] for r in con.execute("SELECT ip, ts FROM own ORDER BY ts DESC")}
         out["last_run"] = _last_run(con)
+        # события периода — во временную таблицу один раз, суммы — SQL-запросами к ней
+        con.execute("PRAGMA temp_store = MEMORY")
+        con.execute(f"CREATE TEMP TABLE _v AS SELECT ts, kind, ip, port, n FROM hits WHERE res = ? AND ts >= ? "
+                    f"AND kind IN ({marks})", (res, since, *kinds))
+        con.execute(f"CREATE TEMP TABLE _ip AS SELECT ip, SUM(n) AS n FROM _v WHERE kind IN ({amarks}) GROUP BY ip",
+                    attack)
+        hidden, out["hidden"] = _scope_split(con.execute("SELECT ip, n FROM _ip"), set(own), include_local)
+        if hidden:
+            con.execute("CREATE TEMP TABLE _hide (ip TEXT PRIMARY KEY) WITHOUT ROWID")
+            con.executemany("INSERT INTO _hide VALUES (?)", ((ip,) for ip in hidden))
+            con.execute("DELETE FROM _v WHERE ip IN (SELECT ip FROM _hide)")
+            con.execute("DELETE FROM _ip WHERE ip IN (SELECT ip FROM _hide)")
+        # по видам и времени: итоги, группы, график, баны
+        by_kind: dict[str, int] = {}
+        by_group: dict[str, dict[str, Any]] = {g: {"n": 0, "ips": 0, "kinds": {}} for g in GROUPS}
+        series: dict[str, list[int]] = {g: [0] * n for g in GROUPS}
+        for ts, kind, cnt in con.execute("SELECT ts, kind, SUM(n) FROM _v GROUP BY ts, kind"):
+            by_kind[kind] = by_kind.get(kind, 0) + int(cnt)
+            if kind in DEFENCE_KINDS:
+                continue
+            group = KINDS[kind][2]
+            g = by_group[group]
+            g["n"] += int(cnt)
+            g["kinds"][kind] = g["kinds"].get(kind, 0) + int(cnt)
+            i = (ts - since) // step
+            if 0 <= i < n:
+                series[group][i] += int(cnt)
+        out["totals"]["bans"] = sum(by_kind.get(k, 0) for k in DEFENCE_KINDS)
+        case = "CASE kind " + " ".join(f"WHEN '{k}' THEN '{KINDS[k][2]}'" for k in attack) + " END"
+        for grp, cnt in con.execute(f"SELECT {case}, COUNT(DISTINCT ip) FROM _v WHERE kind IN ({amarks}) GROUP BY 1",
+                                    attack):
+            by_group[grp]["ips"] = int(cnt)
+        # верхушка: адреса, порты, страны
+        tops = con.execute("SELECT ip, n FROM _ip ORDER BY n DESC, ip LIMIT ?", (top,)).fetchall()
+        top_ports = con.execute(f"SELECT port, SUM(n) AS n, COUNT(DISTINCT ip) AS ips FROM _v WHERE kind IN ({amarks}) "
+                                "AND port != 0 GROUP BY port ORDER BY n DESC, port LIMIT ?", (*attack, top)).fetchall()
+        countries = con.execute("SELECT COALESCE(NULLIF(i.cc, ''), '?') AS c, SUM(v.n) AS n, COUNT(*) AS ips "
+                                "FROM _ip v LEFT JOIN ips i ON i.ip = v.ip GROUP BY c ORDER BY n DESC, c").fetchall()
+        total_ips = sum(int(r["ips"]) for r in countries)
+        detail: dict[str, dict[str, Any]] = {}
+        for r in tops:
+            d: dict[str, Any] = {"ip": r["ip"], "n": int(r["n"]), "kinds": {}, "ports": {}, "bans": 0}
+            for kind, port, cnt in con.execute("SELECT kind, port, SUM(n) FROM hits WHERE res = ? AND ts >= ? AND ip = ? "
+                                               f"AND kind IN ({marks}) GROUP BY kind, port",
+                                               (res, since, r["ip"], *kinds)):
+                if kind in DEFENCE_KINDS:
+                    d["bans"] += int(cnt)
+                    continue
+                d["kinds"][kind] = d["kinds"].get(kind, 0) + int(cnt)
+                if port:
+                    d["ports"][port] = d["ports"].get(port, 0) + int(cnt)
+            row = con.execute("SELECT cc, first, last FROM ips WHERE ip = ?", (r["ip"],)).fetchone()
+            d["cc"], d["first"], d["last"] = (row["cc"] or "", row["first"], row["last"]) if row else ("", None, None)
+            detail[r["ip"]] = d
     finally:
         con.close()
     nets = load_ignore()
     own_set = set(own)
     out["own_ips"] = [{"ip": ip, "ts": ts} for ip, ts in own.items()]
-    by_kind: dict[str, int] = {}
-    by_group: dict[str, dict[str, Any]] = {g: {"n": 0, "ips": set(), "kinds": {}} for g in GROUPS}
-    ips: dict[str, dict[str, Any]] = {}
-    ports: dict[int, dict[str, Any]] = {}
-    series: dict[str, list[int]] = {g: [0] * n for g in GROUPS}
-    for r in rows:
-        ip, kind, cnt = r["ip"], r["kind"], int(r["n"])
-        if ip in hidden or kind not in KINDS:
-            continue
-        by_kind[kind] = by_kind.get(kind, 0) + cnt
-        if kind in DEFENCE_KINDS:
-            out["totals"]["bans"] += cnt
-            continue
-        group = KINDS[kind][2]
-        g = by_group[group]
-        g["n"] += cnt
-        g["ips"].add(ip)
-        g["kinds"][kind] = g["kinds"].get(kind, 0) + cnt
-        i = (r["ts"] - since) // step
-        if 0 <= i < n:
-            series[group][i] += cnt
-        d = ips.setdefault(ip, {"ip": ip, "n": 0, "kinds": {}, "ports": {}, "bans": 0})
-        d["n"] += cnt
-        d["kinds"][kind] = d["kinds"].get(kind, 0) + cnt
-        if r["port"]:
-            d["ports"][r["port"]] = d["ports"].get(r["port"], 0) + cnt
-            p = ports.setdefault(r["port"], {"port": r["port"], "n": 0, "ips": set()})
-            p["n"] += cnt
-            p["ips"].add(ip)
-    for r in rows:  # баны привязываем к адресам, которые уже есть в таблице атак
-        if r["kind"] in DEFENCE_KINDS and r["ip"] in ips:
-            ips[r["ip"]]["bans"] += int(r["n"])
     out["totals"]["events"] = sum(g["n"] for g in by_group.values())
-    out["totals"]["ips"] = len(ips)
+    out["totals"]["ips"] = int(total_ips)
     out["totals"]["by_kind"] = by_kind
-    out["groups"] = [{"key": k, "title": GROUPS[k], "n": g["n"], "ips": len(g["ips"]),
+    out["groups"] = [{"key": k, "title": GROUPS[k], "n": g["n"], "ips": g["ips"],
                       "kinds": [{"kind": kd, "title": KINDS[kd][1], "n": cn}
                                 for kd, cn in sorted(g["kinds"].items(), key=lambda kv: -kv[1])]}
                      for k, g in by_group.items()]
     out["timeline"]["series"] = [{"key": k, "title": GROUPS[k], "values": v} for k, v in series.items() if any(v)]
-    for d in sorted(ips.values(), key=lambda d: -d["n"])[:top]:
-        cc, first, lastts = info.get(d["ip"], ("", None, None))
-        d.update({"cc": cc, "scope": scope_of(d["ip"], own_set, nets), "first": first, "last": lastts,
-                  "ports": [p for p, _ in sorted(d["ports"].items(), key=lambda kv: -kv[1])[:6]]})
+    for r in tops:
+        d = detail[r["ip"]]
+        d["scope"] = scope_of(d["ip"], own_set, nets)
+        d["ports"] = [p for p, _ in sorted(d["ports"].items(), key=lambda kv: -kv[1])[:6]]
         out["top_ips"].append(d)
-    out["top_ports"] = [{"port": p["port"], "n": p["n"], "ips": len(p["ips"])}
-                        for p in sorted(ports.values(), key=lambda p: -p["n"])[:top]]
-    by_cc: dict[str, dict[str, Any]] = {}
-    for d in ips.values():
-        c = info.get(d["ip"], ("",))[0] or "?"
-        e = by_cc.setdefault(c, {"cc": c, "n": 0, "ips": 0})
-        e["n"] += d["n"]
-        e["ips"] += 1
-    out["countries"] = sorted(by_cc.values(), key=lambda e: -e["n"])[:top]
+    out["top_ports"] = [{"port": r["port"], "n": int(r["n"]), "ips": int(r["ips"])} for r in top_ports]
+    out["countries"] = [{"cc": r["c"], "n": int(r["n"]), "ips": int(r["ips"])} for r in countries[:top]]
     return out
 
 
@@ -746,6 +786,18 @@ def _last_run(con: sqlite3.Connection) -> dict[str, Any] | None:
     d["errors"] = json.loads(d["errors"] or "{}")
     d["age"] = int(time.time()) - d["ts"]
     return d
+
+
+def last_run_ts() -> int | None:
+    """Время последнего разбора журнала: по нему страница знает, что данные не менялись."""
+    con = _con()
+    if con is None:
+        return None
+    try:
+        r = _last_run(con)
+        return r["ts"] if r else None
+    finally:
+        con.close()
 
 
 def alerts(now: float | None = None) -> list[tuple[str, str]]:

@@ -1,7 +1,9 @@
 """Веб-админка (ARCHITECTURE §6): `zoo web` — http.server на 127.0.0.1:$ZOO_WEB_PORT.
 
-Вход по токену ZOO_WEB_TOKEN (config.env), доступ только через туннель:
+Вход по токену ZOO_WEB_TOKEN (config.env) или по одноразовой ссылке (`zoo web --link`),
+доступ только через туннель:
     ssh -N -L PORT:127.0.0.1:PORT root@SERVER  →  http://127.0.0.1:PORT/
+    ssh -t -L PORT:127.0.0.1:PORT root@SERVER sudo zoo web --link  →  ссылка входа, туннель открыт
 Страницы и действия используют те же функции zoolib, что CLI (status, users, traffic,
 upgrade); юнит zoo-web.service ставит фаза 09.
 """
@@ -13,7 +15,7 @@ import os
 import random
 from typing import Any
 
-from .. import output, system
+from .. import output, paths, system
 from ..config import Config, config_set
 from ..config import load as load_config
 
@@ -63,8 +65,17 @@ def access_info(cfg: Config) -> dict[str, Any]:
     who = os.environ.get("SUDO_USER") or "root"
     host = f"[{ip}]" if ":" in ip else ip
     ssh = (f"-p {ssh_port} " if ssh_port != "22" else "") + f"{who}@{host}"
+    token = cfg.get("ZOO_WEB_TOKEN")
+    link = ""
+    if len(token) >= 16:
+        from .auth import make_once
+        link = f"http://127.0.0.1:{port}/login?once={make_once(token)}"
     return {"port": port, "url": f"http://127.0.0.1:{port}/", "ssh": ssh,
-            "tunnel": f"ssh -N -L {port}:127.0.0.1:{port} {ssh}", "token": cfg.get("ZOO_WEB_TOKEN")}
+            "tunnel": f"ssh -N -L {port}:127.0.0.1:{port} {ssh}", "token": token, "link": link}
+
+
+def sessions_file():
+    return paths.state_dir() / "web-sessions.json"
 
 
 def serve(cfg: Config, bind: str = DEFAULT_BIND, port: int | None = None) -> None:
@@ -85,7 +96,8 @@ def serve(cfg: Config, bind: str = DEFAULT_BIND, port: int | None = None) -> Non
 
 
 def add_arguments(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--info", action="store_true", help="как подключиться: туннель, адрес, токен")
+    p.add_argument("--info", action="store_true", help="как подключиться: туннель, адрес, ссылка входа, токен")
+    p.add_argument("--link", action="store_true", help="одноразовая ссылка входа (живёт 3 минуты)")
     p.add_argument("--new-token", action="store_true", help="выпустить новый токен (сессии закроются)")
     p.add_argument("--bind", default=DEFAULT_BIND, help="адрес (только loopback)")
     p.add_argument("--port", type=int, help="порт (по умолчанию ZOO_WEB_PORT)")
@@ -96,7 +108,11 @@ def _render_info(d: dict[str, Any]) -> None:
     print("1. На своём компьютере откройте туннель (окно оставьте открытым):")
     print(f"   {d['tunnel']}")
     print(f"2. Откройте в браузере: {d['url']}")
-    print(f"3. Токен для входа: {d['token'] or '— (не задан: sudo zoo setup)'}")
+    if d.get("link"):
+        print(f"3. Вход по ссылке (3 минуты, один раз): {d['link']}")
+        print(f"   или токен: {d['token']}")
+    else:
+        print("3. Токен для входа: — (не задан: sudo zoo setup)")
     print(f"\nСервис {UNIT}: {d['service']}")
 
 
@@ -104,11 +120,24 @@ def cmd_web(args: argparse.Namespace, cfg: Config) -> int:
     from .auth import new_token
     if args.new_token:
         config_set("ZOO_WEB_TOKEN", new_token())
+        try:
+            sessions_file().unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            output.warn(f"не удалил {sessions_file()}: {e} (сессии и так не подойдут к новому токену)")
         cfg = load_config()
         if system.unit_states([UNIT]).get(UNIT, {}).get("active") == "active":
             system.run(["systemctl", "restart", UNIT], timeout=30)
         output.ok("новый токен записан в config.env, сессии админки закрыты")
         args.info = True
+    if args.link:
+        d = access_info(cfg)
+        if not d["link"]:
+            output.error("ZOO_WEB_TOKEN не задан: sudo zoo setup")
+            return 1
+        output.emit({"link": d["link"], "expires_in": 180}, args.json, lambda x: print(x["link"]))
+        return 0
     if args.info:
         d = access_info(cfg)
         d["service"] = system.unit_states([UNIT]).get(UNIT, {}).get("active") or "unknown"

@@ -4,6 +4,7 @@
 клиентский контейнер); строки ufw — по формату ядра: LOG из сети контейнера стенда не доходит до журнала.
 """
 
+import contextlib
 import io
 import ipaddress
 import json
@@ -15,7 +16,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.helpers import ZooEnv
-from tests.test_web import TOKEN, AppTestBase
+from tests.test_web import TOKEN, AppTestBase, visible_words
 from zoolib import cli, config, geoip, journal, traffic
 from zoolib.journal import Event
 
@@ -636,7 +637,7 @@ class JournalPageTest(AppTestBase):
     def test_empty_page(self):
         resp, body = self.c.get("/journal")
         self.assertEqual(resp.status, 200)
-        self.assertIn("Журнал атак ещё не собирался", body)
+        self.assertIn("Нет данных · сбор каждые 5 мин", body)
         self.assertIn('href="/journal"', body, "пункт меню")
 
     def test_page_with_data(self):
@@ -652,6 +653,36 @@ class JournalPageTest(AppTestBase):
         self.assertIn("172.22.0.4", body)
         self.assertIn("локальный", body)
 
+    def test_page_is_short_with_verdict(self):
+        self.seed()
+        _, body = self.c.get("/journal?period=24h")
+        self.assertLessEqual(visible_words(body), 200)
+        self.assertIn("Щупают прокси и панели: REALITY/Hy2 — 1 (адресов: 1)", body)
+        self.assertIn("тихо: Входы в панели", body)
+        self.assertNotIn("Чего мы не видим</strong>", body.split("<details")[0])
+        self.assertIn("Чего мы не видим", body)  # в «?» у таблицы источников
+        self.assertNotIn(">попыток<", body.split("<table")[0].split("Источники")[0])
+
+    def test_quiet_verdict_and_port_cap(self):
+        now = int(time.time())
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(now - 60, "port-scan", A, p) for p in (80, 81, 82, 83)]
+                          + [Event(now - 50, "ssh-auth", B, 22)], now)
+        con.close()
+        _, body = self.c.get("/journal?period=24h")
+        self.assertIn("Обычный фон: сканеры и перебор SSH", body)
+        self.assertIn('<span title="80, 81, 82, 83">80, 81 +2</span>', body)
+        self.assertIn("Источник", body)
+
+    def test_page_cached_until_next_run(self):
+        self.seed()
+        resp, first = self.c.get("/journal?period=24h")
+        with mock.patch.object(journal, "report", side_effect=AssertionError("из кэша")),                 contextlib.redirect_stderr(io.StringIO()):
+            _, again = self.c.get("/journal?period=24h")
+            self.assertEqual(self.c.get("/journal?period=7d")[0].status, 500, "другой период — новый расчёт")
+        self.assertEqual(first, again)
+
     def test_bad_period_falls_back(self):
         self.seed()
         for q in ("period=1h", "period=bogus", "period=", "all=1&period=%3Cscript%3E"):
@@ -665,6 +696,7 @@ class JournalPageTest(AppTestBase):
         with con:
             journal.store(con, [Event(now - 30, "port-scan", A, p % 200 + 1) for p in range(400)], now)
         con.close()
+        self.app.invalidate()  # тревоги журнала кэшируются на минуту: вход уже открыл обзор
         resp, body = self.c.get("/")
         self.assertEqual(resp.status, 200)
         self.assertIn("Журнал атак: за этот час 400", body)
