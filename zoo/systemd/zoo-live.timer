@@ -1,0 +1,12 @@
+# Раз в 10 минут от прошлого запуска, первый — через 2 минуты после загрузки.
+# Скорость (загрузка ~1 МБ) в этот же замер добавляется не чаще раза в 55 минут на протокол.
+[Unit]
+Description=vpn-zoo: замер протоколов каждые 10 минут
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

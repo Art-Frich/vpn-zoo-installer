@@ -6,13 +6,14 @@
                            у этого провайдера. FILE — пакет `zoo export-probe`.
 `zoo probe --compare L R`  сравнить отчёты сервера и клиента.
 `zoo probe --rank`         лучшие протоколы по накопленной истории (rank.py).
+`zoo live run|show`        лёгкие замеры протоколов раз в 10 минут для карточек админки (live.py)
 `zoo export-probe`         пакет для клиента: probe-объекты манифестов (с ключами!) и итог
                            последней самопроверки сервера.
 
 Модули: endpoints (адрес в probe), clients (xray/hysteria/sing-box/awg), fetch (HTTP через
 SOCKS5 или интерфейс), engine (прогон), verdicts (классификация), report (вывод), metrics
-(задержка, скорость), context (метки и провайдер), history (SQLite), rank (рейтинг), export
-(анонимный jsonl и age для history/ в репо).
+(задержка, скорость), context (метки и провайдер), history (SQLite), live (лёгкие замеры раз в
+10 мин), rank (рейтинг), export (анонимный jsonl и age для history/ в репо).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from .. import __version__, manifests, output, paths, protolib, users
 from ..config import Config
 from ..fsutil import atomic_write_json, atomic_write_text, read_json
 from . import context as ctx_mod
-from . import engine, export, history, rank, report as report_mod, verdicts
+from . import engine, export, history, live, rank, report as report_mod, verdicts
 from .verdicts import Thresholds
 
 VERDICTS = verdicts.VERDICTS
@@ -220,7 +221,8 @@ def run_local(cfg: Config, protocols: list[str] | None = None, user: str | None 
     user = user or users.probe_user()
     entries = collect_entries(user, protocols)
     server_ip = cfg.get("SERVER_IP") or None
-    results = engine.run(entries, st, server_ip=server_ip, server_ips=server_addresses())
+    with live.exclusive():
+        results = engine.run(entries, st, server_ip=server_ip, server_ips=server_addresses())
     rep = make_report("local", results, st, server_ip=server_ip, label=cfg.get("LABEL"), user=user,
                       context=ctx_mod.build(st.tag, st.device))
     _save_selftest(rep, partial=bool(protocols))

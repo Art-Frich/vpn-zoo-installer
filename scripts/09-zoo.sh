@@ -12,10 +12,12 @@
 #                                            отчёты в `zoo history export`; не в PATH, сбой — не провал фазы
 #   config.env: ZOO_WEB_PORT, ZOO_WEB_TOKEN  порт (127.0.0.1) и токен веб-админки (zoo setup)
 #
-# Юниты: все zoo/systemd/*.service|*.timer копируются в /etc/systemd/system, включаются
+# Юниты: все zoo/systemd/*.service|*.timer|*.path копируются в /etc/systemd/system, включаются
 # и запускаются те, что перечислены в zoo/systemd/enable.list (zoo-collector.timer —
-# трафик каждые 5 минут, zoo-web.service — админка). Повторный запуск (--phase 09)
+# трафик каждые 5 минут, zoo-live.timer/.path — метрики протоколов, zoo-job.path — вкл/выкл
+# протокола из админки, zoo-web.service — админка). Повторный запуск (--phase 09)
 # обновляет копию и юниты и перезапускает админку.
+#   /var/lib/vpn-zoo/jobs, live-req            заявки админки (файлы); исполняют zoo-job / zoo-live-req
 
 set -euo pipefail
 
@@ -68,7 +70,7 @@ zoo_install_tree() {
 zoo_install_units() {
     local d="$ZOO_HOME/zoo/systemd" f unit changed=()
     [ -d "$d" ] || return 0
-    for f in "$d"/*.service "$d"/*.timer; do
+    for f in "$d"/*.service "$d"/*.timer "$d"/*.path; do
         [ -f "$f" ] || continue
         unit="$(basename "$f")"
         cmp -s "$f" "$ZOO_UNIT_DIR/$unit" && continue
@@ -124,8 +126,8 @@ guard_foreign_install zoo "$ZOO_HOME" "$ZOO_BIN_LINK"
 [ -f "$REPO_ROOT/zoo/zoo" ] || die "zoo: нет $REPO_ROOT/zoo/zoo — неполная копия репо"
 zoo_install_tree
 ln -sfn "$ZOO_HOME/zoo/zoo" "$ZOO_BIN_LINK"
-( umask 077; mkdir -p "$ZOO_STATE_DIR" )
-chmod 700 "$ZOO_STATE_DIR"
+( umask 077; mkdir -p "$ZOO_STATE_DIR" "$ZOO_STATE_DIR/jobs" "$ZOO_STATE_DIR/live-req" )
+chmod 700 "$ZOO_STATE_DIR" "$ZOO_STATE_DIR/jobs" "$ZOO_STATE_DIR/live-req"
 [ "$(config_get ZOO_HOME)" = "$ZOO_HOME" ] || config_set ZOO_HOME "$ZOO_HOME"
 "$ZOO_BIN_LINK" version >/dev/null || die "zoo: не запускается ($ZOO_BIN_LINK version)"
 mark_owned zoo

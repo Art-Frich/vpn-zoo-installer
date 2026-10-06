@@ -136,6 +136,19 @@ details.help > .hint p { margin: 0 0 6px; } details.help > .hint ul { margin: 0 
 .proto .meta { color: var(--text-2); font-size: .88rem; margin-bottom: 8px; }
 .proto .chips { margin-bottom: 12px; }
 .proto .row { display: flex; justify-content: space-between; align-items: flex-end; gap: 8px; margin-top: auto; }
+.metrics { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px;
+  font-size: .88rem; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.mline { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-wrap: anywhere; }
+.nw { white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.btn.icon { padding: 2px 9px; line-height: 1.3; }
+.pctl { margin-top: 12px; display: flex; justify-content: flex-end; }
+.quiet .stale { color: var(--warn); }
+.off { margin-top: 20px; }
+.off-list { display: grid; gap: 8px; margin-top: 8px; }
+.off-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px;
+  border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-2); }
 /* «Подключение»: плитки протоколов и окно протокола */
 .ptiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); }
 .ptile { --acc: var(--accent); display: grid; gap: 4px; align-content: start; text-align: left; cursor: pointer;

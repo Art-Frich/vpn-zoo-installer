@@ -1,0 +1,17 @@
+# zoo-live-req — замер только тех протоколов, где в админке нажали ↻ (заявка — файл в
+# /var/lib/vpn-zoo/live-req). Запускает zoo-live.path; с zoo-live.service они ждут друг друга
+# на общей блокировке (zoo live run). Песочницы нет по той же причине, что у zoo-live.service.
+[Unit]
+Description=vpn-zoo: замер протоколов по заявке из админки
+After=network-online.target x-ui.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/zoo live run --requests
+Nice=10
+CPUQuota=30%
+TimeoutStartSec=10min
+UMask=0077
+PrivateTmp=yes
+ProtectHome=yes
