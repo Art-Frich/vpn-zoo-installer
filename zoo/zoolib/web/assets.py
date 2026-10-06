@@ -475,6 +475,13 @@ JS = r"""
       try { document.execCommand('copy'); done(); } catch (e) { /* выделено — копируйте вручную */ }
     }
   });
+  // форма «Добавить пользователя»: выбор группы отмечает её протоколы (data-protos у option)
+  document.addEventListener('change', function (ev) {
+    var sel = ev.target;
+    if (!sel.matches || !sel.matches('select[data-group]') || !sel.form) return;
+    var want = (sel.selectedOptions[0].getAttribute('data-protos') || '').split(' ');
+    sel.form.querySelectorAll('input[name=proto]').forEach(function (c) { c.checked = want.indexOf(c.value) >= 0; });
+  });
   // подтверждение опасных действий; форма с data-swap уходит в фоне, <main> подменяется ответом
   document.addEventListener('submit', function (ev) {
     var f = ev.target, msg = f.getAttribute('data-confirm');

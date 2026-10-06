@@ -80,13 +80,13 @@ def _group_link(user: users.User) -> Markup | str:
              t("span", " · свой набор протоколов", class_="muted small") if user.custom else None)
 
 
-def _group_clients(user: users.User) -> dict[str, str]:
-    """Клиенты группы пользователя по платформам (для «Что отправить»)."""
+def _group_prefs(user: users.User) -> tuple[dict[str, str], list[str] | None]:
+    """Клиенты и порядок протоколов группы пользователя (для «Что отправить»)."""
     try:
         g = groups.Groups.load().get(user.group)
     except groups.GroupError:
-        return {}
-    return dict(g.clients) if g else {}
+        return {}, None
+    return clientviews.group_prefs(g)
 
 
 def _disable_confirm(name: str) -> str:
@@ -176,7 +176,9 @@ def users_list(app: "App", req: "Request") -> "Response":
     if not reg.exists:
         tbl_html = join(alert_list([("warn", "Реестра users.json ещё нет: он создастся при первом изменении "
                                              "(или фазой 09).")]), tbl_html)
-    protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=True), p) for p in managed]
+    first = gs.get(groups.MAIN_ID) or (gs.groups[0] if gs.groups else None)
+    preset = set(first.resolve(managed)) if first else set(managed)
+    protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=p in preset), p) for p in managed]
     add_form = t("form", csrf_input(csrf),
                  t("div",
                    t("div", t("label", "Имя", for_="name"),
@@ -189,11 +191,15 @@ def users_list(app: "App", req: "Request") -> "Response":
                      t("input", type="text", name="note", id="note", maxlength="200", placeholder="кто это"),
                      class_="field grow"),
                    t("div", t("label", "Группа", for_="group"),
-                     t("select", [t("option", g.name, value=g.id, selected=g.id == groups.MAIN_ID) for g in gs.groups],
-                       name="group", id="group", title="Протоколы и приложения — как у группы"), class_="field")
+                     t("select", [t("option", g.name, value=g.id, selected=g is first,
+                                    data_protos=" ".join(g.resolve(managed))) for g in gs.groups],
+                       name="group", id="group", data_group=True,
+                       title="Протоколы и приложения — как у группы"), class_="field")
                    if gs.groups else None,
                    t("button", "Добавить", type="submit", class_="btn primary"), class_="form-row"),
-                 t("div", t("span", "Протоколы:", class_="label"), t("div", protos, class_="checks"), class_="field")
+                 t("div", t("span", "Протоколы:", class_="label"), t("div", protos, class_="checks"),
+                   t("div", "Отмечены протоколы группы; другой набор станет «своим», и группа его не тронет.",
+                     class_="hint"), class_="field")
                  if protos else alert_list([("warn", "Нет протоколов, куда можно добавить пользователя.")]),
                  method="post", action="/users", class_="stack", data_swap=True)
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
@@ -239,11 +245,19 @@ def user_add(app: "App", req: "Request") -> "Response":
     note = req.form.get("note", "").strip()[:200]
     chosen = req.multi.get("proto", [])
     managed, _ = users.managed_protocols()
-    only = None if not chosen or set(managed) <= set(chosen) else [p for p in chosen if p in managed]
-    if chosen and only == []:
+    group = req.form.get("group") or None
+    # only — только если владелец отметил не то, что у группы: иначе пользователь стал бы «своим»
+    try:
+        grp = groups.Groups.load().get(group or groups.MAIN_ID)
+    except groups.GroupError:
+        grp = None
+    base = set(grp.resolve(managed) if grp else managed)
+    picked = [p for p in chosen if p in managed]
+    only = None if not chosen or set(picked) == base else picked
+    if chosen and not picked:
         req.session.flash("bad", "Не выбран ни один протокол")
         return _redirect("/users")
-    rep = _user_op(req, users.add_user, name, note=note, only=only, group=req.form.get("group") or None)
+    rep = _user_op(req, users.add_user, name, note=note, only=only, group=group)
     app.invalidate("status")
     app.invalidate_links(name)
     return _redirect(f"/users/{name}" if rep and rep.ok else "/users")
@@ -382,15 +396,16 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     if user.system:
         actions = badge("служебный: пробник", "muted")
     try:
-        own = allowlist.Allowlist.load().own(name)
+        al = allowlist.Allowlist.load()
+        apps = "свой список приложений" if al.own(name) else (
+            "список приложений группы" if al.from_group(name) else "общий список приложений")
     except allowlist.AllowlistError:
-        own = False
+        apps = "общий список приложений"
     info = card("Профиль", kv([
         ("статус", badge("включён", "ok") if user.enabled else
          t("span", "отключён", class_="badge muted", title="креды сохранены, доступ закрыт")),
         ("группа", _group_link(user)),
-        ("через VPN", t("a", "свой список приложений" if own else "общий список приложений",
-                        href=f"/apps?user={name}")),
+        ("через VPN", t("a", apps, href=f"/apps?user={name}")),
         ("заметка", user.note or "—"),
         ("создан", _created_local(user.created)),
         ("активность", ago(seen)),
@@ -417,8 +432,9 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     links_card = card("Подключение", err_list, quick_start(links, name),
                       connect_tiles(links, manifests.load_all()[0], name) or t("p", "Ссылок нет.", class_="muted"),
                       help="Ссылки и QR — ключи доступа: показывайте только самому пользователю.")
+    prefer, order = _group_prefs(user)
     body = [page_head(name, user.note or None, actions), links_card,
-            clientviews.handoff_card(links, _group_clients(user)),
+            clientviews.handoff_card(links, prefer, order=order),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
 

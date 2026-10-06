@@ -17,7 +17,7 @@
 
 Движки: VLESS, XHTTP, SS-2022 и TUIC — Xray внутри [3x-ui](https://github.com/MHSanaei/3x-ui) v3.9.0 (Xray 26.9.30); Hysteria2 — standalone [HyNetworks/hysteria](https://github.com/HyNetworks/hysteria) v2.12.3; AmneziaWG — модуль ядра (DKMS) или `amneziawg-go`. Всё скачиваемое закреплено в [scripts/versions.env](../scripts/versions.env) и проверяется по sha256.
 
-**Важно про клиентов VLESS/XHTTP.** Xray 26.9.30 на сервере отклоняет ClientHello без X25519MLKEM768. Клиенты на sing-box (SFA/SFI, Hiddify, NekoBox, Karing), Shadowrocket и старые ядра Xray показывают «подключено», но трафика нет. Для VLESS и XHTTP берите клиент на ядре Xray ≥26.x. NekoBox и Hiddify игнорируют пин сертификата Hysteria2, для неё они не рекомендуются.
+**Важно про клиентов VLESS/XHTTP.** Xray 26.9.30 на сервере отклоняет ClientHello без X25519MLKEM768. Клиенты на sing-box (SFA/SFI, Hiddify, NekoBox, Karing), Shadowrocket и старые ядра Xray показывают «подключено», но трафика нет. Для VLESS и XHTTP берите клиент на ядре Xray ≥26.x. По матрице исследования NekoBox и Hiddify игнорируют пин сертификата Hysteria2 (не проверено): в каталоге клиентов Hysteria2 и TUIC у Hiddify помечены «не проверено» и не рекомендуются.
 
 Кроме протоколов:
 - анти-утечки: echo-сервисы «узнай свой IP» через туннель блокируются или идут через WARP, sniffing, журналы посещений Xray выключены, BitTorrent заблокирован, из туннеля не видны сервисы самого сервера;
@@ -249,7 +249,7 @@ ssh -t -L ПОРТ:127.0.0.1:ПОРТ root@СЕРВЕР sudo zoo web --link   # 
 | `zoo user show ИМЯ` | протоколы, ссылки и файлы пользователя |
 | `zoo user disable ИМЯ` / `enable ИМЯ` | отключить (креды сохраняются) / вернуть |
 | `zoo user del ИМЯ [--force]` | удалить из всех протоколов |
-| `zoo user sync [ИМЯ...]` | завести креды в протоколах, включённых позже |
+| `zoo user sync [ИМЯ...] [--include-custom]` | завести креды в протоколах, включённых позже; пользователям со «своим» набором протоколов — только с `--include-custom` |
 | `zoo links [ИМЯ] [--qr] [--invert] [--svg-dir DIR] [--proto ID]` | ссылки и QR (по умолчанию `owner`) |
 | `zoo allow list [--catalog] [--user ИМЯ]` | какие приложения идут через VPN; `--catalog` — известные приложения с ключами |
 | `zoo allow add\|del ПРИЛОЖЕНИЕ... [--user ИМЯ] [--android\|--windows]` | добавить или убрать (ключ каталога, пакет Android или `name.exe`); файлы пересобираются |

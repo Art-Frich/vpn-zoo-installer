@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 import unittest
+from unittest import mock
 
 from tests.helpers import BASH, ZooEnv, needs_bash
 from tests.test_cli import run_cli
@@ -36,6 +37,49 @@ class GroupsBase(unittest.TestCase):
 
 
 class MigrationTest(GroupsBase):
+    def test_new_protocol_only_for_owner_does_not_make_users_custom(self):
+        # протокол включили после установки: фаза завела только owner, затем 09 (zoo setup) мигрирует
+        users.bootstrap()
+        users.add_user("masha")
+        users.add_user("petya", only=["amneziawg"])
+        self.env.add_protocol("tuic", users=("owner",))
+        code, _, err = run_cli("setup")
+        self.assertEqual(code, 0, err)
+        reg = self.registry()
+        self.assertIn("tuic", reg["owner"]["protocols"])
+        self.assertNotIn("custom", reg["masha"], "без tuic она только потому, что он новый")
+        self.assertTrue(reg["petya"]["custom"], "а сознательно урезанный набор остаётся своим")
+        users.sync_users()
+        reg = self.registry()
+        self.assertIn("tuic", reg["masha"]["protocols"], "Основная довела новый протокол")
+        self.assertNotIn("tuic", reg["petya"]["protocols"])
+
+    def test_sync_does_not_extend_custom_users_without_flag(self):
+        users.bootstrap()
+        groups.ensure()
+        users.add_user("petya", only=["amneziawg"])
+        self.assertTrue(self.registry()["petya"]["custom"])
+        self.env.add_protocol("tuic", users=("owner",))
+        rep = {r.user: r for r in users.sync_users()}
+        self.assertEqual(self.registry()["petya"]["protocols"], ["amneziawg"])
+        self.assertIn("tuic", rep["petya"].skipped)
+        self.assertIn("tuic", self.registry()["owner"]["protocols"])
+        self.assertEqual(rep["petya"].message, "без изменений")
+        users.sync_users(include_custom=True)
+        self.assertIn("tuic", self.registry()["petya"]["protocols"])
+        self.assertTrue(self.registry()["petya"]["custom"], "набор остаётся «своим»")
+
+    def test_cli_sync_flag(self):
+        users.bootstrap()
+        groups.ensure()
+        users.add_user("petya", only=["amneziawg"])
+        self.env.add_protocol("tuic", users=("owner",))
+        code, out, err = run_cli("user", "sync")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.registry()["petya"]["protocols"], ["amneziawg"])
+        code, out, err = run_cli("user", "sync", "--include-custom")
+        self.assertEqual(code, 0, err)
+        self.assertIn("tuic", self.registry()["petya"]["protocols"])
     def test_existing_users_go_to_main_with_current_settings(self):
         users.bootstrap()
         users.add_user("masha")
@@ -290,6 +334,28 @@ class ModelTest(GroupsBase):
         self.assertEqual(self.allow_json()["members"], {"masha": "g1", "kolya": "g1", "petya": "g1"})
         self.assertEqual(self.registry()["owner"]["group"], "main")
 
+    def test_connect_crash_without_members_removes_empty_group(self):
+        with mock.patch.object(groups, "add_members", side_effect=RuntimeError("boom")):
+            rep = groups.connect("Семья", ["amneziawg"], {}, None, [("masha", "")], [])
+        self.assertTrue(rep.crashed and rep.removed)
+        self.assertFalse(rep.ok)
+        self.assertIn("boom", " ".join(rep.errors))
+        self.assertEqual([g["id"] for g in self.groups_json()["groups"]], ["main"], "пустая группа убрана")
+        rep = groups.connect("Семья", ["amneziawg"], {}, None, [("masha", "")], [])  # повтор с тем же названием
+        self.assertTrue(rep.ok, rep.errors)
+        self.assertEqual(rep.created, ["masha"])
+
+    def test_connect_crash_midway_reports_what_was_applied(self):
+        with mock.patch.object(groups, "move_many", side_effect=RuntimeError("упал перенос")):
+            rep = groups.connect("Семья", ["amneziawg"], {}, None, [("masha", "")], ["owner"])
+        self.assertTrue(rep.crashed)
+        self.assertFalse(rep.removed, "masha уже создана: группа остаётся")
+        self.assertEqual((rep.created, rep.moved), (["masha"], []))
+        self.assertEqual(rep.needs_qr, ["masha"])
+        self.assertIn("упал перенос", " ".join(rep.errors))
+        self.assertEqual(self.registry()["masha"]["group"], "g1")
+        self.assertEqual([g["id"] for g in self.groups_json()["groups"]], ["main", "g1"])
+
     def test_connect_failure_keeps_group_and_reports(self):
         self.env.fail("amneziawg:user_add")
         rep = groups.connect("Семья", ["amneziawg"], {}, None, [("masha", "")], [])
@@ -320,6 +386,32 @@ class ModelTest(GroupsBase):
         defaults = groups.default_clients(cat, ["vless-reality"])
         self.assertEqual(defaults["android"], "happ")
         self.assertNotIn("macos", defaults)
+
+    def test_ios_default_is_not_happ(self):
+        cat = clients.load()
+        proto3 = ["vless-reality", "hysteria2", "amneziawg"]
+        opts = groups.client_options(cat, "ios", proto3)
+        ids = [o["client"]["id"] for o in opts]
+        self.assertEqual(ids[0], "incy", "Happ нет в российском App Store")
+        self.assertIn("happ", ids, "выбрать его осознанно можно")
+        self.assertTrue(next(o for o in opts if o["client"]["id"] == "happ")["no_ru_store"])
+        self.assertEqual(groups.default_clients(cat, proto3)["ios"], "incy")
+        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["ios"], "incy",
+                         "Happ покрывает оба протокола, но он не из РФ-магазина")
+        # на Android Happ остаётся первым: он есть в Google Play и на GitHub
+        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["android"], "happ")
+
+    def test_default_client_follows_first_handoff_protocol(self):
+        cat = clients.load()
+        # поровну по охвату — рекомендованный каталога для первого по раздаче протокола группы
+        opts = groups.client_options(cat, "android", ["hysteria2", "amneziawg"])
+        self.assertEqual(opts[0]["client"]["id"], "amneziawg", "у Android первым в раздаче идёт AmneziaWG")
+        self.assertTrue(opts[0]["recommended"])
+        # только TUIC на десктопе: Hiddify не в выборе, рекомендованного нет
+        for plat in ("windows", "macos", "linux"):
+            opts = groups.client_options(cat, plat, ["tuic"])
+            self.assertNotIn("hiddify", [o["client"]["id"] for o in opts])
+            self.assertFalse(any(o["recommended"] for o in opts))
 
     def test_corrupt_file_is_an_error_not_a_crash(self):
         paths.groups_file().write_text("{", encoding="utf-8")
