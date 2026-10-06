@@ -641,5 +641,65 @@ class ZooAllowlistGroupsTest(GroupsBase):
             self.assertEqual(allowlist.Allowlist.load().effective("android", "masha"), ["com.brave.browser"])
 
 
+class ProtocolUsersTest(GroupsBase):
+    """Счётчики пользователей на карточках «Обзора»: включённые, обычные, у которых протокол в реестре."""
+
+    def collect(self):
+        from zoolib import config, status, system
+        units = {"x-ui.service": {"load": "loaded", "active": "active"}}
+        with mock.patch.object(system, "listening_sockets", return_value=[]),                 mock.patch.object(system, "ufw_active", return_value=True),                 mock.patch.object(system, "unit_states", side_effect=lambda us: {
+                    u: units.get(u, {"load": "not-found", "active": "inactive"}) for u in us}),                 mock.patch.object(system, "component_versions", return_value={}):
+            return {p["id"]: p for p in status.collect(config.load(), cpu_interval=0, with_xui=False)["protocols"]}
+
+    def setUp(self):
+        super().setUp()
+        for pid in ("vless-xhttp", "tuic"):
+            self.env.add_protocol(pid)
+        self.env.add_manifest("hysteria2-obfs", layer="udp", users_backend="hysteria-command", engine="hysteria")
+
+    def wizard(self):
+        users.bootstrap()
+        users.add_user("masha")
+        users.add_user("zoo-probe", system=True, partial=True)
+        rep = groups.connect("Группа 2", ["vless-reality", "hysteria2", "amneziawg"], {}, None,
+                             [("vasy", ""), ("vasy2", ""), ("vasy3", "")], [])
+        self.assertTrue(rep.ok, rep.errors)
+
+    def test_wizard_group_counts_owner_masha_and_new_users(self):
+        self.wizard()
+        by = self.collect()
+        five = ("vless-reality", "hysteria2", "hysteria2-obfs", "amneziawg")
+        self.assertEqual({p: by[p]["users"] for p in five}, dict.fromkeys(five, 5), "служебный zoo-probe не считается")
+        self.assertEqual((by["tuic"]["users"], by["vless-xhttp"]["users"]), (2, 2), "только owner и masha")
+        self.assertEqual(by["tuic"]["user_names"], ["owner", "masha"])
+        self.assertEqual(by["tuic"]["lacking"], [["vasy", "нет в группе «Группа 2»"],
+                                                 ["vasy2", "нет в группе «Группа 2»"], ["vasy3", "нет в группе «Группа 2»"]])
+        self.assertEqual(by["tuic"]["users_off"], 0)
+
+    def test_custom_and_unsynced_users_are_named_with_reason(self):
+        users.bootstrap()
+        groups.ensure()
+        users.add_user("petya", only=["amneziawg"])
+        users.add_user("masha")
+        reg = users.Registry.load()
+        reg.get("masha").protocols.remove("hysteria2")
+        reg.get("masha").custom = False
+        reg.save()
+        by = self.collect()
+        self.assertEqual(by["vless-reality"]["lacking"], [["petya", "свой набор протоколов"]])
+        self.assertEqual(by["hysteria2"]["lacking"], [["petya", "свой набор протоколов"],
+                                                      ["masha", "не заведён (zoo user sync)"]])
+        self.assertEqual(by["hysteria2"]["users"], 1)
+
+    def test_disabled_users_are_counted_separately(self):
+        users.bootstrap()
+        users.add_user("masha")
+        users.set_enabled("masha", False)
+        by = self.collect()
+        self.assertEqual((by["amneziawg"]["users"], by["amneziawg"]["users_off"]), (1, 1))
+        self.assertEqual((by["amneziawg"]["user_names"], by["amneziawg"]["off_names"]), (["owner"], ["masha"]))
+        self.assertEqual(by["amneziawg"]["lacking"], [], "отключённый — не «без протокола»")
+
+
 if __name__ == "__main__":
     unittest.main()

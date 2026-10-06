@@ -166,10 +166,8 @@ class Fact:
         if not d["ok"]:
             return t("span", f"с сервера: сбой ({d['verdict']})", class_="chip bad",
                      title=verdicts.DESCRIPTIONS.get(d["verdict"], ""))
-        bits = [f"{d['rtt_ms']:.0f} мс" if d["rtt_ms"] is not None else None,
-                f"{d['speed']:.0f} Мбит/с" if d["speed"] is not None else None]
-        text = "с сервера: " + (" · ".join(b for b in bits if b) or "работает") + (" (устарело)" if stale else "")
-        return t("span", text, class_="chip" if stale else "chip ok")
+        text = "с сервера: " + (" · ".join(live.parts(d, self.now, jitter=False)) or "работает") + (" (устарело)" if stale else "")
+        return t("span", text, class_="chip" if stale else "chip ok", title=live.speed_note(d, self.now) or None)
 
     def rank_chip(self) -> Markup | None:
         r = self.rank
@@ -184,7 +182,7 @@ class Fact:
 def proto_facts() -> list[Fact]:
     managed, _ = users.managed_protocols()
     mans = {m.id: m for m in manifests.load_all()[0]}
-    latest, ranks, now = live.latest(), _rank_facts(), time.time()
+    latest, ranks, now = live.summary(), _rank_facts(), time.time()
     return [Fact(p, mans[p].short if p in mans else p, LAYER.get(mans[p].layer, "") if p in mans else "",
                  latest.get(p), ranks.get(p), now) for p in managed]
 

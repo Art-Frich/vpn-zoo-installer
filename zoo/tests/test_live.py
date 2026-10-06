@@ -104,6 +104,38 @@ class MathTest(unittest.TestCase):
         self.assertEqual(len(light.latency_urls), 1)
 
 
+class SummaryTest(unittest.TestCase):
+    ROW = {"ts": 1000, "rtt_ms": 8.4, "jitter_ms": 1.2, "speed": 51.4, "speed_ts": 1000}
+
+    def test_parts_are_shared_format(self):
+        self.assertEqual(live.parts(self.ROW, 1000 + 180), ["8 мс", "±1", "51 Мбит/с", "3 мин назад"])
+        self.assertEqual(live.parts(self.ROW, 1030, jitter=False), ["8 мс", "51 Мбит/с", "только что"])
+        self.assertEqual(live.parts(dict(self.ROW, speed=4.56), 1030)[2], "4.6 Мбит/с")
+        self.assertEqual(live.parts(dict(self.ROW, rtt_ms=None, jitter_ms=None, speed=None), 1030), [])
+
+    def test_speed_note_only_when_speed_is_older(self):
+        self.assertEqual(live.speed_note(self.ROW, 2000), "")
+        self.assertEqual(live.speed_note(dict(self.ROW, ts=1000 + 2400), 1000 + 2400), "скорость 40 мин назад")
+        self.assertEqual(live.speed_note(dict(self.ROW, speed=None), 2000), "")
+
+    def test_summary_one_source_for_all_and_one_protocol(self):
+        with ZooEnv():
+            now = time.time()
+            for pid, mbps in (("a", None), ("b", None)):
+                con = history.connect()
+                live.store(con, [{"ts": int(now - 3000), "proto": pid, "ok": 1, "rtt_ms": 9.0, "jitter_ms": 1.0,
+                                  "mbps": 40.0, "verdict": "OK", "bytes": 0},
+                                 {"ts": int(now - 60), "proto": pid, "ok": 1, "rtt_ms": 8.0, "jitter_ms": 1.0,
+                                  "mbps": mbps, "verdict": "OK", "bytes": 0}])
+                con.close()
+            allp = live.summary(now=now)
+            self.assertEqual(set(allp), {"a", "b"})
+            self.assertEqual(live.summary("a", now), allp["a"])
+            self.assertEqual((allp["a"]["rtt_ms"], allp["a"]["speed"]), (8.0, 40.0), "задержка — последняя, скорость — последняя загрузка")
+            self.assertEqual(allp["a"]["speed_ts"], int(now - 3000))
+            self.assertIsNone(live.summary("ghost", now))
+
+
 class MeasureTest(unittest.TestCase):
     def setUp(self):
         self.env = ZooEnv().__enter__()
@@ -277,9 +309,29 @@ class TodaySplitTest(unittest.TestCase):
             con.close()
             got = traffic.today_split({"tuic": 400, "hysteria2": 9999}, now)
             self.assertEqual(got["hysteria2"], (90, 150), "серия zoo-probe вычтена точно")
-            self.assertEqual(got["tuic"], (5, 600), "у Xray вычтены байты замеров")
+            self.assertEqual(got["tuic"], (5, 600), "без манифеста Xray — вычтены байты замеров")
             self.assertNotIn("xray", got.get("tuic", ()))
             self.assertEqual(traffic.today_split({"tuic": 5000}, now)["tuic"], (5, 0), "меньше нуля не бывает")
+
+    def test_xray_probe_total_is_exact_and_split_by_weight(self):
+        with ZooEnv() as env:
+            users.bootstrap()
+            for pid in ("vless-reality", "tuic"):
+                env.add_manifest(pid)
+            now = int(time.time())
+            con = traffic.connect()
+            with con:
+                samples = [traffic.Sample("vless-reality", "", 1000, 10_000), traffic.Sample("tuic", "", 500, 8000),
+                           traffic.Sample("xray", "zoo-probe", 100, 4000), traffic.Sample("xray", "masha", 7, 7)]
+                deltas, new = traffic.compute_deltas({}, samples, now, known={"vless-reality", "tuic", "xray"})
+                traffic.store(con, deltas, new, now)
+            con.close()
+            got = traffic.today_split({}, now, {"vless-reality": 3, "tuic": 1})
+            self.assertEqual(got["vless-reality"], (925, 7000), "3/4 общего счётчика zoo-probe")
+            self.assertEqual(got["tuic"], (475, 7000), "1/4")
+            self.assertEqual(sum(v[1] for v in got.values()), 18_000 - 4000, "сумма вычета точна")
+            even = traffic.today_split({}, now, {})
+            self.assertEqual((even["vless-reality"][1], even["tuic"][1]), (8000, 6000), "весов нет — поровну")
 
 
     def test_own_bytes_count_only_since_first_collector_run(self):
@@ -743,7 +795,7 @@ class OverviewMetricsTest(AppTestBase):
         now = time.time()
         seed_live("vless-reality", now, age=240)
         _, body = self.c.get("/")
-        self.assertIn("23 мс · ±4 · 38 Мбит/с", re.sub(r"<[^>]+>", "", body))
+        self.assertIn("23 мс · ±4 · 38 Мбит/с · 4 мин назад", re.sub(r"<[^>]+>", "", body))
         self.assertIn("нет замера", body, "у протокола без замеров — так, без нулей")
         self.assertIn("метрики раз в 10 мин · обновлено 4 мин назад", body)
         self.assertIn('action="/live/vless-reality"', body)
@@ -762,7 +814,19 @@ class OverviewMetricsTest(AppTestBase):
         seed_live("vless-reality", now, nbytes=200 * 1024 ** 2)
         _, body = self.c.get("/")
         self.assertIn("↓1000 МБ ↑90 МБ", re.sub(r"<[^>]+>", "", body))   # 1200 МБ в счётчике минус 200 МБ, скачанных замерами
-        self.assertIn('title="сегодня, без служебных замеров">1.1 ГБ<', body, "крупная цифра — тот же трафик без замеров")
+        self.assertIn('>≈1.1 ГБ<', body, "крупная цифра — тот же трафик без замеров, у Xray приблизительный")
+        self.assertIn("≈↓1000", re.sub(r"<[^>]+>", "", body))
+
+    def test_users_line_names_who_has_the_protocol(self):
+        from tests.test_web import FAKE_SLOW
+        proto = dict(FAKE_SLOW["protocols"][0], users=2, users_off=1, user_names=["owner", "masha"],
+                     off_names=["kolya"], lacking=[["vasy", "нет в группе «Группа 2»"]])
+        self.app.invalidate("status")
+        with mock.patch("zoolib.status.collect_slow", return_value=dict(FAKE_SLOW, protocols=[proto])):
+            _, body = self.c.get("/")
+        self.assertIn("пользователей: 2", re.sub(r"<[^>]+>", "", body))
+        self.assertIn("(+1 откл.)", body)
+        self.assertIn("с протоколом: owner, masha" + chr(10) + "отключены: kolya" + chr(10) + "без протокола: vasy (нет в группе «Группа 2»)", body)
 
     def test_failed_and_stale_measurements(self):
         now = time.time()

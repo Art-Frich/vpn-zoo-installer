@@ -95,6 +95,15 @@ class NavTest(GroupWebBase):
 
 
 class WizardTest(GroupWebBase):
+    def test_wizard_and_overview_show_the_same_numbers_and_age(self):
+        now = time.time()
+        seed_live("hysteria2", now, rtt=31.4, mbps=52.0, age=900)
+        seed_live("hysteria2", now, rtt=29.6, mbps=None, age=120)
+        _, wizard = self.c.get("/connect/new")
+        _, over = self.c.get("/")
+        self.assertIn("с сервера: 30 мс · 52 Мбит/с · 2 мин назад", text_of(wizard))
+        self.assertIn("30 мс · ±4 · 52 Мбит/с · 2 мин назад", re.sub(r"<[^>]+>", "", over))
+
     def test_step1_facts(self):
         now = time.time()
         seed_live("hysteria2", now, rtt=31.0, mbps=52.0, age=120)
