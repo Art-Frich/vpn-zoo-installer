@@ -522,22 +522,39 @@ def connect_done(app: "App", req: "Request") -> "Response":
     ureg = users.list_users()
     wanted = [n for n in req.query.get("u", "").split(",") if n][:groups.NEW_USERS_MAX * 2]
     members = [u for u in ureg.visible() if u.group == g.id and u.name in wanted]
-    prefer, order = clientviews.group_prefs(g)
-    blocks: list[Any] = []
+    ctx = clientviews.Ctx.load()
+    rows: list[Any] = []
     for u in members:
         links, _ = userviews._cached_links(app, u.name)
-        blocks.append(t("div", t("h3", t("a", u.name, href=f"/users/{u.name}"), " ", t("span", u.note, class_="muted small")
-                                  if u.note else None, class_="sub-h"),
-                        clientviews.handoff_card(links, prefer, uid=f"{u.name}-", heading=f"{u.name}: что отправить",
-                                                 order=order)
-                        or t("p", "Ссылок пока нет.", class_="muted"),
-                        t("p", t("a", "Ссылки и QR →", href=f"/users/{u.name}"), class_="small")))
+        panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-") if ctx else None
+        rows.append(t("details", t("summary", t("strong", u.name), t("span", f" {u.note}", class_="muted small")
+                                   if u.note else None),
+                      panel or t("p", "Ссылок пока нет.", class_="muted"),
+                      t("p", t("a", "Страница пользователя →", href=f"/users/{u.name}"), class_="small"),
+                      name="conn-user", open=len(members) == 1 or None, class_="urow"))
     summary = card(f"Группа «{g.name}»", _summary(g),
                    extra=t("a", "Настроить", href=f"/groups/{g.id}", class_="btn small", data_swap=True))
     body = [page_head("Новое подключение", "готово: раздайте пакеты"), _stepper(4), summary,
-            *(blocks or [alert_list([("warn", "Никого не добавили — раздавать нечего.")])]),
-            t("p", clientviews.SEND_WARN, class_="hint")]
+            _texts_card(g, ctx) if ctx else None,
+            card("Кому что отправить", t("div", rows, class_="urows"), clientviews.hints(ctx) if ctx else None,
+                 help="Откройте человека: его QR и ссылки, приложения и текст с его именем.")
+            if rows else alert_list([("warn", "Никого не добавили — раздавать нечего.")])]
     return app.render(req, "Новое подключение", body, active="/groups")
+
+
+def _texts_card(g: groups.Group, ctx: clientviews.Ctx) -> Markup | None:
+    """Один текст инструкции на платформу — общий для группы (на шаге раздачи — только показ)."""
+    items = []
+    for plat, title in ctx.cat.platforms.items():
+        text = ctx.text(g, plat)
+        if text:
+            items.append(t("details", t("summary", title), t("pre", text.replace(clientviews.NAME_TOKEN, "имя"),
+                                                           class_="msg-pre"), class_="more"))
+    if not items:
+        return None
+    return card("Текст для группы", t("div", items),
+                extra=t("a", "Изменить", href=f"/groups/{g.id}#texts", class_="btn small", data_swap=True),
+                help="Один текст на платформу для всех участников; в каждом сообщении вместо «имя» — имя человека.")
 
 
 def _summary(g: groups.Group) -> Markup:
@@ -636,6 +653,32 @@ def _member_rows(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: a
     return rows
 
 
+def _messages_card(g: groups.Group, ctx: clientviews.Ctx, csrf: str, open_plat: str) -> Markup | None:
+    """Текст инструкции по платформам: один на группу, участникам подставляется имя. Свой текст — до «вернуть»."""
+    items = []
+    for plat, title in ctx.cat.platforms.items():
+        default = ctx.default_text(g, plat)
+        if default is None:
+            continue
+        mine = g.messages.get(plat)
+        body = mine or default
+        form = t("form", csrf_input(csrf), t("input", type="hidden", name="platform", value=plat),
+                 t("textarea", body, name="text", rows=str(min(16, len(body.splitlines()) + 2)),
+                   maxlength=str(groups.MESSAGE_MAX), spellcheck="false", class_="msg-edit",
+                   aria_label=f"Текст для {title}"),
+                 t("div", t("button", "Сохранить", type="submit", class_="btn primary small"),
+                   t("button", "Вернуть по умолчанию", type="submit", name="reset", value="1", class_="btn small")
+                   if mine else None, class_="actions"),
+                 method="post", action=f"/groups/{g.id}/message", class_="stack", data_swap=True)
+        items.append(t("details", t("summary", title, " ", badge("свой текст", "info") if mine else None), form,
+                       open=plat == open_plat or None, class_="more"))
+    if not items:
+        return None
+    return card("Текст для участников", t("p", "Один текст на платформу для всех. «{name}» заменится именем человека; "
+                                              "ключей в тексте нет.", class_="hint"),
+                t("div", items), id_="texts")
+
+
 def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, errors: list[str] | None = None,
                status: int = 200) -> "Response":
     try:
@@ -678,9 +721,11 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
     parts: list[Any] = [page_head(g.name, "группа", t("a", "← Группы", href="/groups", class_="btn small", data_swap=True))]
     if errors:
         parts.append(alert_list([("bad", e) for e in errors]))
+    ctx = clientviews.Ctx.load()
     parts += [card("Участники", table(["пользователь", "протоколы", "приложения", ""], members, stack=True,
                                       empty="в группе никого нет")),
-              add, card("Настройки группы", form,
+              add, _messages_card(g, ctx, csrf, req.query.get("m", "")) if ctx else None,
+              card("Настройки группы", form,
                         help="Сохранение применяется ко всем участникам один раз; в сообщении — кому нужен новый QR."),
               t("div", delete, class_="actions")]
     return app.render(req, g.name, parts, active="/groups", status=status)
@@ -711,6 +756,23 @@ def group_save(app: "App", req: "Request", gid: str) -> "Response":
     except CATCH as e:
         return group_page(app, req, gid, d, [_err(e)], 422)
     return _done(app, req, rep, f"/groups/{g.id}")
+
+
+def group_message(app: "App", req: "Request", gid: str) -> "Response":
+    plat = req.form.get("platform", "")[:20]
+    back = f"/groups/{gid}?" + urllib.parse.urlencode({"m": plat}) + "#texts"
+    try:
+        g = groups.Groups.load().require(gid)
+        text: str | None = None if req.form.get("reset") else groups.clean_message(req.form.get("text", ""))
+        ctx = clientviews.Ctx.load()
+        if text and ctx is not None and text == ctx.default_text(g, plat):
+            text = None  # совпал с умолчанием — не замораживаем версии приложений в файле
+        groups.set_message(g.id, plat, text)
+    except CATCH as e:
+        req.session.flash("bad", _err(e))
+        return _redirect(back)
+    req.session.flash("ok", "Текст сохранён" if text else "Текст по умолчанию")
+    return _redirect(back)
 
 
 def group_members(app: "App", req: "Request", gid: str) -> "Response":

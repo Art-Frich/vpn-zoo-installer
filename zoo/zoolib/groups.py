@@ -5,6 +5,7 @@
     {"schema": 1, "groups": [{"id": "main", "name": "Основная",
                               "protocols": ["*"] | [id, ...],          "*" — все включённые
                               "clients": {"android": ["happ", "amneziawg"], ...},   платформа → набор клиентов
+                              "messages": {"android": "текст с {name}", ...},   свой текст инструкции (нет — по умолчанию)
                               "allowlist": null | {"android": [...], "windows": [...]}}]}
 
 allowlist null — группа на общем списке приложений (zoo allow), иначе свой список группы.
@@ -44,6 +45,7 @@ NAME_MAX = 40
 NEW_USERS_MAX = 20
 NOTE_MAX = 200
 CLIENTS_MAX = 5       # клиентов на платформу
+MESSAGE_MAX = 3000    # знаков в тексте инструкции платформы
 KEEP: Any = object()  # «не менять» для update (None у allowlist значит «общий список»)
 
 
@@ -63,6 +65,13 @@ def client_ids(v: Any) -> list[str]:
     return out
 
 
+def clean_message(text: Any) -> str:
+    """Текст инструкции: переводы строк LF, без управляющих знаков и хвостовых пробелов."""
+    s = str(text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    s = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", s)
+    return "\n".join(line.rstrip() for line in s.split("\n")).strip()
+
+
 @dataclass
 class Group:
     id: str
@@ -70,6 +79,7 @@ class Group:
     protocols: list[str] = field(default_factory=lambda: [ALL])
     clients: dict[str, list[str]] = field(default_factory=dict)
     allowlist: dict[str, list[str]] | None = None
+    messages: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Group":
@@ -77,16 +87,22 @@ class Group:
         own = ({p: allowlist._clean(raw_al.get(p), p) for p in allowlist.PLATFORMS}
                if isinstance(raw_al, dict) else None)
         raw_cl = d.get("clients")
+        raw_msg = d.get("messages")
         return cls(
             id=str(d["id"]), name=str(d.get("name") or d["id"]),
             protocols=[str(x) for x in d.get("protocols", [ALL])] or [ALL],
             clients={str(k): ids for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())
                      if (ids := client_ids(v))},
-            allowlist=own if own and all(own.values()) else None)
+            allowlist=own if own and all(own.values()) else None,
+            messages={str(k)[:20]: m for k, v in (raw_msg.items() if isinstance(raw_msg, dict) else ())
+                      if isinstance(v, str) and (m := clean_message(v)[:MESSAGE_MAX])})
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "protocols": list(self.protocols),
-                "clients": {k: list(v) for k, v in self.clients.items()}, "allowlist": self.allowlist}
+        out: dict[str, Any] = {"id": self.id, "name": self.name, "protocols": list(self.protocols),
+                               "clients": {k: list(v) for k, v in self.clients.items()}, "allowlist": self.allowlist}
+        if self.messages:
+            out["messages"] = dict(self.messages)
+        return out
 
     @property
     def all_protocols(self) -> bool:
@@ -550,6 +566,29 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         if names and (protos_changed or allow_changed):
             _settle(rep, gs, ureg, names, before[0], before[1], protos_changed)
         return rep
+
+
+def set_message(ref: str, platform: str, text: str | None) -> Group:
+    """Свой текст инструкции группы для платформы; пустой или None — вернуть текст по умолчанию.
+    Участников не трогает: текст читают страницы при показе."""
+    try:
+        cat = clientcat.load()
+    except clientcat.ClientsError as e:
+        raise GroupError(str(e)) from None
+    if platform not in cat.platforms:
+        raise GroupError(f"неизвестная платформа «{platform[:20]}»")
+    msg = clean_message(text)
+    if len(msg) > MESSAGE_MAX:
+        raise GroupError(f"текст длиннее {MESSAGE_MAX} знаков")
+    with users._lock():
+        gs, _ = _open()
+        g = gs.require(ref)
+        if msg:
+            g.messages[platform] = msg
+        else:
+            g.messages.pop(platform, None)
+        gs.save()
+        return g
 
 
 def move_many(names: list[str], ref: str) -> GroupReport:

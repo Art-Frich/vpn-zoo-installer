@@ -2,7 +2,8 @@
 
 `zoo clients` — таблица клиентов и версий из кэша; `zoo clients --check-upstream` — опрос
 GitHub releases/latest (10 с на запрос, без токена), результат — в кэш
-/var/lib/vpn-zoo/clients-versions.json. Опрос запускает суточный таймер zoo-clients.timer;
+/var/lib/vpn-zoo/clients-versions.json. Опрос запускает суточный таймер zoo-clients.timer
+и заявка «Проверить сейчас» со страницы «Клиенты» (файл clients-req → zoo-clients.path);
 страницы админки читают только кэш и в сеть не ходят.
 """
 
@@ -10,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import time
 import urllib.error
@@ -35,6 +37,9 @@ STATUS_MARK = {"ok": "✓", "warn": "!", "no": "✕", "unk": "?"}
 STATUS_TEXT = {"ok": "заявлено поддерживаемым", "warn": "с оговоркой", "no": "не работает", "unk": "не проверено"}
 LINK_KINDS = {"github": "GitHub", "play": "Google Play", "appstore": "App Store", "fdroid": "F-Droid", "site": "сайт"}
 IMPORT_METHODS = ("qr", "link", "file")
+REQ_NAME = "clients-req"
+RATE_LIMIT = 600   # «Проверить сейчас» — не чаще раза в 10 минут
+REQ_STALE = 900    # заявку, которую никто не забрал за 15 минут, считаем потерянной
 
 
 class ClientsError(Exception):
@@ -158,6 +163,46 @@ def load_cache() -> dict[str, Any]:
     return {"checked": None, "versions": {}}
 
 
+def req_file() -> Path:
+    return paths.state_dir() / REQ_NAME
+
+
+def check_state(now: float | None = None) -> tuple[bool, str]:
+    """(можно ли заказать проверку версий, почему нет)."""
+    now = time.time() if now is None else now
+    try:
+        if now - req_file().stat().st_mtime < REQ_STALE:
+            return False, "проверка уже заказана: версии обновятся через минуту"
+    except OSError:
+        pass
+    last = load_cache()["checked"]
+    if isinstance(last, (int, float)) and 0 <= now - last < RATE_LIMIT:
+        return False, f"версии проверяли меньше {RATE_LIMIT // 60} минут назад"
+    return True, ""
+
+
+def request_check(now: float | None = None) -> tuple[bool, str]:
+    """Заказать опрос GitHub (вызывает админка): файл-заявку забирает zoo-clients.path → zoo-clients.service,
+    у админки на это нет прав и сеть ей не нужна."""
+    now = time.time() if now is None else now
+    ok, why = check_state(now)
+    if not ok:
+        return False, why
+    f = req_file()
+    f.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    f.write_text(str(int(now)), encoding="utf-8")
+    os.chmod(f, 0o600)
+    os.utime(f, (now, now))
+    return True, "проверка заказана: версии обновятся через минуту"
+
+
+def clear_request() -> None:
+    try:
+        req_file().unlink()
+    except OSError:
+        pass
+
+
 def clean_tag(tag: str) -> str:
     """app/v2.12.3 → 2.12.3, v7.25.4 → 7.25.4."""
     tag = tag.rsplit("/", 1)[-1]
@@ -220,6 +265,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def cmd_clients(args: argparse.Namespace, cfg: Config) -> int:
+    if args.check_upstream:
+        clear_request()  # до каталога: битый каталог не должен оставить заявку, которая гоняет юнит по кругу
     try:
         cat = load()
     except ClientsError as e:
