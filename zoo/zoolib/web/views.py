@@ -617,7 +617,7 @@ def _data_card(app: "App", cfg: Any, csrf: str) -> Markup:
              t("label", "Бюджет данных ", t("input", name="limit", value=storage.format_size(d["limit"]),
                                           size="6", maxlength="12", aria_label="Бюджет данных, например 1G")),
              t("button", "Сохранить", type="submit", class_="btn small"),
-             method="post", action="/settings/action", class_="inline")
+             method="post", action="/settings/action", class_="inline", data_swap=True)
     more = t("details", t("summary", "бюджет и то, что вне его"), form,
              t("p", f"Вне бюджета: {outside}", class_="hint") if outside else None, class_="more")
     return card("Данные", t("p", line),
