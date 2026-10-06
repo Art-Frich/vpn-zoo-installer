@@ -22,7 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.helpers import ZooEnv, needs_bash
-from zoolib import config, traffic
+from zoolib import config, logread, traffic
 from zoolib import web as web_mod
 from zoolib.web import assets, auth, charts, logs
 from zoolib.web import stamp as stamp_mod
@@ -1795,7 +1795,7 @@ class ServerSpeedTest(unittest.TestCase):
                 return {u: {"load": "loaded", "active": "failed" if u == "fail2ban.service" else "active"}
                         for u in units}
             with mock.patch("zoolib.system.unit_states", side_effect=states), \
-                    mock.patch("zoolib.web.logs.journal", return_value="fail2ban упал"):
+                    mock.patch("zoolib.logread.view", return_value=logread.Chunk([logread.Line("fail2ban упал", "s=1")])):
                 app = App(TOKEN, config.load)
                 c = Client(app)
                 c.login()

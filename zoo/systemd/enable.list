@@ -7,3 +7,4 @@ zoo-clients.timer
 zoo-live.timer
 zoo-live.path
 zoo-job.path
+zoo-logs.path
