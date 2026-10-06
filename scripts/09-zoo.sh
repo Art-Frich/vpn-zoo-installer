@@ -147,6 +147,15 @@ config_load
 
 log_step "zoo: коллектор трафика и админка"
 journald_limit
+# Установки до D37 держат SSH под «ufw limit» (6 подключений за 30 с), а фаза 01 при обновлении
+# не перезапускается: заменить на allow на месте (ufw: «Rule updated», без окна без SSH)
+if command -v ufw >/dev/null; then
+    while read -r p; do
+        if ufw status 2>/dev/null | grep -Eq "^$p/tcp +LIMIT"; then
+            ZOO_PHASE=01-firewall fw_allow "$p/tcp" "SSH" && log_ok "SSH $p/tcp: limit → allow (D37)"
+        fi
+    done < <(detect_ssh_ports)
+fi
 zoo_install_units
 # копия кода обновилась: работающая админка должна её перечитать
 systemctl try-restart zoo-web.service >/dev/null 2>&1 || true
