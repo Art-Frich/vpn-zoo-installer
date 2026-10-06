@@ -9,7 +9,7 @@ from unittest import mock
 from tests.helpers import BASH, REPO, ZooEnv, needs_bash
 from tests.test_cli import run_cli
 from tests.test_web import AppTestBase, header, visible_words
-from zoolib import allowlist, paths, users
+from zoolib import allowlist, paths, protolib, users
 
 JQ = shutil.which("jq")
 
@@ -131,6 +131,67 @@ class ChangeTest(AllowlistEnvTest):
         with self.assertRaises(allowlist.AllowlistError):
             allowlist.change("del", ["brave"], platform="android")
         self.assertEqual(self.registry()["android"], ["com.brave.browser"])
+
+    def test_set_lists_one_rebuild(self):
+        base = allowlist.Allowlist.load()
+        want = {"android": base.android + ["com.google.android.youtube", "com.example.app"],
+                "windows": base.windows[:1] + ["Discord.exe"]}
+        with mock.patch.object(protolib, "manifest_refresh") as refresh:
+            ch = allowlist.set_lists(want, titles={"com.example.app": "Моя	прога", "x.y.z": "чужое"})
+        self.assertEqual(refresh.call_count, 1, "одна пересборка на всё сохранение")
+        self.assertEqual(sorted(ch.affected), ["masha", "owner"])
+        self.assertEqual(ch.added, [("android", "com.google.android.youtube"), ("android", "com.example.app"),
+                                    ("windows", "Discord.exe")])
+        self.assertEqual(ch.removed, [("windows", "Telegram.exe")])
+        data = self.registry()
+        self.assertEqual(data["android"][-2:], ["com.google.android.youtube", "com.example.app"])
+        self.assertEqual(data["windows"], ["brave.exe", "Discord.exe"])
+        self.assertEqual(data["titles"], {"com.example.app": "Моя прога"})  # чужой id без списка — не хранится
+        self.assertEqual(sorted(os.path.basename(os.path.dirname(p)) for p in ch.applied["v2rayn"]),
+                         ["masha", "owner"])
+        # то же самое ещё раз — без записи и без пересборки; порядок и регистр id не важны
+        with mock.patch.object(protolib, "manifest_refresh") as refresh:
+            ch = allowlist.set_lists({"android": list(reversed(want["android"])),
+                                      "windows": ["discord.exe", "brave.exe"]})
+        self.assertEqual((ch.message, ch.affected, refresh.call_count), ("без изменений", [], 0))
+        # приложение убрали из списков — название забыто
+        allowlist.set_lists({"android": base.android, "windows": base.windows})
+        self.assertNotIn("titles", self.registry())
+
+    def test_set_lists_validates(self):
+        base = allowlist.Allowlist.load()
+        ok = {"android": base.android, "windows": base.windows}
+        for bad in ({**ok, "android": []}, {**ok, "windows": ["", " "]}, {**ok, "android": ["rm -rf /"]},
+                    {**ok, "windows": ["notepad"]}, {**ok, "android": ["com.exa mple"]}):
+            with self.assertRaises(allowlist.AllowlistError, msg=bad):
+                allowlist.set_lists(bad)
+        with self.assertRaises(allowlist.AllowlistError):
+            allowlist.set_lists({**ok, "android": [f"a.b{i}" for i in range(allowlist.LIST_MAX + 1)]})
+        with self.assertRaises(users.UserError):
+            allowlist.set_lists(ok, user=users.PROBE_USER)
+        self.assertFalse(paths.allowlist_file().exists(), "после отказа реестр не тронут")
+
+    def test_set_lists_user_override(self):
+        base = allowlist.Allowlist.load()
+        ch = allowlist.set_lists({"android": base.android + ["com.whatsapp"], "windows": base.windows}, user="masha")
+        self.assertEqual(ch.affected, ["masha"])
+        # своё хранит только платформу, где отличается от общего
+        self.assertEqual(self.registry()["users"], {"masha": {"android": base.android + ["com.whatsapp"]}})
+        # общий Windows дальше действует на masha, общий Android — нет
+        allowlist.set_lists({"android": base.android + ["com.discord"], "windows": base.windows + ["Signal.exe"]})
+        al = allowlist.Allowlist.load()
+        self.assertIn("Signal.exe", al.effective("windows", "masha"))
+        self.assertNotIn("com.discord", al.effective("android", "masha"))
+        # список снова как общий — свой список удаляется
+        ch = allowlist.set_lists({"android": al.common("android"), "windows": al.common("windows")}, user="masha")
+        self.assertEqual(ch.affected, ["masha"])
+        self.assertNotIn("masha", self.registry()["users"])
+
+    def test_reset_reports_affected(self):
+        allowlist.change("add", ["youtube"], user="masha")
+        self.assertEqual(allowlist.reset("masha").affected, ["masha"])
+        allowlist.change("add", ["youtube"])
+        self.assertEqual(sorted(allowlist.reset().affected), ["masha", "owner"])
 
     def test_user_override_and_reset(self):
         ch = allowlist.change("del", ["telegram"], user="masha", platform="android")
@@ -274,73 +335,156 @@ class AllowWebTest(AppTestBase):
         users.ensure_probe_user()
         self.c.login()
 
-    def test_page_and_actions(self):
-        resp, body = self.c.get("/apps")
-        self.assertEqual(resp.status, 200)
-        self.assertIn('href="/apps"', body)
-        self.assertIn("com.brave.browser", body)
-        self.assertIn('value="com.google.android.youtube"', body)  # каталог в выпадающем списке
-        self.assertNotIn("style=", body)
-        resp, _ = self.c.post("/apps", {"action": "add", "platform": "android", "app": "com.google.android.youtube"})
+    def save(self, android, windows, user=None, **extra):
+        form = {"action": "save", **({"user": user} if user else {}), **extra}
+        return self.c.post("/apps", form, multi={"android": android, "windows": windows})
+
+    def test_page_is_one_table_by_app(self):
+        for path in ("/apps", "/apps?user=masha"):
+            resp, body = self.c.get(path)
+            self.assertEqual(resp.status, 200)
+            self.assertNotIn("<select", body)
+            self.assertNotIn("из каталога", body)
+            self.assertNotIn("style=", body)
+            self.assertNotIn(">Показать<", body)
+            self.assertLessEqual(visible_words(body), 100, path)
+            self.assertIn("Через VPN идут только отмеченные приложения", body)
+            self.assertIn('aria-label="Чей список"', body)
+            self.assertIn(">Общий<", body)
+            self.assertEqual(body.count('<form method="post" action="/apps" class="stack"'), 1,
+                             "одна форма на весь список")
+            self.assertIn("data-draft", body)
+            self.assertIn('name="csrf"', body)
+            # весь каталог виден: включённые отмечены, выключенные — нет; платформы без id — прочерк
+            for a in allowlist.CATALOG:
+                for plat in allowlist.PLATFORMS:
+                    ident = getattr(a, plat)
+                    if ident:
+                        self.assertRegex(body, rf'name="{plat}" value="{re.escape(ident)}"( checked)? data-was="[01]"')
+            self.assertRegex(body, r'name="android" value="com.brave.browser" checked data-was="1"')
+            self.assertRegex(body, r'name="android" value="com.whatsapp" data-was="0"')
+            self.assertIn('<span class="muted">—</span>', body)
+            self.assertEqual(len(re.findall(r'name="(?:android|windows)" value=', body)),
+                             sum(1 for a in allowlist.CATALOG for p in allowlist.PLATFORMS if getattr(a, p)))
+            self.assertIn("<summary>Своё приложение</summary>", body)
+            self.assertNotIn('<details class="custom" open', body)
+            self.assertIn("data-save", body)
+            self.assertIn("data-cancel", body)
+        self.assertIn('href="/apps?user=masha"', body)
+        self.assertNotIn(users.PROBE_USER, body)
+
+    def test_save_one_post_one_rebuild_one_flash(self):
+        base = allowlist.Allowlist.load()
+        with mock.patch.object(protolib, "manifest_refresh") as refresh:
+            resp, _ = self.save(base.android + ["com.google.android.youtube", "com.whatsapp"],
+                                base.windows + ["Discord.exe"])
         self.assertEqual(header(resp, "Location"), ["/apps"])
-        self.assertIn("com.google.android.youtube", allowlist.Allowlist.load().android)
-        _, body = self.c.get("/apps")
-        self.assertIn("список изменён", body)
-        # свой список пользователя из ручного поля
-        resp, _ = self.c.post("/apps", {"action": "add", "platform": "windows", "custom": "Discord.exe",
-                                        "user": "masha"})
-        self.assertEqual(header(resp, "Location"), ["/apps?user=masha"])
+        self.assertEqual(refresh.call_count, 1)
         al = allowlist.Allowlist.load()
-        self.assertEqual(al.users["masha"]["windows"][-1], "Discord.exe")
-        _, body = self.c.get("/apps?user=masha")
-        self.assertIn("свой список", body)
-        self.assertIn("Вернуть общий", body)
-        self.c.post("/apps", {"action": "del", "platform": "android", "app": "org.telegram.messenger"})
-        self.assertNotIn("org.telegram.messenger", allowlist.Allowlist.load().android)
-        # ошибки: мусор, чужой пользователь, пустой список
-        for form in ({"action": "add", "platform": "android", "custom": "rm -rf /"},
-                     {"action": "add", "platform": "android", "app": "x.y", "user": "ghost"},
-                     {"action": "del", "platform": "android", "app": "org.telegram.messenger",
-                      "user": users.PROBE_USER},
-                     {"action": "nope"}):
-            resp, _ = self.c.post("/apps", form)
-            self.assertEqual(resp.status, 303)
+        self.assertEqual(al.android[-2:], ["com.google.android.youtube", "com.whatsapp"])
+        self.assertEqual(al.windows[-1], "Discord.exe")
         _, body = self.c.get("/apps")
-        self.assertIn("не ключ каталога", body)
-        self.assertIn("нет в реестре", body)
+        self.assertEqual(body.count('class="alerts flash"'), 1, "одна плашка")
+        self.assertRegex(body, r'Сохранено\. Новые QR/файлы нужны: <a href="/users/owner">owner</a>, '
+                               r'<a href="/users/masha">masha</a> →')
+        self.assertNotIn("Разошлите", body)
+        self.assertRegex(body, r'name="android" value="com.whatsapp" checked data-was="1"')
+        # флеш показывается один раз; без изменений — короткая строка без ссылок
+        _, body = self.c.get("/apps")
+        self.assertNotIn("Сохранено", body)
+        self.save(al.android, al.windows)
+        _, body = self.c.get("/apps")
+        self.assertIn("Без изменений", body)
+        self.assertNotIn("Новые QR", body)
+
+    def test_save_user_list_and_reset(self):
+        base = allowlist.Allowlist.load()
+        resp, _ = self.save(base.android, base.windows + ["Discord.exe"], user="masha")
+        self.assertEqual(header(resp, "Location"), ["/apps?user=masha"])
+        self.assertEqual(allowlist.Allowlist.load().users, {"masha": {"windows": base.windows + ["Discord.exe"]}})
+        _, body = self.c.get("/apps?user=masha")
+        self.assertIn("свой (отличается: +1 −0)", body)
+        self.assertIn('<a href="/users/masha">masha</a> →', body)
+        self.assertNotIn('<a href="/users/owner">', body.split("<main>")[1].split("<form")[0], "затронут только masha")
+        self.assertRegex(body, r'data-confirm="[^"]+" data-swap>(<input[^>]*>)*<input type="hidden" '
+                               r'name="action" value="reset"')
+        _, body = self.c.get("/apps")
+        self.assertIn("Свои списки пользователей", body)
+        self.assertIn("+1 −0", body)
+        self.assertIn("Сбросить к пресету", body)
+        resp, _ = self.c.post("/apps", {"action": "reset", "user": "masha"})
+        self.assertEqual(header(resp, "Location"), ["/apps?user=masha"])
+        self.assertNotIn("masha", allowlist.Allowlist.load().users)
+        _, body = self.c.get("/apps?user=masha")
+        self.assertIn("как общий", body)
+        self.assertEqual(body.count('class="alerts flash"'), 1)
+        self.assertNotIn("Вернуть общий", body)
+
+    def test_custom_app_with_title(self):
+        base = allowlist.Allowlist.load()
+        resp, _ = self.save(base.android, base.windows, custom_title="Мой банк", custom_android="ru.bank.app",
+                            custom_windows="Bank.exe")
+        self.assertEqual(resp.status, 303)
+        al = allowlist.Allowlist.load()
+        self.assertEqual((al.android[-1], al.windows[-1]), ("ru.bank.app", "Bank.exe"))
+        self.assertEqual(al.titles, {"ru.bank.app": "Мой банк", "bank.exe": "Мой банк"})
+        _, body = self.c.get("/apps")
+        self.assertEqual(body.count("<span>Мой банк</span>"), 1, "одна строка на оба id")
+        self.assertEqual(body.count('name="title:'), 2)
+        self.assertRegex(body, r'<span class="sub">ru.bank.app · Bank.exe</span>')
+        self.assertRegex(body, r'name="android" value="ru.bank.app" checked data-was="1"')
+        self.assertRegex(body, r'name="windows" value="Bank.exe" checked data-was="1"')
+        # страница, отправленная как есть (поля title: приходят из формы), название не теряет
+        self.save(al.android, al.windows, **{"title:ru.bank.app": "Мой банк", "title:Bank.exe": "Мой банк"})
+        self.assertEqual(allowlist.Allowlist.load().titles["bank.exe"], "Мой банк")
+        # выключили своё приложение — оно уходит из списка вместе с названием
+        self.save(base.android, base.windows)
+        al = allowlist.Allowlist.load()
+        self.assertNotIn("ru.bank.app", al.android)
+        self.assertEqual(al.titles, {})
+
+    def test_save_errors_keep_draft(self):
+        base = allowlist.Allowlist.load()
+        resp, body = self.save(["com.google.android.youtube"], [])  # Windows пуст
+        self.assertEqual(resp.status, 422)
+        self.assertIn("стал бы пустым", body)
+        self.assertRegex(body, r'name="android" value="com.google.android.youtube" checked data-was="0"')
+        self.assertRegex(body, r'name="android" value="com.brave.browser" data-was="1"')  # снят, но не потерян
+        self.assertFalse(paths.allowlist_file().exists())
+        # мусор в поле «своё»: ошибка, значение остаётся в поле, раздел раскрыт
+        resp, body = self.save(base.android, base.windows, custom_android="rm -rf /", custom_title="Т")
+        self.assertEqual(resp.status, 422)
+        self.assertIn("не пакет Android", body)
+        self.assertIn('value="rm -rf /"', body)
+        self.assertIn('<details open class="custom">', body)
+        resp, body = self.save(base.android, base.windows, custom_title="Только название")
+        self.assertEqual(resp.status, 422)
+        self.assertIn("нужен пакет Android или процесс Windows", body)
+        # подделанная форма: недопустимый id не попадает ни в реестр, ни обратно на страницу
+        resp, body = self.save(base.android + ["x; reboot"], base.windows)
+        self.assertEqual(resp.status, 422)
+        self.assertNotIn('value="x; reboot"', body)
+        self.assertFalse(paths.allowlist_file().exists())
+        # чужой и служебный пользователь, неизвестное действие, старое действие, форма без CSRF
+        for form in ({"action": "save", "user": "ghost"}, {"action": "save", "user": users.PROBE_USER},
+                     {"action": "nope"}, {"action": "add", "platform": "android", "app": "youtube"}):
+            resp, _ = self.c.post("/apps", form)
+            self.assertEqual(resp.status, 303, form)
+        _, body = self.c.get("/apps")
         self.assertIn("служебный пользователь", body)
         self.assertNotIn(users.PROBE_USER, allowlist.Allowlist.load().users)
-        self.c.post("/apps", {"action": "del", "platform": "android", "app": "com.google.android.youtube"})
-        resp, _ = self.c.post("/apps", {"action": "del", "platform": "android", "app": "com.brave.browser"})
-        _, body = self.c.get("/apps")
-        self.assertIn("стал бы пустым", body)
-        self.c.post("/apps", {"action": "reset", "user": "masha"})
-        self.assertNotIn("masha", allowlist.Allowlist.load().users)
-        resp, _ = self.c.post("/apps", {"action": "add", "app": "youtube"}, csrf=False)
+        resp, _ = self.c.post("/apps", {"action": "save"}, csrf=False, multi={"android": base.android,
+                                                                              "windows": base.windows})
         self.assertEqual(resp.status, 403)
+        self.assertFalse(paths.allowlist_file().exists())
 
-    def test_page_is_short_and_resets_ask_confirmation(self):
-        self.c.post("/apps", {"action": "add", "platform": "windows", "custom": "Discord.exe", "user": "masha"})
-        for path in ("/apps", "/apps?user=masha"):
-            _, body = self.c.get(path)
-            self.assertLessEqual(visible_words(body), 100, path)
-            self.assertNotIn("Как это работает", body)
-            self.assertIn("остальное — напрямую (банки, Госуслуги, MAX)", body)
-            self.assertIn('aria-label="Чей список"', body)
-            self.assertNotIn(">Показать<", body)
-            self.assertIn('aria-label="Убрать com.brave.browser"', body)
-        _, body = self.c.get("/apps?user=masha")
-        self.assertRegex(body, r'data-confirm="[^"]+"[^>]*>(<input[^>]*>)*<input type="hidden" name="action" '
-                               r'value="reset"')
+    def test_awg_error_adds_a_line_only_on_failure(self):
+        base = allowlist.Allowlist.load()
+        self.env.fail("amneziawg:manifest_refresh")
+        self.save(base.android + ["com.whatsapp"], base.windows)
         _, body = self.c.get("/apps")
-        self.assertIn("Сбросить к пресету", body)
-        self.assertIn("masha ★", body)
-        # после правки флеш короткий, а кэш ссылок сброшен
-        self.app.cache_put("links:masha", ("stamp", ([], {})), 3600)
-        self.c.post("/apps", {"action": "add", "platform": "android", "app": "com.google.android.youtube"})
-        self.assertIsNone(self.app.cache_get("links:masha", 3600))
-        _, body = self.c.get("/apps")
-        self.assertIn("Разошлите новый QR / файл v2rayN", body)
+        self.assertIn("AmneziaWG: ошибка", body)
+        self.assertIn("Сохранено", body)
 
     def test_user_page_offers_v2rayn_file(self):
         with mock.patch("zoolib.qr.svg", return_value="<svg></svg>"):

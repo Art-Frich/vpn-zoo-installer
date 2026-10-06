@@ -8,7 +8,8 @@
                                                   clients/<имя>/amneziawg-android.conf
      "windows": ["brave.exe", ...],              процессы Windows → правила v2rayN
                                                   clients/<имя>/v2rayn-routing.json
-     "users": {"masha": {"android": [...]}}}     свой список пользователя (вместо общего)
+     "users": {"masha": {"android": [...]}},     свой список пользователя (вместо общего)
+     "titles": {"com.example.app": "Название"}}  названия своих приложений (не из каталога), только для админки
 
 Пока реестра нет, действует пресет scripts/allowlist-default.json (его же читает lib.sh).
 Android-вариант .conf собирает модуль AmneziaWG (zoo_allowlist в lib.sh), правила v2rayN —
@@ -37,6 +38,8 @@ WINDOWS_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,63}\.[eE][xX][eE]")
 V2RAYN_FILE = "v2rayn-routing.json"
 V2RAYN_PROTO = "allowlist"  # proto_id ссылки на файл v2rayN в zoo links и админке
 V2RAYN_LABEL = "v2rayN (Windows): через VPN только выбранные программы"
+TITLE_MAX = 40
+LIST_MAX = 200  # приложений на платформу: защита от мусорной формы
 
 
 class AllowlistError(Exception):
@@ -89,6 +92,11 @@ def valid(platform: str, ident: str) -> bool:
     return bool(rx.fullmatch(ident or ""))
 
 
+def clean_title(value: Any) -> str:
+    """Название своего приложения для админки: без управляющих символов, до TITLE_MAX знаков."""
+    return re.sub(r"[\x00-\x1f\x7f\s]+", " ", value if isinstance(value, str) else "").strip()[:TITLE_MAX].strip()
+
+
 def _clean(values: Any, platform: str) -> list[str]:
     out: list[str] = []
     for v in values if isinstance(values, list) else []:
@@ -113,6 +121,7 @@ class Allowlist:
     windows: list[str] = field(default_factory=list)
     users: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     exists: bool = False
+    titles: dict[str, str] = field(default_factory=dict)  # id в нижнем регистре → название
 
     @classmethod
     def load(cls) -> "Allowlist":
@@ -135,12 +144,18 @@ class Allowlist:
                 own = {p: _clean(o[p], p) for p in PLATFORMS if isinstance(o.get(p), list)}
                 if own:
                     users[str(name)] = own
+        raw_titles = data.get("titles")
+        titles = {k.lower(): clean_title(v) for k, v in (raw_titles.items() if isinstance(raw_titles, dict) else ())
+                  if isinstance(k, str) and isinstance(v, str) and clean_title(v)}
         return cls(path, _clean(data.get("android"), "android"), _clean(data.get("windows"), "windows"),
-                   users, True)
+                   users, True, titles)
 
     def save(self) -> None:
-        atomic_write_json(self.path, {"schema": SCHEMA, "android": self.android, "windows": self.windows,
-                                      "users": self.users})
+        data: dict[str, Any] = {"schema": SCHEMA, "android": self.android, "windows": self.windows,
+                                "users": self.users}
+        if self.titles:
+            data["titles"] = self.titles
+        atomic_write_json(self.path, data)
         self.exists = True
 
     def common(self, platform: str) -> list[str]:
@@ -195,6 +210,7 @@ class Change:
     unchanged: list[tuple[str, str]] = field(default_factory=list)
     message: str = ""
     applied: dict[str, Any] = field(default_factory=dict)
+    affected: list[str] = field(default_factory=list)  # пользователи, у которых изменился итоговый список
 
     def to_dict(self) -> dict[str, Any]:
         f = lambda xs: [{"platform": p, "id": i} for p, i in xs]  # noqa: E731
@@ -213,6 +229,12 @@ def check_user(user: str | None) -> None:
             raise users.UserError(f"{user} — служебный пользователь пробника, своего списка у него нет")
     else:
         users.validate_name(user)
+
+
+def _empty_msg(platform: str) -> str:
+    return (f"список {PLATFORM_TITLE[platform]} стал бы пустым: пустой список значит "
+            + ("«все приложения через VPN»" if platform == "android" else "«ничего через VPN»")
+            + ". Сначала добавьте другое приложение")
 
 
 def _edit(al: Allowlist, op: str, items: list[str], user: str | None, platform: str | None) -> Change:
@@ -235,9 +257,7 @@ def _edit(al: Allowlist, op: str, items: list[str], user: str | None, platform: 
             ch.unchanged.append((p, ident))
     for p in PLATFORMS:
         if not lists[p]:
-            raise AllowlistError(f"список {PLATFORM_TITLE[p]} стал бы пустым: пустой список значит "
-                                 + ("«все приложения через VPN»" if p == "android" else "«ничего через VPN»")
-                                 + ". Сначала добавьте другое приложение")
+            raise AllowlistError(_empty_msg(p))
     if ch.added or ch.removed:
         touched = {p for p, _ in ch.added + ch.removed}
         if user is None:
@@ -248,6 +268,87 @@ def _edit(al: Allowlist, op: str, items: list[str], user: str | None, platform: 
             for p in touched:
                 own[p] = lists[p]
     return ch
+
+
+def _snapshot(al: Allowlist) -> dict[str, dict[str, list[str]]]:
+    from . import users
+    return {u.name: {p: al.effective(p, u.name) for p in PLATFORMS} for u in users.list_users().visible()}
+
+
+def normalize(platform: str, values: list[str]) -> list[str]:
+    """Список из формы: только допустимые id, без повторов (без учёта регистра); id каталога — в
+    написании каталога. Мусор — ошибка, а не молчаливый пропуск: человек должен увидеть."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        v = (raw or "").strip()
+        if not v:
+            continue
+        if not valid(platform, v):
+            hint = "процесс Windows (name.exe)" if platform == "windows" else "пакет Android (com.example.app)"
+            raise AllowlistError(f"«{v[:60]}» не похоже на {hint}")
+        if v.lower() not in seen:
+            seen.add(v.lower())
+            out.append(next((getattr(a, platform) for a in CATALOG
+                             if getattr(a, platform) and getattr(a, platform).lower() == v.lower()), v))
+    if len(out) > LIST_MAX:
+        raise AllowlistError(f"слишком много приложений в списке {PLATFORM_TITLE[platform]} (больше {LIST_MAX})")
+    return out
+
+
+def set_lists(lists: dict[str, list[str]], user: str | None = None, titles: dict[str, str] | None = None,
+              apply_now: bool = True) -> Change:
+    """Админка: список целиком (обе платформы) одним действием — одна запись и одна пересборка
+    файлов. Порядок id сохраняется, новые — в конец. Свой список пользователя хранит только те
+    платформы, где он отличается от общего; совпал с общим — снова общий. titles: id → название
+    для приложений не из каталога."""
+    from . import users
+    check_user(user)
+    new = {p: normalize(p, lists.get(p) or []) for p in PLATFORMS}
+    for p in PLATFORMS:
+        if not new[p]:
+            raise AllowlistError(_empty_msg(p))
+    with users._lock():
+        al = Allowlist.load()
+        before = _snapshot(al)
+        ch = Change(user)
+        for p in PLATFORMS:
+            cur = al.effective(p, user)
+            have, want = {x.lower() for x in cur}, {x.lower() for x in new[p]}
+            if have == want:
+                continue
+            ch.added += [(p, x) for x in new[p] if x.lower() not in have]
+            ch.removed += [(p, x) for x in cur if x.lower() not in want]
+            merged = [x for x in cur if x.lower() in want] + [x for x in new[p] if x.lower() not in have]
+            if user is None:
+                setattr(al, p, merged)
+            elif want == {x.lower() for x in al.common(p)}:
+                al.users.get(user, {}).pop(p, None)
+            else:
+                al.users.setdefault(user, {})[p] = merged
+        if user in al.users and not al.users[user]:
+            del al.users[user]
+        old_titles = dict(al.titles)
+        catalog = {getattr(a, p).lower() for a in CATALOG for p in PLATFORMS if getattr(a, p)}
+        for ident, title in (titles or {}).items():
+            key, title = ident.lower(), clean_title(title)
+            if title and key not in catalog and any(key == x.lower() for p in PLATFORMS for x in new[p]):
+                al.titles[key] = title
+        used = {x.lower() for p in PLATFORMS for x in [*al.common(p), *(i for o in al.users.values()
+                                                                        for i in o.get(p, []))]}
+        al.titles = {k: v for k, v in al.titles.items() if k in used}
+        if not (ch.added or ch.removed):
+            if al.titles != old_titles:
+                al.save()
+            ch.message = "без изменений"
+            return ch
+        al.save()
+        after = _snapshot(al)
+        ch.affected = [n for n in after if after[n] != before.get(n)]
+        ch.message = "список изменён"
+        if apply_now:
+            ch.applied = _apply(ch.affected)
+        return ch
 
 
 def change(op: str, items: list[str], user: str | None = None, platform: str | None = None,
@@ -279,6 +380,7 @@ def reset(user: str | None = None, apply_now: bool = True) -> Change:
     with users._lock():
         al = Allowlist.load()
         ch = Change(user)
+        before = _snapshot(al)
         if user is None:
             d = defaults()
             al.android, al.windows = d["android"], d["windows"]
@@ -289,6 +391,8 @@ def reset(user: str | None = None, apply_now: bool = True) -> Change:
             ch.message = "без изменений: своего списка не было"
             return ch
         al.save()
+        after = _snapshot(al)
+        ch.affected = [n for n in after if after[n] != before.get(n)]
         if apply_now:
             ch.applied = _apply(None if user is None else [user])
         return ch

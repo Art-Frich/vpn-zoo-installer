@@ -367,8 +367,11 @@ class App:
                                             href="/", class_="brand"), nav, logout, class_="top-inner"),
                        class_="top")
             flash = t("ul", [t("li", t("span", {"ok": "✓", "bad": "✕"}.get(k, "!"), class_="ico"),
-                               self.safe_msg(msg) if k in ("bad", "warn") else msg, class_=k)
-                             for k, msg in flashes], class_="alerts flash") if flashes else None
+                               t("span", self.safe_msg(msg) if k in ("bad", "warn") else msg,
+                                 [" ", [[", " if i else None, t("a", label, href=href)]
+                                        for i, (label, href) in enumerate(links)], " →"] if links else None,
+                                 class_="msg"), class_=k)
+                             for k, msg, links in flashes], class_="alerts flash") if flashes else None
             live = active in LIVE_PAGES
             footer = t("footer", f"zoo {__version__}",
                        t("span", " · live", id="live", data_live="10") if live else None)
