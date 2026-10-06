@@ -667,6 +667,12 @@ class KindHelpTest(unittest.TestCase):
         self.assertIn("maxretry = 5", fw)
         self.assertIn("bantime  = 1h", fw)
         self.assertIn("bantime  = 1w", fw)
+        # banaction = ufw блокирует адрес на все порты (а не порт jail'а): справка не говорит «SSH на час»
+        self.assertIn("banaction = ufw", fw)
+        what, _, defence, _ = journal.KIND_HELP["ssh-ban"]
+        self.assertIn("все порты на час", what)
+        self.assertNotIn("SSH на час", what)
+        self.assertIn("все порты", defence)
         self.assertIn("127.0.0.1", journal.KIND_HELP["panel-login"][1])
         self.assertIn("127.0.0.1", journal.KIND_HELP["web-login"][1])
 
