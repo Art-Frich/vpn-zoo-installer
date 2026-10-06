@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from .. import clients as client_catalog
 from .. import journal, paths, traffic
 from .. import probe as probe_mod
 from . import logs
@@ -40,6 +41,7 @@ SOURCES: dict[str, Callable[[], list[Path]]] = {
     "selftest": lambda: [probe_mod.selftest_file(), paths.probe_export_file()],
     "users": lambda: [paths.users_file()],
     "clients": lambda: [paths.clients_dir()],
+    "versions": lambda: [client_catalog.cache_file(), client_catalog.req_file()],
     "manifests": lambda: [paths.manifest_dir()],
     "config": lambda: [paths.config_file()],
     "allowlist": lambda: [paths.allowlist_file()],
@@ -57,6 +59,7 @@ PAGES: list[tuple[re.Pattern[str], tuple[str, ...], int]] = [(re.compile(p), s, 
     (r"/groups(/[^/]+)?", ("groups", "users", "allowlist", "manifests", "clients", "probe"), 60),
     (r"/connect/.*", ("groups", "users", "allowlist", "manifests", "clients", "probe"), 60),
     (r"/apps", ("allowlist", "users"), 0),
+    (r"/clients", ("versions", "manifests"), 60),
     (r"/traffic", ("traffic", "manifests", "users"), 0),
     (r"/probe", ("probe", "selftest", "manifests", "config"), 60),
     (r"/journal", ("journal",), 60),
