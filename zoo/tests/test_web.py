@@ -608,8 +608,8 @@ class HtmlPartsTest(unittest.TestCase):
         self.assertNotIn("<details", card("Без", "тела"))
         self.assertIn('data-confirm="Точно?"', post_button("/x", "Да", "csrf", confirm="Точно?"))
         self.assertNotIn("data-confirm", post_button("/x", "Да", "csrf"))
-        self.assertIn(" data-swap", post_button("/x", "Да", "csrf", swap=True))
-        self.assertNotIn("data-swap", post_button("/x", "Да", "csrf"))
+        self.assertIn(" data-swap", post_button("/x", "Да", "csrf"))
+        self.assertNotIn("data-swap", post_button("/x", "Да", "csrf", swap=False))
 
     def test_css_fixes(self):
         css = assets.CSS
@@ -626,9 +626,12 @@ class HtmlPartsTest(unittest.TestCase):
 
     def test_js_contract(self):
         js = assets.JS
-        for needle in ("dialog[open]", "focusin", "If-None-Match", "X-Zoo-Live", "a.origin", "form[data-autosubmit]",
-                       "img[data-src]", "сессия истекла"):
+        for needle in ("dialog[open]", "focusin", "/api/stamp", "X-Zoo-Live", "X-Zoo-Stamp", "a.origin",
+                       "form[data-autosubmit]", "img[data-src]", "сессия истекла", "нет связи", "details[open]",
+                       "removeItem('zoo-live')"):
             self.assertIn(needle, js)
+        for gone in ("Пауза", "setItem('zoo-live'", "live-btn"):
+            self.assertNotIn(gone, js + assets.CSS)
         self.assertEqual(gzip.decompress(assets.JS_GZ).decode(), js)
         self.assertEqual(gzip.decompress(assets.CSS_GZ).decode(), assets.CSS)
 
@@ -1312,6 +1315,10 @@ class LiveTest(AppTestBase):
 
     def test_second_live_request_gets_304(self):
         self.c.login()
+        with mock.patch("zoolib.web.stamp._now", return_value=1_000_000.0):  # окно «минуты» не меняется
+            self._second_live_request_gets_304()
+
+    def _second_live_request_gets_304(self):
         r1, b1 = self.c.get("/probe", headers={"X-Zoo-Live": "1"})
         etag = header(r1, "ETag")[0]
         self.assertRegex(etag, r'^"[0-9a-f]{20}"$')
@@ -1334,14 +1341,171 @@ class LiveTest(AppTestBase):
 
     def test_login_page_is_not_live_and_footer_is_short(self):
         self.c.login()
-        _, body = self.c.get("/")
-        self.assertIn('id="live"', body)
+        for path in ("/", "/settings", "/users", "/apps", "/probe", "/logs", "/traffic", "/journal"):
+            _, body = self.c.get(path)
+            self.assertRegex(body, r'<footer>zoo [^<]*<span id="live" data-live="10" data-stamp="[0-9a-f]{12}" hidden>',
+                             path)
+            self.assertNotIn("Пауза", body)
         self.assertNotIn("данные обновляются при открытии", body)
-        _, body = self.c.get("/settings")
-        self.assertNotIn('id="live"', body)
-        self.assertIn("<footer>zoo ", body)
         self.assertIn(">Логи<", body)
         self.assertNotIn(">Журнал<", body)
+        self.c.cookies.clear()
+        _, body = self.c.get("/login")
+        self.assertNotIn('id="live"', body)
+
+
+class StampTest(AppTestBase):
+    """/api/stamp: дешёвый отпечаток данных страницы для live (только os.stat)."""
+
+    def stamp(self, page):
+        resp, body = self.c.get("/api/stamp?page=" + urllib.parse.quote(page))
+        self.assertEqual(resp.status, 200, body)
+        self.assertTrue(resp.content_type.startswith("text/plain"))
+        self.assertRegex(body, r"^[0-9a-f]{12}$")
+        return body
+
+    def at(self, ts):
+        return mock.patch("zoolib.web.stamp._now", return_value=ts)
+
+    def test_requires_login_and_answers_401(self):
+        resp, _ = self.c.get("/api/stamp?page=/")
+        self.assertEqual(resp.status, 401)
+        self.c.login()
+        self.stamp("/")
+
+    def test_does_not_extend_session_even_without_live_header(self):
+        self.c.login()
+        s = self.app.auth.session(self.c.cookies[SID_COOKIE], touch=False)
+        before = s.last
+        time.sleep(0.02)
+        self.stamp("/users")
+        self.assertEqual(s.last, before)
+
+    def test_stable_until_data_changes(self):
+        self.c.login()
+        with self.at(1_000_000.0):
+            a = self.stamp("/traffic")
+            self.assertEqual(self.stamp("/traffic"), a)
+            self.assertEqual(self.stamp("/traffic?period=7d"), a, "query не в счёт")
+            traffic.connect().close()
+            b = self.stamp("/traffic")
+            self.assertNotEqual(b, a)
+            apps = self.stamp("/apps")
+            os.utime(traffic.db_path(), ns=(1, 1))
+            self.assertNotEqual(self.stamp("/traffic"), b)
+            self.assertEqual(self.stamp("/apps"), apps, "базе трафика нет дела до /apps")
+
+    def test_wal_counts_but_empty_wal_does_not(self):
+        self.c.login()
+        with self.at(1_000_000.0):
+            traffic.connect().close()
+            wal = traffic.db_path().with_name(traffic.DB_NAME + "-wal")
+            base = self.stamp("/traffic")
+            wal.write_bytes(b"")
+            self.assertEqual(self.stamp("/traffic"), base)
+            wal.write_bytes(b"x" * 32)
+            self.assertNotEqual(self.stamp("/traffic"), base)
+
+    def test_users_file_and_clients_dir(self):
+        self.c.login()
+        with self.at(1_000_000.0):
+            a = self.stamp("/users")
+            Path(os.environ["ZOO_USERS_FILE"]).write_text("{}", encoding="utf-8")
+            b = self.stamp("/users")
+            self.assertNotEqual(a, b)
+            (Path(os.environ["ZOO_CLIENTS_DIR"]) / "masha").mkdir(parents=True)
+            c = self.stamp("/users")
+            self.assertNotEqual(c, b)
+            self.assertEqual(self.stamp("/users/"), c, "хвостовой слэш — та же страница")
+            self.assertEqual(self.stamp("/users/masha"), self.stamp("/users/masha"))
+
+    def test_time_windows(self):
+        self.c.login()
+        with self.at(1_000_000.0):
+            root, users, traffic_, apps = (self.stamp(p) for p in ("/", "/users", "/traffic", "/apps"))
+        with self.at(1_000_012.0):  # +12 с: «/» обновляется (метрики), остальные нет
+            self.assertNotEqual(self.stamp("/"), root)
+            self.assertEqual(self.stamp("/users"), users)
+        with self.at(1_000_070.0):  # +70 с: «N мин назад» устарело
+            self.assertNotEqual(self.stamp("/users"), users)
+            self.assertEqual(self.stamp("/traffic"), traffic_)
+            self.assertEqual(self.stamp("/apps"), apps)
+
+    def test_page_param_is_only_a_key(self):
+        self.c.login()
+        for page in ("../../etc/passwd", "/" + "a" * 5000, "", "/jobs/999999", "/users/%00", "//x"):
+            self.stamp(page)
+
+    def test_job_page_stamp_follows_job(self):
+        self.c.login()
+        job = self.app.jobs.start("t", "t", [sys.executable, "-c", "import time; time.sleep(0.3); print('x')"])
+        before = self.stamp(f"/jobs/{job.id}")
+        self.app.jobs.wait(job)
+        self.assertNotEqual(self.stamp(f"/jobs/{job.id}"), before)
+
+    def test_page_carries_its_stamp(self):
+        self.c.login()
+        with self.at(1_000_000.0):
+            resp, body = self.c.get("/traffic")
+            got = header(resp, "X-Zoo-Stamp")
+            self.assertEqual(got, [self.stamp("/traffic")])
+            self.assertIn(f'data-stamp="{got[0]}"', body)
+            resp, _ = self.c.get("/static/app.js")
+            self.assertEqual(header(resp, "X-Zoo-Stamp"), [])
+
+    def test_no_sql_on_stamp(self):
+        self.c.login()
+        with mock.patch("sqlite3.connect", side_effect=AssertionError("SQL в /api/stamp")):
+            for page in ("/", "/users", "/probe", "/journal", "/logs", "/settings", "/traffic", "/apps"):
+                self.stamp(page)
+
+
+class SwapFormsTest(AppTestBase):
+    """Формы и ссылки внутри main уходят без перезагрузки (data-swap), а без JS остаются обычными."""
+
+    def setUp(self):
+        super().setUp()
+        for pid in ("vless-reality", "amneziawg"):
+            self.env.add_protocol(pid)
+        from zoolib import users
+        users.bootstrap()
+
+    def test_user_forms_and_links(self):
+        self.c.login()
+        self.c.post("/users", {"name": "masha"})
+        _, body = self.c.get("/users")
+        forms = re.findall(r"<form [^>]*>", body)
+        for f in forms:
+            if 'action="/logout"' not in f:
+                self.assertIn(" data-swap", f, f)
+                self.assertIn('method="post"', f)
+        self.assertTrue(any('action="/users"' in f for f in forms))
+        self.assertTrue(any("/disable" in f and "data-confirm" in f for f in forms), "подтверждение осталось")
+        self.assertRegex(body, r'<a href="/users\?verify=1"[^>]*data-swap')
+        _, page = self.c.get("/users/masha")
+        self.assertRegex(page, r'<form method="post" action="/users/masha/disable"[^>]*data-swap')
+        _, confirm = self.c.get("/users/masha/delete")
+        self.assertRegex(confirm, r'<form method="post" action="/users/masha/delete"[^>]*data-swap')
+
+    def test_settings_probe_logs_journal(self):
+        self.c.login()
+        _, body = self.c.get("/settings")
+        forms = [f for f in re.findall(r"<form [^>]*>", body) if 'action="/logout"' not in f]
+        self.assertTrue(forms)
+        for f in forms:
+            self.assertIn(" data-swap", f, f)
+        _, body = self.c.get("/probe")
+        for action in ("/probe/run", "/probe/compare"):
+            self.assertRegex(body, rf'<form method="post" action="{action}"[^>]*data-swap')
+        _, body = self.c.get("/journal")
+        self.assertRegex(body, r'<a href="/journal\?period=24h&amp;all=1"[^>]*data-swap')
+
+    def test_post_without_js_still_redirects_with_flash(self):
+        self.c.login()
+        resp, _ = self.c.post("/users", {"name": "Bad Name!"})
+        self.assertEqual((resp.status, header(resp, "Location")), (303, ["/users"]))
+        _, page = self.c.get("/users")
+        self.assertIn("недопустимое имя", page)
 
 
 class ServerSpeedTest(unittest.TestCase):

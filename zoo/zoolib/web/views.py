@@ -398,7 +398,7 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
                 t("button", "Запустить", type="submit", class_="btn primary small",
                   title="Сервер поднимает клиента каждого протокола у себя и идёт на свой публичный IP: "
                         "работает ли протокол в принципе (1–3 минуты)."),
-                method="post", action="/probe/run", class_="inline")
+                method="post", action="/probe/run", class_="inline", data_swap=True)
     local = card("Самопроверка с сервера", *local_body, extra=run_btn,
                  help=verdict_legend(last["results"]) if last else None)
     cmp_help = t("p", "Отчёт клиентского пробника — файл ", t("code", "probe/probe-report.json"),
@@ -422,7 +422,7 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
               class_="field"),
             t("button", "Сравнить", type="submit", class_="btn primary",
               title="Сравнить с самопроверкой и записать в историю"), class_="form-row"),
-          method="post", action="/probe/compare", class_="stack")]
+          method="post", action="/probe/compare", class_="stack", data_swap=True)]
     if error:
         cmp_body.insert(0, alert_list([("bad", error)]))
     if notice:
@@ -511,7 +511,7 @@ def logs_page(app: "App", req: "Request") -> "Response":
             nav.append(t("li", g, class_="group"))
             group = g
         nav.append(t("li", t("a", label, href=f"/logs?src={k}&lines={lines}", class_="active" if k == src else None,
-                             title=label)))
+                             title=label, data_swap=True)))
     if src in keys:
         kind, _, name = src.partition(":")
         raw = logs.tail_file(logs.log_dir() / name, lines) if kind == "file" else logs.journal(name, lines)

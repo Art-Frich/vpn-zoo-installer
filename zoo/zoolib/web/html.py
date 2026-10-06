@@ -113,8 +113,8 @@ def csrf_input(token: str) -> Markup:
 
 
 def post_button(action: str, label: str, csrf: str, cls: str = "btn", fields: dict[str, str] | None = None,
-                title: str | None = None, confirm: str | None = None, swap: bool = False) -> Markup:
-    """Кнопка-форма POST (действие без JS). confirm — вопрос окна подтверждения (data-confirm);
+                title: str | None = None, confirm: str | None = None, swap: bool = True) -> Markup:
+    """Кнопка-форма POST (без JS — обычная форма). confirm — вопрос окна подтверждения (data-confirm);
     swap — с JS отправить без перезагрузки и подменить <main> (data-swap)."""
     hidden = [t("input", type="hidden", name=k, value=v) for k, v in (fields or {}).items()]
     return t("form", csrf_input(csrf), hidden, t("button", label, type="submit", class_=cls, title=title),
