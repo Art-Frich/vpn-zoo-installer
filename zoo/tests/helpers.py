@@ -111,7 +111,8 @@ class ZooEnv:
 
     ENV_KEYS = ("VPN_ETC", "CONFIG_FILE", "MANIFEST_DIR", "PORTS_FILE", "ZOO_USERS_FILE", "ZOO_CLIENTS_DIR",
                 "ZOO_PROBE_EXPORT", "XUI_HDR_FILE", "ZOO_HOME", "ZOO_STATE_DIR", "ZOO_LOCK_FILE",
-                "ZOO_SCRIPTS_DIR", "FAKE_STATE", "FAKE_FAIL", "FAKE_SLOW", "FAKE_HALF", "ZOO_BASH")
+                "ZOO_SCRIPTS_DIR", "FAKE_STATE", "FAKE_FAIL", "FAKE_SLOW", "FAKE_HALF", "ZOO_BASH",
+                "ZOO_PROBE_KEEP_DAYS")
 
     def __enter__(self) -> "ZooEnv":
         self._saved = {k: os.environ.get(k) for k in self.ENV_KEYS}
@@ -144,6 +145,7 @@ class ZooEnv:
             os.environ.pop(k, None)
         if BASH:
             os.environ["ZOO_BASH"] = BASH
+        os.environ["ZOO_PROBE_KEEP_DAYS"] = "0"   # фикстуры с датами 2026: не устаревают со временем
         self.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "PANEL_PORT": "", "PANEL_PATH": ""})
         return self
 

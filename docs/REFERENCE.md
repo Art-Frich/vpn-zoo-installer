@@ -185,7 +185,7 @@ docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$PWD/probe:/data" 
     zoo-probe --tag mobile-mts --device pixel7 --upload-mb 2
 ```
 
-**Куда копится.** На сервере — SQLite `/var/lib/vpn-zoo/probe-history.sqlite` (0600): каждый `zoo probe --local` пишется сам, клиентский отчёт — формой на странице «Проверка» (там же поля метки и устройства), командой `sudo zoo history add probe-report.json` или с вашей машины `scripts/history.sh push root@СЕРВЕР --tag mobile-mts probe/probe-report.json`. Журнал: `sudo zoo history list`.
+**Куда копится.** На сервере — SQLite `/var/lib/vpn-zoo/probe-history.sqlite` (0600): каждый `zoo probe --local` пишется сам, клиентский отчёт — формой на странице «Проверка» (там же поля метки и устройства), командой `sudo zoo history add probe-report.json` или с вашей машины `scripts/history.sh push root@СЕРВЕР --tag mobile-mts probe/probe-report.json`. Журнал: `sudo zoo history list`. Отчёты старше 365 дней удаляются при записи нового (`ZOO_PROBE_KEEP_DAYS`, 0 — хранить всё); то, что уже выгружено в `history/` репозитория, остаётся там.
 
 **Лучшие протоколы:**
 
