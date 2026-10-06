@@ -417,6 +417,15 @@ def cmd_setup(args: argparse.Namespace, cfg: Config) -> int:
             output.warn(f"приложения через VPN: {n}: {e} (повторить: sudo zoo allow apply)")
     except (allowlist.AllowlistError, LockTimeout, OSError) as e:
         output.warn(f"приложения через VPN: файлы не пересобраны: {e} (sudo zoo allow apply)")
+    # обновление гоняет только 09: манифесты остальных протоколов должны получить новые поля
+    # (short, phase, enable_var), иначе карточки без коротких имён и переключателей
+    libs = set(protolib.list_libs())
+    for m in manifests.load_all()[0]:
+        if m.id in libs and m.id != "amneziawg":   # amneziawg только что обновил allowlist.apply
+            try:
+                protolib.manifest_refresh(m.id)
+            except protolib.ProtoError as e:
+                output.warn(f"манифест {m.id} не обновлён: {e}")
     for mod in (traffic, journal, probe_mod, web_mod):
         mod.setup(cfg)
     return EXIT_OK

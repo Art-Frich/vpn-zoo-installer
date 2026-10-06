@@ -150,25 +150,7 @@ fi
 # Бюджет данных zoo (ZOO_DATA_LIMIT) journald не включает: он ограничен отдельно
 # ------------------------------------------------------------
 
-JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-vpn-zoo.conf
-journald_new="$(mktemp)"
-cat > "$journald_new" <<'EOF'
-# vpn-zoo: потолок объёма системного журнала
-[Journal]
-SystemMaxUse=500M
-EOF
-if cmp -s "$journald_new" "$JOURNALD_DROPIN" 2>/dev/null; then
-    log_info "journald: SystemMaxUse=500M уже задан"
-else
-    mkdir -p "$(dirname "$JOURNALD_DROPIN")"
-    install -m 0644 "$journald_new" "$JOURNALD_DROPIN"
-    if systemctl restart systemd-journald >/dev/null 2>&1; then
-        log_ok "journald: SystemMaxUse=500M"
-    else
-        log_warn "journald: лимит записан в $JOURNALD_DROPIN, но systemd-journald не перезапустился (подействует после перезагрузки)"
-    fi
-fi
-rm -f "$journald_new"
+journald_limit
 
 # ------------------------------------------------------------
 # 5. unattended-upgrades: security-обновления + перезагрузка ночью
