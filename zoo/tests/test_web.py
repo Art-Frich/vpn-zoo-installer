@@ -1155,6 +1155,34 @@ class QuietPagesTest(AppTestBase):
             _, body = self.c.get("/")
         self.assertIn("✓ всё в порядке", body)
 
+    def test_overview_service_traffic_and_short_names(self):
+        from zoolib import users
+        users.bootstrap()
+        now = int(time.time())
+        con = traffic.connect()
+        with con:
+            deltas = [traffic.Delta("xray", "owner", 1000, 2000), traffic.Delta("xray", users.PROBE_USER, 5_000_000, 0)]
+            traffic.store(con, deltas, {}, now)
+        con.close()
+        status = copy.deepcopy(FAKE_SLOW)
+        status["protocols"][0].update(short="VLESS Vision", name="VLESS + REALITY + Vision")
+        with mock.patch("zoolib.status.collect_slow", return_value=status):
+            self.c.login()
+            _, body = self.c.get("/")
+        self.assertIn("Трафик пользователей", body)
+        self.assertIn("без служебного пробника", body)
+        self.assertIn("служебный 4.8 МБ", body)
+        self.assertIn("служебный трафик пробника: 4.8 МБ", body)
+        self.assertRegex(body, r'<h3 title="VLESS \+ REALITY \+ Vision">VLESS Vision</h3>')
+        self.assertRegex(body, r'<h3 title="Hysteria2 &lt;b&gt;">Hysteria2 &lt;b&gt;</h3>')   # нет short — полное имя
+
+    def test_overview_no_service_line_without_probe_traffic(self):
+        self._seed_run()
+        with mock.patch("zoolib.status.collect_slow", return_value=FAKE_SLOW):
+            self.c.login()
+            _, body = self.c.get("/")
+        self.assertNotIn("служебный", body)
+
     def _seed_run(self):
         from zoolib import users
         users.bootstrap()

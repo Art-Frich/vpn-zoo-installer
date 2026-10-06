@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sqlite3
 import time
 import urllib.error
@@ -253,15 +255,36 @@ def hysteria_stats(port: int, secret: str, timeout: float = 5.0) -> dict[str, di
     return data if isinstance(data, dict) else {}
 
 
+STATS_LISTEN_RE = re.compile(r"^trafficStats:[ \t]*\n(?:[ \t]+\S.*\n)*?[ \t]+listen:[ \t]*\S*:(\d+)", re.M)
+
+
+def _hy_stats_port(cfg: Config, m: manifests.Manifest) -> int | None:
+    """Порт trafficStats инстанса: манифест → config.env → конфиг самого инстанса. Последнее
+    нужно, когда второй инстанс (Salamander) включили поверх старой установки и ключа в
+    config.env нет: без этого он молча оставался бы с нулями."""
+    obfs = m.id.endswith("-obfs")
+    port = m.raw.get("stats_port") or cfg.int("HY2_OBFS_STATS_PORT" if obfs else "HY2_STATS_PORT")
+    if port:
+        return int(port)
+    conf = Path(os.environ.get("HY_ETC", "/etc/hysteria")) / ("obfs.yaml" if obfs else "config.yaml")
+    try:
+        found = STATS_LISTEN_RE.search(conf.read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return int(found.group(1)) if found else None
+
+
 def _from_hysteria(cfg: Config, protos: list[manifests.Manifest], g: Gathered) -> None:
     secret = _hy_secret(cfg)
     for m in protos:
-        key = "HY2_OBFS_STATS_PORT" if m.id.endswith("-obfs") else "HY2_STATS_PORT"
-        port = m.raw.get("stats_port") or cfg.int(key)
+        port = _hy_stats_port(cfg, m)
         if not port or not secret:
-            # ключей нет — через модуль (сумма по инстансам, без разбивки)
+            # ключей нет — через модуль (сумма по инстансам, без разбивки); у инстанса без своего
+            # модуля (Salamander) так нельзя — и тогда это ошибка, а не тихий ноль
             if m.id in protolib.list_libs():
                 _from_module(m, g)
+            else:
+                g.errors[m.id] = "нет порта trafficStats или секрета HY2_STATS_SECRET"
             continue
         try:
             stats = hysteria_stats(int(port), secret)
@@ -630,8 +653,9 @@ def timeseries(period: str = "24h", group: str = "protocol", user: str | None = 
     return out
 
 
-def today(group: str = "protocol", now: float | None = None) -> dict[str, int]:
-    """Трафик за текущие сутки: {протокол | пользователь: байты}."""
+def today(group: str = "protocol", now: float | None = None, include_hidden: bool = False) -> dict[str, int]:
+    """Трафик за текущие сутки: {протокол | пользователь: байты}. По пользователям служебные
+    (zoo-probe) скрыты, include_hidden=True — с ними."""
     now = time.time() if now is None else now
     con = _con()
     if con is None:
@@ -639,7 +663,7 @@ def today(group: str = "protocol", now: float | None = None) -> dict[str, int]:
     col = "user" if group == "user" else "proto"
     cond = "user != ''" if group == "user" else "user = ''"
     args: list[Any] = [RES_1D, align(now, RES_1D)]
-    hidden, names = _hidden_sql(False)
+    hidden, names = _hidden_sql(include_hidden)
     if group == "user" and hidden:
         cond += f" AND {hidden}"
         args += names

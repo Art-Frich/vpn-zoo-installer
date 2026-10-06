@@ -217,7 +217,7 @@ proto_vless_xhttp_manifest_refresh() {
     manifest_write "$PROTO_XHTTP_ID" "$(jq -cn --argjson ib "$ib" --argjson links "$links" --argjson probe "$probe" \
         --argjson port "$pport" --arg placement "${XHTTP_PLACEMENT:-port}" --arg notes "$notes" '
         ($ib.streamSettings | if type == "string" then fromjson else . end) as $st |
-        {id:"vless-xhttp", name:"VLESS + XHTTP + REALITY", layer:"tcp", port:$port, engine:"xray",
+        {id:"vless-xhttp", name:"VLESS + XHTTP + REALITY", short:"VLESS XHTTP", layer:"tcp", port:$port, engine:"xray",
          service:"x-ui", enabled:($ib.enable == true), users_backend:"xui",
          links:$links, files:[], probe:$probe,
          params:{placement:$placement, inbound_id:$ib.id, inbound_port:$ib.port, listen:$ib.listen,

@@ -404,7 +404,7 @@ _awg_manifest_refresh() {
         --arg engine "$engine" --arg service "$AWG_SERVICE" --argjson links "$links" --argjson files "$files" \
         --argjson probe "$probe" --arg notes "$notes" --arg profile "${AWG_PROFILE:-v2}" \
         --arg net "$AWG_NETWORK" --arg iface "$AWG_IFACE" --argjson en "$([ "${ENABLE_AWG:-1}" = 1 ] && echo true || echo false)" '{
-        id:"amneziawg", name:$name, layer:"udp", port:$port, engine:$engine, service:$service,
+        id:"amneziawg", name:$name, short:"AmneziaWG 3.1", layer:"udp", port:$port, engine:$engine, service:$service,
         enabled:$en, users_backend:"awg", interface:$iface, network:$net, profile:$profile,
         links:$links, files:$files, probe:$probe, notes:$notes}')"
 }

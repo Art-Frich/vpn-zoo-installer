@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 REBOOT_FLAG = Path("/var/run/reboot-required")
 GEO_UNIT = "vpn-zoo-geo-update.service"
 COLLECT_ACTION = {"action": "collect"}
+USERS_TRAFFIC_TITLE = "трафик пользователей сегодня (без служебного пробника)"
 
 
 # ---------- общие куски ----------
@@ -92,9 +93,11 @@ def no_history_hint(csrf: str = "") -> Markup:
                  post_button("/settings/action", "Снять сейчас", csrf, "btn small", COLLECT_ACTION) if csrf else None)
 
 
-def _tile(label: str, value: str, hint: str = "", extra: Any = None, title: str | None = None) -> Markup:
+def _tile(label: str, value: str, hint: str = "", extra: Any = None, title: str | None = None,
+          label_title: str | None = None) -> Markup:
     """Плитка-сетка: подпись, значение, место под полоску (занято всегда), подсказка — всё в одну строку."""
-    return t("div", t("div", label, class_="label", title=label), t("div", value, class_="value", title=value),
+    return t("div", t("div", label, class_="label", title=label_title or label),
+             t("div", value, class_="value", title=value),
              t("div", extra, class_="meter-slot"),
              t("div", hint, class_="hint", title=title or hint or None), class_="tile")
 
@@ -175,6 +178,7 @@ def overview(app: "App", req: "Request") -> "Response":
     host = st["host"]
     today_p = traffic.today("protocol")
     today_u = traffic.today("user")
+    service_bytes = max(0, sum(traffic.today("user", include_hidden=True).values()) - sum(today_u.values()))
     spark = {s["key"]: s["values"] for s in traffic.timeseries("24h", "protocol", top=50)["series"]}
 
     alerts = collect_alerts(app, st, csrf)
@@ -192,8 +196,12 @@ def overview(app: "App", req: "Request") -> "Response":
                     charts.meter(disk.get("used") or 0, disk.get("total") or 0, 0.85, 0.95)),
               _tile("Трафик сегодня", human_bytes(today_p.get(traffic.HOST)), "сервер",
                     title="интерфейс сервера: приём + отдача"),
-              _tile("Пользователи", human_bytes(sum(today_u.values())), f"{active_users}/{st['users']['total']} активны",
-                    title="трафик пользователей сегодня"),
+              _tile("Трафик пользователей", human_bytes(sum(today_u.values())),
+                    f"{active_users}/{st['users']['total']} активны"
+                    + (f" · служебный {human_bytes(service_bytes)}" if service_bytes else ""),
+                    label_title=USERS_TRAFFIC_TITLE,
+                    title=f"{USERS_TRAFFIC_TITLE}; служебный трафик пробника zoo-probe: {human_bytes(service_bytes)}"
+                    if service_bytes else USERS_TRAFFIC_TITLE),
               _tile("Аптайм", human_duration(host.get("uptime")),
                     f"Xray {st['xray'].get('state') or '—'}" if st["xray"] else ""),
               class_="tiles")
@@ -203,20 +211,19 @@ def overview(app: "App", req: "Request") -> "Response":
         if not p["enabled"]:
             off.append(p["id"])
             continue
-        # «Shadowsocks-2022 (2022-blake3-aes-128-gcm)» → заголовок «Shadowsocks-2022», уточнение — в title
-        name, _, detail = p["name"].partition(" (")
-        about = f"{p['id']} · {p['engine'] or '—'}" + (f" · {detail.rstrip(')')}" if detail else "")
+        # короткое имя — в заголовок, полное — в title (на 380 px длинные имена переносились)
+        about = f"{p['id']} · {p['engine'] or '—'}"
         problems = [t("span", f"{u}: {s}", class_="chip bad") for u, s in p["services"].items() if s != "active"]
         problems += [t("span", f"{k} не слушает", class_="chip bad") for k, v in p["listening"].items() if not v]
         cards.append(card(
-            name,
+            p.get("short") or p["name"].partition(" (")[0],
             t("div", t("span", f"{p['port']}/{p['layer']}", class_="chip", title=about), problems, class_="chips"),
             t("div",
               t("div", t("div", human_bytes(today_p.get(p["id"], 0)), class_="num-big", title="сегодня"),
                 t("div", f"пользователей: {'—' if p['users'] is None else p['users']}", class_="muted small")),
               charts.sparkline(spark.get(p["id"], []), charts.series_class(i)),
               class_="row"),
-            cls="proto", extra=badge("работает", "ok") if p["ok"] else badge("сбой", "bad")))
+            cls="proto", tip=p["name"], extra=badge("работает", "ok") if p["ok"] else badge("сбой", "bad")))
     if cards:
         protos: Any = t("div", cards, class_="grid")
     else:
@@ -229,7 +236,11 @@ def overview(app: "App", req: "Request") -> "Response":
                             [[t("a", n, href=f"/users/{n}"), human_bytes(v), charts.bar(v, mx)]
                              for n, v in top_users],
                             num=[1], empty="трафика сегодня ещё не было"),
-                      extra=t("a", "все →", href="/users", class_="small"))
+                      t("p", f"служебный трафик пробника: {human_bytes(service_bytes)}", class_="quiet")
+                      if service_bytes else None,
+                      extra=t("a", "все →", href="/users", class_="small"),
+                      help="Трафик пользователей за сегодня, без служебного пользователя пробника (zoo-probe): "
+                           "он учтён только в итогах протоколов.")
     expiring = [c for c in st["certs"] if c["days_left"] is None or c["days_left"] < status.CERT_WARN_DAYS]
     certs = [[c["path"], fmt_time(_iso_ts(c["not_after"])),
               badge("не читается", "bad") if c["days_left"] is None else badge(f"{c['days_left']} дн.", "warn")]
@@ -358,15 +369,18 @@ def results_table(results: list[dict[str, Any]]) -> Markup:
     for r in results:
         why = "; ".join(([r["reason"]] if r.get("reason") else []) + list(r.get("notes") or []))
         rtt = (r.get("l4") or {}).get("rtt_ms")
+        lat = r.get("latency_ms")
         rows.append([t("span", t("strong", r.get("id")),
                        t("span", f"{r.get('port') or '?'}/{r.get('layer') or '?'}", class_="sub")),
                      verdict_badge(r.get("verdict")),
-                     "—" if rtt is None else f"{rtt:.0f} мс",
-                     "—" if r.get("latency_ms") is None else f"{r['latency_ms']:.0f} мс",
+                     t("span", "—" if lat is None else f"{lat:.0f} мс",
+                       t("span", f"порт {rtt:.0f} мс", class_="sub") if rtt is not None else None),
                      "—" if r.get("speed_mbps") is None else f"{r['speed_mbps']:.1f} Мбит/с",
                      r.get("egress_ip") or "—", t("span", why, class_="small")])
-    return table(["протокол", "итог", "RTT", "задержка", "скорость", "IP выхода", "причина"], rows,
-                 num=[2, 3, 4], empty="протоколов для проверки нет", stack=True)
+    return table(["протокол", "итог", ("задержка", "время до первого байта через туннель; ниже — TCP-соединение "
+                                        "с портом сервера (RTT), если протокол по TCP"),
+                  "скорость", "IP выхода", "причина"], rows,
+                 num=[2, 3], empty="протоколов для проверки нет", stack=True)
 
 
 def verdict_legend(results: list[dict[str, Any]]) -> Markup | None:
@@ -431,7 +445,8 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
         rows = [[t("strong", r["id"]), verdict_badge(r.get("server")), verdict_badge(r.get("client")),
                  badge(r.get("verdict", ""), CATEGORY.get(r.get("category", ""), "muted"))] for r in compare_rows]
         cmp_body += [t("h3", "Сравнение"), table(["протокол", "сервер", "клиент", "вывод"], rows, stack=True)]
-    body = [page_head("Проверка"), local, *probeviews.cards(req), card("Сравнить с клиентом", *cmp_body, help=cmp_help)]
+    body = [page_head("Проверка"), local, *probeviews.cards(req),
+            card("Сравнить с клиентом", *cmp_body, help=cmp_help, id_=probeviews.HOW_ANCHOR)]
     return app.render(req, "Проверка", body, active="/probe")
 
 

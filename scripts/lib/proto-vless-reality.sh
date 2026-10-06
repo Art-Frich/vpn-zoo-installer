@@ -186,7 +186,7 @@ proto_vless_reality_manifest_refresh() {
     sni="$(jq -r '.streamSettings.realitySettings.serverNames[0]' <<< "$PVR_INB")"
     manifest_write "$PVR_ID" "$(jq -cn --argjson inb "$PVR_INB" --argjson links "$links" --argjson probe "$probe" \
         --arg notes "$PVR_NOTES" --arg sni "$sni" '{
-        id:"vless-reality", name:"VLESS + REALITY + Vision", layer:"tcp", port:$inb.port,
+        id:"vless-reality", name:"VLESS + REALITY + Vision", short:"VLESS Vision", layer:"tcp", port:$inb.port,
         engine:"xray", service:"x-ui", enabled:$inb.enable, users_backend:"xui",
         xui_inbound_id:$inb.id, xui_tag:$inb.tag, sni:$sni,
         target:$inb.streamSettings.realitySettings.target,

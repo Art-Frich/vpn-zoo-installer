@@ -96,9 +96,9 @@ def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
             if iface_up is False:
                 problems.append(f"{m.id}: нет интерфейса {iface} (systemctl restart {', '.join(m.services) or iface})")
         protocols.append({
-            "id": m.id, "name": m.name, "port": m.port, "layer": m.layer, "engine": m.engine,
+            "id": m.id, "name": m.name, "short": m.short, "port": m.port, "layer": m.layer, "engine": m.engine,
             "services": svc, "enabled": m.enabled, "listening": listening, "ok": ok,
-            "users": sum(1 for u in reg.visible() if users_module(m, libs) in u.protocols) if reg else None,
+            "users": sum(1 for u in reg.visible() if {m.id, users_module(m, libs)} & set(u.protocols)) if reg else None,
         })
 
     for u in BASE_UNITS:
