@@ -62,7 +62,7 @@ def page_head(title: str, sub: Any = None, actions: Any = None, top: bool | None
         if not (sub or actions):
             return Markup("")
         return t("div", t("div", sub, class_="sub") if sub else None, t("div", actions, class_="actions") if actions else None,
-                 class_="page-head top")
+                 class_="page-head bare")
     return t("div", t("div", t("h1", title), t("div", sub, class_="sub") if sub else None),
              t("div", actions, class_="actions") if actions else None, class_="page-head")
 

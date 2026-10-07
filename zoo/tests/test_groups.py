@@ -1,6 +1,7 @@
 import inspect
 import json
 import os
+import re
 import shutil
 import subprocess
 import unittest
@@ -8,7 +9,7 @@ from unittest import mock
 
 from tests.helpers import BASH, ZooEnv, needs_bash
 from tests.test_cli import run_cli
-from zoolib import allowlist, clients, groups, paths, users
+from zoolib import allowlist, clients, groups, paths, protolib, users
 
 PROTOS = ("vless-reality", "hysteria2", "amneziawg")
 JQ = shutil.which("jq")
@@ -276,7 +277,7 @@ class ModelTest(GroupsBase):
             groups.update(g.id, name="Основная")
         with self.assertRaises(groups.GroupError):
             groups.update(g.id, protocols=["nope"])
-        self.assertEqual(self.groups_json()["groups"][1]["protocols"], ["vless-reality", "amneziawg"])
+        self.assertEqual(self.groups_json()["groups"][1]["protocols"], ["amneziawg", "vless-reality"])
 
     def test_group_allowlist_and_user_override(self):
         g = groups.create("Семья", ["amneziawg", "vless-reality"])
@@ -926,6 +927,175 @@ class GroupDeleteMergeCliTest(GroupsBase):
         code, out, _ = run_cli("group", "merge", "g2", "main", "--json")
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out)["group"]["id"], "main")
+
+
+class ObfsGroupTest(GroupsBase):
+    """Salamander (hysteria2-obfs) выбирается группой отдельно от Hysteria2; учётки у них общие (модуль hysteria2)."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.add_manifest("hysteria2-obfs", layer="udp", users_backend="hysteria-command", engine="hysteria",
+                              name="Hysteria2 + Salamander", short="HY2 + Salamander")
+        users.bootstrap()
+        groups.ensure()
+
+    def test_selectable_and_variants(self):
+        self.assertEqual(users.variant_modules(), {"hysteria2-obfs": "hysteria2"})
+        sel = users.selectable_protocols()
+        self.assertEqual(sorted(sel), ["amneziawg", "hysteria2", "hysteria2-obfs", "vless-reality"])
+        self.assertEqual(sel.index("hysteria2-obfs"), sel.index("hysteria2") + 1, "вариант — следом за модулем")
+        self.env.add_manifest("hysteria2-obfs", enabled=False, users_backend="hysteria-command")
+        self.assertEqual(users.variant_modules(), {})
+        self.assertNotIn("hysteria2-obfs", users.selectable_protocols())
+        with self.assertRaises(groups.GroupError):
+            groups.create("Семья", ["hysteria2-obfs"])
+
+    def test_group_stores_a_set_in_priority_order(self):
+        g = groups.create("Семья", ["vless-reality", "hysteria2-obfs", "amneziawg", "hysteria2-obfs", "hysteria2"])
+        self.assertEqual(g.protocols, ["hysteria2", "amneziawg", "hysteria2-obfs", "vless-reality"])
+        self.assertEqual(self.groups_json()["groups"][1]["protocols"], g.protocols)
+        # прочитанный в «чужом» порядке файл нормализуется; «*» остаётся единственным значением
+        data = self.groups_json()
+        data["groups"][1]["protocols"] = ["ss2022", "tuic", "vless-reality", "hysteria2-obfs", "hysteria2", "x"]
+        data["groups"][0]["protocols"] = ["amneziawg", "*"]
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        gs = groups.Groups.load()
+        self.assertEqual(gs.get("g1").protocols, ["hysteria2", "hysteria2-obfs", "tuic", "vless-reality", "ss2022", "x"])
+        self.assertEqual(gs.get("main").protocols, ["*"])
+        self.assertEqual(groups.by_priority(["b", "a", "tuic", "hysteria2"]), ["hysteria2", "tuic", "a", "b"])
+
+    def test_resolve_maps_variants_to_modules_and_offered_keeps_them(self):
+        managed, _ = users.managed_protocols()
+        sel = users.selectable_protocols()
+        only = groups.Group("g", "G", ["hysteria2-obfs"])
+        self.assertEqual(only.resolve(managed), ["hysteria2"])
+        self.assertEqual(only.offered(sel), ["hysteria2-obfs"])
+        both = groups.Group("g", "G", ["hysteria2-obfs", "hysteria2", "amneziawg"])
+        self.assertEqual(both.resolve(managed), ["hysteria2", "amneziawg"], "учётка модуля одна")
+        self.assertEqual(both.offered(sel), ["hysteria2", "amneziawg", "hysteria2-obfs"])
+        plain = groups.Group("g", "G", ["hysteria2"])
+        self.assertEqual((plain.resolve(managed), plain.offered(sel)), (["hysteria2"], ["hysteria2"]))
+        everything = groups.Group("main", "Основная", ["*"])
+        self.assertEqual(everything.resolve(managed), managed)
+        self.assertEqual(everything.offered(sel), sel)
+        self.assertEqual(only.resolve(["amneziawg"]), [], "модуля нет среди включённых — учёток нет")
+
+    def test_obfs_only_group_gives_hysteria2_credentials(self):
+        g = groups.create("Салам", ["hysteria2-obfs"])
+        rep = users.add_user("masha", group=g.id)
+        self.assertTrue(rep.ok, rep.to_dict())
+        self.assertEqual(self.registry()["masha"]["protocols"], ["hysteria2"])
+        self.assertIn("masha", self.env.proto_users("hysteria2"))
+        self.assertNotIn("masha", self.env.proto_users("vless-reality"))
+        self.assertNotIn("custom", self.registry()["masha"])
+        # sync доводит до протоколов группы, а не до всех включённых
+        reg = users.Registry.load()
+        reg.get("masha").protocols.clear()
+        reg.save()
+        users.sync_users(["masha"])
+        self.assertEqual(self.registry()["masha"]["protocols"], ["hysteria2"])
+
+    def test_swapping_hysteria2_for_salamander_keeps_credentials_and_asks_new_qr(self):
+        g = groups.create("Телефон", ["hysteria2", "amneziawg"])
+        users.add_user("masha", group=g.id)
+        users.add_user("petya", group=g.id, only=["amneziawg"])   # свой набор
+        before = list(self.env.calls())
+        rep = groups.update(g.id, protocols=["hysteria2-obfs", "amneziawg"])
+        self.assertTrue(rep.ok, rep.to_dict())
+        self.assertEqual(sorted(self.registry()["masha"]["protocols"]), ["amneziawg", "hysteria2"], "учётки на месте")
+        new_calls = self.env.calls()[len(before):]
+        self.assertFalse([c for c in new_calls if c.startswith("hysteria2 user_")], new_calls)
+        self.assertEqual(rep.needs_qr, ["masha"], "учётки те же, но ссылка другая — QR нужен; свой набор не тронут")
+        self.assertEqual(rep.skipped, ["petya"])
+        # тот же набор в другом порядке — ничего нового
+        rep = groups.update(g.id, protocols=["amneziawg", "hysteria2-obfs"])
+        self.assertEqual(rep.needs_qr, [])
+
+    def test_add_obfs_to_group_without_new_credentials(self):
+        g = groups.create("Телефон", ["hysteria2", "amneziawg"])
+        users.add_user("masha", group=g.id)
+        rep = groups.update(g.id, protocols=["hysteria2", "hysteria2-obfs", "amneziawg"])
+        self.assertTrue(rep.ok, rep.to_dict())
+        self.assertEqual(rep.needs_qr, ["masha"], "появилась ссылка Salamander")
+
+    def test_clean_clients_counts_variant_protocols(self):
+        self.assertEqual(groups.clean_clients({"android": ["v2rayng"]}, ["hysteria2-obfs"]), {"android": ["v2rayng"]})
+        with self.assertRaises(groups.GroupError):   # Happ Salamander не заявлен
+            groups.clean_clients({"android": ["happ"]}, ["hysteria2-obfs"])
+        self.assertEqual(groups.clean_clients({"android": ["happ"]}, ["hysteria2-obfs", "hysteria2"]),
+                         {"android": ["happ"]})
+
+    def test_migration_adds_salamander_once_to_groups_with_hysteria2(self):
+        groups.create("С Hysteria2", ["hysteria2", "amneziawg"])
+        groups.create("Без неё", ["amneziawg"])
+        data = self.groups_json()
+        data.pop("obfs_split", None)   # как до разделения: метки нет
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        gs = groups.ensure()
+        self.assertEqual({g.id: g.protocols for g in gs.groups},
+                         {"main": ["*"], "g1": ["hysteria2", "amneziawg", "hysteria2-obfs"], "g2": ["amneziawg"]})
+        self.assertEqual(self.groups_json().get("obfs_split"), 1)
+        # один раз: потом Salamander можно снять, миграция его не вернёт
+        groups.update("g1", protocols=["hysteria2", "amneziawg"])
+        gs = groups.ensure()
+        self.assertEqual(gs.get("g1").protocols, ["hysteria2", "amneziawg"])
+        self.assertFalse(groups._pending(gs, users.Registry.load()))
+
+    def test_migration_waits_while_salamander_is_off(self):
+        groups.create("С Hysteria2", ["hysteria2"])
+        data = self.groups_json()
+        data.pop("obfs_split", None)
+        paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+        self.env.add_manifest("hysteria2-obfs", enabled=False, users_backend="hysteria-command")
+        gs = groups.ensure()
+        self.assertEqual(gs.get("g1").protocols, ["hysteria2"])
+        self.assertNotIn("obfs_split", self.groups_json(), "метка не ставится: Salamander ещё не включён")
+        self.assertFalse(groups._pending(gs, users.Registry.load()), "и страницы не берут блокировку на каждом показе")
+        # включили позже — прежнее поведение (Salamander вместе с Hysteria2) возвращается один раз
+        self.env.add_manifest("hysteria2-obfs", users_backend="hysteria-command")
+        gs = groups.ensure()
+        self.assertEqual(gs.get("g1").protocols, ["hysteria2", "hysteria2-obfs"])
+        self.assertEqual(self.groups_json().get("obfs_split"), 1)
+
+    def test_fresh_server_marks_migration_done(self):
+        self.assertEqual(self.groups_json().get("obfs_split"), 1)
+
+    LINKS = [protolib.Link("hysteria2://a@h:443/?sni=x", "", "hysteria2"),
+             protolib.Link("hysteria2://a@h:443,20000-30000/?sni=x", "", "hysteria2"),
+             protolib.Link("hysteria2://a@h:8443/?sni=x&obfs=salamander&obfs-password=p", "", "hysteria2"),
+             protolib.Link("vless://u@h:443#x", "", "vless-reality")]
+
+    def test_links_shown_only_for_selected_variants(self):
+        from zoolib.web import userviews
+        def shown(g, **kw):
+            f = userviews.link_filter(users.User("masha", group=g.id, **kw), g)
+            return None if f is None else [i for i, ln in enumerate(self.LINKS) if f(ln)]
+        self.assertEqual(shown(groups.Group("g", "G", ["hysteria2-obfs"])), [2, 3], "только Salamander и VLESS")
+        self.assertEqual(shown(groups.Group("g", "G", ["hysteria2"])), [0, 1, 3], "обычная и hop, без Salamander")
+        self.assertEqual(shown(groups.Group("g", "G", ["hysteria2", "hysteria2-obfs"])), [0, 1, 2, 3])
+        self.assertIsNone(shown(groups.Group("main", "Основная", ["*"])))
+        self.assertIsNone(shown(groups.Group("g", "G", ["hysteria2-obfs"]), custom=True), "свой набор — всё")
+        self.assertIsNone(userviews.link_filter(users.User("owner", group="g"), groups.Group("g", "G", ["hysteria2-obfs"])))
+        self.assertIsNone(userviews.link_filter(users.User("masha"), None))
+
+    def test_connect_panel_hands_off_only_selected_variants(self):
+        from zoolib.web import clientviews
+        ctx = clientviews.Ctx.load()
+        def panel(protos):
+            g = groups.Group("g", "G", protos, {"android": ["v2rayng"]})
+            return str(clientviews.connect_panel(self.LINKS, "masha", ctx, g))
+        out = panel(["hysteria2-obfs"])
+        self.assertIn("obfs=salamander", out)
+        self.assertNotIn("20000", out)
+        self.assertNotIn("sni=x&amp;obfs", out.replace("obfs=salamander&amp;obfs-password=p", ""))
+        self.assertEqual(out.count("<input type=\"text\""), 1, "одна ссылка: Salamander")
+        out = panel(["hysteria2"])
+        self.assertNotIn("salamander", out)
+        self.assertIn("hysteria2://a@h:443/?sni=x", out)
+        out = panel(["hysteria2", "hysteria2-obfs"])
+        self.assertEqual(out.count("<input type=\"text\""), 2)
+        self.assertEqual(re.findall(r'<div class="key-name">([^<]*)</div>', out), ["Протокол hysteria2", "Hysteria2 + Salamander"],
+                         "по приоритету: Hysteria2, затем Salamander")
 
 
 class ProtocolUsersTest(GroupsBase):

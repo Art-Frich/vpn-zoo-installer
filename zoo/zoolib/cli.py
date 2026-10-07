@@ -547,7 +547,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def group_options(p: argparse.ArgumentParser) -> None:
         g = p.add_mutually_exclusive_group()
-        g.add_argument("--proto", action="append", metavar="ID", help="протокол группы (можно несколько раз; первый — основной)")
+        g.add_argument("--proto", action="append", metavar="ID", help="протокол группы (можно несколько раз; hysteria2-obfs — Salamander отдельно от hysteria2)")
         g.add_argument("--all-protocols", action="store_true", help="все включённые протоколы")
         p.add_argument("--client", action="append", metavar="ПЛАТФОРМА=КЛИЕНТ[,КЛИЕНТ]",
                        help="набор клиентов платформы из каталога (android=happ,amneziawg; zoo clients); "

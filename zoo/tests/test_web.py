@@ -705,7 +705,7 @@ class ProtoChipTest(AppTestBase):
 
     def test_group_without_new_protocol_is_not_warned(self):
         _, body = self.c.get("/users")
-        self.assertIn('<span class="chip" title="vless-reality, amneziawg">2/2</span>', body)
+        self.assertIn('<span class="chip" title="amneziawg, vless-reality">2/2</span>', body)
         self.assertIn('<span class="chip warn" title="2/3; нет в: tuic">нет: tuic</span>', body, "owner в «Основной»: ждёт все три")
 
     def test_all_protocols_group_and_no_group_expect_everything(self):
@@ -1439,13 +1439,35 @@ class TilesTest(unittest.TestCase):
                  protolib.Link("hysteria2://a@h:443?obfs=salamander&obfs-password=p", "", "hysteria2"),
                  protolib.Link("hysteria2://a@h:20000,20100?sni=x", "", "hysteria2")]
         out = str(connect_tiles(links, [], "masha"))
+        # Salamander — свой протокол группы: своя плитка, обычная Hysteria2 и hop остаются вкладками первой
         self.assertIn(">Обычная</button>", out)
         self.assertIn(">Запасная 2</button>", out)
-        self.assertIn(">Запасная 3</button>", out)
-        self.assertIn('title="Salamander: обфускация Hysteria2"', out)
+        self.assertNotIn(">Запасная 3</button>", out)
         self.assertIn('title="Port hopping: порт меняется"', out)
+        self.assertEqual(out.count('class="ptile '), 2)
+        self.assertIn('ptile-name">hysteria2-obfs<', out)
         self.assertNotIn("Для:", out)
         self.assertNotIn("нужен Xray-клиент", out)
+
+    def test_show_filter_keeps_only_selected_variants(self):
+        from zoolib import protolib
+        from zoolib.web.userviews import connect_tiles, quick_start
+        links = [protolib.Link("hysteria2://a@h:443?sni=x", "", "hysteria2"),
+                 protolib.Link("hysteria2://a@h:443?obfs=salamander&obfs-password=p", "", "hysteria2"),
+                 protolib.Link("hysteria2://a@h:20000,20100?sni=x", "", "hysteria2")]
+        only_obfs = lambda ln: ln.variant != "hysteria2"
+        out = str(connect_tiles(links, [], "masha", only_obfs))
+        self.assertEqual(out.count('class="ptile '), 1)
+        self.assertIn("obfs=salamander", out)
+        self.assertNotIn("20000", out)
+        self.assertIn("/qr/1?", out, "номера QR — по полному списку ссылок")
+        only_plain = lambda ln: ln.variant == "hysteria2"
+        out = str(connect_tiles(links, [], "masha", only_plain))
+        self.assertNotIn("salamander", out)
+        self.assertIn("20000", out)
+        copy_all = str(quick_start(links, "masha", only_plain))
+        self.assertNotIn("salamander", copy_all)
+        self.assertIsNone(connect_tiles(links, [], "masha", lambda ln: False))
 
 
 # ---------- объём текста, подтверждения, ошибки ----------

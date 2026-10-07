@@ -133,8 +133,8 @@ class WizardTest(GroupWebBase):
         # лежащий на сервере протокол не предвыбирается; остальные — да
         self.assertNotRegex(body, r'name="proto" value="amneziawg" checked')
         self.assertRegex(body, r'name="proto" value="hysteria2" checked')
-        self.assertIn("основной", body)
-        self.assertIn("Подсказки без цифр — ориентир", body)
+        for gone in ("основной", "запасные", "Подсказки без цифр"):
+            self.assertNotIn(gone, body)
         self.assertIn('class="stepper"', body)
 
     def test_step1_client_probe_ranking(self):
@@ -215,7 +215,7 @@ class WizardTest(GroupWebBase):
     def test_step2_keeps_manual_set_and_skipped_platform(self):
         # вернулись с шага 3: у Android отмечен один Happ (2 из 3), у iPhone ничего — платформа не нужна
         resp, body = self.wiz(3, go="back", name="Семья", proto=["hysteria2", "vless-reality", "amneziawg"],
-                              clients_for="hysteria2,vless-reality,amneziawg", client__android=["happ"],
+                              clients_for="hysteria2,amneziawg,vless-reality", client__android=["happ"],
                               client__windows=["v2rayn", "amneziavpn"], users_new="masha")
         self.assertIn("2. Клиенты", body)
         self.assertEqual(self.checked(body, "android"), ["happ"], "ничего не дозаполняется")
@@ -225,7 +225,7 @@ class WizardTest(GroupWebBase):
         self.assertIn("Платформа не нужна: ничего не отмечено", text)
         self.assertIn("Набор: v2rayN + AmneziaVPN — покрывает 3 из 3", text)
         # смена протоколов на шаге 1 — набор пересчитывается под них
-        resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "amneziawg"], clients_for="hysteria2,vless-reality,amneziawg",
+        resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "amneziawg"], clients_for="hysteria2,amneziawg,vless-reality",
                               client__android=["happ"])
         self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg"])
         self.assertEqual(self.checked(body, "ios"), ["singbox", "amneziavpn"])
@@ -292,7 +292,7 @@ class WizardTest(GroupWebBase):
         self.assertEqual(loc, "/connect/done?group=g1&u=masha%2Ckolya%2Cowner")
         g = [x for x in self.groups_json() if x["id"] == "g1"][0]
         self.assertEqual((g["name"], g["protocols"], g["clients"], g["allowlist"]),
-                         ("Семья", ["vless-reality", "amneziawg"], {"android": ["happ"]}, None))
+                         ("Семья", ["amneziawg", "vless-reality"], {"android": ["happ"]}, None))
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
         for n in ("masha", "kolya", "owner"):
             self.assertEqual((reg[n]["group"], sorted(reg[n]["protocols"])), ("g1", ["amneziawg", "vless-reality"]), n)
@@ -513,7 +513,7 @@ class GroupsPagesTest(GroupWebBase):
         self.assertIn('name="act" value="move"', card)
         self.assertIn('name="act" value="remove"', card)
         self.assertIn("Объединить с…", page)
-        self.assertRegex(page, r'<a href="/groups/g1/delete"[^>]*>Удалить группу…</a>')
+        self.assertRegex(page, r'<a href="/groups/g1/delete"[^>]*>Удалить группу</a>')
 
     def test_move_selected_in_one_go(self):
         resp, _ = self.post("/groups/g1/move", {"user": ["masha", "kolya"], "to": ["main"], "act": ["move"]})
@@ -548,7 +548,7 @@ class GroupsPagesTest(GroupWebBase):
         self.assertEqual(resp.status, 200)
         self.assertRegex(page, r'<input type="radio" name="members" value="move" checked>')
         self.assertIn('name="members" value="delete"', page)
-        self.assertIn("Перевести в «Основная»", text_of(page))
+        self.assertIn("Перевести в группу «Основная»", text_of(page))
         self.assertIn("(masha, kolya)", text_of(page), "кого удалим — названо")
         self.assertIn('action="/groups/g1/delete"', page)
         self.assertIn('name="csrf"', page)
@@ -653,7 +653,7 @@ class GroupsPagesTest(GroupWebBase):
 
     def test_list_has_delete_actions(self):
         _, body = self.c.get("/groups")
-        self.assertIn('href="/groups/g1/delete"', body)
+        self.assertRegex(body, r'<a href="/groups/g1/delete\?from=list"[^>]*>Удалить</a>')
         self.assertRegex(body, r'aria-disabled="true" title="[^"]*не удаляется')
         self.assertNotIn('href="/groups/main/delete"', body)
 
@@ -837,7 +837,7 @@ class GroupsPagesTest(GroupWebBase):
     def test_users_form_does_not_make_group_member_custom(self):
         # протоколы в форме отмечены как у группы — only не передаётся, пользователь не «свой»
         _, page = self.c.get("/users")
-        self.assertRegex(page, r'<option value="g1" data-protos="vless-reality amneziawg">Семья</option>')
+        self.assertRegex(page, r'<option value="g1" data-protos="amneziawg vless-reality">Семья</option>')
         self.assertRegex(page, r'<option value="main" selected data-protos="[^"]*">')
         resp, _ = self.post("/users", {"name": ["vasya"], "group": ["g1"], "proto": ["vless-reality", "amneziawg"]})
         self.assertEqual(header(resp, "Location"), ["/users/vasya"])
@@ -941,72 +941,70 @@ class ProtocolRowsTest(GroupWebBase):
             self.assertIn(name, text, name)
         self.assertEqual(len(self.rows(body)), 7)
 
-    def test_salamander_is_its_own_row_linked_to_hysteria2(self):
+    def test_salamander_is_an_independent_row(self):
         _, body = self.c.get("/connect/new")
         hy = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked>', body)
-        sal = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked data-variant="hysteria2-obfs" disabled>',
-                        body)
-        self.assertTrue(hy and sal, "обе строки отмечены вместе, строка Salamander серая: сама в форму не уходит")
-        self.assertLess(hy.start(), sal.start(), "Salamander — сразу под Hysteria2")
+        sal = re.search(r'<input type="checkbox" name="proto" value="hysteria2-obfs">', body)
+        self.assertTrue(hy and sal, "своя строка со своим значением; предвыбор — только Hysteria2")
+        self.assertLess(hy.start(), sal.start(), "порядок строк — по приоритету")
         row = body[sal.start():]
         row = row[:row.index("</label>")]
         self.assertIn("HY2 + Salamander", row)
-        self.assertIn("Общая учётка с Протокол hysteria2", row)
-        self.assertIn("снимается и отмечается вместе с ним", row)
-        self.assertNotIn("основной", row)
-        self.assertIn("data-variant", body)
+        for gone in ("снимается и отмечается", "Общая учётка", "основной", "disabled", "data-variant"):
+            self.assertNotIn(gone, row)
+        self.assertNotIn("data-variant", body)
         # выключенный — серой строкой, без галочки
         off = body[body.index('class="opt off"'):]
         self.assertIn("SS-2022", off)
         self.assertNotIn('value="ss2022"', body)
-        self.assertNotIn('value="hysteria2-obfs"', body, "отдельного значения у Salamander нет")
 
     @staticmethod
     def submitted(body):
-        """Что отправит браузер без JS: отмеченные и не отключённые чекбоксы proto, как нарисованы сервером."""
+        """Что отправит браузер: отмеченные чекбоксы proto, как нарисованы сервером."""
         tags = re.findall(r'<input type="checkbox" name="proto"[^>]*>', body)
-        return [re.search(r'value="([^"]+)"', tag).group(1) for tag in tags
-                if " checked" in tag and " disabled" not in tag]
+        return [re.search(r'value="([^"]+)"', tag).group(1) for tag in tags if " checked" in tag]
 
-    def test_without_js_only_the_hysteria2_row_decides(self):
-        _, body = self.c.get("/connect/new")
-        self.assertEqual(self.submitted(body).count("hysteria2"), 1, "две отмеченные строки — одно значение")
-        hy = '<input type="checkbox" name="proto" value="hysteria2" checked>'
-        self.assertIn(hy, body)
-        # человек снял Hysteria2, JS нет: строка Salamander осталась нарисованной отмеченной
-        stale = body.replace(hy, '<input type="checkbox" name="proto" value="hysteria2">')
-        self.assertIn('data-variant="hysteria2-obfs" disabled>', stale)
-        self.assertNotIn("hysteria2", self.submitted(stale), "отключённая строка не воскрешает Hysteria2")
-        resp, page = self.wiz(1, name="Семья", proto=self.submitted(stale))
-        self.assertEqual(resp.status, 200)
-        self.assertNotIn('name="proto" value="hysteria2"', page)
-        # и наоборот: отметили только Hysteria2 — Salamander с ней
-        only = re.sub(r'<input type="checkbox" name="proto"[^>]*>',
-                      lambda m: m.group(0) if 'value="hysteria2"' in m.group(0) and "data-variant" not in m.group(0)
-                      else m.group(0).replace(" checked", ""), body)
-        self.assertEqual(self.submitted(only), ["hysteria2"])
-
-    def test_either_row_selects_hysteria2_and_duplicates_are_harmless(self):
+    def test_either_one_or_both_are_selectable(self):
+        for chosen in (["hysteria2"], ["hysteria2-obfs"], ["hysteria2", "hysteria2-obfs"]):
+            resp, body = self.wiz(1, name="Семья", proto=chosen)
+            self.assertEqual(resp.status, 200, chosen)
+            self.assertEqual(sorted(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body)), sorted(chosen))
+            resp, body = self.wiz(2, go="back", name="Семья", proto=chosen)
+            self.assertEqual(sorted(self.submitted(body)), sorted(chosen), "шаг 1 показывает ровно выбранное")
         resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "hysteria2", "amneziawg"])
-        self.assertEqual(resp.status, 200)
         self.assertEqual(body.count('type="hidden" name="proto" value="hysteria2"'), 1)
-        resp, body = self.wiz(1, name="Семья", proto=["hysteria2-obfs"])
-        self.assertEqual(resp.status, 422, "в форме только общие значения")
 
-    def test_off_without_hysteria2_no_row(self):
+    def test_obfs_only_group_is_created_with_hysteria2_credentials(self):
+        resp, _ = self.create_group(proto=["hysteria2-obfs"], client__android="v2rayng", users_new="masha")
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(self.groups_json()[1]["protocols"], ["hysteria2-obfs"])
+        self.assertEqual(users.list_users().get("masha").protocols, ["hysteria2"], "учётка — модуля Hysteria2")
+        _, page = self.c.get("/groups/g1")
+        self.assertEqual(self.submitted(page), ["hysteria2-obfs"])
+        self.assertIn("HY2 + Salamander", text_of(self.c.get("/groups")[1]))
+
+    def test_step1_and_group_page_have_no_primary_or_reserve_wording(self):
+        _, body = self.c.get("/connect/new")
+        for gone in ("основной", "запасные", "Первый отмеченный", "Подсказки без цифр", "обычно 2–3"):
+            self.assertNotIn(gone, text_of(body))
+        self.assertEqual(self.rows(body)[0].count("badge"), 0)
+        _, page = self.c.get("/groups/main")
+        for gone in ("Первый отмеченный", "Подсказки без цифр", "основной", "запасные"):
+            self.assertNotIn(gone, text_of(page))
+
+    def test_off_without_hysteria2_no_salamander_row(self):
         (self.env.etc / "protocols.d" / "hysteria2.json").unlink()
         _, body = self.c.get("/connect/new")
-        self.assertNotIn("data-variant", body)
+        self.assertNotIn("hysteria2-obfs", body)
 
     def test_group_page_has_the_same_rows(self):
         _, body = self.c.get("/groups/main")
-        self.assertIn('data-variant="hysteria2-obfs"', body)
+        self.assertIn('name="proto" value="hysteria2-obfs"', body)
         self.assertIn("SS-2022", body)
 
-    def test_js_links_rows_by_value(self):
+    def test_js_does_not_link_rows(self):
         from zoolib.web import assets
-        self.assertIn("input[type=checkbox][name=proto]", assets.JS)
-        self.assertIn("o.value === box.value", assets.JS)
+        self.assertNotIn("o.value === box.value", assets.JS)
         self.assertIn("[data-picker]", assets.JS)
 
 

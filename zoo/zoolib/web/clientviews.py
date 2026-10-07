@@ -214,7 +214,7 @@ class Pack:
     def message(self) -> str:
         """Текст инструкции платформы одним списком: сначала установка всех приложений, потом по порядку
         импорт и настройки каждого (с несколькими приложениями — с их названием), в конце проверка по
-        основному протоколу. Начинается с {name}: имя подставляет тот, кто показывает текст человеку."""
+        первому протоколу. Начинается с {name}: имя подставляет тот, кто показывает текст человеку."""
         many = len(self.sections) > 1
         steps = [s.install for s in self.sections]
         for s in self.sections:
@@ -241,7 +241,7 @@ def _qrable(link: protolib.Link) -> bool:
 
 def pick_method(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link]) -> str | None:
     """Как человеку передать ключ: на телефоне QR, на компьютере ссылка; клиент должен это уметь."""
-    mine = [ln for ln in links if ln.proto_id == proto and _usable(proto, client["id"], ln)]
+    mine = [ln for ln in links if ln.variant == proto and _usable(proto, client["id"], ln)]
     have = {"qr": any(_qrable(ln) for ln in mine), "link": any(ln.kind == "uri" for ln in mine),
             "file": any(ln.kind == "file" for ln in mine)}
     order = ("link", "file", "qr") if platform in DESKTOP else ("qr", "link", "file")
@@ -251,7 +251,7 @@ def pick_method(proto: str, client: dict[str, Any], platform: str, links: list[p
 def pick_link(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link], method: str) -> int | None:
     """Номер ссылки пользователя под способ передачи: ссылка — первая («Обычная»); из файлов Android берёт
     конфиг со списком приложений, остальные — общий."""
-    mine = [(i, ln) for i, ln in enumerate(links) if ln.proto_id == proto and _usable(proto, client["id"], ln)]
+    mine = [(i, ln) for i, ln in enumerate(links) if ln.variant == proto and _usable(proto, client["id"], ln)]
     pool = {"link": [x for x in mine if x[1].kind == "uri"], "file": [x for x in mine if x[1].kind == "file"],
             "qr": [x for x in mine if _qrable(x[1])]}[method]
 
@@ -291,8 +291,8 @@ def _assign(platform: str, links: list[protolib.Link], have: set[str], cs: list[
 
 def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have: set[str],
           prefer: dict[str, list[str]] | None, order: list[str] | None) -> list[tuple[dict[str, Any], list[tuple[str, str]]]]:
-    """Набор клиентов платформы и их протоколы. Набор группы главнее рекомендованных: протоколы идут в порядке
-    группы (первый — основной; у «всех включённых» — порядок раздачи каталога, затем остальные включённые).
+    """Набор клиентов платформы и их протоколы. Набор группы главнее рекомендованных: протоколы идут по PRIORITY
+    (выбранные группой; у «всех включённых» — все, что есть у человека).
     Группа выбрала клиентов, а для платформы — «не нужна» (нет записи): пакета нет. Если набор устарел
     (клиент убран из каталога или платформы) или не покрывает ничего включённого — рекомендованные
     клиенты по протоколам (если клиенты группы были выбраны — только в рамках протоколов группы)."""
@@ -302,10 +302,12 @@ def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have:
         if not ids:
             return []
         cs = [c for c in (cat.client(i) for i in ids) if c is not None and platform in c["platforms"]]
-        got = _assign(platform, links, have, cs, order or [*handoff, *sorted(have - set(handoff))])
+        got = _assign(platform, links, have, cs, order if order is not None else groups.by_priority(have))
         if got:
             return got
-    protos = [p for p in handoff if not (prefer and order) or p in order]
+    protos = [p for p in handoff if not (prefer and order is not None) or p in order]
+    if prefer and order is not None:
+        protos = [p for p in order if p in protos]   # порядок группы — PRIORITY, не каталога
     rec: list[dict[str, Any]] = []
     for proto in protos:
         c = cat.recommended(platform, proto)
@@ -316,9 +318,9 @@ def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have:
 
 def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links: list[protolib.Link],
                mans: list[Any], prefer: dict[str, list[str]] | None = None, order: list[str] | None = None) -> Pack | None:
-    """prefer — наборы клиентов группы по платформам, order — протоколы группы по порядку (первый — основной);
+    """prefer — наборы клиентов группы по платформам, order — протоколы группы (по PRIORITY);
     без них — рекомендованные клиенты и порядок раздачи из каталога."""
-    have = {ln.proto_id for ln in links}
+    have = {ln.variant for ln in links}
     plan = _plan(cat, platform, links, have, prefer, order)
     if not plan:
         return None
@@ -346,17 +348,17 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
 
 
 def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]], list[str] | None]:
-    """Наборы клиентов и порядок протоколов группы для «Подключить» (у «всех включённых» порядок — из каталога)."""
+    """Наборы клиентов и протоколы группы по PRIORITY для «Подключить» (у «всех включённых» — None: что есть у человека)."""
     if g is None:
         return {}, None
     prefer = {p: list(ids) for p, ids in g.clients.items()}
-    return prefer, (None if g.all_protocols else list(g.protocols))
+    return prefer, (None if g.all_protocols else groups.by_priority(g.protocols))
 
 
 def synth_links(protos: list[str]) -> list[protolib.Link]:
     """Ссылки-заглушки по протоколам группы: пакет группы строится до того, как у кого-то есть ключи, и без
     них (ни в тексте, ни в способах передачи ничего личного)."""
-    out = [protolib.Link(f"{p}://", "", p, "uri") for p in protos]
+    out = [protolib.Link(f"{p}://", "", p, "uri") for p in protos]   # hysteria2-obfs:// — вариант (Link.variant) без «obfs=salamander»
     if "amneziawg" in protos:
         out += [protolib.Link("vpn://", "", "amneziawg", "uri"), protolib.Link("amneziawg.conf", "", "amneziawg", "file")]
     return out + [protolib.Link(allowlist.V2RAYN_FILE, "", allowlist.V2RAYN_PROTO, "file")]
@@ -387,14 +389,14 @@ class Ctx:
         return cls(cat, clients.load_cache(), manifests.load_all()[0])
 
     @cached_property
-    def managed(self) -> list[str]:
-        return users.managed_protocols()[0]
+    def selectable(self) -> list[str]:
+        return users.selectable_protocols()
 
     def group_pack(self, g: groups.Group, plat: str) -> "Pack | None":
         key = (g.id, plat)
         if key not in self.packs:
             prefer, order = group_prefs(g)
-            self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.resolve(self.managed)), self.mans,
+            self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.offered(self.selectable)), self.mans,
                                          prefer, order)
         return self.packs[key]
 
@@ -438,7 +440,7 @@ def _keys(sec: Section, platform: str, links: list[protolib.Link]) -> list[Key]:
             k.file = Path(links[i].uri).name
         out.append(k)
     for ex in sec.extras:
-        f = next((Path(ln.uri).name for ln in links if ln.proto_id == ex.proto and ln.kind == "file"), None)
+        f = next((Path(ln.uri).name for ln in links if ln.variant == ex.proto and ln.kind == "file"), None)
         out.append(Key(ex.tile, file=f))
     return [k for k in out if k.qr is not None or k.uri or k.file]
 

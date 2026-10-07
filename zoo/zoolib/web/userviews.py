@@ -7,7 +7,7 @@ import sqlite3
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from .. import allowlist, clients, groups, manifests, paths, protolib, qr, traffic, users
 from ..fsutil import LockTimeout
@@ -186,7 +186,8 @@ def users_list(app: "App", req: "Request") -> "Response":
         tbl_html = join(alert_list([("warn", "Реестра users.json ещё нет: он создастся при первом изменении "
                                              "(или фазой 09).")]), tbl_html)
     first = gs.get(groups.MAIN_ID) or (gs.groups[0] if gs.groups else None)
-    preset = set(first.resolve(managed)) if first else set(managed)
+    variants = users.variant_modules()
+    preset = set(first.resolve(managed, variants)) if first else set(managed)
     protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=p in preset), p) for p in managed]
     add_form = t("form", csrf_input(csrf),
                  t("div",
@@ -201,7 +202,7 @@ def users_list(app: "App", req: "Request") -> "Response":
                      class_="field grow"),
                    t("div", t("label", "Группа", for_="group"),
                      t("select", [t("option", g.name, value=g.id, selected=g is first,
-                                    data_protos=" ".join(g.resolve(managed))) for g in gs.groups],
+                                    data_protos=" ".join(g.resolve(managed, variants))) for g in gs.groups],
                        name="group", id="group", data_group=True,
                        title="Протоколы и приложения — как у группы"), class_="field")
                    if gs.groups else None,
@@ -531,10 +532,12 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
 
     links, errors = _cached_links(app, name)
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
-    connect = clientviews.connect_card(links, name, clientviews.Ctx.load(), _group_of(user))
-    tiles = connect_tiles(links, manifests.load_all()[0], name)
+    grp = _group_of(user)
+    show = link_filter(user, grp)
+    connect = clientviews.connect_card(links, name, clientviews.Ctx.load(), grp)
+    tiles = connect_tiles(links, manifests.load_all()[0], name, show)
     # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
-    advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name), tiles,
+    advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show), tiles,
                  t("p", "Ссылки и QR — ключи доступа: показывайте только самому пользователю.", class_="hint"),
                  class_="card more", open=connect is None or None) if tiles else None
     body = [page_head(name, user.note or None, actions, top=False), err_list, connect, advanced,
@@ -569,6 +572,7 @@ PLATFORMS = {
     "vless-reality": "iPhone, Android, Windows",
     "vless-xhttp": "iPhone, Android, Windows",
     "hysteria2": "iPhone, Android, Windows",
+    "hysteria2-obfs": "Android, Windows",
     "amneziawg": "Android, iPhone, Windows",
     "tuic": "iPhone, Android, Windows",
     "ss2022": "iPhone, Android, Windows",
@@ -633,10 +637,22 @@ def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool) -
     return t("div", qr_block, action, class_="variant", id=vid, hidden=hidden or None)
 
 
-def quick_start(links: list[protolib.Link], name: str) -> Markup | None:
+def link_filter(user: users.User, g: groups.Group | None) -> Callable[[protolib.Link], bool] | None:
+    """Какие ссылки показывать человеку: Hysteria2 и Salamander — только выбранные группой (ссылки обоих отдаёт
+    один модуль). Свой набор, владелец, группа «всех» и человек без группы видят всё; остальные протоколы не трогаются."""
+    if g is None or g.all_protocols or user.custom or user.name == users.OWNER:
+        return None
+    variants = users.variant_modules()
+    family = {*variants, *variants.values()}
+    offered = set(g.offered(users.selectable_protocols()))
+    return lambda ln: ln.variant not in family or ln.variant in offered
+
+
+def quick_start(links: list[protolib.Link], name: str, show: Callable[[protolib.Link], bool] | None = None) -> Markup | None:
     """Один QR лучшего протокола (по истории проб, иначе VLESS REALITY) и «скопировать всё»."""
+    show = show or (lambda ln: True)
     cand = [(i, l) for i, l in enumerate(links)
-            if l.kind == "uri" and not l.uri.startswith("vpn://") and len(l.uri.encode("utf-8")) <= qr.MAX_BYTES]
+            if show(l) and l.kind == "uri" and not l.uri.startswith("vpn://") and len(l.uri.encode("utf-8")) <= qr.MAX_BYTES]
     if not cand:
         return None
     prefer: list[str] = []
@@ -645,8 +661,8 @@ def quick_start(links: list[protolib.Link], name: str) -> Markup | None:
             prefer += [p["proto"] for p in c["top"]]
     except (sqlite3.Error, OSError, ValueError):
         pass
-    idx, link = next(((i, l) for pid in (*prefer, "vless-reality") for i, l in cand if l.proto_id == pid), cand[0])
-    all_uris = "\n".join(l.uri for l in links if l.kind == "uri")
+    idx, link = next(((i, l) for pid in (*prefer, "vless-reality") for i, l in cand if l.variant == pid), cand[0])
+    all_uris = "\n".join(l.uri for l in links if show(l) and l.kind == "uri")
     return t("div",
              t("img", class_="qr", src=qr_url(name, idx, link), width=160, height=160, alt="QR",
                title=link.proto_id),
@@ -657,8 +673,10 @@ def quick_start(links: list[protolib.Link], name: str) -> Markup | None:
              class_="quick")
 
 
-def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str) -> Markup | None:
-    """Плитки по протоколам; клик — окно протокола: вкладки вариантов, QR, копировать/скачать."""
+def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
+                  show: Callable[[protolib.Link], bool] | None = None) -> Markup | None:
+    """Плитки по протоколам; клик — окно протокола: вкладки вариантов, QR, копировать/скачать.
+    show — какие ссылки показывать (номера для QR остаются по полному списку)."""
     if not links:
         return None
     by_id = {m.id: m for m in mans}
@@ -668,7 +686,10 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str) -> Mar
         cat = None  # без каталога плитки без подсказки о клиентах
     groups: dict[str, list[tuple[int, protolib.Link]]] = {}
     for i, link in enumerate(links):
-        groups.setdefault(link.proto_id, []).append((i, link))
+        if show is None or show(link):
+            groups.setdefault(link.variant, []).append((i, link))
+    if not groups:
+        return None
     order = sorted(groups, key=lambda p: (p not in MAIN_PROTOS,
                                           MAIN_PROTOS.index(p) if p in MAIN_PROTOS else 99, p))
     sections: dict[bool, list[Markup]] = {True: [], False: []}
