@@ -13,10 +13,10 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from .. import allowlist, clients, groups, manifests, protolib, users
+from .. import allowlist, clients, groups, manifests, people, protolib, users
 from ..fsutil import LockTimeout
 from ..probe import history, live, rank, verdicts
-from . import allowviews, clientviews, userviews
+from . import allowviews, clientviews, handoffviews, userviews
 from .html import Markup, badge, card, csrf_input, post_button, t, table
 from .views import alert_list, page_head
 
@@ -38,6 +38,8 @@ TIPS = {
     "hysteria2-obfs": "UDP; Hysteria2 с обфускацией Salamander.",
     "ss2022": "По умолчанию выключен: в полевом тесте соединения теряли данные.",
 }
+ERRORS_SHOWN = 6
+DONE_ROWS_MAX = 10   # больше людей — на шаге раздачи не строки с QR каждого, а переход к карточкам
 CATCH = (groups.GroupError, users.UserError, allowlist.AllowlistError, LockTimeout, protolib.ProtoError)
 MAIN_PLATFORMS = clientviews.MAIN_PLATFORMS
 
@@ -75,7 +77,7 @@ class Draft:
             clients_for=f.get("clients_for", "")[:400],
             allow_mode="own" if f.get("allow_mode") == "own" else "common",
             allow={p: [v[:128] for v in m.get(p, [])][:allowlist.LIST_MAX + 1] for p in allowlist.PLATFORMS},
-            new_users=f.get("users_new", "")[:4000],
+            new_users=f.get("users_new", "")[:people.TEXT_MAX],
             existing=[n[:32] for n in m.get("existing", [])][:200])
 
     @classmethod
@@ -394,11 +396,51 @@ def _existing_block(d: Draft, group_id: str | None = None) -> Markup | None:
 
 def _users_block(d: Draft, group_id: str | None = None) -> Markup:
     return t("div",
-             t("div", t("label", "Новые пользователи", for_="users_new"),
-               t("textarea", d.new_users, name="users_new", id="users_new", rows="4", maxlength="4000",
-                 placeholder="masha сестра\npetya", autocomplete="off", autocapitalize="none", spellcheck="false"),
-               t("div", "По одному в строке: имя латиницей, после него — заметка.", class_="hint"), class_="field"),
+             t("div", t("label", "Новые люди", for_="users_new"),
+               t("textarea", d.new_users, name="users_new", id="users_new", rows="8", maxlength=str(people.TEXT_MAX),
+                 placeholder="Иван Петров; бухгалтерия\nМария Сидорова\nОльга; склад", autocomplete="off",
+                 spellcheck="false"),
+               t("div", f"По строке на человека: «Имя» или «Имя; заметка», до {people.LINES_MAX}. "
+                        "Имена станут латинскими; перед созданием покажем, что получится.", class_="hint"),
+               class_="field"),
              _existing_block(d, group_id), class_="stack")
+
+
+def _preview_rows(plan: people.Plan) -> Markup:
+    rows, cls = [], []
+    for r in plan.rows:
+        chips = [t("span", "латиницей", class_="chip", title="имя переведено в латиницу") if r.converted else None,
+                 t("span", f"{r.clash}: добавлен номер", class_="chip warn",
+                   title="такое имя уже есть: добавлен номер") if r.clash else None,
+                 t("span", r.problem, class_="chip bad") if r.problem else None]
+        rows.append([str(r.line), r.raw[:80], t("strong", r.name) if r.name else "—", r.note or "—", chips])
+        cls.append("row-bad" if r.problem else ("row-warn" if r.clash else None))
+    return table(["№", "строка", "имя", "заметка", ""], rows, num=[0], cls="preview", row_cls=cls)
+
+
+def _preview_summary(plan: people.Plan, existing: int = 0) -> str:
+    text = f"Будет создано: {len(plan.rows)}"
+    if existing:
+        text += f", переведено из имеющихся: {existing}"
+    if plan.renamed:
+        text += f". Совпали имена, добавлен номер: {len(plan.renamed)}"
+    return text + "."
+
+
+def _preview(app: "App", req: "Request", d: Draft, plan: people.Plan) -> "Response":
+    """Шаг 3 → создание: что получится из списка; создаёт только кнопка под таблицей (confirm=1)."""
+    csrf = req.session.csrf if req.session else ""
+    form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value="3"),
+             t("input", type="hidden", name="confirm", value="1"), _hidden(d, 0),
+             t("div", t("button", f"Создать группу и {len(plan.rows)} чел.", type="submit", name="go", value="create",
+                        class_="btn primary"),
+               t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
+               class_="wiz-nav"),
+             method="post", action="/connect/new", class_="stack", data_swap=True)
+    body = card("3. Люди: проверьте список", t("p", _preview_summary(plan, len(d.existing)), class_="hint"),
+                _preview_rows(plan), form)
+    return app.render(req, "Новая группа", t("div", [page_head("Новая группа"), _stepper(3), body], class_="wizard",
+                                              data_expanded=True), active="/groups")
 
 
 # ---------- мастер ----------
@@ -494,14 +536,18 @@ def connect_post(app: "App", req: "Request") -> "Response":
     go = req.form.get("go", "next")
     if go == "back":
         return _wizard(app, req, max(step - 1, 1), d)
+    if go == "edit":
+        return _wizard(app, req, 3, d)
     errors = _check(d, step)
     if errors:
         return _wizard(app, req, step, d, errors, 422)
     if go != "create" or step < 3:
         return _wizard(app, req, min(step + 1, 3), d)
+    plan = people.plan_for_registry(d.new_users)
+    if plan.rows and not req.form.get("confirm"):
+        return _preview(app, req, d, plan)
     try:
-        rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), groups.parse_new_users(d.new_users),
-                             d.existing)
+        rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), plan.pairs(), d.existing)
     except CATCH as e:
         return _wizard(app, req, 3, d, [_err(e)], 422)
     app.invalidate("status")
@@ -509,7 +555,7 @@ def connect_post(app: "App", req: "Request") -> "Response":
     if rep.removed:
         # никого не добавили, пустая группа убрана: форма остаётся на шаге 3, повтор с тем же названием возможен
         return _wizard(app, req, 3, d, rep.errors or ["Никого не удалось добавить"], 422)
-    flash_report(req, rep)
+    flash_report(req, rep, _renamed(plan))
     if rep.crashed:
         return _redirect(f"/groups/{rep.group.id}")
     who = ",".join(rep.created + rep.moved)
@@ -526,6 +572,8 @@ def connect_done(app: "App", req: "Request") -> "Response":
     members = [u for u in ureg.visible() if u.group == g.id and u.name in wanted]
     ctx = clientviews.Ctx.load()
     rows: list[Any] = []
+    if len(members) > DONE_ROWS_MAX:
+        return _done_many(app, req, g, members, ctx)
     for u in members:
         links, _ = userviews._cached_links(app, u.name)
         panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-") if ctx else None
@@ -541,6 +589,24 @@ def connect_done(app: "App", req: "Request") -> "Response":
             card("Кому что отправить", t("div", rows, class_="urows"), clientviews.hints(ctx) if ctx else None,
                  help="Откройте человека: его QR и ссылки, приложения и текст с его именем.")
             if rows else alert_list([("warn", "Никого не добавили — раздавать нечего.")])]
+    return app.render(req, "Новая группа", body, active="/groups")
+
+
+def _done_many(app: "App", req: "Request", g: groups.Group, members: list[users.User],
+               ctx: clientviews.Ctx | None) -> "Response":
+    """Шаг раздачи для команды: строка с QR на каждого не нужна — все карточки одной страницей и архивом."""
+    st = handoffviews.connection([u.name for u in members])
+    link = "/handoff?" + urllib.parse.urlencode({"group": g.id})
+    go = card(f"Раздать {len(members)} человек",
+              t("p", "Карточка на каждого: приложение, его QR и ссылка, шаги. Печать, ZIP с папкой на человека и CSV для рассылки.",
+                class_="hint"),
+              t("div", t("a", "Карточки для раздачи", href=link, class_="btn primary", data_swap=True),
+                t("span", st.counter, class_="chip"), class_="actions"),
+              t("p", clientviews.SEND_WARN, class_="hint"))
+    summary = card(f"Группа «{g.name}»", _summary(g),
+                   extra=t("a", "Настроить", href=f"/groups/{g.id}", class_="btn small", data_swap=True))
+    body = [page_head("Новая группа", "готово: раздайте пакеты"), _stepper(4), summary, go,
+            _texts_card(g, ctx) if ctx else None]
     return app.render(req, "Новая группа", body, active="/groups")
 
 
@@ -574,25 +640,41 @@ def _summary(g: groups.Group) -> Markup:
              t("p", "приложения: " + ("свой список группы" if g.allowlist else "общий список"), class_="hint"))
 
 
-def flash_report(req: "Request", rep: groups.GroupReport) -> None:
+def _list(names: list[str], limit: int = 8) -> str:
+    """«a, b, c»; длинный список — число, начало и «и ещё N»."""
+    if len(names) <= limit:
+        return ", ".join(names)
+    return f"{len(names)}: " + ", ".join(names[:5]) + f" и ещё {len(names) - 5}"
+
+
+def _renamed(plan: people.Plan) -> list[str]:
+    return [f"{r.display} → {r.name}" for r in plan.renamed]
+
+
+def flash_report(req: "Request", rep: groups.GroupReport, renamed: list[str] | None = None) -> None:
+    """Один итог на всё действие; ошибки по людям — по одной, но не больше ERRORS_SHOWN."""
     s = req.session
     if s is None:
         return
     parts = [f"«{rep.group.name}»: {rep.message}"]
     if rep.created:
-        parts.append("создано: " + ", ".join(rep.created))
+        parts.append("создано: " + _list(rep.created))
     if rep.moved:
-        parts.append("переведено: " + ", ".join(rep.moved))
-    if rep.needs_qr and not rep.created:
+        parts.append("переведено: " + _list(rep.moved))
+    if rep.needs_qr and not rep.created and len(rep.needs_qr) <= 8:
         s.flash("ok" if rep.ok else "warn", ". ".join(parts) + ". Новые QR/файлы нужны:",
                 [(n, f"/users/{n}") for n in rep.needs_qr])
     else:
         s.flash("ok" if rep.ok else "warn", ". ".join(parts))
+    if renamed:
+        s.flash("warn", "Совпали имена, добавлен номер: " + _list(renamed, 5))
     if rep.skipped:
-        s.flash("warn", "Свой набор протоколов, группа его не тронула: " + ", ".join(rep.skipped)
+        s.flash("warn", "Свой набор протоколов, группа его не тронула: " + _list(rep.skipped)
                 + ". «Как у группы» в списке участников вернёт.")
-    for e in rep.errors:
+    for e in rep.errors[:ERRORS_SHOWN]:
         s.flash("bad", e)
+    if len(rep.errors) > ERRORS_SHOWN:
+        s.flash("bad", f"…и ещё ошибок: {len(rep.errors) - ERRORS_SHOWN}")
 
 
 # ---------- страницы групп ----------
@@ -656,11 +738,14 @@ def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: 
     mem = groups.members_of(gs, ureg, g.id)
     if not mem:
         return card("Участники", t("p", "В группе никого нет.", class_="muted"))
+    st = handoffviews.connection([u.name for u in mem])
     chips = []
     for u in mem:
         notes = (["свой набор протоколов: группа его не меняет"] if u.custom else []) + (
-            ["свой список приложений"] if al.own(u.name) else [])
-        chips.append(t("a", u.name, href=f"/users/{u.name}", class_="chip warn" if u.custom else "chip",
+            ["свой список приложений"] if al.own(u.name) else []) + (
+            ["уже подключился"] if st.connected(u.name) else [])
+        chips.append(t("a", u.name, href=f"/users/{u.name}",
+                       class_="chip warn" if u.custom else ("chip ok" if st.connected(u.name) else "chip"),
                        title="; ".join(notes) or None))
     acts = [t("select", [t("option", x.name, value=x.id) for x in others], name="to", aria_label="В группу")
             if others else None,
@@ -672,9 +757,17 @@ def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: 
     form = t("form", csrf_input(csrf), _picker("Отметьте участников:", "user", [(u.name, "", False) for u in mem]),
              t("div", acts, class_="actions"), method="post", action=f"/groups/{g.id}/move", class_="stack",
              data_swap=True)
+    cards_url = "/handoff?" + urllib.parse.urlencode({"group": g.id})
+    left = len(mem) - len(st.on)
+    go = t("div", t("a", "Карточки для раздачи", href=cards_url, class_="btn small primary", data_swap=True),
+           t("a", f"Ещё не подключились: {left}", href=cards_url + "&only=pending", class_="btn small", data_swap=True)
+           if st.known and 0 < left < len(mem) else None, class_="actions")
     return card("Участники", t("div", chips, class_="chips"),
+                t("p", "Зелёные уже подключились (трафик за 30 дней).", class_="hint") if st.on else None,
+                go,
                 t("details", t("summary", "Действия с участниками"), form, class_="more"),
-                extra=t("span", str(len(mem)), class_="chip"))
+                extra=t("span", f"{st.counter}" if st.known else str(len(mem)), class_="chip" + (" ok" if st.on else ""),
+                        title=None if not st.known else "Подключился — за 30 дней был трафик"))
 
 
 def _messages_card(g: groups.Group, ctx: clientviews.Ctx, csrf: str, open_plat: str) -> Markup | None:
@@ -707,7 +800,7 @@ def _messages_card(g: groups.Group, ctx: clientviews.Ctx, csrf: str, open_plat: 
 
 
 def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, errors: list[str] | None = None,
-               status: int = 200) -> "Response":
+               status: int = 200, add_draft: Draft | None = None) -> "Response":
     try:
         gs = groups.ensure()
     except CATCH as e:
@@ -735,10 +828,11 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
              t("h3", "Приложения через VPN", class_="sub-h"), _apps_block(d),
              t("div", t("button", "Сохранить", type="submit", class_="btn primary"), class_="actions"),
              method="post", action=f"/groups/{g.id}", class_="stack", data_swap=True)
-    add = t("details", t("summary", "＋ Добавить участников"),
-            t("form", csrf_input(csrf), _users_block(Draft(new_users="", existing=[]), g.id),
-              t("button", "Добавить", type="submit", class_="btn primary"),
-              method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True), class_="card more")
+    add = t("details", t("summary", "＋ Добавить людей списком"),
+            t("form", csrf_input(csrf), _users_block(add_draft or Draft(new_users="", existing=[]), g.id),
+              t("button", "Проверить список", type="submit", class_="btn primary"),
+              method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True),
+            class_="card more", open=bool(add_draft) or None)
     others = [x for x in gs.groups if x.id != g.id]
     mem_users = groups.members_of(gs, ureg, g.id)
     names = [u.name for u in mem_users]
@@ -815,18 +909,46 @@ def group_message(app: "App", req: "Request", gid: str) -> "Response":
 
 
 def group_members(app: "App", req: "Request", gid: str) -> "Response":
+    """«Добавить людей списком»: без confirm — предпросмотр (что получится из текста), с confirm — создание."""
     gs = groups.Groups.load()
     g = gs.get(gid)
     if g is None:
         return app.error(req, 404, "Нет группы", f"Группы «{gid}» нет.")
+    text = req.form.get("users_new", "")[:people.TEXT_MAX]
+    existing = [n[:32] for n in req.multi.get("existing", [])][:200]
     try:
-        rep = groups.add_members(g.id, groups.parse_new_users(req.form.get("users_new", "")[:4000]),
-                                 [n[:32] for n in req.multi.get("existing", [])][:200])
+        plan = people.plan_for_registry(text)
+        if not plan.ok:
+            raise groups.GroupError(plan.error)
+        if req.form.get("go") == "edit":
+            return group_page(app, req, gid, add_draft=Draft(new_users=text, existing=existing))
+        if plan.rows and not req.form.get("confirm"):
+            return _members_preview(app, req, g, plan, text, existing)
+        rep = groups.add_members(g.id, plan.pairs(), existing)
     except CATCH as e:
         req.session.flash("bad", _err(e))
         return _redirect(f"/groups/{g.id}")
     rep.message = "участники добавлены"
-    return _done(app, req, rep, f"/groups/{g.id}")
+    app.invalidate("status")
+    app.invalidate_links()
+    flash_report(req, rep, _renamed(plan))
+    return _redirect(f"/groups/{g.id}")
+
+
+def _members_preview(app: "App", req: "Request", g: groups.Group, plan: people.Plan, text: str,
+                     existing: list[str]) -> "Response":
+    csrf = req.session.csrf if req.session else ""
+    form = t("form", csrf_input(csrf), t("input", type="hidden", name="users_new", value=text),
+             t("input", type="hidden", name="confirm", value="1"),
+             [t("input", type="hidden", name="existing", value=n) for n in existing],
+             t("div", t("button", f"Создать: {len(plan.rows)}", type="submit", class_="btn primary"),
+               t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
+               class_="actions"),
+             method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True)
+    body = card(f"Проверьте список: группа «{g.name}»", t("p", _preview_summary(plan, len(existing)), class_="hint"),
+                _preview_rows(plan), form)
+    return app.render(req, g.name, t("div", [page_head(g.name, "добавление людей"), body], data_expanded=True),
+                      active="/groups")
 
 
 def _names(req: "Request", key: str) -> list[str]:

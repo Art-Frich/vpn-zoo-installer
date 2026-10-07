@@ -519,6 +519,38 @@ th.pick, td.pick { width: 1%; padding-right: 0; }
 .pick-item:hover { background: var(--surface-2); }
 .pick-item:has(input:checked) { background: var(--accent-soft); }
 footer { max-width: 1200px; margin: 0 auto; padding: 0 16px 24px; color: var(--muted); font-size: .8rem; }
+/* раздача пачкой: карточки на экране и на бумаге */
+tr.row-warn td { background: var(--warn-soft); }
+tr.row-bad td { background: var(--bad-soft); }
+table.preview td, table.preview th { white-space: normal; }
+.hper { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--text-2); font-size: .85rem; }
+.hcards { display: grid; gap: 12px; margin-top: 14px; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
+.hcard { display: grid; gap: 8px; align-content: start; padding: 12px 14px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; break-inside: avoid; }
+.hhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 1.05rem; }
+.hnote { color: var(--muted); font-size: .85rem; }
+.hblock > * + * { margin-top: 6px; }
+.hblock .plat-title { margin: 0; font-size: .85rem; color: var(--text-2); }
+.hkeys { display: flex; flex-wrap: wrap; gap: 10px; }
+.hkey { display: grid; gap: 3px; justify-items: start; max-width: 100%; min-width: 0; }
+.hkey img.qr { width: 120px; height: 120px; padding: 5px; margin: 0; box-sizing: content-box; }
+.hlink { font-size: .72rem; word-break: break-all; user-select: all; }
+.hsteps { margin: 0; padding-left: 1.2em; font-size: .85rem; }
+.hsteps li { overflow-wrap: anywhere; }
+@media print {
+  .top, footer, .noprint, .flash, .alerts.flash, #live { display: none !important; }
+  body { background: #fff; color: #000; font-size: 10pt; }
+  main { max-width: none; padding: 0; min-height: 0; }
+  .hcards { display: block; margin: 0; }
+  .hcard { break-inside: avoid; border: 1px solid #888; border-radius: 4px; padding: 3mm 4mm; margin: 0 0 4mm; background: #fff; box-shadow: none; }
+  .hcards.per-3 .hkey img.qr { width: 24mm; height: 24mm; }
+  .hcards.per-2 .hkey img.qr { width: 34mm; height: 34mm; }
+  .hkey img.qr { padding: 1mm; }
+  .hlink { font-size: 6.5pt; }
+  .hsteps { font-size: 8.5pt; }
+  .chip { border: 1px solid #aaa; background: #fff; color: #000; }
+}
+@media (max-width: 600px) { .hkey img.qr { width: 100px; height: 100px; } }
 @media (max-width: 600px) {
   body { font-size: 14px; }
   .top-inner { gap: 6px 10px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
@@ -569,6 +601,10 @@ JS = r"""
       src.select();
       try { document.execCommand('copy'); done(); } catch (e) { /* выделено — копируйте вручную */ }
     }
+  });
+  // «Карточки для раздачи»: печать (кнопки видны только с JS)
+  document.addEventListener('click', function (ev) {
+    if (ev.target.closest && ev.target.closest('[data-print]')) window.print();
   });
   // «Подключить»: список платформ оставляет видимой одну панель (без JS видны все подряд),
   // галочка «добавить ссылки» дописывает их в текст сообщения (и убирает обратно)
@@ -971,6 +1007,7 @@ JS = r"""
       refreshDraft(f);
     });
     initConn();
+    document.querySelectorAll('[data-print]').forEach(function (b) { b.hidden = false; });
     bulkSync();
     document.querySelectorAll('[data-picker]').forEach(pickCount);
   }

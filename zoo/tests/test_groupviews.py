@@ -45,7 +45,7 @@ class GroupWebBase(AppTestBase):
 
     def create_group(self, **kw):
         base = dict(name="Семья", proto=["vless-reality", "amneziawg"], client__android="happ", users_new="masha\nkolya",
-                    existing=[], allow_mode="common")
+                    existing=[], allow_mode="common", confirm="1")
         base.update(kw)
         return self.wiz(3, go="create", **base)
 
@@ -299,13 +299,13 @@ class WizardTest(GroupWebBase):
         self.assertRegex(body, r'type="hidden" name="client:android" value="happ"')
         # назад на шаг 2: введённое на шаге 3 не пропадает
         resp, body = self.wiz(3, go="back", name="Семья", proto=["vless-reality"], client__android="happ",
-                              users_new="masha сестра", existing=["owner"], allow_mode="common")
+                              users_new="masha; сестра", existing=["owner"], allow_mode="common")
         self.assertIn("2. Клиенты", body)
-        self.assertIn('type="hidden" name="users_new" value="masha сестра"', body)
+        self.assertIn('type="hidden" name="users_new" value="masha; сестра"', body)
         self.assertIn('type="hidden" name="existing" value="owner"', body)
 
     def test_create_flow(self):
-        resp, body = self.create_group(users_new="masha сестра\nkolya", existing=["owner"])
+        resp, body = self.create_group(users_new="masha; сестра\nkolya", existing=["owner"])
         self.assertEqual(resp.status, 303, text_of(body)[:300])
         loc = header(resp, "Location")[0]
         self.assertEqual(loc, "/connect/done?group=g1&u=masha%2Ckolya%2Cowner")
@@ -362,12 +362,10 @@ class WizardTest(GroupWebBase):
         self.c.get("/connect/new")
         before = (paths.groups_file().read_text(encoding="utf-8"), paths.users_file().read_text(encoding="utf-8"))
         for fields, msg in (({"users_new": ""}, "хотя бы одного"),
-                            ({"users_new": "bad!"}, "недопустимое имя"),
-                            ({"users_new": "owner"}, "уже есть"),
-                            ({"users_new": "a\na"}, "повторяется"),
-                            ({"users_new": "zoo-probe"}, "зарезервировано"),
+                            ({"users_new": "!!!"}, "нет ни букв, ни цифр"),
+                            ({"users_new": "; заметка"}, "нет имени"),
                             ({"users_new": "", "existing": ["ghost"]}, "нет в реестре"),
-                            ({"users_new": "\n".join(f"u{i}" for i in range(25))}, "не больше")):
+                            ({"users_new": "\n".join(f"u{i}" for i in range(201))}, "не больше 200")):
             resp, body = self.create_group(**fields)
             self.assertEqual(resp.status, 422, fields)
             self.assertIn(msg, body)
@@ -391,11 +389,14 @@ class WizardTest(GroupWebBase):
         self.assertNotIn("<script>alert", body)
         self.assertNotIn("<img src=x", body)
         self.assertIn("&lt;script&gt;", body)
-        resp, body = self.wiz(3, name=evil, proto=["vless-reality"], client__android="happ", users_new=evil_user)
-        self.assertEqual(resp.status, 422)
+        resp, body = self.wiz(3, go="create", name=evil, proto=["vless-reality"], client__android="happ",
+                              users_new=evil_user)
+        self.assertEqual(resp.status, 200, "предпросмотр: ничего не создано")
         self.assertNotIn("<script>alert", body)
         self.assertNotIn("<img", body)
         self.assertIn("&lt;img src=x", body)
+        self.assertIn("<strong>img-src-x-onerror-alert-2</strong>", body)
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main"])
         # группа с таким названием (допустимо) безопасна во всех местах
         resp, body = self.create_group(name=evil, users_new="masha")
         self.assertEqual(resp.status, 303)
@@ -408,7 +409,7 @@ class WizardTest(GroupWebBase):
         self.assertNotIn("<", loc)
 
     def test_note_with_html_is_escaped_everywhere(self):
-        resp, _ = self.create_group(users_new="masha <b>x</b>")
+        resp, _ = self.create_group(users_new="masha; <b>x</b>")
         self.assertEqual(resp.status, 303)
         _, page = self.c.get(header(resp, "Location")[0])
         self.assertNotIn("<b>x</b>", page)
@@ -523,7 +524,7 @@ class GroupsPagesTest(GroupWebBase):
 
     def test_members_are_chips_and_one_multiselect(self):
         _, page = self.c.get("/groups/g1")
-        card = page.split("<h3>Участники</h3>")[1].split("Добавить участников")[0]
+        card = page.split("<h3>Участники</h3>")[1].split("Добавить людей списком")[0]
         self.assertNotIn("<table", card, "участники — не длинный список строк")
         self.assertIn('<a href="/users/masha" class="chip">masha</a>', card)
         self.assertEqual(card.count('type="checkbox" name="user"'), 2, "один список с галочками на всех")
@@ -592,7 +593,7 @@ class GroupsPagesTest(GroupWebBase):
         self.assertNotIn('name="expected"', empty)
 
     def test_delete_aborts_when_membership_changed_after_confirm_page(self):
-        self.post("/groups/g1/members", {"users_new": ["petya"]})   # после показа страницы подтверждения
+        self.post("/groups/g1/members", {"users_new": ["petya"], "confirm": ["1"]})   # после показа страницы подтверждения
         for mode in ("delete", "move"):
             resp, _ = self.post("/groups/g1/delete", {"members": [mode], "shown": ["1"], "expected": ["masha", "kolya"]})
             self.assertEqual(header(resp, "Location"), ["/groups/g1/delete"], mode)
@@ -717,7 +718,7 @@ class GroupsPagesTest(GroupWebBase):
         self.assertNotIn('class="checks"', wiz.split("Уже есть")[1].split("Приложения через VPN")[0])
 
     def test_add_members(self):
-        resp, _ = self.post("/groups/g1/members", {"users_new": ["petya друг"], "existing": ["owner"]})
+        resp, _ = self.post("/groups/g1/members", {"users_new": ["petya; друг"], "existing": ["owner"], "confirm": ["1"]})
         self.assertEqual(resp.status, 303)
         _, page = self.c.get("/groups/g1")
         self.assertIn("petya", page)
@@ -725,9 +726,9 @@ class GroupsPagesTest(GroupWebBase):
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
         self.assertEqual((reg["petya"]["group"], reg["owner"]["group"]), ("g1", "g1"))
         self.assertEqual(sorted(reg["petya"]["protocols"]), ["amneziawg", "vless-reality"])
-        resp, _ = self.c.post("/groups/g1/members", {"users_new": "bad!"})
+        resp, _ = self.c.post("/groups/g1/members", {"users_new": "!!!", "confirm": "1"})
         _, page = self.c.get("/groups/g1")
-        self.assertIn("недопустимое имя", page)
+        self.assertIn("нет ни букв, ни цифр", page)
 
     def test_users_page_adds_into_group(self):
         resp, _ = self.c.post("/users", {"name": "vasya", "group": "g1"})

@@ -37,7 +37,7 @@ MSG_MAX = 300  # ошибки на странице короткие: длинн
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
 # ответ не страница (картинка QR, скачиваемый файл) или всегда редирект: отпечаток считать незачем
-NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /live/[^/]+/?|GET /logs/(?:chunk|export)/?|POST /logs/(?:clean|vacuum)/?")
+NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /handoff/export/?|POST /live/[^/]+/?|GET /logs/(?:chunk|export)/?|POST /logs/(?:clean|vacuum)/?")
 
 
 @dataclass
@@ -90,7 +90,7 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import (allowviews, clientviews, groupviews, journalviews, logviews, probeviews, protoviews, userviews,
+        from . import (allowviews, clientviews, groupviews, handoffviews, journalviews, logviews, probeviews, protoviews, userviews,
                        views)  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
@@ -129,6 +129,8 @@ class App:
             ("GET", rf"/groups/{gid}/delete", groupviews.group_delete_confirm, True),
             ("POST", rf"/groups/{gid}/delete", groupviews.group_delete, True),
             ("POST", rf"/groups/{gid}/merge", groupviews.group_merge, True),
+            ("GET", r"/handoff", handoffviews.cards_page, True),
+            ("POST", r"/handoff/export", handoffviews.export, True),
             ("GET", r"/apps", allowviews.apps_page, True),
             ("POST", r"/apps", allowviews.apps_post, True),
             ("GET", r"/clients", clientviews.clients_page, True),

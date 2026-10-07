@@ -18,6 +18,7 @@ AmneziaWG у телефона владельца (роуминг WireGuard) и �
 from __future__ import annotations
 
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -261,69 +262,112 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
     if name in SYSTEM_USERS and not system:
         raise UserError(f"имя «{name}» зарезервировано за служебным пользователем пробника")
     with _lock():
+        return _add_in(_load_registry(), name, note, only, partial, system, group)
+
+
+BULK_BUDGET = 300   # секунд на пачку: дольше блокировка мешала бы остальным операциям
+
+
+def add_many(items: list[tuple[str, str]], group: str, budget: float = BULK_BUDGET) -> list[OpReport]:
+    """Новые пользователи (имя, заметка) в группу под одной блокировкой. Отказ у одного не мешает остальным
+    (у каждого свой отчёт); не уложились в budget — остальным отчёт «не успели». Списки пользователей
+    протоколов читаются один раз на протокол, а не на каждого человека."""
+    known: dict[str, set[str] | None] = {}
+
+    def present(pid: str, name: str) -> bool | None:
+        if pid not in known:
+            try:
+                known[pid] = set(protolib.user_list(pid))
+            except protolib.ProtoError:
+                known[pid] = None
+        have = known[pid]
+        return None if have is None else name in have
+
+    start = time.monotonic()
+    out: list[OpReport] = []
+    with _lock():
         reg = _load_registry()
-        if reg.get(name):
-            raise UserError(f"пользователь «{name}» уже есть")
-        grp, custom = None, False
-        if not system:
-            from . import groups
-            gs = groups.Groups.load()
-            grp = gs.require(group) if group else (gs.get(groups.MAIN_ID) if group is None else None)
-            if grp is not None:
-                if only:
-                    custom = True
-                else:
-                    managed_all, _ = managed_protocols()
-                    want = grp.resolve(managed_all)
-                    if not want:
-                        raise UserError(f"в группе «{grp.name}» нет включённых протоколов")
-                    only = None if set(want) >= set(managed_all) else want
-                groups.refresh_mirror(extra={name: grp.id})
-        targets, skipped = managed_protocols(only)
-        if not targets:
-            raise UserError("нет протоколов, куда можно добавить пользователя: "
-                            + ("; ".join(f"{k}: {v}" for k, v in skipped.items()) or "манифестов нет"))
-        rep = OpReport("add", name, skipped=skipped)
-        added: list[str] = []
-        failed: list[str] = []
-        for pid in targets:
-            before = _present(pid, name)
-            if before:
-                rep.steps.append(Step(pid, "adopt", True, "уже был в протоколе"))
+        for name, note in items:
+            if time.monotonic() - start > budget:
+                out.append(OpReport("add", name, ok=False, message="не успели: повторите для оставшихся"))
                 continue
             try:
-                protolib.user_add(pid, name)
-                rep.steps.append(Step(pid, "add", True))
-                added.append(pid)
-            except protolib.ProtoError as e:
-                rep.steps.append(Step(pid, "add", False, _err(e)))
-                failed.append(pid)
-                # модуль мог успеть завести пользователя до ошибки — убираем недоделанное
-                if before is False and _present(pid, name):
-                    _rollback(rep, [pid], lambda p: protolib.user_del(p, name))
-                if not partial:
-                    break
-        if failed and not partial:
-            _rollback(rep, added, lambda pid: protolib.user_del(pid, name))
-            _cleanup_client_dir(name)
-            _drop_mirror(grp)
-            rep.ok = False
-            rep.message = "пользователь не создан: ошибка в " + ", ".join(failed)
-            return rep
-        ok_ids = [s.proto_id for s in rep.steps if s.ok and s.action in ("add", "adopt")]
-        if not ok_ids:
-            _drop_mirror(grp)
-            rep.ok = False
-            rep.message = "пользователь не создан ни в одном протоколе"
-            return rep
-        reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system,
-                              group=grp.id if grp else "", custom=custom))
-        reg.save()
-        if not system:
-            _write_allowlist_files(name)
-        rep.ok = not failed
-        rep.message = "пользователь создан" if rep.ok else "создан частично, без: " + ", ".join(failed)
+                out.append(_add_in(reg, name, note, group=group, present=present))
+            except (UserError, protolib.ProtoError) as e:
+                out.append(OpReport("add", name, ok=False, message=str(e)))
+    return out
+
+
+def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = None, partial: bool = False,
+            system: bool = False, group: str | None = None, present=None) -> OpReport:
+    """Добавление под уже взятой блокировкой; реестр сохраняется здесь. present — как _present
+    (add_many подставляет кэш списков протоколов)."""
+    present = present or _present
+    validate_name(name)
+    if name in SYSTEM_USERS and not system:
+        raise UserError(f"имя «{name}» зарезервировано за служебным пользователем пробника")
+    if reg.get(name):
+        raise UserError(f"пользователь «{name}» уже есть")
+    grp, custom = None, False
+    if not system:
+        from . import groups
+        gs = groups.Groups.load()
+        grp = gs.require(group) if group else (gs.get(groups.MAIN_ID) if group is None else None)
+        if grp is not None:
+            if only:
+                custom = True
+            else:
+                managed_all, _ = managed_protocols()
+                want = grp.resolve(managed_all)
+                if not want:
+                    raise UserError(f"в группе «{grp.name}» нет включённых протоколов")
+                only = None if set(want) >= set(managed_all) else want
+            groups.refresh_mirror(extra={name: grp.id})
+    targets, skipped = managed_protocols(only)
+    if not targets:
+        raise UserError("нет протоколов, куда можно добавить пользователя: "
+                        + ("; ".join(f"{k}: {v}" for k, v in skipped.items()) or "манифестов нет"))
+    rep = OpReport("add", name, skipped=skipped)
+    added: list[str] = []
+    failed: list[str] = []
+    for pid in targets:
+        before = present(pid, name)
+        if before:
+            rep.steps.append(Step(pid, "adopt", True, "уже был в протоколе"))
+            continue
+        try:
+            protolib.user_add(pid, name)
+            rep.steps.append(Step(pid, "add", True))
+            added.append(pid)
+        except protolib.ProtoError as e:
+            rep.steps.append(Step(pid, "add", False, _err(e)))
+            failed.append(pid)
+            # модуль мог успеть завести пользователя до ошибки — убираем недоделанное
+            if before is False and _present(pid, name):
+                _rollback(rep, [pid], lambda p: protolib.user_del(p, name))
+            if not partial:
+                break
+    if failed and not partial:
+        _rollback(rep, added, lambda pid: protolib.user_del(pid, name))
+        _cleanup_client_dir(name)
+        _drop_mirror(grp)
+        rep.ok = False
+        rep.message = "пользователь не создан: ошибка в " + ", ".join(failed)
         return rep
+    ok_ids = [s.proto_id for s in rep.steps if s.ok and s.action in ("add", "adopt")]
+    if not ok_ids:
+        _drop_mirror(grp)
+        rep.ok = False
+        rep.message = "пользователь не создан ни в одном протоколе"
+        return rep
+    reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system,
+                          group=grp.id if grp else "", custom=custom))
+    reg.save()
+    if not system:
+        _write_allowlist_files(name)
+    rep.ok = not failed
+    rep.message = "пользователь создан" if rep.ok else "создан частично, без: " + ", ".join(failed)
+    return rep
 
 
 def delete_user(name: str, force: bool = False) -> OpReport:

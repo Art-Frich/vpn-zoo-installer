@@ -246,6 +246,8 @@ def bulk_bar(csrf: str, gs: groups.Groups) -> Markup:
              t("button", "Отключить", type="submit", name="action", value="disable", class_="btn small",
                title="Ссылки сохранятся, подключиться они не смогут; owner не отключается"),
              t("button", "Включить", type="submit", name="action", value="enable", class_="btn small"),
+             t("button", "Раздать", type="submit", name="action", value="handoff", class_="btn small primary",
+               title="Карточки с QR и ссылками для отмеченных: печать, ZIP"),
              move, method="post", action="/users/bulk", class_="bulkbar", id="bulk", data_swap=True, data_bulk_bar=True,
              aria_label="Действия с отмеченными")
 
@@ -377,7 +379,7 @@ def users_bulk(app: "App", req: "Request") -> "Response":
     s = req.session
     action = req.form.get("action", "")[:60]
     op, _, gid = action.partition(":")
-    if op not in (*users.BULK_OPS, "move") or (op == "move") != bool(gid):
+    if op not in (*users.BULK_OPS, "move", "handoff") or (op == "move") != bool(gid):
         s.flash("bad", "Неизвестное действие")
         return _redirect("/users")
     names = list(dict.fromkeys(req.multi.get("names", [])[:BULK_MAX]))
@@ -393,6 +395,13 @@ def users_bulk(app: "App", req: "Request") -> "Response":
             errors.append(f"{n[:32]}: {why}")
         else:
             todo.append(n)
+    if op == "handoff":
+        if not todo:
+            s.flash("warn", "Раздавать некому")
+            for e in errors:
+                s.flash("bad", e)
+            return _redirect("/users")
+        return _redirect("/handoff?" + urllib.parse.urlencode({"u": ",".join(todo)}))
     if op == "delete" and todo and not req.form.get("confirm"):
         return _bulk_confirm(req, app, todo, errors)
     done: list[str] = []
