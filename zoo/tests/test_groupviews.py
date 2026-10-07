@@ -209,8 +209,9 @@ class WizardTest(GroupWebBase):
         self.assertNotIn("happ", ios, "Happ нет в российском App Store")
         self.assertEqual(self.checked(body, "windows"), ["v2rayn", "amneziavpn"])
         # платформа, которую набор целиком не закрыл, — предупреждением
-        self.assertIn("Набор: hysteria (консоль) + AmneziaVPN — покрывает 2 из 3: для Протокол vless-reality нет клиента",
+        self.assertIn("Набор: Hiddify + AmneziaVPN — покрывает 2 из 3: для Протокол vless-reality нет клиента",
                       text_of(body))
+        self.assertIn("Приложений всего 7: Happ — Android; AmneziaWG — Android;", text_of(body))
 
     def test_step2_keeps_manual_set_and_skipped_platform(self):
         # вернулись с шага 3: у Android отмечен один Happ (2 из 3), у iPhone ничего — платформа не нужна
@@ -227,8 +228,26 @@ class WizardTest(GroupWebBase):
         # смена протоколов на шаге 1 — набор пересчитывается под них
         resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "amneziawg"], clients_for="hysteria2,amneziawg,vless-reality",
                               client__android=["happ"])
-        self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg"])
+        self.assertEqual(self.checked(body, "android"), ["hiddify", "amneziawg"], "Hiddify — один на Android и десктопы")
         self.assertEqual(self.checked(body, "ios"), ["singbox", "amneziavpn"])
+        self.assertEqual(self.checked(body, "windows"), ["hiddify", "amneziavpn"])
+
+    def test_step2_shows_one_app_summary(self):
+        _, body = self.wiz(1, name="Семья", proto=["hysteria2"])
+        self.assertIn("data-unify", body)
+        self.assertIn("Приложений всего 2: Hiddify — Android, Windows, macOS, Linux; sing-box (SFA/SFI) — iPhone",
+                      text_of(body))
+        for plat in ("android", "windows", "macos", "linux"):
+            self.assertEqual(self.checked(body, plat), ["hiddify"], plat)
+        # устройства, которые не нужны, снимают — остаётся одно приложение на все
+        _, body = self.wiz(3, go="back", name="Семья", proto=["hysteria2"], clients_for="hysteria2",
+                           client__android=["hiddify"], client__windows=["hiddify"], users_new="masha")
+        self.assertIn("Одно приложение на всех устройствах: Hiddify", text_of(body))
+        self.assertNotRegex(body, r"data-unify[^>]*hidden")
+        # одно приложение у одной платформы или у каждой своё — плашка пустая и скрыта
+        _, body = self.wiz(3, go="back", name="Семья", proto=["hysteria2"], clients_for="hysteria2",
+                           client__android=["happ"], client__windows=["v2rayn"], users_new="masha")
+        self.assertRegex(body, r'<p class="plat-sum ok" data-unify[^>]*hidden')
 
     def test_set_is_saved_and_handed_off_as_sections(self):
         resp, body = self.create_group(proto=["hysteria2", "vless-reality", "amneziawg"],

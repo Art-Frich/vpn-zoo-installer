@@ -1,4 +1,5 @@
 import inspect
+import itertools
 import json
 import os
 import re
@@ -502,6 +503,82 @@ class ModelTest(GroupsBase):
         self.assertEqual(groups.coverage(cat, "android", proto3, ["happ"])[1], ["amneziawg"])
         self.assertEqual(groups.coverage(cat, "android", proto3, [])[1], proto3)
 
+    def test_hysteria2_group_gets_one_app_on_android_and_desktop(self):
+        cat = clients.load()
+        got = groups.suggest_set(cat, ["android", "windows"], ["hysteria2"])
+        self.assertEqual(got, {"android": ["hiddify"], "windows": ["hiddify"]})
+        head, line = groups.apps_summary(cat, got)
+        self.assertEqual(head, "Одно приложение на всех устройствах: Hiddify")
+        self.assertEqual(line, "")
+        # все пять устройств: Hiddify везде, где он есть в магазине РФ или на GitHub; iPhone — иностранный магазин
+        # у Hiddify, поэтому там sing-box
+        every = groups.default_clients(cat, ["hysteria2"])
+        self.assertEqual({p: ids for p, ids in every.items() if p != "ios"},
+                         {p: ["hiddify"] for p in ("android", "windows", "macos", "linux")})
+        self.assertEqual(every["ios"], ["singbox"])
+        head, line = groups.apps_summary(cat, every)
+        self.assertEqual(head, "")
+        self.assertEqual(line, "Приложений всего 2: Hiddify — Android, Windows, macOS, Linux; sing-box (SFA/SFI) — iPhone")
+        # Salamander и TUIC тот же Hiddify тоже покрывает
+        for protos in (["hysteria2", "hysteria2-obfs"], ["hysteria2", "tuic", "ss2022"]):
+            self.assertEqual(groups.suggest_set(cat, ["android", "windows"], protos),
+                             {"android": ["hiddify"], "windows": ["hiddify"]}, protos)
+        # старый подбор по одной платформе общих приложений не ищет
+        self.assertEqual(groups.suggest_clients(cat, "android", ["hysteria2"]), ["happ"])
+        self.assertEqual(groups.suggest_clients(cat, "android", ["hysteria2"], prefer={"hiddify"}), ["hiddify"])
+        opts = groups.client_options(cat, "android", ["hysteria2"], prefer={"hiddify"})
+        self.assertLess([o["client"]["id"] for o in opts].index("hiddify"), [o["client"]["id"] for o in opts].index("singbox"))
+
+    def test_vless_is_never_given_to_sing_box_clients(self):
+        cat = clients.load()
+        for protos in (["vless-reality"], ["vless-xhttp"], ["vless-reality", "vless-xhttp"]):
+            for plat, ids in groups.default_clients(cat, protos).items():
+                engines = {cat.client(i)["engine"] for i in ids}
+                self.assertNotIn("sing-box", engines, f"{plat} {protos}: sing-box не проходит REALITY у Xray 26.9.30")
+
+    def test_group_with_amneziawg_keeps_an_awg_app_on_every_device(self):
+        cat = clients.load()
+        protos = ["hysteria2", "amneziawg"]
+        got = groups.default_clients(cat, protos)
+        self.assertEqual(sorted(got), ["android", "ios", "linux", "macos", "windows"])
+        awg_capable = {c["id"] for c in cat.clients if c["protocols"].get("amneziawg", {}).get("s") in ("ok", "warn")}
+        for plat, ids in got.items():
+            self.assertTrue(awg_capable & set(ids), f"{plat}: нет приложения для AmneziaWG: {ids}")
+            self.assertEqual(groups.coverage(cat, plat, protos, ids)[1], [], plat)
+        # на Android — AmneziaWG (приложения из .conf, нет бага AmneziaVPN после Doze), а не AmneziaVPN ради «одного»
+        self.assertEqual(got["android"], ["hiddify", "amneziawg"])
+        self.assertEqual(got["windows"], ["hiddify", "amneziavpn"])
+        self.assertEqual(got["ios"], ["singbox", "amneziavpn"])
+        # только AmneziaWG
+        only = groups.default_clients(cat, ["amneziawg"])
+        self.assertEqual(only["android"], ["amneziawg"])
+        self.assertEqual({only[p][0] for p in ("ios", "windows", "macos", "linux")}, {"amneziavpn"})
+
+    def test_legacy_sets_when_nothing_can_be_shared_better(self):
+        cat = clients.load()
+        self.assertEqual(groups.default_clients(cat, ["vless-reality"]),
+                         {"android": ["happ"], "ios": ["incy"], "windows": ["v2rayn"], "linux": ["v2rayn"]})
+        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["android"], ["happ"])
+        self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["windows"], ["v2rayn"])
+        self.assertEqual(groups.suggest_set(cat, ["android"], []), {})
+        self.assertEqual(groups.suggest_set(cat, [], ["hysteria2"]), {})
+        head, line = groups.apps_summary(cat, {"android": ["happ"], "ios": ["incy"], "windows": ["v2rayn"]})
+        self.assertEqual((head, line), ("", ""), "ничего общего — сказать нечего")
+        self.assertEqual(groups.apps_summary(cat, {"android": ["happ"]}), ("", ""))
+
+    def test_shared_set_is_never_worse_per_device_than_per_platform_set(self):
+        cat = clients.load()
+        for r in (1, 2, 3):
+            for protos in itertools.combinations(groups.PRIORITY, r):
+                got = groups.default_clients(cat, list(protos))
+                for plat in cat.platforms:
+                    old = groups.suggest_clients(cat, plat, list(protos))
+                    new = got.get(plat, [])
+                    self.assertEqual(bool(new), bool(old), (plat, protos))
+                    self.assertLessEqual(len(new), len(old), (plat, protos, new, old))
+                    self.assertEqual(groups.coverage(cat, plat, list(protos), new)[1],
+                                     groups.coverage(cat, plat, list(protos), old)[1], (plat, protos, new, old))
+
     def test_legacy_string_client_loads_as_one_item_set_and_saves_as_list(self):
         users.bootstrap()
         data = self.groups_json()
@@ -577,11 +654,14 @@ class ModelTest(GroupsBase):
         opts = groups.client_options(cat, "android", ["hysteria2", "amneziawg"])
         self.assertEqual(opts[0]["client"]["id"], "amneziawg", "у Android первым в раздаче идёт AmneziaWG")
         self.assertTrue(opts[0]["recommended"])
-        # только TUIC на десктопе: Hiddify не в выборе, рекомендованного нет
+        # только TUIC на десктопе: Hiddify проверен ядром на стенде, но каталог его там не рекомендует
         for plat in ("windows", "macos", "linux"):
             opts = groups.client_options(cat, plat, ["tuic"])
-            self.assertNotIn("hiddify", [o["client"]["id"] for o in opts])
+            self.assertIn("hiddify", [o["client"]["id"] for o in opts])
             self.assertFalse(any(o["recommended"] for o in opts))
+        android = groups.client_options(cat, "android", ["tuic"])
+        self.assertEqual(android[0]["client"]["id"], "hiddify", "SFA не берёт ссылки, Hiddify берёт")
+        self.assertTrue(android[0]["recommended"])
 
     def test_corrupt_file_is_an_error_not_a_crash(self):
         paths.groups_file().write_text("{", encoding="utf-8")

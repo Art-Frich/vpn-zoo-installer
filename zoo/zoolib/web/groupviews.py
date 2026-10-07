@@ -289,6 +289,8 @@ def _clients_block(d: Draft, managed: list[str]) -> Markup:
     protocols = d.resolved(managed)
     real = [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
     main_, other = [], []
+    plan = groups.default_clients(cat, protocols)
+    picked: dict[str, list[str]] = {}
     for plat, title in cat.platforms.items():
         opts = {o["client"]["id"]: o for o in groups.client_options(cat, plat, protocols)}
         if not opts:
@@ -296,7 +298,8 @@ def _clients_block(d: Draft, managed: list[str]) -> Markup:
             sum_attrs: dict[str, Any] = {}
         else:
             chosen = [i for i in d.clients.get(plat, []) if i in opts]
-            sugg = groups.suggest_clients(cat, plat, protocols)
+            picked[plat] = chosen
+            sugg = plan.get(plat, [])
             first = [*sugg, *[i for i in chosen if i not in sugg]]
             rest = [i for i in opts if i not in first]
             text, kind = set_summary(cat, plat, protocols, chosen, names)
@@ -312,7 +315,9 @@ def _clients_block(d: Draft, managed: list[str]) -> Markup:
                          "data_names": "|".join(names.get(p, p) for p in real)}
         (main_ if plat in MAIN_PLATFORMS else other).append(
             t("fieldset", t("legend", title), body, class_="plat", **sum_attrs))
-    return t("div", main_,
+    head, line = groups.apps_summary(cat, picked)
+    return t("div", t("p", head or line, class_="plat-sum ok", data_unify=True, hidden=not (head or line) or None),
+             main_,
              t("details", t("summary", "Другие платформы"), other, class_="more") if other else None,
              t("p", clientviews.UNVERIFIED, class_="hint"))
 
@@ -327,13 +332,14 @@ def normalize_clients(d: Draft, managed: list[str], fill: bool = True) -> None:
         return
     protocols = d.resolved(managed)
     stale = fill and d.clients_for != ",".join(protocols)
+    plan = groups.default_clients(cat, protocols) if stale else {}
     fixed: dict[str, list[str]] = {}
     for plat in cat.platforms:
         opts = groups.client_options(cat, plat, protocols)
         if not opts:
             continue
         ids = {o["client"]["id"] for o in opts}
-        got = groups.suggest_clients(cat, plat, protocols) if stale else [i for i in d.clients.get(plat, []) if i in ids]
+        got = plan.get(plat, []) if stale else [i for i in d.clients.get(plat, []) if i in ids]
         if got:
             fixed[plat] = got
     d.clients = fixed

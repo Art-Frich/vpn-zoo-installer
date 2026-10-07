@@ -1,6 +1,6 @@
 {
-  "_doc": "Каталог клиентских приложений (docs/PLAN-builder.md). Статусы протоколов: ok — заявлено поддерживаемым (по коду и документации), warn — работает с оговоркой, no — не работает, unk — не проверено; нет записи — не заявлено. device=false — на устройстве не проверялось. checked=false у ссылки — адреса нет в исследованиях, собран по id пакета. Источники: research/2026-10-04/clients-and-allowlist_04-10-26.md, research/2026-10-05/field-test-vps_05-10-26.md, docs/REFERENCE.md.",
-  "updated": "2026-10-06",
+  "_doc": "Каталог клиентских приложений (docs/PLAN-builder.md). no_unify — список платформ, где клиента не берут ради «одного приложения на всех устройствах» (только если без него протокол не покрыть): на Android AmneziaVPN (баг после Doze, приложения не из .conf) и INCY (приложения только из подписки, которой у нас нет). Статусы протоколов: ok — заявлено поддерживаемым (по коду и документации), warn — работает с оговоркой, no — не работает, unk — не проверено; нет записи — не заявлено. device=false — на устройстве не проверялось. checked=false у ссылки — адреса нет в исследованиях, собран по id пакета. Источники: research/2026-10-04/clients-and-allowlist_04-10-26.md, research/2026-10-05/field-test-vps_05-10-26.md, research/2026-10-07/hiddify-compat_07-10-26.md (прогон ядер на стенде), docs/REFERENCE.md.",
+  "updated": "2026-10-07",
   "platforms": {
     "android": "Android",
     "ios": "iPhone",
@@ -15,7 +15,7 @@
     },
     "vless-xhttp": {
       "title": "VLESS XHTTP",
-      "caveat": "Тот же запрет на sing-box-клиенты, что у VLESS + REALITY."
+      "caveat": "Тот же запрет на sing-box-клиенты, что у VLESS + REALITY; у самого sing-box транспорта XHTTP нет."
     },
     "ss2022": {
       "title": "Shadowsocks-2022",
@@ -112,6 +112,7 @@
         "link": "Нажмите «Добавить» и вставьте ключ, который я пришлю.",
         "file": "Нажмите «Добавить» → «Из файла» и выберите файл, который я пришлю."
       },
+      "no_unify": ["android"],
       "per_app": "ui",
       "per_app_steps": {"android": "Раздельное туннелирование приложений → «только приложения из списка», отметьте Brave и Telegram."},
       "verified": {"date": "2026-10-04", "version": "5.0.3.0", "device": false, "how": "документация"},
@@ -165,6 +166,7 @@
         "qr": "Нажмите «+» и отсканируйте QR, который я пришлю.",
         "link": "Скопируйте ссылку, которую я пришлю, и добавьте её в INCY из буфера обмена."
       },
+      "no_unify": ["android"],
       "per_app": "header",
       "verified": {"date": "2026-10-04", "version": "2.6.2", "device": false, "how": "документация"},
       "notes": "Есть в российском App Store. Клиент закрытый, в сборках Firebase Crashlytics; закрыт ли локальный SOCKS — не проверено."
@@ -234,19 +236,20 @@
         "ios": [{"kind": "site", "url": "https://sing-box.sagernet.org/clients/apple/", "checked": false}]
       },
       "protocols": {
-        "vless-reality": {"s": "no", "note": "не проходит REALITY у Xray 26.9.30 (X25519MLKEM768); по исследованию 04.10.2026, на устройстве не проверено"},
-        "vless-xhttp": {"s": "no", "note": "то же, что у REALITY"},
-        "ss2022": {"s": "ok"},
-        "hysteria2": {"s": "ok"},
-        "hysteria2-obfs": {"s": "ok", "note": "по документации, импорт не проверен"},
-        "tuic": {"s": "ok"}
+        "vless-reality": {"s": "no", "note": "не проходит REALITY у Xray 26.9.30 (X25519MLKEM768): «reality verification failed»; проверено на стенде 07.10.2026, sing-box 1.13.1, 1.14.2 и 1.15.0-alpha.10 (sing-box#4520); устройство не проверялось"},
+        "vless-xhttp": {"s": "no", "note": "в sing-box нет транспорта xhttp («unknown transport type»); проверено на стенде 07.10.2026, sing-box 1.13.1, 1.14.2 и 1.15.0-alpha.10"},
+        "ss2022": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро sing-box 1.13.1 и 1.14.2; на устройстве не проверено"},
+        "hysteria2": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро sing-box 1.13.1 и 1.14.2; пин сертификата — только SPKI в JSON-профиле (certificate_public_key_sha256), формат пина Hysteria не понимает; на устройстве не проверено"},
+        "hysteria2-obfs": {"s": "ok", "note": "Salamander проверен на стенде 07.10.2026, ядро sing-box 1.13.1 и 1.14.2; на устройстве не проверено"},
+        "tuic": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро sing-box 1.13.1 и 1.14.2; на устройстве не проверено"},
+        "amneziawg": {"s": "no", "note": "ядро не знает параметры обфускации AmneziaWG: «unknown field amnezia»; проверено на стенде 07.10.2026, sing-box 1.13.1, 1.14.2 и 1.15.0-alpha.10"}
       },
       "import": {
         "link": "Скопируйте ссылку, которую я пришлю, и добавьте профиль из буфера обмена."
       },
       "per_app": "profile",
-      "verified": {"date": "2026-10-04", "version": null, "device": false, "how": "исходники"},
-      "notes": "Нужен для TUIC; для VLESS не подходит."
+      "verified": {"date": "2026-10-07", "version": "1.14.2", "device": false, "how": "стенд (ядро), приложение не запускалось"},
+      "notes": "Для VLESS и XHTTP не подходит. SFA и SFI берут JSON-профиль, а не ссылки hysteria2://, tuic://, ss:// (по коду SFA, ProfileImportHandler); профилей мы пока не выдаём, поэтому пользователям проще Hiddify. SFI в App Store недоступен, только TestFlight для спонсоров (документация sing-box)."
     },
     {
       "id": "hiddify",
@@ -254,24 +257,32 @@
       "engine": "sing-box",
       "repo": "hiddify/hiddify-app",
       "platforms": {
-        "android": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}],
+        "android": [
+          {"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true},
+          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=app.hiddify.com", "checked": true}
+        ],
+        "ios": [{"kind": "appstore", "url": "https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532", "checked": true}],
         "windows": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}],
         "macos": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}],
         "linux": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}]
       },
       "protocols": {
-        "vless-reality": {"s": "no", "note": "почти наверняка не проходит REALITY у Xray 26.9.30 (X25519MLKEM768, sing-box 1.13); по исследованию 04.10.2026, новые релизы и устройство не проверены"},
-        "vless-xhttp": {"s": "no", "note": "то же, что у REALITY"},
-        "ss2022": {"s": "unk", "note": "не проверено"},
-        "hysteria2": {"s": "unk", "note": "не проверено (04.10.2026); «игнорирует пин» — по матрице исследования, без проверки"},
-        "tuic": {"s": "unk", "note": "не проверено"}
+        "vless-reality": {"s": "no", "note": "не проходит REALITY у Xray 26.9.30 (X25519MLKEM768): «reality verification failed»; проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); устройство не проверялось"},
+        "vless-xhttp": {"s": "no", "note": "соединение обрывается после рукопожатия; проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); причина, скорее всего, та же, что у REALITY"},
+        "ss2022": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); на устройстве не проверено"},
+        "hysteria2": {"s": "warn", "note": "работает (проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0, sing-box 1.13.1); пин сертификата не проверяется, подключение идёт по insecure=1; на устройстве не проверено"},
+        "hysteria2-obfs": {"s": "warn", "note": "Salamander работает (проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0); пин сертификата не проверяется; на устройстве не проверено"},
+        "tuic": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); на устройстве не проверено"},
+        "amneziawg": {"s": "no", "note": "ядро не знает параметры обфускации AmneziaWG (Jc, S1, H1…); проверено на стенде 07.10.2026, hiddify-core 4.1.0"}
       },
       "import": {
-        "link": "Скопируйте ссылку, которую я пришлю, и добавьте её из буфера обмена."
+        "link": "Скопируйте ссылку, которую я пришлю, нажмите «Добавить профиль» и добавьте её из буфера обмена."
       },
-      "per_app": "unk",
-      "verified": {"date": "2026-10-04", "version": "4.1.1", "device": false, "how": "исследование"},
-      "notes": "Для VLESS и XHTTP этого сервера не подходит; Hysteria2, SS-2022 и TUIC в исследовании не проверены."
+      "no_ru_store": ["ios"],
+      "per_app": "ui",
+      "per_app_steps": {"android": "«Настройки» → «Маршрутизация» → «Прокси для приложений» → режим «Прокси» (только выбранные), отметьте Brave и Telegram."},
+      "verified": {"date": "2026-10-07", "version": "4.1.1 (ядро hiddify-core 4.1.0)", "device": false, "how": "стенд (ядро), приложение не запускалось"},
+      "notes": "Один клиент на Android, Windows, macOS и Linux для Hysteria2, Salamander, TUIC и SS-2022. VLESS, XHTTP и AmneziaWG не умеет. Пин сертификата Hysteria2 игнорирует. В App Store РФ его нет (только магазин США, версия 4.0 — ядро iOS-сборки не проверяли). Названия пунктов приложений взяты из переводов в исходниках, на устройстве не проверены."
     },
     {
       "id": "karing",
@@ -325,7 +336,7 @@
       "ss2022": "happ",
       "hysteria2": "happ",
       "hysteria2-obfs": "v2rayng",
-      "tuic": "singbox"
+      "tuic": "hiddify"
     },
     "ios": {
       "vless-reality": "incy",

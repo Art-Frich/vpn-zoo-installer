@@ -629,6 +629,32 @@ JS = r"""
       (miss.length ? ': для ' + miss.join(', ') + ' нет клиента' : '');
     out.className = 'plat-sum ' + (miss.length ? 'warn' : 'ok');
   });
+  // шаг «Клиенты»: итог «одно приложение на всех устройствах» (как groups.apps_summary)
+  document.addEventListener('change', function (ev) {
+    var box = ev.target, out = document.querySelector('[data-unify]');
+    if (!out || !box.closest || !box.closest('fieldset[data-sum]') || !box.matches('input[type=checkbox]')) return;
+    var where = {}, order = [], plats = 0, text = '';
+    document.querySelectorAll('fieldset[data-sum]').forEach(function (fs) {
+      var on = fs.querySelectorAll('input[type=checkbox]:checked');
+      if (!on.length) return;
+      plats++;
+      on.forEach(function (c) {
+        var n = c.getAttribute('data-name');
+        if (!where[n]) { where[n] = []; order.push(n); }
+        where[n].push(fs.querySelector('legend').textContent);
+      });
+    });
+    if (plats >= 2) {
+      if (order.length === 1) text = 'Одно приложение на всех устройствах: ' + order[0];
+      else if (order.some(function (n) { return where[n].length > 1; })) {
+        text = 'Приложений всего ' + order.length + ': ' + order.map(function (n) {
+          return n + ' — ' + where[n].join(', ');
+        }).join('; ');
+      }
+    }
+    out.textContent = text;
+    out.hidden = !text;
+  });
   // подтверждение опасных действий; форма с data-swap уходит в фоне, <main> подменяется ответом
   document.addEventListener('submit', function (ev) {
     var f = ev.target, msg = f.getAttribute('data-confirm');
