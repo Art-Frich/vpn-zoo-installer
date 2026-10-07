@@ -43,6 +43,23 @@ class GroupWebBase(AppTestBase):
         form["csrf"] = self.c.csrf
         return self.c.req("POST", "/connect/new", form, multi={**multi, "csrf": [self.c.csrf]})
 
+    def checked(self, body, plat):
+        """Набор устройства, отмеченный радиокнопкой на шаге «Приложения»; нет строки или «не нужен» — пусто."""
+        m = re.search(rf'<input type="radio" name="set:{plat}" value="([^"]+)" checked', body)
+        return m.group(1).split("+") if m else []
+
+    def rows(self, body):
+        """Строки устройств шага «Приложения»: {заголовок: текст строки}."""
+        out = {}
+        for r in re.findall(r'<div class="dev-row">.*?(?=<div class="dev-row">|<p class="dev-total"|<p class="muted">)', body, re.S):
+            title = re.search(r'<strong class="dev-name">([^<]+)</strong>', r).group(1)
+            out[title] = text_of(r)
+        return out
+
+    def step1(self):
+        """Шаг «Протоколы»: со стартового экрана — «Свой набор»."""
+        return self.wiz(0, go="custom")
+
     def create_group(self, **kw):
         base = dict(name="Семья", proto=["vless-reality", "amneziawg"], client__android="happ", users_new="masha\nkolya",
                     existing=[], allow_mode="common", confirm="1")
@@ -118,7 +135,7 @@ class WizardTest(GroupWebBase):
         now = time.time()
         seed_live("hysteria2", now, rtt=31.0, mbps=52.0, age=120)
         seed_live("amneziawg", now, ok=0, verdict="SERVER_DOWN", rtt=None, mbps=None, age=60)
-        resp, body = self.c.get("/connect/new")
+        resp, body = self.step1()
         self.assertEqual(resp.status, 200)
         self.assertIn("data-expanded", body, "живое обновление не должно сбрасывать мастер")
         self.assertIn('name="name" id="name" value="Группа 2"', body)
@@ -141,7 +158,7 @@ class WizardTest(GroupWebBase):
         facts = {"hysteria2": {"n": 10, "ok": 9, "top": 2, "score": 160.0, "ctx": 2},
                  "vless-reality": {"n": 2, "ok": 1, "top": 0, "score": 0.0, "ctx": 0}}
         with mock.patch.object(groupviews, "_rank_facts", return_value=facts):
-            _, body = self.c.get("/connect/new")
+            _, body = self.step1()
         self.assertIn("у клиентов: 9 из 10", body)
         self.assertIn("у клиентов: 1 из 2 · мало данных", body)
         # топ по пробам — предвыбран первым
@@ -157,97 +174,108 @@ class WizardTest(GroupWebBase):
             resp, body = self.wiz(1, **fields)
             self.assertEqual(resp.status, 422, fields)
             self.assertIn(msg, body)
-            self.assertIn("1. Протоколы", body)
+            self.assertIn("2. Протоколы", body)
         self.assertEqual([g["id"] for g in self.groups_json()], ["main"])
 
-    def test_step2_clients_per_platform(self):
+    def test_step2_one_row_per_device_and_no_global_lists(self):
         resp, body = self.wiz(1, name="Семья", proto=["vless-reality", "hysteria2"])
         self.assertEqual(resp.status, 200)
-        self.assertIn("2. Клиенты", body)
+        self.assertIn("3. Приложения", body)
         # состояние шага 1 — скрытыми полями
         self.assertIn('type="hidden" name="name" value="Семья"', body)
         self.assertRegex(body, r'type="hidden" name="proto" value="vless-reality"')
-        self.assertRegex(body, r'type="checkbox" name="client:android" value="happ" checked')
-        self.assertNotIn('type="radio" name="client:android"', body, "набор клиентов — галочки, не выбор одного")
-        self.assertIn("рекомендуем", body)
-        self.assertRegex(body, r'name="client:windows" value="v2rayn" checked')
-        self.assertRegex(body, r'name="client:android" value="singbox"', "тянет только Hysteria2")
-        self.assertIn("Набор: Happ — покрывает 2 из 2", text_of(body))
-        self.assertIn("Платформа, где ничего не отмечено, не нужна", body)
-        # карточка клиента — чипы протоколов, которые он умеет (из выбранных), а не «N из M»
-        card = body[body.index('value="singbox"'):]
-        card = card[:card.index("</label>")]
-        self.assertIn(">Протокол hysteria2<", card)
-        self.assertNotIn("Протокол vless-reality", card, "sing-box REALITY не умеет")
-        # лишние клиенты — под «Другие клиенты», набор — сверху
-        self.assertRegex(body, r"Другие клиенты \(\d+\)")
-        self.assertLess(body.index('value="happ"'), body.index("Другие клиенты"))
-        self.assertGreater(body.index('value="singbox"'), body.index("Другие клиенты"))
-        self.assertIn("data-covers=", body)
-        _, only = self.wiz(1, name="Семья", proto=["vless-reality"])
-        self.assertNotRegex(only, r'name="client:android" value="singbox"', "sing-box-клиенты REALITY не проходят")
-        self.assertIn("github.com/Happ-proxy", body)
-        self.assertIn("Другие платформы", body)
+        for gone in ("Другие клиенты", "Другие платформы", "рекомендуем", "data-covers", "data-unify", "data-sum"):
+            self.assertNotIn(gone, body)
+        self.assertNotRegex(body, r'name="client:')
+        # чипы: основные устройства включены, остальные — нет
+        for plat in ("android", "ios", "windows"):
+            self.assertRegex(body, rf'<input type="checkbox" name="dev" value="{plat}" checked')
+        for plat in ("macos", "linux"):
+            self.assertRegex(body, rf'<input type="checkbox" name="dev" value="{plat}" data-auto>')
+        rows = self.rows(body)
+        self.assertEqual(list(rows), ["Android", "iPhone", "Windows"], "ровно одна строка на включённое устройство")
+        self.assertIn("Happ", rows["Android"])
+        self.assertIn("все 2", rows["Android"])
+        self.assertIn("сменить", rows["Android"])
+        self.assertEqual(self.checked(body, "android"), ["happ"])
+        self.assertEqual(self.checked(body, "ios"), ["happ"])
+        self.assertEqual(self.checked(body, "windows"), ["v2rayn"])
+        self.assertIn("! Happ: нет в App Store РФ", rows["iPhone"], "подвох — одной строкой под устройством")
+        self.assertNotIn("ставится только из App Store", body, "про iPhone «ставит ИТ» — только в режиме ИТ")
+        # «Итого»: каждое приложение один раз, со своими устройствами
+        total = text_of(re.search(r'<p class="dev-total">(.*?)</p>', body).group(1)).strip()
+        self.assertEqual(total, "Итого 2: Happ — Android, iPhone · v2rayN — Windows")
+        for app in ("Happ", "v2rayN"):
+            self.assertEqual(total.count(app), 1)
+        self.assertIn('name="go" value="refresh"', body)
         self.assertNotIn("style=", body)
 
-    def test_clients_follow_protocol_change(self):
-        # вернулись на шаг 1 и сменили протоколы: клиент, не умеющий новые, заменяется
-        resp, body = self.wiz(1, name="Семья", proto=["amneziawg"], client__android="happ")
-        self.assertRegex(body, r'name="client:android" value="amneziawg" checked')
-        self.assertNotRegex(body, r'name="client:android" value="happ"')
-
-    def checked(self, body, plat):
-        """Отмеченные клиенты платформы на шаге 2, по порядку на странице."""
-        return re.findall(rf'<input type="checkbox" name="client:{plat}" value="([^"]+)" checked', body)
-
-    def test_step2_preselects_set_that_covers_all_protocols(self):
-        resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "vless-reality", "amneziawg"])
-        self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg"], "Happ — VLESS и Hysteria2, AmneziaWG — AWG")
-        self.assertIn("Набор: Happ + AmneziaWG — покрывает 3 из 3", text_of(body))
-        ios = self.checked(body, "ios")
-        self.assertIn("incy", ios)
-        self.assertNotIn("happ", ios, "Happ нет в российском App Store")
+    def test_step2_change_options_are_ready_sets_only(self):
+        _, body = self.wiz(1, name="Семья", proto=["hysteria2", "vless-reality", "amneziawg"])
+        opts = re.findall(r'name="set:ios" value="([^"]+)"', body)
+        self.assertEqual(opts[0], "happ+amneziavpn", "первым — лучший набор: покрывает всё двумя приложениями")
+        self.assertEqual(opts[-1], "none", "последним — «Не нужен»")
+        sets = opts[:-1]
+        self.assertLessEqual(len(sets), 4)
+        self.assertTrue(all(1 <= len(s.split("+")) <= 2 for s in sets), "наборы из одного-двух приложений")
+        self.assertEqual(len(sets), len(set(sets)))
+        self.assertIn("все 3", text_of(body))
+        self.assertIn("без Протокол hysteria2", text_of(body), "честная метка у набора, который не покрыл протокол")
+        self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg"])
         self.assertEqual(self.checked(body, "windows"), ["v2rayn", "amneziavpn"])
-        # платформа, которую набор целиком не закрыл, — предупреждением
-        self.assertIn("Набор: Hiddify + AmneziaVPN — покрывает 2 из 3: для Протокол vless-reality нет клиента",
-                      text_of(body))
-        self.assertIn("Приложений всего 7: Happ — Android; AmneziaWG — Android;", text_of(body))
 
-    def test_step2_keeps_manual_set_and_skipped_platform(self):
-        # вернулись с шага 3: у Android отмечен один Happ (2 из 3), у iPhone ничего — платформа не нужна
+    def test_step2_refresh_keeps_manual_choice_and_none_drops_device(self):
+        base = dict(name="Семья", proto=["hysteria2", "vless-reality"], clients_for="hysteria2,vless-reality", devs="1",
+                    dev=["android", "ios", "windows"])
+        # ручной выбор iPhone: sing-box вместо Happ; Windows — «не нужен»; Android — как предложено
+        resp, body = self.wiz(2, go="refresh", **base, set__android="happ", set__ios="incy+singbox", set__windows="none")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(self.checked(body, "ios"), ["incy", "singbox"], "выбор не затирается подбором")
+        self.assertEqual(list(self.rows(body)), ["Android", "iPhone"], "«не нужен» — устройство выключено")
+        self.assertNotRegex(body, r'name="dev" value="windows" checked')
+        # включили чип macOS: появилась строка с подбором, остальное на месте
+        resp, body = self.wiz(2, go="refresh", **{**base, "dev": ["android", "ios", "macos"]},
+                              set__android="happ", set__ios="incy+singbox")
+        self.assertEqual(list(self.rows(body)), ["Android", "iPhone", "macOS"])
+        self.assertTrue(self.checked(body, "macos"))
+        self.assertEqual(self.checked(body, "ios"), ["incy", "singbox"])
+        # смена протоколов на шаге 2 → набор пересчитывается под них, ручной не остаётся
+        resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "amneziawg"], clients_for="hysteria2,vless-reality",
+                              devs="1", dev=["android", "ios"], set__android="happ")
+        self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg"], "вместо ручного «Happ» — набор, покрывающий оба")
+
+    def test_step2_back_from_people_keeps_state(self):
         resp, body = self.wiz(3, go="back", name="Семья", proto=["hysteria2", "vless-reality", "amneziawg"],
-                              clients_for="hysteria2,amneziawg,vless-reality", client__android=["happ"],
-                              client__windows=["v2rayn", "amneziavpn"], users_new="masha")
-        self.assertIn("2. Клиенты", body)
+                              clients_for="hysteria2,amneziawg,vless-reality", devs="1", dev=["android", "windows"],
+                              set__android="happ", set__windows="v2rayn+amneziavpn", users_new="masha")
+        self.assertIn("3. Приложения", body)
         self.assertEqual(self.checked(body, "android"), ["happ"], "ничего не дозаполняется")
-        self.assertEqual(self.checked(body, "ios"), [])
-        text = text_of(body)
-        self.assertRegex(text, r"Набор: Happ — покрывает 2 из 3: для Протокол amneziawg нет клиента")
-        self.assertIn("Платформа не нужна: ничего не отмечено", text)
-        self.assertIn("Набор: v2rayN + AmneziaVPN — покрывает 3 из 3", text)
-        # смена протоколов на шаге 1 — набор пересчитывается под них
-        resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "amneziawg"], clients_for="hysteria2,amneziawg,vless-reality",
-                              client__android=["happ"])
-        self.assertEqual(self.checked(body, "android"), ["hiddify", "amneziawg"], "Hiddify — один на Android и десктопы")
-        self.assertEqual(self.checked(body, "ios"), ["singbox", "amneziavpn"])
-        self.assertEqual(self.checked(body, "windows"), ["hiddify", "amneziavpn"])
+        self.assertEqual(self.checked(body, "windows"), ["v2rayn", "amneziavpn"])
+        self.assertEqual(list(self.rows(body)), ["Android", "Windows"], "iPhone выключен чипом")
+        self.assertIn("без Протокол amneziawg", self.rows(body)["Android"])
+        self.assertIn("все 3", self.rows(body)["Windows"])
+        self.assertIn('type="hidden" name="users_new" value="masha"', body)
 
-    def test_step2_shows_one_app_summary(self):
+    def test_step2_one_app_banner_and_old_three_app_set(self):
         _, body = self.wiz(1, name="Семья", proto=["hysteria2"])
-        self.assertIn("data-unify", body)
-        self.assertIn("Приложений всего 2: Hiddify — Android, Windows, macOS, Linux; sing-box (SFA/SFI) — iPhone",
-                      text_of(body))
-        for plat in ("android", "windows", "macos", "linux"):
-            self.assertEqual(self.checked(body, plat), ["hiddify"], plat)
-        # устройства, которые не нужны, снимают — остаётся одно приложение на все
-        _, body = self.wiz(3, go="back", name="Семья", proto=["hysteria2"], clients_for="hysteria2",
-                           client__android=["hiddify"], client__windows=["hiddify"], users_new="masha")
         self.assertIn("Одно приложение на всех устройствах: Hiddify", text_of(body))
-        self.assertNotRegex(body, r"data-unify[^>]*hidden")
-        # одно приложение у одной платформы или у каждой своё — плашка пустая и скрыта
-        _, body = self.wiz(3, go="back", name="Семья", proto=["hysteria2"], clients_for="hysteria2",
-                           client__android=["happ"], client__windows=["v2rayn"], users_new="masha")
-        self.assertRegex(body, r'<p class="plat-sum ok" data-unify[^>]*hidden')
+        self.assertIn("Итого 1: Hiddify — Android, iPhone, Windows", text_of(body))
+        # старая группа с тремя приложениями на устройстве не ломается: набор показан первым, как есть
+        _, body = self.wiz(2, go="refresh", name="Семья", proto=["hysteria2", "vless-reality", "amneziawg"],
+                           clients_for="hysteria2,amneziawg,vless-reality", devs="1", dev=["android"],
+                           set__android="happ+amneziawg+wgtunnel")
+        self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg", "wgtunnel"])
+        self.assertEqual(re.findall(r'name="set:android" value="([^"]+)"', body)[0], "happ+amneziawg+wgtunnel")
+
+    def test_step2_unverified_footnote_once_and_ios_note_only_for_it(self):
+        _, body = self.wiz(1, name="Семья", proto=["vless-reality"])
+        self.assertEqual(body.count("на устройстве не проверялись"), 1)
+
+    def test_step2_shows_one_row_and_set_only_for_device_without_apps(self):
+        _, body = self.wiz(1, name="Семья", proto=["vless-reality", "amneziawg"], devs="1", dev=["macos"],
+                           clients_for="")
+        self.assertEqual(self.checked(body, "macos"), ["amneziavpn"])
+        self.assertIn("без Протокол vless-reality", self.rows(body)["macOS"])
 
     def test_set_is_saved_and_handed_off_as_sections(self):
         resp, body = self.create_group(proto=["hysteria2", "vless-reality", "amneziawg"],
@@ -255,6 +283,7 @@ class WizardTest(GroupWebBase):
         self.assertEqual(resp.status, 303, text_of(body)[:300])
         g = [x for x in self.groups_json() if x["id"] == "g1"][0]
         self.assertEqual(g["clients"], {"android": ["happ", "amneziawg"]})
+        self.assertNotIn("install_mode", g, "по умолчанию — люди ставят сами, поле не пишется")
         _, page = self.c.get("/users/masha")
         msg = self.msg(page)
         self.assertIn("1) Установите «Happ»", msg)
@@ -268,12 +297,32 @@ class WizardTest(GroupWebBase):
         self.assertNotIn('data-pp="windows"', page, "для Windows клиенты не выбраны")
         _, done = self.c.get("/connect/done?group=g1&u=masha")
         self.assertIn("2) Установите «AmneziaWG»", done)
-        # страница группы: набор виден галочками, снять все — платформа не нужна
+        # страница группы: набор виден радиокнопкой, выключить устройство — платформа не нужна
         _, gp = self.c.get("/groups/g1")
         self.assertEqual(self.checked(gp, "android"), ["happ", "amneziawg"])
         self.assertIn("Android: Happ + AmneziaWG", text_of(self.c.get("/groups")[1]))
-        self.post("/groups/g1", {"name": ["Семья"], "proto": ["hysteria2", "vless-reality", "amneziawg"]})
+        self.post("/groups/g1", {"name": ["Семья"], "proto": ["hysteria2", "vless-reality", "amneziawg"],
+                                 "devs": ["1"], "set:android": ["none"]})
         self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0]["clients"], {})
+
+    def test_set_field_posts_save_the_pair_and_none_or_unchecked_device_has_no_key(self):
+        self.post("/connect/new", {"step": ["3"], "go": ["create"], "name": ["Офис"], "proto": ["hysteria2", "vless-reality"],
+                                   "devs": ["1"], "dev": ["android", "ios", "windows"], "set:android": ["happ"],
+                                   "set:ios": ["none"], "set:windows": ["v2rayn"], "users_new": ["masha"],
+                                   "allow_mode": ["common"], "mode": ["admin"], "confirm": ["1"]})
+        g = [x for x in self.groups_json() if x["id"] == "g1"][0]
+        self.assertEqual(g["clients"], {"android": ["happ"], "windows": ["v2rayn"]})
+        self.assertEqual(g["install_mode"], "admin")
+        # снятый чип: набор в форме есть, но устройство выключено
+        self.post("/groups/g1", {"name": ["Офис"], "proto": ["hysteria2", "vless-reality"], "devs": ["1"],
+                                 "dev": ["android"], "set:android": ["happ"], "set:windows": ["v2rayn"], "mode": ["admin"]})
+        self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0]["clients"], {"android": ["happ"]})
+        # прежняя форма (client:<платформа>) принимается
+        self.post("/groups/g1", {"name": ["Офис"], "proto": ["hysteria2", "vless-reality"], "client:android": ["happ"],
+                                 "client:windows": ["v2rayn"]})
+        self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0]["clients"],
+                         {"android": ["happ"], "windows": ["v2rayn"]})
+        self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0].get("install_mode", "self"), "self")
 
     def test_step2_validation(self):
         for client, msg in (("happ", "не поддерживает выбранные протоколы"), ("ghost", "нет в каталоге")):
@@ -288,19 +337,21 @@ class WizardTest(GroupWebBase):
         self.assertEqual([g["id"] for g in self.groups_json()], ["main"])
 
     def test_step3_and_back_keeps_state(self):
-        resp, body = self.wiz(2, name="Семья", proto=["vless-reality"], client__android="happ")
-        self.assertIn("3. Люди", body)
+        resp, body = self.wiz(2, name="Семья", proto=["vless-reality"], set__android="happ")
+        self.assertIn("4. Люди", body)
         self.assertIn('name="users_new"', body)
         self.assertIn('name="existing" value="owner"', body, "уже заведённые — можно добавить")
         self.assertIn('name="allow_mode" value="common" checked', body)
         self.assertIn('name="android" value="com.brave.browser"', body)
         self.assertIn("Создать группу", body)
         self.assertNotIn("Создать подключение", body)
-        self.assertRegex(body, r'type="hidden" name="client:android" value="happ"')
-        # назад на шаг 2: введённое на шаге 3 не пропадает
-        resp, body = self.wiz(3, go="back", name="Семья", proto=["vless-reality"], client__android="happ",
+        self.assertRegex(body, r'type="hidden" name="set:android" value="happ"')
+        self.assertRegex(body, r'type="hidden" name="dev" value="android"')
+        self.assertRegex(body, r'type="hidden" name="mode" value="self"')
+        # назад на шаг «Приложения»: введённое на шаге «Люди» не пропадает
+        resp, body = self.wiz(3, go="back", name="Семья", proto=["vless-reality"], set__android="happ",
                               users_new="masha; сестра", existing=["owner"], allow_mode="common")
-        self.assertIn("2. Клиенты", body)
+        self.assertIn("3. Приложения", body)
         self.assertIn('type="hidden" name="users_new" value="masha; сестра"', body)
         self.assertIn('type="hidden" name="existing" value="owner"', body)
 
@@ -369,7 +420,7 @@ class WizardTest(GroupWebBase):
             resp, body = self.create_group(**fields)
             self.assertEqual(resp.status, 422, fields)
             self.assertIn(msg, body)
-            self.assertIn("3. Люди", body)
+            self.assertIn("4. Люди", body)
         self.assertEqual(before, (paths.groups_file().read_text(encoding="utf-8"),
                                   paths.users_file().read_text(encoding="utf-8")))
 
@@ -449,7 +500,7 @@ class GroupsPagesTest(GroupWebBase):
         self.assertRegex(body, r'name="proto" value="vless-reality" checked')
         self.assertRegex(body, r'name="proto" value="amneziawg" checked')
         self.assertNotRegex(body, r'name="proto" value="hysteria2" checked')
-        self.assertRegex(body, r'name="client:android" value="happ" checked')
+        self.assertRegex(body, r'name="set:android" value="happ" checked')
         self.assertIn('name="allow_mode" value="common" checked', body)
         calls = len(self.env.calls())
         resp, _ = self.post("/groups/g1", {"name": ["Родные"], "proto": ["hysteria2", "amneziawg"], "allow_mode": ["own"],
@@ -889,7 +940,7 @@ class GroupsPagesTest(GroupWebBase):
             resp, body = self.create_group(name="Друзья", users_new="petya")
         self.assertEqual(resp.status, 422)
         self.assertIn("сломалось", body)
-        self.assertIn("3. Люди", body)
+        self.assertIn("4. Люди", body)
         self.assertEqual([g["id"] for g in self.groups_json()], ["main", "g1"], "пустая группа не осталась")
         resp, _ = self.create_group(name="Друзья", users_new="petya")
         self.assertEqual(resp.status, 303)
@@ -938,6 +989,163 @@ class GroupsPagesTest(GroupWebBase):
         self.assertNotEqual(self.c.get("/api/stamp?page=/users")[1], "")
 
 
+class StartStepTest(GroupWebBase):
+    """Шаг 0 мастера: кто ставит приложения и готовые варианты."""
+
+    def test_start_screen_has_mode_and_three_variants(self):
+        now = time.time()
+        seed_live("hysteria2", now, rtt=31.4, mbps=52.0, age=120)
+        resp, body = self.c.get("/connect/new")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("1. Кто ставит приложения?", body)
+        self.assertRegex(body, r'<li class="cur" aria-current="step"><span class="n">1</span>Кто ставит</li>')
+        self.assertIn('href="/connect/new?mode=admin"', body)
+        self.assertIn('href="/connect/new?mode=self" class="active"', body, "по умолчанию — люди ставят сами")
+        for name in ("Просто", "Надёжно", "Свой набор"):
+            self.assertIn(f"<strong>{name}</strong>", body)
+        self.assertEqual(len(re.findall(r'name="go" value="(?:simple|reliable|custom)"', body)), 3)
+        text = text_of(body)
+        self.assertIn("1 приложение на устройство: Hiddify", text)
+        self.assertIn("с сервера: 31 мс · 52 Мбит/с · 2 мин назад", text, "цифры — из live.summary, как на «Обзоре»")
+        self.assertIn("с сервера: нет замера", text)
+        self.assertIn("! нет в магазине РФ: iPhone", text)
+        self.assertIn('type="hidden" name="mode" value="self"', body)
+        self.assertNotRegex(body, r'name="proto"')
+        self.assertIn("data-expanded", body)
+        self.assertNotIn("style=", body)
+        self.assertNotIn("Далее", body, "у экрана выбора своих кнопок «Далее» нет: выбор — кнопки вариантов")
+
+    def test_mode_switch_is_a_link_and_changes_hint_and_hidden_mode(self):
+        _, admin = self.c.get("/connect/new?mode=admin")
+        self.assertIn('href="/connect/new?mode=admin" class="active"', admin)
+        self.assertIn('type="hidden" name="mode" value="admin"', admin)
+        self.assertIn("дистрибутивы", admin)
+        _, junk = self.c.get("/connect/new?mode=zzz")
+        self.assertIn('type="hidden" name="mode" value="self"', junk)
+
+    def test_simple_preset_goes_straight_to_apps_with_one_app_per_device(self):
+        resp, body = self.wiz(0, go="simple", mode="self")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("3. Приложения", body)
+        self.assertEqual(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body), ["hysteria2"])
+        self.assertIn('type="hidden" name="name" value="Группа 2"', body)
+        self.assertEqual(self.checked(body, "android"), ["hiddify"])
+        self.assertEqual(self.checked(body, "ios"), ["hiddify"])
+        self.assertEqual(self.checked(body, "windows"), ["hiddify"])
+        self.assertIn("Одно приложение на всех устройствах: Hiddify", text_of(body))
+        self.assertNotIn("ставится только из App Store", body, "ИТ-заметка про iPhone — только в режиме «ставит ИТ»")
+        # весь путь: люди, создание — режим сохраняется в группе, у «по умолчанию» поля нет
+        resp, body = self.wiz(2, mode="self", name="Группа 2", proto="hysteria2", clients_for="hysteria2", devs="1",
+                              dev=["android", "ios", "windows"], set__android="hiddify", set__ios="hiddify",
+                              set__windows="hiddify")
+        self.assertIn("4. Люди", body)
+        self.assertRegex(body, r'<input type="text" name="name" id="name" value="Группа 2"', )
+        resp, _ = self.wiz(3, go="create", mode="self", name="Офис", proto="hysteria2", devs="1",
+                           dev=["android", "windows"], set__android="hiddify", set__windows="hiddify",
+                           users_new="masha\nkolya", allow_mode="common", confirm="1")
+        self.assertEqual(resp.status, 303)
+        g = [x for x in self.groups_json() if x["id"] == "g1"][0]
+        self.assertEqual((g["name"], g["protocols"], g["clients"]), ("Офис", ["hysteria2"],
+                                                                     {"android": ["hiddify"], "windows": ["hiddify"]}))
+        self.assertNotIn("install_mode", g)
+
+    def test_admin_mode_is_saved_and_final_step_has_distributions_and_iphone_note(self):
+        resp, body = self.wiz(0, go="reliable", mode="admin")
+        self.assertIn("3. Приложения", body)
+        self.assertIn("Протокол hysteria2", body)
+        self.assertIn("iPhone: приложение ставится только из App Store.", body, "в режиме ИТ — честная строка про iPhone")
+        self.assertRegex(body, r'<details class="more inline"><summary>варианты</summary>')
+        self.assertNotIn("<details class=\"more inline\" open", body)
+        protos = re.findall(r'type="hidden" name="proto" value="([^"]+)"', body)
+        self.assertEqual(len(protos), 2)
+        resp, _ = self.wiz(3, go="create", mode="admin", name="Офис", proto=protos, devs="1", dev=["android", "windows"],
+                           set__android="happ", set__windows="v2rayn", users_new="masha", allow_mode="common",
+                           confirm="1")
+        self.assertEqual(resp.status, 303, text_of(_)[:300])
+        g = [x for x in self.groups_json() if x["id"] == "g1"][0]
+        self.assertEqual(g["install_mode"], "admin")
+        loc = header(resp, "Location")[0]
+        _, done = self.c.get(loc)
+        self.assertIn("Скачать дистрибутивы", done)
+        self.assertIn("ещё не скачан", done, "файлов ещё нет: честно так и пишем и даём ссылку на GitHub")
+        self.assertIn('action="/dist/refresh"', done)
+
+    def test_custom_goes_to_protocols_with_defaults_by_mode(self):
+        resp, body = self.wiz(0, go="custom", mode="self")
+        self.assertIn("2. Протоколы", body)
+        self.assertRegex(body, r'name="proto" value="hysteria2" checked')
+        self.assertIn('type="hidden" name="mode" value="self"', body)
+        resp, body = self.wiz(0, go="custom", mode="admin")
+        self.assertRegex(body, r'name="proto" value="hysteria2" checked')
+        self.assertIn('type="hidden" name="mode" value="admin"', body)
+
+    def test_self_mode_defaults_skip_protocols_without_one_qr_import(self):
+        self.env.add_protocol("tuic")
+        self.env.add_manifest("hysteria2-obfs", layer="udp", users_backend="hysteria-command", engine="hysteria",
+                              name="Hysteria2 + Salamander", short="HY2 + Salamander")
+        with mock.patch.object(groupviews, "_rank_facts", return_value={
+                "tuic": {"n": 9, "ok": 9, "top": 3, "score": 300.0, "ctx": 3}}):
+            _, own = self.wiz(0, go="custom", mode="self")
+            _, admin = self.wiz(0, go="custom", mode="admin")
+        self.assertNotRegex(own, r'name="proto" value="tuic" checked', "TUIC: людям без QR из магазина не предвыбирается")
+        self.assertRegex(admin, r'name="proto" value="tuic" checked')
+
+    def test_preset_unknown_or_gone_is_an_error_not_a_crash(self):
+        resp, body = self.wiz(0, go="nope", mode="self")
+        self.assertEqual(resp.status, 422)
+        self.assertIn("Такого варианта нет", body)
+        self.assertIn("1. Кто ставит приложения?", body)
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main"])
+
+    def test_back_walks_every_step(self):
+        _, body = self.wiz(1, go="back", mode="admin", name="Семья", proto=["hysteria2"])
+        self.assertIn("1. Кто ставит приложения?", body)
+        self.assertIn('href="/connect/new?mode=admin" class="active"', body, "режим не теряется при возврате")
+        _, body = self.wiz(2, go="back", mode="admin", name="Семья", proto=["hysteria2"])
+        self.assertIn("2. Протоколы", body)
+        self.assertNotIn("← Назад", self.c.get("/connect/new")[1], "на первом шаге назад некуда")
+
+    def test_no_presets_only_custom_when_nothing_fits(self):
+        for pid in PROTOS:
+            (self.env.etc / "protocols.d" / f"{pid}.json").unlink()
+        self.env.add_protocol("tuic")
+        _, body = self.c.get("/connect/new")
+        self.assertIn("<strong>Свой набор</strong>", body)
+        self.assertNotIn("<strong>Просто</strong>", body, "людям TUIC без QR из магазина не предлагаем")
+        _, admin = self.c.get("/connect/new?mode=admin")
+        self.assertIn("<strong>Просто</strong>", admin)
+        self.assertNotIn("<strong>Надёжно</strong>", admin, "пары протоколов нет")
+
+    def test_group_page_has_mode_and_saves_it(self):
+        self.create_group()
+        _, page = self.c.get("/groups/g1")
+        self.assertRegex(page, r'<input type="radio" name="mode" value="self" checked data-auto>')
+        self.assertRegex(page, r'<input type="radio" name="mode" value="admin" data-auto>')
+        self.assertNotIn("Скачать дистрибутивы", page)
+        # «Обновить» — пересборка блока без записи
+        before = paths.groups_file().read_text(encoding="utf-8")
+        resp, body = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "devs": ["1"],
+                                              "dev": ["android", "ios"], "mode": ["admin"], "go": ["refresh"],
+                                              "set:android": ["happ"]})
+        self.assertEqual(resp.status, 200)
+        self.assertIn("ставится только из App Store", body, "в режиме ИТ строка про iPhone видна и до сохранения")
+        self.assertEqual(before, paths.groups_file().read_text(encoding="utf-8"))
+        resp, _ = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "devs": ["1"],
+                                           "dev": ["android"], "mode": ["admin"], "set:android": ["happ"]})
+        self.assertEqual(resp.status, 303)
+        self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0]["install_mode"], "admin")
+        _, page = self.c.get("/groups/g1")
+        self.assertIn("Скачать дистрибутивы", page)
+        self.assertRegex(text_of(self.c.get("/groups")[1]), r"Семья .* общий ИТ ")
+
+    def test_new_device_chip_gets_a_proposed_set_on_group_page(self):
+        self.create_group()
+        _, body = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "devs": ["1"],
+                                           "dev": ["android", "macos"], "go": ["refresh"], "set:android": ["happ"]})
+        self.assertEqual(self.checked(body, "macos"), ["amneziavpn"], "добавленному устройству — подбор")
+        self.assertEqual(self.checked(body, "android"), ["happ"], "остальное не тронуто")
+
+
 class ProtocolRowsTest(GroupWebBase):
     """Шаг 1 и страница группы: все семь протоколов сервера — отдельными строками."""
 
@@ -953,7 +1161,7 @@ class ProtocolRowsTest(GroupWebBase):
         return re.findall(r'<label class="opt(?: off)?">.*?</label>|<div class="opt off">.*?</div></div>', body, re.S)
 
     def test_wizard_lists_all_seven(self):
-        _, body = self.c.get("/connect/new")
+        _, body = self.step1()
         titles = [re.sub(r"<[^>]+>", " ", r) for r in self.rows(body)]
         text = " ".join(titles)
         for name in ("Протокол vless-reality", "Протокол vless-xhttp", "Протокол hysteria2", "HY2 + Salamander",
@@ -962,7 +1170,7 @@ class ProtocolRowsTest(GroupWebBase):
         self.assertEqual(len(self.rows(body)), 7)
 
     def test_salamander_is_an_independent_row(self):
-        _, body = self.c.get("/connect/new")
+        _, body = self.step1()
         hy = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked>', body)
         sal = re.search(r'<input type="checkbox" name="proto" value="hysteria2-obfs">', body)
         self.assertTrue(hy and sal, "своя строка со своим значением; предвыбор — только Hysteria2")
@@ -1004,7 +1212,7 @@ class ProtocolRowsTest(GroupWebBase):
         self.assertIn("HY2 + Salamander", text_of(self.c.get("/groups")[1]))
 
     def test_step1_and_group_page_have_no_primary_or_reserve_wording(self):
-        _, body = self.c.get("/connect/new")
+        _, body = self.step1()
         for gone in ("основной", "запасные", "Первый отмеченный", "Подсказки без цифр", "обычно 2–3"):
             self.assertNotIn(gone, text_of(body))
         self.assertEqual(self.rows(body)[0].count("badge"), 0)
@@ -1014,7 +1222,7 @@ class ProtocolRowsTest(GroupWebBase):
 
     def test_off_without_hysteria2_no_salamander_row(self):
         (self.env.etc / "protocols.d" / "hysteria2.json").unlink()
-        _, body = self.c.get("/connect/new")
+        _, body = self.step1()
         self.assertNotIn("hysteria2-obfs", body)
 
     def test_group_page_has_the_same_rows(self):

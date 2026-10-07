@@ -90,7 +90,7 @@ class BulkCreateTest(Base):
         resp, body = self.wiz(3, go="edit", name="Офис", proto=["vless-reality"], client__android="happ",
                               users_new="Иван Петров; бух", existing=[], allow_mode="common")
         self.assertEqual(resp.status, 200)
-        self.assertIn("3. Люди", body)
+        self.assertIn("4. Люди", body)
         self.assertRegex(body, r'<textarea[^>]*name="users_new"[^>]*>Иван Петров; бух</textarea>')
 
     def test_group_page_adds_list_with_preview(self):

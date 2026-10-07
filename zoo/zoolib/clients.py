@@ -4,7 +4,8 @@
 GitHub releases/latest (10 с на запрос, без токена), результат — в кэш
 /var/lib/vpn-zoo/clients-versions.json. Опрос запускает суточный таймер zoo-clients.timer
 и заявка «Проверить сейчас» со страницы «Клиенты» (файл clients-req → zoo-clients.path);
-страницы админки читают только кэш и в сеть не ходят.
+страницы админки читают только кэш и в сеть не ходят. `--fetch-dist` — скачать дистрибутивы (APK, установщики)
+клиентов, выбранных в группах «ставит ИТ» (zoolib/dist.py); его тоже запускает zoo-clients.service.
 """
 
 from __future__ import annotations
@@ -264,11 +265,16 @@ def version_of(cache: dict[str, Any], cid: str) -> str | None:
 def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--check-upstream", action="store_true",
                    help="спросить GitHub про последние версии (10 с на запрос, без токена) и записать в кэш")
+    p.add_argument("--fetch-dist", action="store_true",
+                   help="скачать дистрибутивы клиентов групп «ставит ИТ» в /var/lib/vpn-zoo/dist (две последние версии)")
 
 
 def cmd_clients(args: argparse.Namespace, cfg: Config) -> int:
     if args.check_upstream:
         clear_request()  # до каталога: битый каталог не должен оставить заявку, которая гоняет юнит по кругу
+    if args.fetch_dist:
+        from . import dist
+        dist.clear_request()
     try:
         cat = load()
     except ClientsError as e:
@@ -282,6 +288,8 @@ def cmd_clients(args: argparse.Namespace, cfg: Config) -> int:
         for cid, msg in errors.items():
             output.warn(f"{cid}: {msg}")
         (output.ok if not errors else output.warn)(f"версии: {total - len(errors)} из {total} обновлены")
+    if args.fetch_dist and not args.check_upstream:
+        return _fetch_dist(cat, args.json)
     cache = load_cache()
     rows = []
     for c in cat.clients:
@@ -292,7 +300,27 @@ def cmd_clients(args: argparse.Namespace, cfg: Config) -> int:
     data = {"updated": cat.raw.get("updated"), "checked": cache["checked"], "clients": rows}
     output.emit(data, args.json, _render)
     total = sum(1 for c in cat.clients if c.get("repo"))
-    return 1 if args.check_upstream and total and len(errors) == total else 0
+    code = 1 if args.check_upstream and total and len(errors) == total else 0
+    if args.fetch_dist:   # сбой версий не мешает скачать файлы; итог юнита — худший из двух
+        code = max(code, _fetch_dist(cat, False))
+    return code
+
+
+def _fetch_dist(cat: Catalog, as_json: bool) -> int:
+    from . import dist, groups
+    try:
+        res = dist.fetch_all(cat, groups.Groups.load())
+    except (groups.GroupError, OSError) as e:
+        output.error(f"дистрибутивы: {e}")
+        return 1
+    for key, msg in res["errors"].items():
+        output.warn(f"{key}: {msg}")
+    if as_json:
+        output.print_json(res)
+    else:
+        output.ok(f"дистрибутивы: скачано {len(res['downloaded'])}, уже есть {len(res['kept'])}, "
+                  f"не удалось {len(res['errors'])}")
+    return 1 if res["errors"] and not res["downloaded"] and not res["kept"] else 0
 
 
 def _render(d: dict[str, Any]) -> None:

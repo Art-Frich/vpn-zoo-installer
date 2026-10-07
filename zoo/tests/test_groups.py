@@ -465,21 +465,19 @@ class ModelTest(GroupsBase):
         self.assertEqual(defaults["android"], ["happ"])
         self.assertNotIn("macos", defaults)
 
-    def test_ios_default_is_not_happ(self):
+    def test_ios_default_covers_everything_with_two_apps(self):
         cat = clients.load()
         proto3 = ["vless-reality", "hysteria2", "amneziawg"]
         opts = groups.client_options(cat, "ios", proto3)
         ids = [o["client"]["id"] for o in opts]
-        self.assertEqual(ids[0], "incy", "Happ нет в российском App Store")
-        self.assertIn("happ", ids, "выбрать его осознанно можно")
+        self.assertEqual(ids[0], "incy", "в client_options российский магазин идёт первым")
         self.assertTrue(next(o for o in opts if o["client"]["id"] == "happ")["no_ru_store"])
         ios = groups.default_clients(cat, proto3)["ios"]
-        self.assertIn("incy", ios)
-        self.assertNotIn("happ", ios, "Happ нет в российском App Store, а покрыть протоколы можно без него")
+        self.assertEqual(ios, ["happ", "amneziavpn"], "покрытие выше магазина РФ, не больше двух приложений")
         self.assertEqual(groups.coverage(cat, "ios", proto3, ios)[1], [], "набор покрывает все три протокола")
         both = groups.default_clients(cat, ["vless-reality", "hysteria2"])["ios"]
-        self.assertNotIn("happ", both, "Happ покрывает оба протокола, но он не из РФ-магазина")
-        self.assertEqual(sorted(both), ["incy", "singbox"])
+        self.assertEqual(both, ["happ"], "Happ покрывает оба протокола одним приложением")
+        self.assertEqual(groups.default_clients(cat, ["vless-reality"])["ios"], ["incy"], "один протокол — приложение из РФ-магазина")
         # на Android Happ остаётся первым: он есть в Google Play и на GitHub
         self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["android"], ["happ"])
 
@@ -513,15 +511,12 @@ class ModelTest(GroupsBase):
         head, line = groups.apps_summary(cat, got)
         self.assertEqual(head, "Одно приложение на всех устройствах: Hiddify")
         self.assertEqual(line, "")
-        # все пять устройств: Hiddify везде, где он есть в магазине РФ или на GitHub; iPhone — иностранный магазин
-        # у Hiddify, поэтому там sing-box
+        # все пять устройств: Hiddify везде; на iPhone sing-box (SFI) не из магазина, поэтому и там Hiddify (App Store США)
         every = groups.default_clients(cat, ["hysteria2"])
-        self.assertEqual({p: ids for p, ids in every.items() if p != "ios"},
-                         {p: ["hiddify"] for p in ("android", "windows", "macos", "linux")})
-        self.assertEqual(every["ios"], ["singbox"])
+        self.assertEqual(every, {p: ["hiddify"] for p in ("android", "ios", "windows", "macos", "linux")})
         head, line = groups.apps_summary(cat, every)
-        self.assertEqual(head, "")
-        self.assertEqual(line, "Приложений всего 2: Hiddify — Android, Windows, macOS, Linux; sing-box (SFA/SFI) — iPhone")
+        self.assertEqual(head, "Одно приложение на всех устройствах: Hiddify")
+        self.assertEqual(line, "")
         # Salamander и TUIC тот же Hiddify тоже покрывает
         for protos in (["hysteria2", "hysteria2-obfs"], ["hysteria2", "tuic", "ss2022"]):
             self.assertEqual(groups.suggest_set(cat, ["android", "windows"], protos),
@@ -570,17 +565,21 @@ class ModelTest(GroupsBase):
         self.assertEqual(groups.apps_summary(cat, {"android": ["happ"]}), ("", ""))
 
     def test_shared_set_is_never_worse_per_device_than_per_platform_set(self):
+        """Режим «ставит ИТ»: приложений не больше, чем у подбора по платформе, охват тот же; если подбору по платформе
+        нужно больше MAX_APPS приложений, набор — лучшие два и честное «без X»."""
         cat = clients.load()
         for r in (1, 2, 3):
             for protos in itertools.combinations(groups.PRIORITY, r):
-                got = groups.default_clients(cat, list(protos))
+                got = groups.default_clients(cat, list(protos), "admin")
                 for plat in cat.platforms:
                     old = groups.suggest_clients(cat, plat, list(protos))
                     new = got.get(plat, [])
                     self.assertEqual(bool(new), bool(old), (plat, protos))
-                    self.assertLessEqual(len(new), len(old), (plat, protos, new, old))
-                    self.assertEqual(groups.coverage(cat, plat, list(protos), new)[1],
-                                     groups.coverage(cat, plat, list(protos), old)[1], (plat, protos, new, old))
+                    self.assertLessEqual(len(new), max(len(old), 0) if len(old) <= groups.MAX_APPS else groups.MAX_APPS,
+                                         (plat, protos, new, old))
+                    if len(old) <= groups.MAX_APPS:
+                        self.assertEqual(groups.coverage(cat, plat, list(protos), new)[1],
+                                         groups.coverage(cat, plat, list(protos), old)[1], (plat, protos, new, old))
 
     def test_legacy_string_client_loads_as_one_item_set_and_saves_as_list(self):
         users.bootstrap()
@@ -1239,6 +1238,140 @@ class ProtocolUsersTest(GroupsBase):
         self.assertEqual((by["amneziawg"]["users"], by["amneziawg"]["users_off"]), (1, 1))
         self.assertEqual((by["amneziawg"]["user_names"], by["amneziawg"]["off_names"]), (["owner"], ["masha"]))
         self.assertEqual(by["amneziawg"]["lacking"], [], "отключённый — не «без протокола»")
+
+
+def mini_catalog(**changes):
+    """Каталог из файла; changes — правки по id клиента: {"hiddify": {"protocols": {...}}}."""
+    cat = clients.load()
+    for cid, patch in changes.items():
+        c = cat.client(cid)
+        for k, v in patch.items():
+            if isinstance(v, dict) and isinstance(c.get(k), dict):
+                c[k].update(v)
+            else:
+                c[k] = v
+    return cat
+
+
+class ClientSetsTest(unittest.TestCase):
+    def test_sets_cover_at_most_two_apps_and_best_first(self):
+        cat = clients.load()
+        proto3 = ["hysteria2", "vless-xhttp", "amneziawg"]
+        sets = groups.client_sets(cat, "ios", proto3)
+        self.assertEqual(sets[0]["ids"], ["happ", "amneziavpn"])
+        self.assertEqual(sets[0]["missing"], [])
+        self.assertEqual(sets[0]["foreign"], 1)
+        self.assertTrue(all(1 <= len(x["ids"]) <= groups.MAX_APPS for x in sets))
+        pairs = {frozenset(x["ids"]) for x in sets}
+        self.assertEqual(len(pairs), len(sets), "наборы не повторяются")
+        for x in sets:
+            self.assertFalse(set(x["covers"]) & set(x["missing"]))
+            self.assertEqual(sorted(x["covers"] + x["missing"]), sorted(proto3))
+        # набор, где приложение ничего не добавляет, не предлагается: Happ + Hiddify для Hysteria2 — одно и то же
+        for x in groups.client_sets(cat, "android", ["hysteria2"]):
+            self.assertEqual(len(x["ids"]), 1, x)
+
+    def test_equal_coverage_russian_store_beats_foreign_and_prefer_only_breaks_ties(self):
+        cat = clients.load()
+        by = groups.client_sets(cat, "ios", ["vless-reality", "vless-xhttp"])
+        self.assertEqual(by[0]["ids"], ["incy"], "то же покрытие, что у Happ, но приложение из App Store РФ")
+        # Android + AmneziaWG: prefer не вытесняет рекомендованное каталогом
+        self.assertEqual(groups.client_sets(cat, "android", ["amneziawg"], prefer={"amneziavpn"})[0]["ids"], ["amneziawg"])
+        self.assertEqual(groups.client_sets(cat, "android", ["hysteria2"], "admin", prefer={"hiddify"})[0]["ids"],
+                         ["happ"], "prefer не сильнее рекомендации каталога")
+        # при равенстве всего прочего (macOS, Hysteria2: каталог никого не рекомендует) prefer решает
+        a = groups.client_sets(cat, "macos", ["hysteria2"], "admin")
+        b = groups.client_sets(cat, "macos", ["hysteria2"], "admin", prefer={"hysteria"})
+        self.assertEqual((a[0]["ids"], b[0]["ids"]), (["hiddify"], ["hysteria"]))
+        self.assertEqual({tuple(x["ids"]) for x in a}, {tuple(x["ids"]) for x in b})
+
+    def test_no_set_for_empty_or_unsupported(self):
+        cat = clients.load()
+        self.assertEqual(groups.client_sets(cat, "android", []), [])
+        self.assertEqual(groups.client_sets(cat, "macos", ["vless-reality"]), [])
+        self.assertEqual(groups.client_sets(cat, "macos", ["vless-reality", "amneziawg"])[0]["missing"], ["vless-reality"])
+
+    def test_default_never_exceeds_two_apps(self):
+        cat = clients.load()
+        for mode in groups.INSTALL_MODES:
+            for r in (1, 2, 3, 4):
+                for protos in itertools.combinations(groups.PRIORITY, r):
+                    for plat, ids in groups.default_clients(cat, list(protos), mode).items():
+                        self.assertLessEqual(len(ids), groups.MAX_APPS, (mode, plat, protos, ids))
+
+    def test_store_rules_by_mode(self):
+        cat = clients.load()
+        self.assertTrue(groups.in_store(cat.client("happ"), "android"))
+        self.assertFalse(groups.in_store(cat.client("v2rayng"), "android"))
+        self.assertFalse(groups.in_store(cat.client("singbox"), "ios"), "SFI в App Store недоступен")
+        self.assertEqual(groups.default_clients(cat, ["vless-reality"], "self")["android"], ["happ"])
+        # на iPhone — приложение магазина, даже если оно не из РФ-магазина (sing-box из магазина недоступен)
+        for mode in groups.INSTALL_MODES:
+            self.assertEqual(groups.suggest_set(cat, ["ios"], ["hysteria2"], mode), {"ios": ["happ"]})
+        # админ на Android берёт любое: v2rayNG из APK покрывает xhttp + obfs одним приложением
+        self.assertEqual(groups.suggest_set(cat, ["android"], ["vless-xhttp", "hysteria2-obfs"], "admin"),
+                         {"android": ["v2rayng"]})
+        self.assertEqual(groups.suggest_set(cat, ["android"], ["vless-xhttp", "hysteria2-obfs"], "self"),
+                         {"android": ["happ", "hiddify"]}, "людям — только приложения из магазина")
+
+    def test_simple_preset_is_one_app_per_device(self):
+        cat = clients.load()
+        every = ["hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022"]
+        for mode in groups.INSTALL_MODES:
+            pr = {p["id"]: p for p in groups.presets(cat, every, mode)}
+            simple = pr["simple"]
+            self.assertEqual(simple["protocols"], ["hysteria2"], mode)
+            self.assertEqual(simple["plan"], {p: ["hiddify"] for p in groups.MAIN_DEVICES}, mode)
+            self.assertEqual((simple["apps"], simple["per_device"], simple["complete"]), (1, 1, True))
+            rel = pr["reliable"]
+            self.assertEqual(rel["protocols"], ["hysteria2", "vless-xhttp"], "TCP + UDP, самые устойчивые")
+            self.assertLessEqual(rel["per_device"], groups.MAX_APPS)
+            self.assertTrue(rel["complete"])
+            self.assertNotIn("ss2022", rel["protocols"], "SS-2022 терял данные в полевом тесте")
+
+    def test_self_presets_only_protocols_that_import_by_one_qr_from_a_store_app(self):
+        cat = clients.load()
+        easy = groups.easy_protocols(cat)
+        self.assertEqual(easy, {"hysteria2", "vless-reality", "vless-xhttp", "amneziawg", "ss2022"})
+        self.assertNotIn("tuic", easy, "TUIC: ни одного приложения из магазина с QR")
+        self.assertNotIn("hysteria2-obfs", easy, "Salamander: QR только у v2rayNG (APK)")
+        self.assertEqual(groups.presets(cat, ["tuic", "hysteria2-obfs"], "self"), [],
+                         "людям нечего предложить без QR-протоколов")
+        admin = groups.presets(cat, ["tuic"], "admin")
+        self.assertEqual([p["id"] for p in admin], ["simple"], "ИТ: TUIC через Hiddify; пары нет")
+
+    def test_hiddify_gone_changes_the_simple_preset(self):
+        cat = mini_catalog(hiddify={"protocols": {"hysteria2": {"s": "no"}}})
+        pr = groups.presets(cat, ["hysteria2", "vless-xhttp"], "admin")
+        simple = next(p for p in pr if p["id"] == "simple")
+        self.assertEqual(simple["apps"], 2, "общего приложения для Hysteria2 больше нет: Happ и v2rayN")
+        self.assertNotIn("hiddify", {a for ids in simple["plan"].values() for a in ids})
+
+    def test_install_mode_is_stored_and_defaults_to_self(self):
+        g = groups.Group.from_dict({"id": "g1", "name": "Офис", "install_mode": "admin"})
+        self.assertEqual(g.install_mode, "admin")
+        self.assertEqual(g.to_dict()["install_mode"], "admin")
+        for raw in ({"id": "g1"}, {"id": "g1", "install_mode": "other"}, {"id": "g1", "install_mode": 7}):
+            self.assertEqual(groups.Group.from_dict(raw).install_mode, "self")
+        self.assertNotIn("install_mode", groups.Group.from_dict({"id": "g1"}).to_dict(), "прежние группы файл не меняют")
+
+
+@needs_bash
+class InstallModeGroupTest(GroupsBase):
+    def test_create_update_and_cli_keep_the_mode(self):
+        users.bootstrap()
+        g = groups.create("Офис", ["hysteria2"], {"android": ["hiddify"]}, install_mode="admin")
+        self.assertEqual(self.groups_json()["groups"][-1]["install_mode"], "admin")
+        groups.update(g.id, name="Офис 2")
+        self.assertEqual(groups.Groups.load().get(g.id).install_mode, "admin", "без аргумента режим не меняется")
+        groups.update(g.id, install_mode="self")
+        self.assertEqual(groups.Groups.load().get(g.id).install_mode, "self")
+        self.assertNotIn("install_mode", self.groups_json()["groups"][-1])
+        code, out, _ = run_cli("group", "set", g.id, "--install", "admin")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(groups.Groups.load().get(g.id).install_mode, "admin")
+        code, out, _ = run_cli("group", "list", "--json")
+        self.assertIn('"install_mode": "admin"', out)
 
 
 if __name__ == "__main__":

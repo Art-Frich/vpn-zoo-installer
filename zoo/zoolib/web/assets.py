@@ -320,14 +320,31 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .opt-body { display: grid; gap: 4px; min-width: 0; }
 .opt-title { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .opt-row { align-items: center; margin-bottom: 8px; }
-fieldset.plat { border: 0; padding: 0; margin: 0 0 14px; min-width: 0; }
-fieldset.plat legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
-.plat-sum { margin: 0 0 8px; font-size: .9rem; }
+.plat-sum { margin: 0; font-size: .9rem; }
 .plat-sum.ok { color: var(--ok); }
 .plat-sum.warn { color: var(--warn); }
 .plat-sum.muted { color: var(--muted); }
-fieldset.plat details.more { margin-top: 8px; }
-fieldset.plat details.more > summary { margin-top: 0; }
+.dev-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }
+.chip-check { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border: 1px solid var(--border);
+  border-radius: 999px; background: var(--surface); cursor: pointer; font-size: .9rem; }
+.chip-check:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.dev-rows { display: grid; gap: 10px; margin-bottom: 12px; }
+.dev-row { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); min-width: 0; }
+.dev-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.dev-name { min-width: 76px; }
+.dev-set { flex: 1 1 160px; min-width: 0; }
+.dev-change { margin: 0; flex: 1 1 100%; }
+.dev-change > summary { margin-top: 4px; font-size: .85rem; }
+.dev-row p.hint { margin: 4px 0 0; }
+.dev-opt { margin-bottom: 0; align-items: flex-start; flex-wrap: wrap; }
+.dev-total { margin: 0 0 8px; font-size: .9rem; }
+.ios-note { margin-top: 6px; }
+.ios-note details.more.inline { display: inline; margin: 0; }
+.ios-note details.more.inline > summary { display: inline; margin: 0; }
+.preset { align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.preset .opt-body { flex: 1 1 260px; }
+.sha { font-size: .72rem; word-break: break-all; }
+.dl-name { word-break: break-all; }
 /* «Подключить»: платформа → приложения → ключи человека → текст */
 .conn-pick { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .conn-pick label { font-size: .82rem; color: var(--text-2); font-weight: 550; }
@@ -643,53 +660,12 @@ JS = r"""
     var want = (sel.selectedOptions[0].getAttribute('data-protos') || '').split(' ');
     sel.form.querySelectorAll('input[name=proto]').forEach(function (c) { c.checked = want.indexOf(c.value) >= 0; });
   });
-  // шаг «Клиенты»: строка над платформой пересчитывается при отметке клиентов (data-covers у галочек)
+  // шаг «Приложения»: смена чипа устройства, набора или режима пересобирает блок — нажимается «Обновить» формы
   document.addEventListener('change', function (ev) {
-    var box = ev.target, fs = box.closest && box.closest('fieldset[data-sum]');
-    if (!fs || !box.matches('input[type=checkbox]')) return;
-    var all = fs.getAttribute('data-protos').split(' '), names = fs.getAttribute('data-names').split('|');
-    var on = [], have = {}, miss = [];
-    fs.querySelectorAll('input[type=checkbox]:checked').forEach(function (c) {
-      on.push(c.getAttribute('data-name'));
-      c.getAttribute('data-covers').split(' ').forEach(function (p) { have[p] = 1; });
-    });
-    all.forEach(function (p, i) { if (!have[p]) miss.push(names[i]); });
-    var out = fs.querySelector('[data-sumtext]');
-    if (!out) return;
-    if (!on.length) {
-      out.textContent = 'Платформа не нужна: ничего не отмечено';
-      out.className = 'plat-sum muted';
-      return;
-    }
-    out.textContent = 'Набор: ' + on.join(' + ') + ' — покрывает ' + (all.length - miss.length) + ' из ' + all.length +
-      (miss.length ? ': для ' + miss.join(', ') + ' нет клиента' : '');
-    out.className = 'plat-sum ' + (miss.length ? 'warn' : 'ok');
-  });
-  // шаг «Клиенты»: итог «одно приложение на всех устройствах» (как groups.apps_summary)
-  document.addEventListener('change', function (ev) {
-    var box = ev.target, out = document.querySelector('[data-unify]');
-    if (!out || !box.closest || !box.closest('fieldset[data-sum]') || !box.matches('input[type=checkbox]')) return;
-    var where = {}, order = [], plats = 0, text = '';
-    document.querySelectorAll('fieldset[data-sum]').forEach(function (fs) {
-      var on = fs.querySelectorAll('input[type=checkbox]:checked');
-      if (!on.length) return;
-      plats++;
-      on.forEach(function (c) {
-        var n = c.getAttribute('data-name');
-        if (!where[n]) { where[n] = []; order.push(n); }
-        where[n].push(fs.querySelector('legend').textContent);
-      });
-    });
-    if (plats >= 2) {
-      if (order.length === 1) text = 'Одно приложение на всех устройствах: ' + order[0];
-      else if (order.some(function (n) { return where[n].length > 1; })) {
-        text = 'Приложений всего ' + order.length + ': ' + order.map(function (n) {
-          return n + ' — ' + where[n].join(', ');
-        }).join('; ');
-      }
-    }
-    out.textContent = text;
-    out.hidden = !text;
+    var el = ev.target;
+    if (!el.matches || !el.matches('input[data-auto]') || !el.form) return;
+    var btn = el.form.querySelector('button[data-refresh]');
+    if (btn && el.form.requestSubmit) el.form.requestSubmit(btn);
   });
   // подтверждение опасных действий; форма с data-swap уходит в фоне, <main> подменяется ответом
   document.addEventListener('submit', function (ev) {
