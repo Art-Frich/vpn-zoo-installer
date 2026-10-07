@@ -346,7 +346,7 @@ class ClientsPageTest(AppTestBase):
             resp, body = self.c.get("/clients")
         self.assertEqual(resp.status, 200, body[-400:])
         self.assertIn('href="/clients"', body)
-        for want in ("Android", "iPhone", "Windows", "Happ", "AmneziaWG", "INCY", "v2rayN", "Что умеют клиенты",
+        for want in ("Android", "iPhone", "Windows", "Happ", "AmneziaWG", "INCY", "v2rayN", "Все приложения", "Ставить",
                      "X25519MLKEM768", "ещё не проверялись"):
             self.assertIn(want, body)
         self.assertNotIn("style=", body)
@@ -374,53 +374,80 @@ class ClientsPageTest(AppTestBase):
         self.env.add_manifest("amneziawg")
         self.env.add_manifest("hysteria2", enabled=False)
         _, body = self.c.get("/clients")
-        matrix = body[body.index("Что умеют клиенты"):]
+        matrix = body[body.index("Все приложения"):]
         self.assertIn(">AmneziaWG<", matrix)
         self.assertNotIn(">TUIC v5<", matrix)
         self.assertNotIn(">Hysteria2<", matrix)
 
     def test_matrix_marks(self):
         _, body = self.c.get("/clients")
-        self.assertRegex(body, r'class="badge bad" title="не работает: [^"]*X25519MLKEM768')
-        self.assertIn('class="badge muted" title="не проверено: в исследовании не проверяли', body)
+        self.assertRegex(body, r'class="chip bad" title="не работает: [^"]*X25519MLKEM768')
+        self.assertIn('class="chip" title="не проверено: в исследовании не проверяли', body)
 
-    def card(self, body, title):
-        card = body[body.index(f"<h3>{title}</h3>"):]
-        return card[:card.index("</section>")]
+    def table_rows(self, body):
+        """Строки таблицы «Все приложения»: {имя приложения: html строки}."""
+        table = body[body.index("<h3>Все приложения</h3>"):]
+        table = table[:table.index("</section>")]
+        rows = re.findall(r"<tr><td[^>]*><span class=\"app-cell\"><strong>(.*?)</strong>(.*?)</tr>", table, re.S)
+        return {name: row for name, row in rows}
 
-    def test_platform_cards_list_every_supported_protocol_and_mark_recommended(self):
+    def test_one_row_per_app_no_per_platform_duplicates(self):
         _, body = self.c.get("/clients")
-        android = self.card(body, "Android")
         cat = catalog()
-        for cid in ("happ", "v2rayng", "incy", "singbox"):
-            row = android[android.index(f"<strong>{cat.client(cid)['name']}</strong>"):]
-            row = row[:row.index("</tr>")]
-            for pid, st in cat.client(cid)["protocols"].items():
-                if pid not in cat.real_protocols():
-                    continue
-                chip = f">{cat.protocols[pid]['title']}</span>"
-                if st["s"] in ("ok", "warn"):
-                    self.assertIn(chip, row, f"{cid}: {pid}")
-                else:
-                    self.assertNotIn(chip, row, f"{cid}: {pid}")
-        happ = android[android.index("<strong>Happ</strong>"):]
-        happ = happ[:happ.index("</tr>")]
-        incy = android[android.index("<strong>INCY</strong>"):]
-        incy = incy[:incy.index("</tr>")]
-        self.assertIn("рекомендуем</span>", happ)
-        basis = "по документации и исследованию 04.10.2026, на устройстве не проверено"
-        self.assertIn(f'class="badge ok" title="{basis}">рекомендуем</span>', happ)
-        self.assertRegex(happ, r'class="chip ok" title="рекомендуем для этого протокола — ' + basis + '">VLESS')
-        self.assertIn("рекомендуем — " + basis, self.c.get("/clients")[1], "легенда")
-        self.assertNotIn("рекомендуем", incy, "INCY на Android каталог не рекомендует")
-        self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>INCY</strong>"),
-                        "рекомендованные — первыми")
-        self.assertIn("<strong>Karing</strong>", android, "не рекомендованный, но умеющий протокол — в списке")
-        hid = android[android.index("<strong>Hiddify</strong>"):]
-        hid = hid[:hid.index("</tr>")]
-        self.assertNotIn(">VLESS + REALITY</span>", hid, "Hiddify VLESS не проходит: ✕ в список не идёт")
-        self.assertNotIn(">AmneziaWG</span>", hid)
-        self.assertIn(">Hysteria2</span>", hid)
+        rows = self.table_rows(body)
+        self.assertEqual(list(sorted(rows)), sorted(c["name"] for c in cat.clients), "строка = приложение, ни одного дубля")
+        self.assertNotIn("<h3>Android</h3>", body, "карточек по платформам больше нет")
+        self.assertNotIn("Что умеют клиенты", body)
+        # столбцы устройств: есть / есть, но не из РФ-магазина / нет
+        happ = rows["Happ"]
+        self.assertEqual(happ.count('class="chip ok">✓</span>'), 1, "Android")
+        self.assertIn('class="chip warn" title="В российском App Store его нет', happ)
+        self.assertIn(">✓!</span>", happ, "iPhone: Happ нет в App Store РФ")
+        self.assertIn(">—</span>", happ, "Windows: Happ нет")
+        # протоколы — по каталогу: зелёный заявлен, жёлтый с оговоркой, красный не работает
+        hid = rows["Hiddify"]
+        self.assertRegex(hid, r'class="chip warn" title="с оговоркой: работает[^"]*">Hysteria2 · стенд</span>')
+        self.assertRegex(hid, r'class="chip ok" title="заявлено поддерживаемым: проверено на стенде[^"]*">TUIC v5 · стенд</span>')
+        self.assertRegex(hid, r'class="chip bad" title="не работает: [^"]*">VLESS \+ REALITY · стенд</span>')
+        self.assertRegex(hid, r'class="chip bad"[^>]*>AmneziaWG')
+        self.assertIn(">Hysteria2</span>", rows["Happ"], "без отметки «стенд»: Happ только по документации")
+        self.assertNotIn("стенд", rows["Happ"])
+        # ссылки и заметка — внутри строки, под спойлером
+        self.assertIn("<summary>ссылки</summary>", happ)
+        self.assertIn("github.com/Happ-proxy/happ-android", happ)
+        self.assertIn("App Store", happ)
+        self.assertIn("Названия пунктов", happ, "заметка клиента — в строке")
+        self.assertLess(list(rows).index("Happ"), list(rows).index("Hiddify"), "рекомендованные — первыми")
+
+    def test_install_block_is_the_same_set_the_wizard_proposes(self):
+        _, body = self.c.get("/clients")
+        cat = catalog()
+        plan = groups.suggest_set(cat, ["android", "ios", "windows"], cat.real_protocols(), "self")
+        card = body[body.index("<h3>Ставить</h3>"):]
+        card = card[:card.index("</section>")]
+        for plat, ids in plan.items():
+            row = card[card.index(f'class="dev-name">{cat.platforms[plat]}</strong>'):]
+            row = row[:row.index('class="dev-row"')] if 'class="dev-row"' in row else row
+            self.assertIn(" + ".join(cat.client(i)["name"] for i in ids), re.sub(r"<[^>]+>", "", row), plat)
+        self.assertNotRegex(card, r'class="dev-name">macOS')
+        self.assertIn("нет в магазине РФ", card, "Happ/Hiddify на iPhone — не из РФ-магазина")
+
+    def test_dev_filter_is_a_link_not_js_and_filters_the_table(self):
+        _, body = self.c.get("/clients?dev=windows")
+        self.assertIn('href="/clients?dev=windows" class="active"', body)
+        rows = self.table_rows(body)
+        self.assertIn("v2rayN", rows)
+        self.assertNotIn("INCY", rows, "INCY на Windows нет")
+        self.assertNotIn("Happ", rows)
+        card = body[body.index("<h3>Ставить</h3>"):]
+        card = card[:card.index("</section>")]
+        self.assertEqual(card.count('class="dev-row"'), 1, "«Ставить» — про одно устройство")
+        self.assertIn("Windows", card)
+        _, body = self.c.get("/clients?dev=macos")
+        self.assertIn("<strong>AmneziaVPN</strong>", body)
+        _, body = self.c.get("/clients?dev=nope")
+        self.assertEqual(len(self.table_rows(body)), len(catalog().clients), "неизвестное устройство — без фильтра")
+        self.assertNotIn("<script>", body)
 
     def test_check_now_button_and_request(self):
         clients.check_upstream(fetch=fake_fetch, now=lambda: time.time() - 7500)
