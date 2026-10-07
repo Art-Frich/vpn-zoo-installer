@@ -208,6 +208,26 @@ def managed_protocols(only: list[str] | None = None) -> tuple[list[str], dict[st
     return ids, skipped
 
 
+def variant_modules(libs: set[str] | None = None) -> dict[str, str]:
+    """Включённые варианты модулей, которые группа выбирает отдельно: {id варианта: id модуля}
+    (hysteria2-obfs → hysteria2). Учётки у варианта общие с модулем, своих нет."""
+    libs = set(protolib.list_libs()) if libs is None else libs
+    managed, _ = managed_protocols()
+    out: dict[str, str] = {}
+    for m in manifests.load_all()[0]:
+        mod = None if m.id in libs or not m.enabled or not m.has_users else shared_module(m, libs)
+        if mod and mod in managed:
+            out[m.id] = mod
+    return out
+
+
+def selectable_protocols() -> list[str]:
+    """Протоколы, которые выбирает группа: модули с пользователями и их варианты (вариант — следом за модулем)."""
+    managed, _ = managed_protocols()
+    variants = variant_modules()
+    return [x for p in managed for x in (p, *[v for v, mod in variants.items() if mod == p])]
+
+
 def _present(pid: str, name: str) -> bool | None:
     """Есть ли пользователь в протоколе; None — модуль не смог ответить."""
     try:
@@ -472,6 +492,7 @@ def sync_users(names: list[str] | None = None, include_custom: bool = False) -> 
         targets, _ = managed_protocols()
         known = {m.id for m in manifests.load_all()[0]}
         gs = groups.Groups.load()
+        variants = variant_modules()
         reports = []
         for user in reg.users:
             if names and user.name not in names:
@@ -482,7 +503,7 @@ def sync_users(names: list[str] | None = None, include_custom: bool = False) -> 
                 rep.steps.append(Step(pid, "forget", True, "манифеста больше нет"))
             owner = user.name == OWNER   # владельцу — все включённые протоколы, группа и custom его не ограничивают
             grp = gs.get(user.group) if user.group and not user.custom and not owner else None
-            lacking = [p for p in (grp.resolve(targets) if grp else targets) if p not in user.protocols]
+            lacking = [p for p in (grp.resolve(targets, variants) if grp else targets) if p not in user.protocols]
             if user.custom and not include_custom and not owner:
                 rep.skipped.update({p: "свой набор протоколов (--include-custom, чтобы добавить)" for p in lacking})
                 lacking = []

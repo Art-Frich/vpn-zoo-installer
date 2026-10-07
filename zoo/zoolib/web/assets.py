@@ -81,7 +81,7 @@ body { overflow-x: hidden; }
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
   gap: 12px; margin-bottom: 4px; }
 .page-head .sub { color: var(--muted); font-size: .9rem; }
-.page-head.top { justify-content: flex-end; align-items: center; margin-bottom: 12px; }
+.page-head.bare { justify-content: flex-end; align-items: center; margin-bottom: 12px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* карточки и сетки */
@@ -712,14 +712,6 @@ JS = r"""
       box.querySelectorAll('.variant').forEach(function (v) { v.hidden = v.id !== tab.getAttribute('data-tab'); });
       showQr(box);
     }
-  });
-  // Salamander и Hysteria2 — две строки с одной учёткой: отметка одной отмечает обе (одно значение поля proto)
-  document.addEventListener('change', function (ev) {
-    var box = ev.target;
-    if (!box.matches || !box.matches('input[type=checkbox][name=proto]') || !box.form) return;
-    box.form.querySelectorAll('input[type=checkbox][name=proto]').forEach(function (o) {
-      if (o !== box && o.value === box.value) o.checked = box.checked;
-    });
   });
   // список с поиском и галочками: строка поиска прячет несовпавшие, счётчик показывает отмеченных
   function pickCount(p) {

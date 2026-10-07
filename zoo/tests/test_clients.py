@@ -458,12 +458,58 @@ class PackTest(unittest.TestCase):
         # клиент группы не умеет первый протокол группы — берём те, что умеет
         s = self.gpack("android", links, {"android": ["wgtunnel"]}, ["vless-reality", "amneziawg"]).sections
         self.assertEqual((s[0].client["id"], s[0].proto, s[0].method), ("wgtunnel", "amneziawg", "qr"))
-        # группа «все включённые»: порядок раздачи каталога, но клиент — группы
+        # группа «все включённые»: порядок фиксированный (PRIORITY), клиент — группы
         s = self.gpack("android", links, {"android": ["v2rayng"]}, None).sections
-        self.assertEqual([i.proto for i in s[0].items], ["vless-reality", "hysteria2"])
+        self.assertEqual([i.proto for i in s[0].items], ["hysteria2", "vless-reality"])
         # без клиентов группы — рекомендованные каталога: AWG и остальное
         self.assertEqual([x.client["id"] for x in self.gpack("android", links, {}, ["hysteria2"]).sections],
                          ["amneziawg", "happ"])
+
+    def test_group_prefs_order_is_the_fixed_priority(self):
+        from zoolib import groups
+        g = groups.Group("g1", "Г", ["ss2022", "vless-reality", "hysteria2-obfs", "amneziawg", "hysteria2"])
+        self.assertEqual(g.protocols, ["hysteria2", "amneziawg", "hysteria2-obfs", "vless-reality", "ss2022"],
+                         "порядок группы нормализуется при чтении")
+        self.assertEqual(clientviews.group_prefs(g)[1], g.protocols)
+        self.assertIsNone(clientviews.group_prefs(groups.Group("main", "Основная", ["*"]))[1])
+
+    def test_salamander_and_plain_hysteria2_are_picked_separately(self):
+        plain = link("hysteria2", "hysteria2://x@1.2.3.4:443/?sni=x#x")
+        obfs = link("hysteria2", "hysteria2://x@1.2.3.4:8443/?sni=x&obfs=salamander&obfs-password=p#x")
+        hop = link("hysteria2", "hysteria2://x@1.2.3.4:443,20000-30000/?sni=x#x")
+        links = [plain, hop, obfs]
+        self.assertEqual((plain.variant, hop.variant, obfs.variant), ("hysteria2", "hysteria2", "hysteria2-obfs"))
+        for order, want in ((["hysteria2"], {"hysteria2": 0}),
+                            (["hysteria2-obfs"], {"hysteria2-obfs": 2}),
+                            (["hysteria2", "hysteria2-obfs"], {"hysteria2": 0, "hysteria2-obfs": 2})):
+            p = self.gpack("windows", links, {"windows": ["v2rayn"]}, order)
+            items = [i for s in p.sections for i in s.items]
+            self.assertEqual([i.proto for i in items], list(want), order)
+            c = catalog()
+            cl = c.client("v2rayn")
+            for i in items:
+                self.assertEqual(clientviews.pick_link(i.proto, cl, "windows", links, i.method), want[i.proto], (order, i.proto))
+        # группа «все»: оба варианта, если ссылки есть
+        p = self.gpack("windows", links, {"windows": ["v2rayn"]}, None)
+        self.assertEqual([i.proto for s in p.sections for i in s.items], ["hysteria2", "hysteria2-obfs"])
+        # только обычная ссылка у человека: Salamander раздавать нечего
+        p = self.gpack("windows", [plain], {"windows": ["v2rayn"]}, ["hysteria2", "hysteria2-obfs"])
+        self.assertEqual([i.proto for s in p.sections for i in s.items], ["hysteria2"])
+        self.assertEqual(p.sections[0].tiles, "Hysteria2")
+        p = self.gpack("windows", links, {"windows": ["v2rayn"]}, ["hysteria2-obfs"])
+        self.assertEqual(p.sections[0].tiles, "Hysteria2 + Salamander")
+
+    def test_synth_links_for_group_pack_and_coverage_use_variant_ids(self):
+        from zoolib import groups
+        cat = catalog()
+        synth = clientviews.synth_links(["hysteria2-obfs"])
+        self.assertEqual([ln.variant for ln in synth if ln.proto_id != "allowlist"], ["hysteria2-obfs"])
+        p = self.gpack("windows", synth, {"windows": ["v2rayn"]}, ["hysteria2-obfs"])
+        self.assertEqual([i.proto for i in p.sections[0].items], ["hysteria2-obfs"])
+        done, miss = groups.coverage(cat, "android", ["hysteria2-obfs"], ["v2rayng"])
+        self.assertEqual((done, miss), (["hysteria2-obfs"], []))
+        done, miss = groups.coverage(cat, "android", ["hysteria2-obfs", "hysteria2"], ["happ"])
+        self.assertEqual((done, miss), (["hysteria2"], ["hysteria2-obfs"]), "Happ не заявлен для Salamander")
 
     def test_group_set_gives_one_section_per_client_with_own_protocols(self):
         hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")

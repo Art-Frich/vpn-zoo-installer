@@ -55,7 +55,8 @@ def protocol_users(reg: Registry | None, m: manifests.Manifest, libs: set[str],
             g = (groups_by_id or {}).get(u.group)
             if u.custom and u.name != OWNER:
                 why = "свой набор протоколов"
-            elif g is not None and not g.all_protocols and not (ids & set(g.protocols)):
+            elif g is not None and not g.all_protocols and not (
+                    ids & set(g.protocols) or any(x.startswith(users_module(m, libs) + "-") for x in g.protocols)):
                 why = f"нет в группе «{g.name}»"
             else:
                 why = "не заведён (zoo user sync)"

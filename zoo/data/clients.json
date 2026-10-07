@@ -352,11 +352,11 @@
     }
   },
   "handoff": {
-    "android": ["amneziawg", "vless-reality", "hysteria2", "vless-xhttp"],
+    "android": ["amneziawg", "vless-reality", "hysteria2", "hysteria2-obfs", "vless-xhttp"],
     "ios": ["vless-reality", "vless-xhttp", "amneziawg"],
-    "windows": ["vless-reality", "vless-xhttp", "hysteria2", "amneziawg"],
+    "windows": ["vless-reality", "vless-xhttp", "hysteria2", "hysteria2-obfs", "amneziawg"],
     "macos": ["amneziawg"],
-    "linux": ["vless-reality", "hysteria2", "amneziawg"]
+    "linux": ["vless-reality", "hysteria2", "hysteria2-obfs", "amneziawg"]
   },
   "check": {
     "amneziawg": "Включите VPN и откройте 2ip.ru в {browser}: там должен быть адрес сервера, а не ваш. Банк и Госуслуги работают как обычно, с вашим адресом.",

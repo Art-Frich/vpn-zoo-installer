@@ -41,6 +41,8 @@ SCHEMA = 1
 MAIN_ID = "main"
 MAIN_NAME = "Основная"
 ALL = "*"
+# порядок протоколов при раздаче: фиксированный, группа хранит только набор
+PRIORITY = ("hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 NAME_MAX = 40
 NEW_USERS_MAX = 20
@@ -56,6 +58,11 @@ class GroupError(users.UserError):
 
 class MembersChanged(GroupError):
     """Состав группы не тот, что человек видел на странице подтверждения."""
+
+
+def by_priority(ids: Any) -> list[str]:
+    """Протоколы без повторов в порядке PRIORITY; неизвестные — в конце по алфавиту."""
+    return sorted(dict.fromkeys(ids), key=lambda p: (PRIORITY.index(p) if p in PRIORITY else len(PRIORITY), p))
 
 
 def client_ids(v: Any) -> list[str]:
@@ -77,6 +84,14 @@ def clean_message(text: Any) -> str:
     return "\n".join(line.rstrip() for line in s.split("\n")).strip()
 
 
+def _norm_protocols(ids: list[str]) -> list[str]:
+    return [ALL] if ALL in ids or not ids else by_priority(ids)
+
+
+def offered(protocols: list[str], selectable: list[str]) -> list[str]:
+    return list(selectable) if ALL in protocols else [p for p in protocols if p in selectable]
+
+
 @dataclass
 class Group:
     id: str
@@ -86,6 +101,9 @@ class Group:
     allowlist: dict[str, list[str]] | None = None
     messages: dict[str, str] = field(default_factory=dict)
     msg_sigs: dict[str, str] = field(default_factory=dict)   # подпись набора клиентов на момент сохранения текста
+
+    def __post_init__(self) -> None:
+        self.protocols = _norm_protocols(self.protocols)   # набор, не очередь: порядок — PRIORITY
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Group":
@@ -104,7 +122,7 @@ class Group:
                     sigs[str(k)[:20]] = sig[:40]
         return cls(
             id=str(d["id"]), name=str(d.get("name") or d["id"]),
-            protocols=[str(x) for x in d.get("protocols", [ALL])] or [ALL],
+            protocols=[str(x) for x in d.get("protocols", [ALL])],
             clients={str(k): ids for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())
                      if (ids := client_ids(v))},
             allowlist=own if own and all(own.values()) else None,
@@ -121,9 +139,18 @@ class Group:
     def all_protocols(self) -> bool:
         return ALL in self.protocols
 
-    def resolve(self, managed: list[str]) -> list[str]:
-        """Протоколы группы среди включённых (порядок группы: первый — основной)."""
-        return list(managed) if self.all_protocols else [p for p in self.protocols if p in managed]
+    def resolve(self, managed: list[str], variants: dict[str, str] | None = None) -> list[str]:
+        """Модули, где участник получает учётки: протоколы группы среди включённых; вариант (hysteria2-obfs)
+        даёт учётку своего модуля. variants — users.variant_modules(); не задан — читается здесь."""
+        if self.all_protocols:
+            return list(managed)
+        variants = users.variant_modules() if variants is None else variants
+        return [m for m in by_priority(variants.get(p, p) for p in self.protocols) if m in managed]
+
+    def offered(self, selectable: list[str]) -> list[str]:
+        """Протоколы группы, которые видит человек (ссылки, QR, плитки): выбранные среди выбираемых,
+        в порядке PRIORITY; у «всех включённых» — все выбираемые."""
+        return offered(self.protocols, selectable)
 
 
 class Groups:
@@ -132,6 +159,7 @@ class Groups:
         self.groups = groups or []
         self.exists = exists
         self.custom_recomputed = 0   # метка разового пересчёта custom у «Основной» (_migrate)
+        self.obfs_split = 0          # метка: Salamander выбирается отдельно, прежним группам с Hysteria2 он добавлен (_migrate)
 
     @classmethod
     def load(cls) -> "Groups":
@@ -150,12 +178,15 @@ class Groups:
                 out.append(Group.from_dict(d))
         gs = cls(path, out, exists=True)
         gs.custom_recomputed = 1 if data.get("custom_recomputed") == 1 else 0
+        gs.obfs_split = 1 if data.get("obfs_split") == 1 else 0
         return gs
 
     def save(self) -> None:
         data: dict[str, Any] = {"schema": SCHEMA, "groups": [g.to_dict() for g in self.groups]}
         if self.custom_recomputed:
             data["custom_recomputed"] = self.custom_recomputed
+        if self.obfs_split:
+            data["obfs_split"] = self.obfs_split
         atomic_write_json(self.path, data)
         self.exists = True
 
@@ -203,8 +234,9 @@ def clean_name(name: str, gs: Groups, ignore: str | None = None) -> str:
 
 
 def clean_protocols(raw: list[str]) -> list[str]:
-    """Только включённые протоколы (ids модулей) или «*»; порядок сохраняется, без повторов."""
-    managed, _ = users.managed_protocols()
+    """Только включённые протоколы (модули и их варианты, например hysteria2-obfs) или «*»;
+    без повторов, в порядке PRIORITY."""
+    managed = users.selectable_protocols()
     out: list[str] = []
     for p in raw:
         p = (p or "").strip()
@@ -216,7 +248,7 @@ def clean_protocols(raw: list[str]) -> list[str]:
             out.append(p)
     if not out:
         raise GroupError("выберите хотя бы один протокол")
-    return out
+    return by_priority(out)
 
 
 def clean_clients(raw: dict[str, Any], protocols: list[str] | None = None) -> dict[str, list[str]]:
@@ -229,8 +261,7 @@ def clean_clients(raw: dict[str, Any], protocols: list[str] | None = None) -> di
         cat = clientcat.load()
     except clientcat.ClientsError as e:
         raise GroupError(str(e)) from None
-    managed, _ = users.managed_protocols()
-    protos = managed if not protocols or ALL in protocols else protocols
+    protos = users.selectable_protocols() if not protocols or ALL in protocols else protocols
     out: dict[str, list[str]] = {}
     for plat, ids in wanted.items():
         if plat not in cat.platforms:
@@ -326,14 +357,14 @@ def client_options(cat: clientcat.Catalog, platform: str, protocols: list[str]) 
 
 
 def _real(cat: clientcat.Catalog, protocols: list[str]) -> list[str]:
-    return [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
+    return by_priority(p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo"))
 
 
 def suggest_clients(cat: clientcat.Catalog, platform: str, protocols: list[str]) -> list[str]:
     """Минимальный набор клиентов платформы, вместе покрывающий протоколы (жадно). На каждом шаге: клиент не из
     российского магазина — только если иначе протокол не покрыть; затем покрывающий больше ещё не покрытых
     протоколов; затем рекомендованный каталогом для них; затем порядок client_options. Результат — по порядку
-    протоколов группы: первым идёт клиент основного протокола."""
+    протоколов по PRIORITY: первым идёт клиент самого приоритетного протокола."""
     real = _real(cat, protocols)
     opts = client_options(cat, platform, protocols)
     todo = list(real)
@@ -431,15 +462,32 @@ def _errors(reports: list[users.OpReport]) -> list[str]:
 
 # ---------- миграция ----------
 
+OBFS = "hysteria2-obfs"
+
+
+def _obfs_pending(gs: Groups) -> bool:
+    """Salamander стал отдельным выбором: один раз группам с Hysteria2 добавляется он (как было, пока галочка была
+    общей), если включён на сервере. Метка obfs_split ставится при добавлении; пока Salamander выключен — не ставится."""
+    return gs.exists and not gs.obfs_split and OBFS in users.variant_modules()
+
+
 def _migrate(gs: Groups, ureg: users.Registry) -> bool:
     """«Основная» и все пользователи без группы — в неё, с текущими настройками: протоколы «*»
     (как раньше: всё включённое), у кого набор меньше — custom (группа его не трогает).
+    Один раз (метка obfs_split) группам с Hysteria2 добавляется Salamander (_obfs_pending).
     Один раз (метка custom_recomputed в groups.json) custom у участников «Основной» пересчитывается по
     тому же правилу: серверы, перенесённые прежним кодом, получили неверные флаги. Идемпотентно.
     True — что-то записано."""
     changed = False
     if not gs.exists:
         gs.groups.append(Group(MAIN_ID, MAIN_NAME, [ALL]))
+        gs.save()
+        changed = True
+    if _obfs_pending(gs):
+        for g in gs.groups:
+            if not g.all_protocols and "hysteria2" in g.protocols:
+                g.protocols = by_priority([*g.protocols, OBFS])
+        gs.obfs_split = 1
         gs.save()
         changed = True
     main = gs.get(MAIN_ID)
@@ -476,6 +524,8 @@ def _pending(gs: Groups, ureg: users.Registry) -> bool:
     """Нужна ли запись миграции (проверка без блокировки: страницы читают её на каждом показе)."""
     if not gs.exists:
         return ureg.exists
+    if _obfs_pending(gs):
+        return True
     if gs.get(MAIN_ID) is None:
         return False
     return (ureg.exists and not gs.custom_recomputed) or any(not u.group or gs.get(u.group) is None
@@ -525,6 +575,7 @@ def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str]
             before_protos: dict[str, list[str]], before_allow: dict[str, Any], protocols: bool) -> None:
     """Применить настройки групп к участникам names один раз (под блокировкой, реестры сохранены)."""
     managed, _ = users.managed_protocols()
+    variants = users.variant_modules()
     if protocols:
         wanted: dict[str, list[str]] = {}
         for n in names:
@@ -532,7 +583,7 @@ def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str]
             if u.custom:
                 rep.skipped.append(n)
                 continue
-            want = gs.require(u.group).resolve(managed)
+            want = gs.require(u.group).resolve(managed, variants)
             if want:
                 wanted[n] = want
             else:
@@ -573,6 +624,8 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         new_clients = clean_clients(clients, new_protocols) if clients is not None else g.clients
         new_allow = clean_allow(allow) if allow is not KEEP else g.allowlist
         protos_changed = new_protocols != g.protocols
+        sel = users.selectable_protocols()
+        offer_changed = offered(new_protocols, sel) != offered(g.protocols, sel)
         allow_changed = new_allow != g.allowlist
         g.name, g.protocols, g.clients, g.allowlist = new_name, new_protocols, new_clients, new_allow
         gs.save()
@@ -580,6 +633,8 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         refresh_mirror(gs, ureg)
         if names and (protos_changed or allow_changed):
             _settle(rep, gs, ureg, names, before[0], before[1], protos_changed)
+            if offer_changed:   # учётки те же, но набор ссылок (Salamander) другой
+                rep.needs_qr += [n for n in names if n not in rep.needs_qr and n not in rep.skipped]
         return rep
 
 

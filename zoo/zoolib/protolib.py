@@ -119,6 +119,11 @@ class Link:
         страницы и запросом картинки, а метка — нет."""
         return hashlib.sha1("|".join((self.proto_id, self.kind, self.uri)).encode("utf-8")).hexdigest()[:8]
 
+    @property
+    def variant(self) -> str:
+        """Протокол группы, к которому относится ссылка: Salamander отдаёт модуль hysteria2, но выбирается отдельно."""
+        return "hysteria2-obfs" if self.proto_id == "hysteria2" and "obfs=salamander" in self.uri else self.proto_id
+
     def to_dict(self) -> dict[str, str]:
         return {"proto": self.proto_id, "kind": self.kind, "label": self.label, "uri": self.uri}
 
