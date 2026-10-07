@@ -287,7 +287,7 @@ def _item(csrf: str, action: str, label: str, fields: dict[str, str], confirm: s
              method="post", action=action, class_="inline", data_confirm=confirm, data_swap=True)
 
 
-def _file_menu(csrf: str, name: str, newest: bool, back: str) -> Markup:
+def _file_menu(csrf: str, name: str, newest: bool, back: str, busy: bool = False) -> Markup:
     base = {"src": back}
     return _menu(
         f"Действия с {name}",
@@ -295,7 +295,8 @@ def _file_menu(csrf: str, name: str, newest: bool, back: str) -> Markup:
               f"Удалить {name} насовсем?",
               off="самый свежий лог не удаляется: возможно, идёт установка" if newest else None),
         _item(csrf, "/logs/clean", f"Оставить последние {logctl.TAIL_LINES} строк", {**base, "mode": "tail", "names": name},
-              f"Оставить в {name} последние {logctl.TAIL_LINES} строк? Остальное удалится насовсем."))
+              f"Оставить в {name} последние {logctl.TAIL_LINES} строк? Остальное удалится насовсем.",
+              off="идёт установка и пишет в этот лог: обрежьте после её окончания" if newest and busy else None))
 
 
 def _install_menu(csrf: str, back: str) -> Markup:
@@ -327,6 +328,7 @@ def logs_page(app: "App", req: "Request") -> "Response":
     csrf = req.session.csrf if req.session else ""
     install = logctl.install_logs()
     newest = install[-1].name if install else ""
+    busy = bool(install) and logctl.install_running()
     nav: list[Any] = []
     group = None
     for g, k, label in sources:
@@ -336,7 +338,7 @@ def logs_page(app: "App", req: "Request") -> "Response":
             group = g
         link = t("a", label, href=_url(st, src=k, before="", after="", at=""),
                  class_="active" if k == st["src"] else None, title=label, data_swap=True)
-        nav.append(t("li", link, _file_menu(csrf, label, label == newest, st["src"]) if k.startswith("file:") and logctl.INSTALL_RE.match(label) else None,
+        nav.append(t("li", link, _file_menu(csrf, label, label == newest, st["src"], busy) if k.startswith("file:") and logctl.INSTALL_RE.match(label) else None,
                      class_="src"))
     problems: list[tuple[str, Any]] = _vacuum_notice()
     results = None

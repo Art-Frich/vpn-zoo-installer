@@ -211,14 +211,16 @@ def suggest(facts: list[Fact]) -> list[str]:
 
 
 def _proto_row(f: Fact, pid: str, checked: bool, primary: bool, host: Fact | None = None) -> Markup:
-    """Строка протокола. Вариант с общей учёткой (host) — своя строка, но галочка та же, что у host:
-    значение поля — id host, и отметка одной строки отмечает обе (app.js)."""
+    """Строка протокола. Вариант с общей учёткой (host) — своя строка, но не свой выбор: галочка серая и в форму
+    не уходит (отключённое поле не отправляется), состав задаёт строка host; app.js повторяет её отметку
+    в строке варианта. Без JS строка варианта остаётся как нарисована, поэтому подпись говорит, как она работает."""
     chips = [t("span", f.layer, class_="chip") if f.layer else None, f.live_chip(), f.rank_chip()]
     tip = TIPS.get(f.id)
     if host is not None:
-        tip = (tip + " " if tip else "") + f"Общая учётка с {host.title}: отмечается и снимается вместе с ним."
+        tip = (tip + " " if tip else "") + (f"Общая учётка с {host.title}: снимается и отмечается вместе с ним, "
+                                            "отдельно не переключается.")
     return t("label", t("input", type="checkbox", name="proto", value=pid, checked=checked,
-                        data_variant=f.id if host is not None else None),
+                        data_variant=f.id if host is not None else None, disabled=host is not None or None),
              t("span", t("span", t("strong", f.title), " ", badge("основной", "info") if primary else None,
                          class_="opt-title"),
                t("div", chips, class_="chips"),
@@ -758,17 +760,22 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
               t("button", "Добавить", type="submit", class_="btn primary"),
               method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True), class_="card more")
     others = [x for x in gs.groups if x.id != g.id]
-    names = [u.name for u in groups.members_of(gs, ureg, g.id)]
+    mem_users = groups.members_of(gs, ureg, g.id)
+    names = [u.name for u in mem_users]
+    own = [u.name for u in mem_users if u.custom]
     who = ", ".join(names[:8]) + (f" и ещё {len(names) - 8}" if len(names) > 8 else "")
     merge = t("details", t("summary", "Объединить с…"),
               t("form", csrf_input(csrf),
                 t("p", "Участники этой группы перейдут в выбранную и получат её протоколы и приложения, эта группа "
-                       "будет удалена, настройки выбранной не изменятся.", class_="hint"),
+                       "будет удалена, настройки выбранной не изменятся."
+                       + (f" Свой набор протоколов сохранится: {', '.join(own)}." if own else ""), class_="hint"),
                 t("select", [t("option", x.name, value=x.id) for x in others], name="to", aria_label="Объединить с группой"),
                 t("button", "Объединить", type="submit", class_="btn small"),
                 method="post", action=f"/groups/{g.id}/merge", class_="actions", data_swap=True,
                 data_confirm=f"Объединить: участники «{g.name}» ({who or 'никого нет'}) перейдут в выбранную "
-                             f"группу и получат её протоколы и приложения, «{g.name}» будет удалена. Отменить нельзя."),
+                             f"группу и получат её протоколы и приложения, «{g.name}» будет удалена."
+                             + (f" Свой набор протоколов сохранится: {', '.join(own)}." if own else "")
+                             + " Отменить нельзя."),
               class_="more") if others and g.id != groups.MAIN_ID else None
     delete = _delete_link(g, "btn danger")
     parts: list[Any] = [page_head(g.name, "группа", t("a", "← Группы", href="/groups", class_="btn small", data_swap=True))]
@@ -879,25 +886,33 @@ def group_delete_confirm(app: "App", req: "Request", gid: str) -> "Response":
     if g.id == groups.MAIN_ID:
         body = card(f"«{g.name}» не удаляется", t("p", groups.MAIN_KEEP + "."), back)
         return app.render(req, "Удаление группы", [page_head("Удаление группы"), body], active="/groups")
-    mem = [u.name for u in groups.members_of(gs, users.list_users(), g.id)]
+    members = groups.members_of(gs, users.list_users(), g.id)
+    mem = [u.name for u in members]
+    own = [u.name for u in members if u.custom]
     if mem:
         gone = [n for n in mem if n != users.OWNER]
+        kept_own = [n for n in own if n not in gone]
         choice: Any = t("div",
                         t("label", t("input", type="radio", name="members", value="move", checked=True),
                           t("span", f"Перевести в «{groups.MAIN_NAME}»",
-                            t("span", f" ({len(mem)}): " + ", ".join(mem), class_="muted small"), class_="opt-title"),
+                            t("span", f" ({len(mem)}): " + ", ".join(mem), class_="muted small"),
+                            t("span", "Свой набор протоколов сохранится: " + ", ".join(own), class_="hint")
+                            if own else None, class_="opt-title"),
                           class_="opt-row"),
                         t("label", t("input", type="radio", name="members", value="delete"),
                           t("span", "Удалить вместе с группой",
                             t("span", " (" + (", ".join(gone) or "никого") + ")", class_="muted small"),
-                            t("span", f"{users.OWNER} не удаляется — он перейдёт в «{groups.MAIN_NAME}»", class_="hint")
+                            t("span", f"{users.OWNER} не удаляется — он перейдёт в «{groups.MAIN_NAME}»"
+                              + (" (свой набор протоколов сохранится)" if kept_own else ""), class_="hint")
                             if users.OWNER in mem else None,
                             t("span", "Креды удалённых будут стёрты из протоколов, ссылки и QR перестанут работать.",
                               class_="hint") if gone else None, class_="opt-title"),
                           class_="opt-row"))
     else:
         choice = t("input", type="hidden", name="members", value="move")
-    form = t("form", csrf_input(csrf), choice,
+    shown = [t("input", type="hidden", name="shown", value="1")] + [
+        t("input", type="hidden", name="expected", value=n) for n in mem]
+    form = t("form", csrf_input(csrf), shown, choice,
              t("div", t("button", "Удалить группу", type="submit", class_="btn danger-solid"), back, class_="actions"),
              method="post", action=f"/groups/{g.id}/delete", class_="stack", data_swap=True)
     body = card(f"Удалить группу «{g.name}»?",
@@ -912,7 +927,11 @@ def group_delete(app: "App", req: "Request", gid: str) -> "Response":
     try:
         if mode not in ("move", "delete"):
             raise groups.GroupError("выберите, что сделать с участниками")
-        rep = groups.delete_group(gid, mode)
+        expected = list(dict.fromkeys(req.multi.get("expected", []))) if req.form.get("shown") == "1" else None
+        rep = groups.delete_group(gid, mode, expected)
+    except groups.MembersChanged as e:
+        s.flash("bad", _err(e))
+        return _redirect(f"/groups/{gid}/delete")
     except CATCH as e:
         s.flash("bad", _err(e))
         return _redirect(f"/groups/{gid}")

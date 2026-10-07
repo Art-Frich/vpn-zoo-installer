@@ -725,18 +725,21 @@ class WebLogsTest(AppTestBase):
         self.assertIn("Удалено логов установки: 1", body)
 
     def test_delete_older_than_days(self):
-        os.utime(self.f3, None)   # свежий
-        os.utime(self.f2, (time.time() - 10 * 86400,) * 2)
-        os.utime(self.f1, (time.time() - 40 * 86400,) * 2)
+        """Возраст — по времени в имени install-YYYYMMDD-HHMMSS.log, а не по mtime."""
+        now = time.time()
+        for f, age in ((self.f3, 0), (self.f2, 10), (self.f1, 40)):
+            f.rename(self.logdir / time.strftime("install-%Y%m%d-%H%M%S.log", time.localtime(now - age * 86400)))
+        names = sorted(f.name for f in self.logdir.iterdir())
         self.c.get("/logs")
         self.c.post("/logs/clean", {"mode": "older", "days": "30"})
-        self.assertEqual(sorted(f.name for f in self.logdir.iterdir()),
-                         ["install-20261002-100000.log", "install-20261003-100000.log"])
+        self.assertEqual(sorted(f.name for f in self.logdir.iterdir()), names[1:])
         self.c.post("/logs/clean", {"mode": "older", "days": "7"})
-        self.assertEqual(sorted(f.name for f in self.logdir.iterdir()), ["install-20261003-100000.log"])
-        os.utime(self.f3, (time.time() - 100 * 86400,) * 2)
+        self.assertEqual(sorted(f.name for f in self.logdir.iterdir()), names[2:])
+        newest = self.logdir / names[2]
+        newest.rename(self.logdir / time.strftime("install-%Y%m%d-%H%M%S.log", time.localtime(now - 100 * 86400)))
         self.c.post("/logs/clean", {"mode": "older", "days": "1"})
-        self.assertTrue(self.f3.exists(), "единственный (самый свежий) лог не удаляется никогда")
+        self.assertEqual(len(list(self.logdir.glob("install-*.log"))), 1,
+                         "единственный (самый свежий) лог не удаляется никогда")
 
     def test_bad_clean_requests_change_nothing(self):
         self.c.get("/logs")
@@ -1011,6 +1014,132 @@ class ExecutorTest(unittest.TestCase):
             self.assertEqual(cli.main(["logs", "vacuum"]), 2)
             self.assertEqual(cli.main(["logs", "vacuum", "--size", "100M"]), 0)
             self.assertEqual(cli.main(["logs", "clean"]), 2)
+
+
+class InstallLogOrderTest(unittest.TestCase):
+    """Новизна и возраст логов установки — по времени в имени; обрезка не должна ни менять порядок, ни резать лог,
+    в который прямо сейчас пишет install.sh."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(prefix="zoo-logord-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        p = mock.patch.dict(os.environ, {"LOG_DIR": self.dir.as_posix(), "ZOO_SETUP_LOCK": (self.dir / "setup.lock").as_posix()})
+        p.start()
+        self.addCleanup(p.stop)
+        self.old = self.dir / "install-20261001-100000.log"
+        self.new = self.dir / "install-20261003-100000.log"
+        write_lines(self.old, [f"строка {i:04d}" for i in range(1500)])
+        write_lines(self.new, [f"новая {i:04d}" for i in range(1500)])
+        os.utime(self.old, (BASE, BASE))
+        os.utime(self.new, (BASE + 100, BASE + 100))
+
+    def names(self):
+        return sorted(f.name for f in self.dir.iterdir() if f.name.startswith("install-"))
+
+    def test_trim_does_not_make_old_log_the_newest(self):
+        """Старый лог обрезали (mtime стал «сейчас») — самым свежим остаётся тот, что новее по имени."""
+        self.assertTrue(logctl.trim_file(self.old.name)["trimmed"])
+        os.utime(self.old, (BASE + 999_999, BASE + 999_999))   # как если бы обрезка сдвинула mtime
+        self.assertEqual([f.name for f in logctl.install_logs()], [self.old.name, self.new.name])
+        res = logctl.clean_files(names=[self.old.name, self.new.name])
+        self.assertEqual((res["deleted"], res["skipped"]), ([self.old.name], [self.new.name]))
+        self.assertEqual(self.names(), [self.new.name])
+
+    def test_older_than_uses_name_not_mtime(self):
+        now = time.mktime(time.strptime("20261010-100000", "%Y%m%d-%H%M%S"))
+        os.utime(self.old, (now, now))   # mtime «свежий», имя — девять дней назад
+        res = logctl.clean_files(older_days=7, now=now)
+        self.assertEqual(res["deleted"], [self.old.name])
+        write_lines(self.old, ["x"])
+        os.utime(self.old, (0, 0))   # mtime древний, имя — сегодня
+        res = logctl.clean_files(older_days=1, now=time.mktime(time.strptime("20261001-120000", "%Y%m%d-%H%M%S")))
+        self.assertEqual(res["deleted"], [])
+
+    def test_unparseable_name_falls_back_to_mtime(self):
+        odd = self.dir / "install-manual.log"
+        write_lines(odd, ["x"])
+        later = logctl.log_stamp(self.new) + 500
+        os.utime(odd, (later, later))
+        self.assertEqual([f.name for f in logctl.install_logs()][-1], odd.name)
+        bad_date = self.dir / "install-20269999-999999.log"
+        write_lines(bad_date, ["x"])
+        os.utime(bad_date, (BASE + 600, BASE + 600))
+        self.assertEqual(logctl.log_stamp(bad_date), BASE + 600)
+
+    def test_trim_restores_times(self):
+        before = self.old.stat()
+        self.assertTrue(logctl.trim_file(self.old.name)["trimmed"])
+        after = self.old.stat()
+        self.assertEqual(after.st_mtime_ns, before.st_mtime_ns)
+        self.assertEqual(after.st_size < before.st_size, True)
+
+    def test_trim_refuses_newest_while_install_holds_lock(self):
+        size = self.new.stat().st_size
+        with mock.patch.object(logctl, "install_running", return_value=True):
+            with self.assertRaises(logctl.CleanError) as cm:
+                logctl.trim_file(self.new.name)
+            self.assertIn("идёт установка", str(cm.exception))
+            self.assertTrue(logctl.trim_file(self.old.name)["trimmed"], "не самый свежий обрезать можно")
+            self.assertEqual(logctl.clean_files(names=[self.new.name])["skipped"], [self.new.name],
+                             "удалить самый свежий нельзя и без блокировки")
+        self.assertEqual(self.new.stat().st_size, size)
+        with mock.patch.object(logctl, "install_running", return_value=False):
+            self.assertTrue(logctl.trim_file(self.new.name)["trimmed"])
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW") and logctl.fcntl, "нужен flock (Linux)")
+    def test_install_running_probes_real_flock(self):
+        lock = self.dir / "setup.lock"
+        self.assertFalse(logctl.install_running(), "файла блокировки нет")
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            self.assertFalse(logctl.install_running(), "файл есть, но никто не держит")
+            logctl.fcntl.flock(fd, logctl.fcntl.LOCK_EX | logctl.fcntl.LOCK_NB)
+            self.assertTrue(logctl.install_running())
+            with self.assertRaises(logctl.CleanError):
+                logctl.trim_file(self.new.name)
+        finally:
+            os.close(fd)
+        self.assertFalse(logctl.install_running(), "держатель вышел")
+        self.assertFalse(logctl.install_running(), "проба сама блокировку не оставляет")
+
+    def test_bytes_appended_during_trim_are_kept(self):
+        real = logctl._tail_of
+        appended = "дописано установкой\n".encode()
+
+        def racing(fh, size, lines):
+            out = real(fh, size, lines)
+            with open(self.old, "ab") as w:
+                w.write(appended)
+            return out
+
+        with mock.patch.object(logctl, "_tail_of", racing):
+            res = logctl.trim_file(self.old.name)
+        self.assertTrue(res["trimmed"])
+        data = self.old.read_bytes()
+        self.assertTrue(data.endswith("строка 1499\n".encode() + appended), data[-80:])
+        self.assertEqual(data.count(b"\n"), logctl.TAIL_LINES + 1)
+
+    def test_web_menu_disables_trim_of_newest_while_running(self):
+        from tests.test_web import AppTestBase
+
+        class Page(AppTestBase):
+            def runTest(self):
+                pass
+
+        page = Page()
+        page.setUp()
+        try:
+            page.env.write_config({"SERVER_IP": "10.0.0.1", "ZOO_WEB_TOKEN": SECRET})
+            page.c.login()
+            with mock.patch.object(logctl, "install_running", return_value=True):
+                resp, body = page.c.get("/logs")
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(body.count("идёт установка и пишет в этот лог"), 1)
+            with mock.patch.object(logctl, "install_running", return_value=False):
+                resp, body = page.c.get("/logs")
+            self.assertNotIn("идёт установка и пишет в этот лог", body)
+        finally:
+            page.doCleanups()
 
 
 if __name__ == "__main__":

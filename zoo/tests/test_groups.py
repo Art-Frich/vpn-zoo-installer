@@ -1,3 +1,4 @@
+import inspect
 import json
 import os
 import shutil
@@ -714,7 +715,43 @@ class DeleteGroupTest(GroupsBase):
             self.assertEqual((reg[n]["group"], sorted(reg[n]["protocols"])), ("main", sorted(PROTOS)))
         al = self.allow_json()
         self.assertFalse(al.get("groups") or al.get("members"), "зеркало списка приложений чистое")
-        self.assertEqual(groups.delete_group.__defaults__, ("move",))
+        self.assertEqual(inspect.signature(groups.delete_group).parameters["members"].default, "move")
+
+    def test_delete_keeps_custom_protocol_sets(self):
+        reg = users.Registry.load()
+        reg.get("masha").custom = True
+        reg.save()
+        rep = groups.delete_group(self.g.id)
+        self.assertTrue(rep.ok and rep.removed, rep.to_dict())
+        self.assertEqual(rep.skipped, ["masha"], "свой набор группа не тронула")
+        reg = self.registry()
+        self.assertEqual((reg["masha"]["group"], reg["masha"]["protocols"], reg["masha"]["custom"]),
+                         ("main", ["amneziawg"], True), "группа сменилась, набор и признак — нет")
+        self.assertEqual((reg["kolya"]["group"], sorted(reg["kolya"]["protocols"])), ("main", sorted(PROTOS)))
+        self.assertNotIn("custom", reg["kolya"])
+
+    def test_expected_members_must_match(self):
+        for bad in ([], ["masha"], ["masha", "kolya", "petya"], ["masha", "owner"]):
+            with self.assertRaises(groups.MembersChanged, msg=bad) as cm:
+                groups.delete_group(self.g.id, "delete", bad)
+            self.assertIn("изменился", str(cm.exception))
+            self.assertIn("Ничего не удалено", str(cm.exception))
+        self.assertEqual(self.ids(), ["main", self.g.id])
+        reg = self.registry()
+        self.assertEqual((reg["masha"]["group"], reg["kolya"]["group"]), (self.g.id, self.g.id))
+        self.assertIn("masha", self.env.proto_users("amneziawg"))
+        rep = groups.delete_group(self.g.id, "delete", ["kolya", "masha"])
+        self.assertTrue(rep.removed, rep.to_dict())
+        self.assertEqual(sorted(rep.deleted), ["kolya", "masha"])
+
+    def test_expected_empty_group_and_new_member(self):
+        e = groups.create("Пустая", ["amneziawg"])
+        self.assertTrue(groups.delete_group(e.id, "move", []).removed)
+        e = groups.create("Пустая2", ["amneziawg"])
+        users.add_user("petya", group=e.id)   # добавили, пока страница подтверждения была открыта
+        with self.assertRaises(groups.MembersChanged):
+            groups.delete_group(e.id, "delete", [])
+        self.assertIn("petya", self.registry(), "новичка не удалили вслепую")
 
     def test_delete_members_keeps_owner(self):
         groups.move_many(["owner"], self.g.id)
@@ -797,12 +834,17 @@ class MergeGroupsTest(GroupsBase):
         al = self.allow_json()
         self.assertFalse(al.get("groups") or al.get("members"), "список исчезнувшей группы из зеркала убран")
 
-    def test_custom_members_return_to_group(self):
+    def test_custom_members_keep_their_set(self):
         reg = users.Registry.load()
         reg.get("masha").custom = True
         reg.save()
-        groups.merge_groups(self.a.id, self.b.id)
-        self.assertNotIn("custom", self.registry()["masha"])
+        rep = groups.merge_groups(self.a.id, self.b.id)
+        self.assertEqual(rep.skipped, ["masha"])
+        reg = self.registry()
+        self.assertEqual((reg["masha"]["group"], reg["masha"]["protocols"], reg["masha"]["custom"]),
+                         (self.b.id, ["amneziawg"], True), "группа новая, набор протоколов — свой, как был")
+        self.assertEqual(sorted(reg["kolya"]["protocols"]), ["hysteria2", "vless-reality"])
+        self.assertNotIn("custom", reg["kolya"])
 
     def test_empty_source_is_just_removed(self):
         e = groups.create("Пустая", ["amneziawg"])

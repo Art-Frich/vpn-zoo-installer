@@ -561,6 +561,48 @@ class GroupsPagesTest(GroupWebBase):
         self.assertRegex(page, r'<span class="btn danger" aria-disabled="true" title="[^"]*не удаляется[^"]*">Удалить группу</span>')
         self.assertNotIn("/groups/main/delete", page)
 
+    def test_delete_confirm_posts_what_it_showed_and_lists_custom_sets(self):
+        regs = users.Registry.load()
+        regs.require("masha").custom = True
+        regs.save()
+        _, page = self.c.get("/groups/g1/delete")
+        self.assertEqual(re.findall(r'<input type="hidden" name="expected" value="([^"]*)"', page), ["masha", "kolya"])
+        self.assertIn('name="shown" value="1"', page)
+        self.assertIn("Свой набор протоколов сохранится: masha", text_of(page))
+        _, empty = self.c.get("/groups/main/delete")
+        self.assertNotIn('name="expected"', empty)
+
+    def test_delete_aborts_when_membership_changed_after_confirm_page(self):
+        self.post("/groups/g1/members", {"users_new": ["petya"]})   # после показа страницы подтверждения
+        for mode in ("delete", "move"):
+            resp, _ = self.post("/groups/g1/delete", {"members": [mode], "shown": ["1"], "expected": ["masha", "kolya"]})
+            self.assertEqual(header(resp, "Location"), ["/groups/g1/delete"], mode)
+            _, page = self.c.get("/groups/g1/delete")
+            self.assertIn("изменился", text_of(page))
+            self.assertIn("стало: kolya, masha, petya", text_of(page))
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main", "g1"])
+        self.assertEqual({self.reg()[n]["group"] for n in ("masha", "kolya", "petya")}, {"g1"})
+        resp, _ = self.post("/groups/g1/delete", {"members": ["delete"], "shown": ["1"],
+                                                  "expected": ["masha", "kolya", "petya"]})
+        self.assertEqual(header(resp, "Location"), ["/groups"])
+        self.assertNotIn("petya", self.reg())
+
+    def test_delete_without_shown_marker_is_not_checked(self):
+        resp, _ = self.post("/groups/g1/delete", {"members": ["move"]})
+        self.assertEqual(header(resp, "Location"), ["/groups"])
+
+    def test_delete_and_merge_keep_custom_sets(self):
+        regs = users.Registry.load()
+        regs.require("masha").custom = True
+        regs.save()
+        _, page = self.c.get("/groups/g1")
+        self.assertRegex(page, r'data-confirm="[^"]*Свой набор протоколов сохранится: masha')
+        self.post("/groups/g1/delete", {"members": ["move"], "shown": ["1"], "expected": ["masha", "kolya"]})
+        reg = self.reg()
+        self.assertEqual((reg["masha"]["group"], sorted(reg["masha"]["protocols"]), reg["masha"].get("custom")),
+                         ("main", ["amneziawg", "vless-reality"], True))
+        self.assertIn("Свой набор протоколов, группа его не тронула: masha", text_of(self.c.get("/groups")[1]))
+
     def test_delete_group_moves_members_by_default(self):
         resp, _ = self.c.post("/groups/g1/delete", {"members": "move"})
         self.assertEqual(header(resp, "Location"), ["/groups"])
@@ -902,13 +944,15 @@ class ProtocolRowsTest(GroupWebBase):
     def test_salamander_is_its_own_row_linked_to_hysteria2(self):
         _, body = self.c.get("/connect/new")
         hy = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked>', body)
-        sal = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked data-variant="hysteria2-obfs">', body)
-        self.assertTrue(hy and sal, "обе строки отмечены вместе: одно значение поля")
+        sal = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked data-variant="hysteria2-obfs" disabled>',
+                        body)
+        self.assertTrue(hy and sal, "обе строки отмечены вместе, строка Salamander серая: сама в форму не уходит")
         self.assertLess(hy.start(), sal.start(), "Salamander — сразу под Hysteria2")
         row = body[sal.start():]
         row = row[:row.index("</label>")]
         self.assertIn("HY2 + Salamander", row)
         self.assertIn("Общая учётка с Протокол hysteria2", row)
+        self.assertIn("снимается и отмечается вместе с ним", row)
         self.assertNotIn("основной", row)
         self.assertIn("data-variant", body)
         # выключенный — серой строкой, без галочки
@@ -916,6 +960,31 @@ class ProtocolRowsTest(GroupWebBase):
         self.assertIn("SS-2022", off)
         self.assertNotIn('value="ss2022"', body)
         self.assertNotIn('value="hysteria2-obfs"', body, "отдельного значения у Salamander нет")
+
+    @staticmethod
+    def submitted(body):
+        """Что отправит браузер без JS: отмеченные и не отключённые чекбоксы proto, как нарисованы сервером."""
+        tags = re.findall(r'<input type="checkbox" name="proto"[^>]*>', body)
+        return [re.search(r'value="([^"]+)"', tag).group(1) for tag in tags
+                if " checked" in tag and " disabled" not in tag]
+
+    def test_without_js_only_the_hysteria2_row_decides(self):
+        _, body = self.c.get("/connect/new")
+        self.assertEqual(self.submitted(body).count("hysteria2"), 1, "две отмеченные строки — одно значение")
+        hy = '<input type="checkbox" name="proto" value="hysteria2" checked>'
+        self.assertIn(hy, body)
+        # человек снял Hysteria2, JS нет: строка Salamander осталась нарисованной отмеченной
+        stale = body.replace(hy, '<input type="checkbox" name="proto" value="hysteria2">')
+        self.assertIn('data-variant="hysteria2-obfs" disabled>', stale)
+        self.assertNotIn("hysteria2", self.submitted(stale), "отключённая строка не воскрешает Hysteria2")
+        resp, page = self.wiz(1, name="Семья", proto=self.submitted(stale))
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn('name="proto" value="hysteria2"', page)
+        # и наоборот: отметили только Hysteria2 — Salamander с ней
+        only = re.sub(r'<input type="checkbox" name="proto"[^>]*>',
+                      lambda m: m.group(0) if 'value="hysteria2"' in m.group(0) and "data-variant" not in m.group(0)
+                      else m.group(0).replace(" checked", ""), body)
+        self.assertEqual(self.submitted(only), ["hysteria2"])
 
     def test_either_row_selects_hysteria2_and_duplicates_are_harmless(self):
         resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "hysteria2", "amneziawg"])

@@ -1247,8 +1247,8 @@ class OwnAddressesTest(AppTestBase):
         self.assertNotIn("свои и служебные адреса:", body)
         self.assertNotIn("all=1", body)
         self.assertNotIn('name="all"', body)
-        m = re.search(r'<p class="muted small" title="([^"]+)" id="skipped">не учтены: ваши входы и служебные адреса '
-                      r'— (\d+)</p>', body)
+        m = re.search(r'<p class="muted small" title="([^"]+)" id="skipped"><a href="/journal\?period=24h&amp;own=1"[^>]*>'
+                      r'не учтены: ваши входы и служебные адреса — (\d+)</a></p>', body)
         self.assertIsNotNone(m)
         for word in ("SSH-ключу", "сам сервер", "контейнеры", "192.0.2.0/24"):
             self.assertIn(word, m.group(1))
@@ -1256,6 +1256,51 @@ class OwnAddressesTest(AppTestBase):
         self.assertEqual(int(m.group(2)), d["hidden"]["own"] + d["hidden"]["local"])
         _, body = self.c.get("/journal?period=24h&all=1")
         self.assertNotIn("192.0.2.5", body, "own/служебные не в таблице, даже с ?all=1")
+
+    def test_skipped_line_links_to_the_list_with_reasons(self):
+        self.seed()
+        _, body = self.c.get("/journal?period=24h")
+        self.assertIn('id="skipped"><a href="/journal?period=24h&amp;own=1"', body)
+        resp, page = self.c.get("/journal?period=24h&own=1")
+        self.assertEqual(resp.status, 200)
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", page))
+        d = journal.report("24h")
+        total = d["hidden"]["own"] + d["hidden"]["local"]
+        self.assertEqual(journal.own_report("24h")["total"], total, "в списке ровно то, что в строке «не учтены»")
+        self.assertIn(f"{total} с 12 адресов", text)
+        self.assertIn(f"— {total}</a>", self.c.get("/journal?period=24h")[1])
+        for ip, why in (("203.0.113.50", "заходили по SSH-ключу, последний вход"), (self.SERVER, "адрес самого сервера"),
+                        ("46.8.8.8", "адрес самого сервера"), ("192.0.2.5", "зарезервированный диапазон 192.0.2.0/24"),
+                        ("100.64.0.9", "зарезервированный диапазон 100.64.0.0/10"), ("127.0.0.1", "сам сервер (loopback)"),
+                        ("10.1.1.1", "частная сеть или контейнер"), ("2001:db8::5", "зарезервированный диапазон 2001:db8::/32")):
+            self.assertRegex(text, re.escape(ip) + r" (?:свой|служебный) " + re.escape(why), ip)
+        self.assertNotIn("8.8.8.8", text)
+        self.assertNotIn("<form", page.split("Не учтены: ваши")[1].split("</section>")[0], "список только для чтения")
+
+    def test_own_list_reads_ignore_file_and_excludes_external(self):
+        self.seed(extra=[Event(int(time.time()) - 5, "port-scan", "8.8.8.8", 22),
+                         Event(int(time.time()) - 5, "port-scan", "77.1.2.3", 22)])
+        (self.env.etc / "journal-ignore.txt").write_text("77.1.2.0/24 # офис\n", encoding="utf-8")
+        d = journal.own_report("24h")
+        by = {r["ip"]: r for r in d["rows"]}
+        self.assertEqual((by["77.1.2.3"]["why"], by["77.1.2.3"]["detail"], by["77.1.2.3"]["scope"]),
+                         ("ignore-file", "77.1.2.0/24", "own"))
+        self.assertNotIn("8.8.8.8", by)
+        self.assertEqual(by["203.0.113.50"]["why"], "ssh-login", "из таблицы own раньше, чем «зарезервированный»")
+        _, page = self.c.get("/journal?period=24h&own=1")
+        self.assertIn("в списке journal-ignore.txt: 77.1.2.0/24", page)
+        resp, _ = self.c.post("/journal?own=1", {})
+        self.assertNotEqual(resp.status, 200, "страница ничего не принимает")
+
+    def test_own_list_without_data_and_with_bad_period(self):
+        resp, page = self.c.get("/journal?own=1")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Нет данных", page)
+        self.seed()
+        resp, page = self.c.get("/journal?own=1&period=zzz")
+        self.assertEqual(resp.status, 200)
+        self.assertIn('href="/journal?period=24h"', page, "назад — к журналу того же периода")
+        self.assertIn('href="/journal?period=7d&amp;own=1"', page, "период переключается, список остаётся")
 
     def test_spike_alert_ignores_noise_addresses(self):
         now = int(time.time())
