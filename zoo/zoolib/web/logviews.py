@@ -1,4 +1,4 @@
-"""Страница «Логи»: просмотр с прокруткой назад по всему логу, поиск (по одному логу и по всем), очистка.
+"""Страница «Логи»: просмотр с прокруткой назад по всему логу, поиск (по одному логу и по всем), очистка из меню «⋯».
 
 Читает `zoolib/logread.py` (куски по токенам, лимиты), чистит `zoolib/logctl.py`. Всё, что уходит в
 браузер или в выгрузку — страница, найденные строки, JSON подгрузки, файл — проходит `logs.sanitize`.
@@ -247,79 +247,72 @@ def _view_card(app: "App", st: dict[str, Any], kind: str, name: str, chunk: logr
                 help="Весь доступный лог: ↑ или прокрутка вверх подгружает предыдущие строки. Ключи, пароли и ссылки скрыты.")
 
 
-# ---------- очистка ----------
+# ---------- очистка: меню «⋯» у источников ----------
 
-def _rules() -> list[Any]:
-    out = []
-    for action, (_flag, values, _lbl) in logctl.ACTIONS.items():
-        for v in values:
-            out.append(t("option", logctl.label(action, v), value=f"{action}:{v}", selected=(action, v) == ("vacuum-time", "30d")))
-    return out
+SERVICE_VACUUM = ("1d", "7d", "30d")
+INSTALL_OLDER = (7, 30)
+RESULT_FRESH = 30 * 60
 
 
 def _fmt_dt(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%d.%m %H:%M") if ts else "—"
 
 
-def _vacuum_state() -> Any:
+def _vacuum_notice() -> list[tuple[str, Any]]:
+    """Итог очистки журнала: заявка выполняется в фоне root-службой, поэтому показываем его на странице."""
     pend = logctl.pending()
     if pend:
-        return t("p", "Очистка журнала ждёт выполнения: " + logctl.label(str(pend[0]["action"]), str(pend[0]["value"])) +
-                 ". Обычно это секунды.", class_="hint")
+        return [("info", "Очистка журнала выполняется: " + logctl.label(str(pend[0]["action"]), str(pend[0]["value"])) +
+                 ". Обычно это секунды.")]
     last = next(iter(logctl.states(1)), None)
-    if not last:
-        return None
+    if not last or time.time() - float(last.get("finished") or 0) > RESULT_FRESH:
+        return []
     what = logctl.label(str(last.get("action")), str(last.get("value")))
     if last.get("status") == "ok":
-        return t("p", f"Последняя очистка ({_fmt_dt(last.get('finished'))}, {what}): освобождено "
-                      f"{human_bytes(int(last.get('freed') or 0))}.", class_="hint")
-    return t("p", f"Последняя очистка не удалась: {last.get('error') or 'ошибка'}", class_="hint err")
+        return [("ok", f"Журнал очищен ({_fmt_dt(last.get('finished'))}, {what}): освобождено "
+                       f"{human_bytes(int(last.get('freed') or 0))}.")]
+    return [("bad", f"Очистить журнал не удалось: {last.get('error') or 'ошибка'}")]
 
 
-def _clean_card(req: "Request", st: dict[str, Any]) -> Markup:
-    csrf = csrf_input(req.session.csrf if req.session else "")
-    files = logctl.install_logs()
-    jsize = logctl.journald_size()
-    keep = files[-1].name if files else ""
-    items = []
-    for f in reversed(files[-30:]):
-        try:
-            stt = f.stat()
-        except OSError:
-            continue
-        lbl = f"{f.name} · {human_bytes(stt.st_size)} · {_fmt_dt(stt.st_mtime)}"
-        items.append(t("li", t("label", t("input", type="checkbox", name="names", value=f.name, disabled=f.name == keep),
-                               lbl, title="самый свежий лог не удаляется: возможно, идёт установка" if f.name == keep else None)))
-    back = t("input", type="hidden", name="src", value=st["src"])
-    days = [t("option", f"старше {n} дн.", value=n, selected=n == 30) for n in logctl.OLDER_DAYS]
-    sel = t("form", csrf, back, t("input", type="hidden", name="mode", value="selected"), t("ul", items),
-            t("button", "Удалить выбранные", type="submit", class_="btn small danger"),
-            method="post", action="/logs/clean", data_confirm="Удалить выбранные логи установки насовсем?",
-            data_swap=True) if items else None
-    old = t("form", csrf, back, t("input", type="hidden", name="mode", value="older"), t("select", days, name="days",
-                                                                                          aria_label="Срок"),
-            t("button", "Удалить старые", type="submit", class_="btn small danger"),
-            method="post", action="/logs/clean", data_confirm="Удалить логи установки старше выбранного срока? "
-            "Самый свежий останется.", data_swap=True) if len(files) > 1 else None
-    vac = t("form", csrf, back, t("select", _rules(), name="rule", aria_label="Правило очистки журнала"),
-            t("button", "Очистить журнал", type="submit", class_="btn small danger"),
-            method="post", action="/logs/vacuum", data_swap=True,
-            data_confirm="Очистить журнал systemd по выбранному правилу? Удалённые записи не вернуть. "
-            "Выполнится в фоне, обычно за секунды.")
-    return card("Очистка",
-                t("div", t("p", f"Логи установки: {len(files)} шт., {human_bytes(sum(_size(f) for f in files))}",
-                           class_="hint"), sel, old,
-                  t("p", f"Журнал systemd занимает {human_bytes(jsize)}", class_="hint"), vac, _vacuum_state(),
-                  class_="logclean"),
-                help="Логи установки админка удаляет сама (самый свежий остаётся). Журнал systemd чистит отдельная "
-                     "служба по заявке: песочница админки в него не пишет. Разрешены только готовые правила из списка.")
+def _menu(label: str, *items: Any) -> Markup:
+    return t("details", t("summary", "⋯", title=label, aria_label=label), t("div", items, class_="menu-pop"), class_="menu")
 
 
-def _size(f: Any) -> int:
-    try:
-        return f.stat().st_size
-    except OSError:
-        return 0
+def _item(csrf: str, action: str, label: str, fields: dict[str, str], confirm: str, off: str | None = None) -> Markup:
+    """Пункт меню: форма POST с CSRF и подтверждением; off — причина, почему недоступно (подсказка)."""
+    if off:
+        return t("span", t("button", label, type="button", class_="menu-item", disabled=True), class_="menu-off", title=off)
+    hidden = [t("input", type="hidden", name=k, value=v) for k, v in fields.items()]
+    return t("form", csrf_input(csrf), hidden, t("button", label, type="submit", class_="menu-item danger"),
+             method="post", action=action, class_="inline", data_confirm=confirm, data_swap=True)
+
+
+def _file_menu(csrf: str, name: str, newest: bool, back: str) -> Markup:
+    base = {"src": back}
+    return _menu(
+        f"Действия с {name}",
+        _item(csrf, "/logs/clean", "Удалить", {**base, "mode": "selected", "names": name},
+              f"Удалить {name} насовсем?",
+              off="самый свежий лог не удаляется: возможно, идёт установка" if newest else None),
+        _item(csrf, "/logs/clean", f"Оставить последние {logctl.TAIL_LINES} строк", {**base, "mode": "tail", "names": name},
+              f"Оставить в {name} последние {logctl.TAIL_LINES} строк? Остальное удалится насовсем."))
+
+
+def _install_menu(csrf: str, back: str) -> Markup:
+    return _menu("Логи установки", *[
+        _item(csrf, "/logs/clean", f"Удалить старше {n} дн.", {"src": back, "mode": "older", "days": str(n)},
+              f"Удалить логи установки старше {n} дн.? Самый свежий останется.") for n in INSTALL_OLDER])
+
+
+def _services_menu(csrf: str, back: str) -> Markup:
+    items = [t("p", f"Журнал systemd общий для всех сервисов: по одному не чистится. Сейчас занимает "
+                    f"{human_bytes(logctl.journald_size())}.", class_="hint")]
+    for v in SERVICE_VACUUM:
+        items.append(_item(csrf, "/logs/vacuum", f"Очистить журнал старше {logctl.VALUE_TITLES[v]}",
+                           {"src": back, "rule": f"vacuum-time:{v}"},
+                           f"Очистить журнал systemd: записи старше {logctl.VALUE_TITLES[v]}? Затронет все сервисы, "
+                           "удалённое не вернуть. Выполнится в фоне, обычно за секунды."))
+    return _menu("Журнал systemd", *items)
 
 
 # ---------- маршруты ----------
@@ -331,15 +324,21 @@ def logs_page(app: "App", req: "Request") -> "Response":
     if not st["src"]:
         failed = [k for g, k, label in sources if g == "Сервисы" and states.get(label, {}).get("active") == "failed"]
         st["src"] = failed[0] if failed else sources[0][1] if sources else ""
+    csrf = req.session.csrf if req.session else ""
+    install = logctl.install_logs()
+    newest = install[-1].name if install else ""
     nav: list[Any] = []
     group = None
     for g, k, label in sources:
         if g != group:
-            nav.append(t("li", g, class_="group"))
+            menu = _install_menu(csrf, st["src"]) if g == "Установка" else                 _services_menu(csrf, st["src"]) if g == "Сервисы" else None
+            nav.append(t("li", t("span", g), menu, class_="group"))
             group = g
-        nav.append(t("li", t("a", label, href=_url(st, src=k, before="", after="", at=""),
-                             class_="active" if k == st["src"] else None, title=label, data_swap=True)))
-    problems: list[tuple[str, Any]] = []
+        link = t("a", label, href=_url(st, src=k, before="", after="", at=""),
+                 class_="active" if k == st["src"] else None, title=label, data_swap=True)
+        nav.append(t("li", link, _file_menu(csrf, label, label == newest, st["src"]) if k.startswith("file:") and logctl.INSTALL_RE.match(label) else None,
+                     class_="src"))
+    problems: list[tuple[str, Any]] = _vacuum_notice()
     results = None
     if st["q"]:
         try:
@@ -367,7 +366,7 @@ def logs_page(app: "App", req: "Request") -> "Response":
                   "(логи установки и сервисы). Секреты в результатах скрыты.")
     body = [views.page_head("Логи", None, sizes),
             t("div", card("Источники", t("ul", nav, class_="list")),
-              t("div", views.alert_list(problems) if problems else None, search, results, content, _clean_card(req, st),
+              t("div", views.alert_list(problems) if problems else None, search, results, content,
                 class_="col-stack"), class_="side")]
     return app.render(req, "Логи", body, active="/logs")
 
@@ -426,12 +425,14 @@ def _back(req: "Request") -> str:
 def logs_clean(app: "App", req: "Request") -> "Response":
     from .app import redirect
     mode = req.form.get("mode", "")
+    names = req.multi.get("names", [])[:100]
     try:
-        if mode == "selected":
-            names = req.multi.get("names", [])[:100]
+        if mode in ("selected", "tail"):
             if not names:
                 req.session.flash("warn", "Ничего не выбрано")
                 return redirect(_back(req))
+            if mode == "tail":
+                return _trim(app, req, names[0])
             res = logctl.clean_files(names=names)
         elif mode == "older":
             res = logctl.clean_files(older_days=int(req.form.get("days", "")))
@@ -447,6 +448,22 @@ def logs_clean(app: "App", req: "Request") -> "Response":
                       + (f"; оставлено как свежее: {len(res['skipped'])}" if res["skipped"] else ""))
     for e in res["errors"][:3]:
         req.session.flash("warn", e)
+    gone = {f"file:{n}" for n in res["deleted"]}
+    return redirect("/logs" if req.form.get("src", "") in gone else _back(req))
+
+
+def _trim(app: "App", req: "Request", name: str) -> "Response":
+    from .app import redirect
+    try:
+        res = logctl.trim_file(name)
+    except logctl.CleanError as e:
+        req.session.flash("bad", str(e))
+        return redirect(_back(req))
+    app.invalidate("storage", "storage-alerts")
+    if res["trimmed"]:
+        req.session.flash("ok", f"{name}: оставлено {res['kept']} строк, освобождено {human_bytes(res['freed'])}")
+    else:
+        req.session.flash("info", f"В {name} и так не больше {logctl.TAIL_LINES} строк")
     return redirect(_back(req))
 
 
@@ -467,5 +484,6 @@ def logs_vacuum(app: "App", req: "Request") -> "Response":
         req.session.flash("warn", str(e))
         return redirect(_back(req))
     app.invalidate("storage")
-    req.session.flash("info", f"Заявка принята: {logctl.label(action, value)}. Выполняется в фоне, итог появится в «Очистке».")
+    req.session.flash("info", f"Заявка принята: {logctl.label(action, value)}. Выполняется в фоне; "
+                      "сколько места освободилось, покажем здесь через несколько секунд.")
     return redirect(_back(req))

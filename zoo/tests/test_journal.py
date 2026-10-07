@@ -1110,16 +1110,16 @@ class JournalPageTest(AppTestBase):
         for text in (A, B, C, "CN", "Стучались в закрытые порты", "Перебор SSH", "Проверяли, прокси ли это",
                      "Чего мы не видим", "3389"):
             self.assertIn(text, body)
-        self.assertNotIn("172.22.0.4", body, "локальные скрыты по умолчанию")
-        self.assertIn("скрыты свои и служебные адреса — служебных 3", body)
+        self.assertNotIn("172.22.0.4", body, "локальные не показываются")
+        self.assertIn("не учтены: ваши входы и служебные адреса — 3", body)
         resp, body = self.c.get("/journal?period=7d&all=1")
-        self.assertIn("172.22.0.4", body)
-        self.assertIn("служебный", body)
+        self.assertNotIn("172.22.0.4", body, "переключателя нет: ?all=1 в вебе ничего не открывает")
+        self.assertNotIn("служебный</span>", body)
 
     def test_page_is_short_with_verdict(self):
         self.seed()
         _, body = self.c.get("/journal?period=24h")
-        self.assertLessEqual(visible_words(body), 200)
+        self.assertLessEqual(visible_words(body), 210)
         self.assertIn("Прокси (Hysteria2) проверяли чужие клиенты: 1 попытка с 1 адреса.", body)
         self.assertIn("ничего делать не нужно", body)
         self.assertNotIn("Щупают", body)
@@ -1213,7 +1213,7 @@ class OwnAddressesTest(AppTestBase):
 
     def test_only_external_address_makes_the_verdict(self):
         self.seed()
-        for q in ("", "&all=1"):
+        for q in ("",):
             _, body = self.c.get("/journal?period=24h" + q)
             self.assertIn("Обычный фон: сканеры и перебор SSH", body, q)
             self.assertNotIn("проверяли чужие клиенты", body, q)
@@ -1223,7 +1223,7 @@ class OwnAddressesTest(AppTestBase):
         with con:
             journal.store(con, [Event(now - 5, "hy2-auth", "8.8.4.4", 443)] * 2, now)
         con.close()
-        for q in ("", "&all=1"):
+        for q in ("",):
             self.app.invalidate()
             _, body = self.c.get("/journal?period=24h" + q)
             self.assertIn("Прокси (Hysteria2) проверяли чужие клиенты: 2 попытки с 1 адреса.", body, q)
@@ -1241,18 +1241,21 @@ class OwnAddressesTest(AppTestBase):
         self.assertIn("слушать только 127.0.0.1", body)
         self.assertIn('class="warn"', body.split("Пробовали войти")[0][-80:])
 
-    def test_toggle_wording_and_tooltip(self):
+    def test_no_toggle_and_note_line_with_tooltip(self):
         self.seed()
         _, body = self.c.get("/journal?period=24h")
-        self.assertIn("свои и служебные адреса: показать", body)
-        self.assertNotIn("показать локальные", body)
-        m = re.search(r'<a href="/journal\?period=24h&amp;all=1" title="([^"]+)"', body)
+        self.assertNotIn("свои и служебные адреса:", body)
+        self.assertNotIn("all=1", body)
+        self.assertNotIn('name="all"', body)
+        m = re.search(r'<p class="muted small" title="([^"]+)" id="skipped">не учтены: ваши входы и служебные адреса '
+                      r'— (\d+)</p>', body)
         self.assertIsNotNone(m)
         for word in ("SSH-ключу", "сам сервер", "контейнеры", "192.0.2.0/24"):
             self.assertIn(word, m.group(1))
+        d = journal.report("24h")
+        self.assertEqual(int(m.group(2)), d["hidden"]["own"] + d["hidden"]["local"])
         _, body = self.c.get("/journal?period=24h&all=1")
-        self.assertIn("свои и служебные адреса: скрыть", body)
-        self.assertIn("служебный", body)
+        self.assertNotIn("192.0.2.5", body, "own/служебные не в таблице, даже с ?all=1")
 
     def test_spike_alert_ignores_noise_addresses(self):
         now = int(time.time())

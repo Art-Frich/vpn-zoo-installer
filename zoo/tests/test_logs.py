@@ -516,7 +516,7 @@ class WebLogsTest(AppTestBase):
         self.assertEqual(resp.status, 200, path)
         return body
 
-    def test_page_has_search_pagination_and_cleaning(self):
+    def test_page_has_search_pagination_and_cleaning_menus(self):
         body = self.body("/logs?src=file:install-20261002-100000.log")
         self.assertIn('id="logtext"', body)
         self.assertIn("строка 0999", body)
@@ -525,11 +525,22 @@ class WebLogsTest(AppTestBase):
         self.assertIn('name="q"', body)
         self.assertIn("в этом логе", body)
         self.assertIn("во всех логах", body)
-        self.assertIn('action="/logs/clean"', body)
-        self.assertIn('action="/logs/vacuum"', body)
-        self.assertIn("Журнал systemd занимает 9.8 КБ", body)
-        self.assertEqual(len(re.findall(r'data-confirm="', body)), 4, "выход и три очистки: у каждой окно подтверждения")
+        self.assertNotIn("<h3>Очистка</h3>", body, "отдельной карточки очистки больше нет")
+        self.assertEqual(body.count('class="menu"'), 5, "«Установка», три файла, «Сервисы»; у юнитов меню нет")
+        self.assertEqual(len(re.findall(r'action="/logs/vacuum"', body)), 3)
+        self.assertIn("Журнал systemd общий для всех сервисов", body)
+        self.assertIn("9.8 КБ", body)
+        self.assertEqual(len(re.findall(r'data-confirm="', body)), 11,
+                         "выход, 2 «старше N дн.», 2 «Удалить» (не у свежего), 3 «последние строки», 3 очистки журнала")
+        self.assertRegex(body, r'<span class="menu-off" title="самый свежий лог не удаляется[^"]*"><button[^>]*disabled>')
         self.assertIn(" data-tail", body)
+
+    def test_menu_only_for_install_logs(self):
+        write_lines(self.logdir / "other.log", ["x"])
+        body = self.body("/logs")
+        self.assertIn("other.log", body)
+        self.assertNotIn("Действия с other.log", body)
+        self.assertIn("Действия с install-20261001-100000.log", body)
 
     def test_csp_friendly_markup(self):
         for path in ("/logs?src=file:install-20261002-100000.log", "/logs?q=timeout&in=all",
@@ -735,6 +746,45 @@ class WebLogsTest(AppTestBase):
             self.assertEqual(resp.status, 303, form)
         self.assertEqual(len(list(self.logdir.glob("install-*.log"))), 3)
 
+    def test_tail_keeps_last_lines_in_place(self):
+        write_lines(self.f2, [f"строка {i:04d}" for i in range(1500)])
+        inode = self.f2.stat().st_ino
+        self.c.get("/logs")
+        resp, _ = self.c.post("/logs/clean", {"mode": "tail", "src": "file:install-20261002-100000.log"},
+                              multi={"names": ["install-20261002-100000.log"]})
+        self.assertEqual(resp.status, 303)
+        lines = self.f2.read_bytes().decode("utf-8").split("\n")
+        self.assertEqual((len(lines), lines[0], lines[-2], lines[-1]), (1001, "строка 0500", "строка 1499", ""))
+        self.assertEqual(self.f2.stat().st_ino, inode)
+        self.assertIn("оставлено 1000 строк, освобождено", self.body("/logs"))
+        self.c.post("/logs/clean", {"mode": "tail"}, multi={"names": ["install-20261001-100000.log"]})
+        self.assertIn("не больше 1000 строк", self.body("/logs"))
+
+    def test_tail_rejects_foreign_names(self):
+        other = self.logdir / "other.log"
+        other.write_text("a\nb\n", encoding="utf-8")
+        self.c.get("/logs")
+        for name in ("other.log", "../other.log", "install-x.log", ""):
+            self.c.post("/logs/clean", {"mode": "tail"}, multi={"names": [name]})
+        self.assertEqual(other.read_text(encoding="utf-8"), "a\nb\n")
+
+    def test_deleting_the_open_log_goes_back_to_list(self):
+        self.c.get("/logs")
+        resp, _ = self.c.post("/logs/clean", {"mode": "selected", "src": "file:install-20261001-100000.log"},
+                              multi={"names": ["install-20261001-100000.log"]})
+        self.assertEqual((resp.status, header(resp, "Location")), (303, ["/logs"]))
+        self.assertFalse(self.f1.exists())
+
+    def test_finished_vacuum_result_is_shown_with_freed_space(self):
+        logctl.state_dir().mkdir(parents=True)
+        rid = "a" * 32
+        (logctl.state_dir() / f"{rid}.json").write_text(json.dumps(
+            {"id": rid, "action": "vacuum-time", "value": "7d", "status": "ok", "freed": 3 * 1024 * 1024,
+             "finished": int(time.time())}), encoding="utf-8")
+        body = self.body("/logs")
+        self.assertIn("Журнал очищен", body)
+        self.assertIn("освобождено 3.0 МБ", body)
+
     def test_symlink_is_not_deleted(self):
         link = self.logdir / "install-20261004-100000.log"
         try:
@@ -756,7 +806,7 @@ class WebLogsTest(AppTestBase):
         data = json.loads(files[0].read_text(encoding="utf-8"))
         self.assertEqual((data["action"], data["value"], data["id"]), ("vacuum-time", "7d", files[0].stem))
         self.assertIn("Заявка принята", self.body("/logs"))
-        self.assertIn("ждёт выполнения", self.body("/logs"))
+        self.assertIn("Очистка журнала выполняется", self.body("/logs"))
         self.c.post("/logs/vacuum", {"rule": "vacuum-size:100M"})
         self.assertEqual(len(list(logctl.req_dir().glob("*.json"))), 1, "пока первая не выполнена, вторая не принимается")
 
@@ -931,6 +981,25 @@ class ExecutorTest(unittest.TestCase):
                               ["install-3.log", "install-4.log"]))
             with self.assertRaises(logctl.CleanError):
                 logctl.clean_files(older_days=13)
+
+    def test_trim_file_unit(self):
+        d = self.env.root / "logs"
+        d.mkdir()
+        with mock.patch.dict(os.environ, {"LOG_DIR": d.as_posix()}):
+            f = d / "install-1.log"
+            full = "".join(f"line {i}\n" for i in range(5000))
+            f.write_bytes(full.encode())
+            res = logctl.trim_file("install-1.log", 100)
+            self.assertEqual((res["trimmed"], res["kept"]), (True, 100))
+            got = f.read_text(encoding="utf-8").splitlines()
+            self.assertEqual((len(got), got[0], got[-1]), (100, "line 4900", "line 4999"))
+            self.assertEqual(res["freed"], len(full) - f.stat().st_size)
+            self.assertFalse(logctl.trim_file("install-1.log", 100)["trimmed"], "уже короче — не трогаем")
+            f.write_bytes(b"a\nb\nc")
+            self.assertEqual(logctl.trim_file("install-1.log", 2)["trimmed"], True)
+            self.assertEqual(f.read_bytes(), b"b\nc")
+            with self.assertRaises(logctl.CleanError):
+                logctl.trim_file("../x.log")
 
     def test_cli(self):
         from zoolib import cli

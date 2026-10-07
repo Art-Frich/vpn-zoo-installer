@@ -34,6 +34,7 @@ KEEP_STATES = 20
 PENDING_STALE = 10 * 60
 RUN_TIMEOUT = 300
 OLDER_DAYS = (1, 7, 30, 90)
+TAIL_LINES = 1000
 
 # действие → (ключ journalctl, допустимые значения, подпись)
 ACTIONS: dict[str, tuple[str, tuple[str, ...], str]] = {
@@ -134,6 +135,38 @@ def clean_files(names: list[str] | None = None, older_days: int | None = None, k
         out["deleted"].append(name)
         out["freed"] += size
     return out
+
+
+def trim_file(name: str, lines: int = TAIL_LINES) -> dict[str, Any]:
+    """Оставить в логе установки последние `lines` строк. Файл переписывается на месте (тот же inode):
+    идущая установка дописывает в него и дальше. → {freed, kept, trimmed}; trimmed=False — и так короче."""
+    f = next((f for f in install_logs() if f.name == name), None)
+    if f is None:
+        raise CleanError("такого лога установки нет")
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    try:
+        fd = os.open(f, flags)
+    except OSError as e:
+        raise CleanError(f"{name}: {e.strerror or e}") from None
+    with os.fdopen(fd, "r+b") as fh:
+        size = os.fstat(fd).st_size
+        pos, found = size, 0
+        while pos > 0 and found <= lines + 1:   # с конца блоками, пока не наберётся достаточно строк
+            step = min(65536, pos)
+            pos -= step
+            fh.seek(pos)
+            found += fh.read(step).count(b"\n")
+        fh.seek(pos)
+        data = fh.read()
+        nl = b"\n" if data.endswith(b"\n") else b""
+        parts = (data[:-1] if nl else data).split(b"\n")
+        if pos == 0 and len(parts) <= lines:
+            return {"freed": 0, "kept": len(parts), "trimmed": False}
+        tail = b"\n".join(parts[-lines:]) + nl
+        fh.seek(0)
+        fh.write(tail)
+        fh.truncate(len(tail))
+    return {"freed": max(0, size - len(tail)), "kept": lines, "trimmed": True}
 
 
 # ---------- journald (заявка → root) ----------
