@@ -23,6 +23,7 @@ MAIN_PLATFORMS = ("android", "ios", "windows")  # остальные — под 
 BADGE_KIND = {"ok": "ok", "warn": "warn", "no": "bad", "unk": "muted"}
 LEGEND = "✓ заявлено поддерживаемым · ! с оговоркой · ✕ не работает · ? не проверено · — не заявлено"
 UNVERIFIED = "Шаги и статусы — по коду и документации клиентов, на устройстве не проверялись."
+RECOMMEND_BASIS = "по документации и исследованию 04.10.2026, на устройстве не проверено"
 SEND_WARN = ("Ссылки и QR — ключи доступа: не отправляйте через MAX и VK, лучше лично или мессенджером "
              "со сквозным шифрованием.")
 FOREIGN_STORE = "В российском App Store его нет: нужен Apple ID другой страны, подделки с похожим названием не ставьте."
@@ -84,7 +85,7 @@ def _proto_chips(cat: clients.Catalog, c: dict[str, Any], plat: str, protos: lis
         if st.get("s") not in ("ok", "warn"):
             continue
         rec = (cat.recommended(plat, p) or {}).get("id") == c["id"]
-        why = ["рекомендуем для этого протокола"] if rec else []
+        why = [f"рекомендуем для этого протокола — {RECOMMEND_BASIS}"] if rec else []
         if st.get("note"):
             why.append(st["note"])
         kind = "chip ok" if rec else ("chip warn" if st["s"] == "warn" else "chip")
@@ -95,8 +96,8 @@ def _proto_chips(cat: clients.Catalog, c: dict[str, Any], plat: str, protos: lis
 def _check_controls(cache: dict[str, Any], csrf: str) -> Markup:
     checked = cache["checked"]
     can, why = clients.check_state()
-    status = t("span", f"версии проверены {ago(checked)}" if checked else "версии ещё не проверялись",
-               class_="muted small")
+    status = t("span", f"предложены последние версии · {ago(checked)}" if checked else "версии ещё не проверялись",
+               class_="muted small", title="Свежие релизы с GitHub: что вышло, а не что стоит на устройстве")
     if can:
         btn = post_button("/clients/check", "Проверить сейчас", csrf, "btn small",
                           title="Спросить GitHub про свежие версии (не чаще раза в 10 минут)")
@@ -124,7 +125,7 @@ def clients_page(app: "App", req: "Request") -> "Response":
         if not mine:
             continue
         mine.sort(key=lambda c: c["id"] not in rec)  # рекомендованные первыми, дальше порядок каталога
-        rows = [[t("span", t("strong", c["name"]), " ", badge("рекомендуем", "ok") if c["id"] in rec else None),
+        rows = [[t("span", t("strong", c["name"]), " ", t("span", "рекомендуем", class_="badge ok", title=RECOMMEND_BASIS) if c["id"] in rec else None),
                  _proto_chips(cat, c, plat, protos), _version_cell(c, cache, plat),
                  t("div", _link_anchors(c["platforms"][plat]), class_="chips")] for c in mine]
         cards.append(card(plat_title, table(["клиент", "для протоколов", "версия", "скачать"], rows, stack=True)))
@@ -154,7 +155,8 @@ def clients_page(app: "App", req: "Request") -> "Response":
     foot = t("p", "Версии из GitHub: раз в сутки и по кнопке, страница в сеть не ходит"
              + (f" · не удалось: {', '.join(failed)}" if failed else "") + f" · каталог от {cat.raw['updated']}",
              class_="hint")
-    intro = t("p", UNVERIFIED + " Зелёным — рекомендуем для протокола, жёлтым — с оговоркой (наведите).", class_="hint")
+    intro = t("p", UNVERIFIED, " ", f"Зелёное: рекомендуем — {RECOMMEND_BASIS}. Жёлтое: с оговоркой (наведите).",
+              class_="hint")
     body = [page_head("Клиенты", "что ставить на устройство", _check_controls(cache, csrf)), intro, *cards, matrix,
             *[n for n in notes if n], foot]
     return app.render(req, "Клиенты", body, active="/clients")

@@ -243,10 +243,10 @@ cj=$(mktemp)
 curl -s -m 10 -c "$cj" "$B/login" -o /tmp/jr-login.html
 lc=$(grep -o "name=\"lc\" value=\"[^\"]*\"" /tmp/jr-login.html | sed "s/.*value=\"//;s/\"//")
 curl -s -m 10 -b "$cj" -c "$cj" -d "lc=$lc&token=$ZOO_WEB_TOKEN&next=/" "$B/login" -o /dev/null
-curl -s -m 10 -b "$cj" "$B/journal?period=24h&all=1"
+curl -s -m 10 -b "$cj" "$B/journal?period=24h"
 rm -f "$cj" /tmp/jr-login.html')"
-if grep -q "$S1" <<< "$page" && grep -q 'Стучались в закрытые порты' <<< "$page" && grep -q 'Перебор SSH' <<< "$page"; then
-    pass "страница «Атаки»: адреса и группы на месте"
+if grep -q 'не учтены: ваши входы и служебные адреса' <<< "$page" && grep -q 'Стучались в закрытые порты' <<< "$page" && grep -q 'Перебор SSH' <<< "$page"; then
+    pass "страница «Атаки»: группы и строка «не учтены» на месте"
 else
     fail "страница «Атаки» без ожидаемого содержимого"
 fi

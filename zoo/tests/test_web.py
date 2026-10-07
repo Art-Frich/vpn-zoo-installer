@@ -1291,6 +1291,11 @@ class QuietPagesTest(AppTestBase):
         self.assertLess(body.index("Версии"), body.index("config.env"))
         self.assertNotIn("Сверить пользователей", body)
         self.assertIn("btn-grid", body)
+        self.assertIn('class="cols maint"', body, "узкая колонка обслуживания и широкая таблица версий")
+        from zoolib.web import assets
+        self.assertRegex(assets.CSS, r"\.btn-grid \{[^}]*grid-template-columns: minmax\(0, 1fr\);",
+                         "кнопки обслуживания — в один столбец")
+        self.assertRegex(assets.CSS, r"\.cols\.maint \{ grid-template-columns: 230px minmax\(0, 1fr\)")
 
     def test_settings_masks_panel_path_and_copies_full_url(self):
         self.env.write_config({"SERVER_IP": "10.0.0.1", "LABEL": "test", "PANEL_PORT": "24680",
@@ -1611,7 +1616,7 @@ class SwapFormsTest(AppTestBase):
         for action in ("/probe/run", "/probe/compare"):
             self.assertRegex(body, rf'<form method="post" action="{action}"[^>]*data-swap')
         _, body = self.c.get("/journal")
-        self.assertRegex(body, r'<a href="/journal\?period=24h&amp;all=1"[^>]*data-swap')
+        self.assertNotIn("all=1", body, "переключателя своих адресов в вебе нет")
 
     def test_post_without_js_still_redirects_with_flash(self):
         self.c.login()
