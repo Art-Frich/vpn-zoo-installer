@@ -66,17 +66,53 @@ class CatalogTest(unittest.TestCase):
         self.assertNotIn("Hiddify", cat.names_for("vless-reality"))
         self.assertIn("AmneziaWG", cat.names_for("amneziawg"))
 
-    def test_hiddify_unverified_and_not_recommended(self):
-        # исследование 04.10.2026: у Hiddify Hy2/SS/TUIC — ❓; без проверки не рекомендуем и в выбор не берём
+    def test_hiddify_checked_on_stand(self):
+        # прогон ядра hiddify-core 4.1.0 на стенде 07.10.2026 (research/2026-10-07/hiddify-compat_07-10-26.md)
         cat = catalog()
         h = cat.client("hiddify")
-        for pid in ("ss2022", "hysteria2", "tuic"):
-            self.assertEqual(h["protocols"][pid]["s"], "unk", pid)
-            self.assertIn("не проверено", h["protocols"][pid]["note"], pid)
-        for plat, by_proto in cat.raw["recommended"].items():
-            self.assertNotIn("hiddify", by_proto.values(), plat)
+        for pid in ("ss2022", "tuic"):
+            self.assertEqual(h["protocols"][pid]["s"], "ok", pid)
+        for pid in ("hysteria2", "hysteria2-obfs"):
+            self.assertEqual(h["protocols"][pid]["s"], "warn", pid)
+            self.assertIn("пин", h["protocols"][pid]["note"], "работает, но пин сертификата не проверяется")
+        for pid in ("vless-reality", "vless-xhttp", "amneziawg"):
+            self.assertEqual(h["protocols"][pid]["s"], "no", pid)
+        for pid, st in h["protocols"].items():
+            self.assertIn("07.10.2026", st["note"], pid)
+            self.assertIn("hiddify-core 4.1.0", st["note"], pid)
+        self.assertEqual(h["verified"]["date"], "2026-10-07")
+        self.assertFalse(h["verified"]["device"])
+        self.assertEqual(sorted(h["platforms"]), ["android", "ios", "linux", "macos", "windows"])
+        self.assertTrue(cat.no_ru_store(h, "ios"), "в App Store РФ Hiddify нет")
+        self.assertFalse(cat.no_ru_store(h, "android"))
+        self.assertEqual(h["per_app"], "ui")
+        self.assertIn("Прокси для приложений", cat.per_app_steps(h, "android"))
+        self.assertIsNone(cat.per_app_steps(h, "windows"), "режим приложений в Hiddify только на Android")
+        # рекомендован только там, где проверен и нет лучшего: TUIC на Android; VLESS — никогда
+        by = {(plat, pid) for plat, m in cat.raw["recommended"].items() for pid, cid in m.items() if cid == "hiddify"}
+        self.assertEqual(by, {("android", "tuic")})
         for plat in ("windows", "macos", "linux"):
-            self.assertNotIn("tuic", cat.raw["recommended"][plat], "проверенного клиента TUIC на десктопе нет")
+            self.assertNotIn("tuic", cat.raw["recommended"][plat], "на десктопе рекомендованного клиента TUIC нет")
+
+    def test_singbox_checked_on_stand(self):
+        cat = catalog()
+        sb = cat.client("singbox")
+        for pid in ("ss2022", "hysteria2", "hysteria2-obfs", "tuic"):
+            self.assertEqual(sb["protocols"][pid]["s"], "ok", pid)
+            self.assertIn("07.10.2026", sb["protocols"][pid]["note"], pid)
+        for pid in ("vless-reality", "vless-xhttp", "amneziawg"):
+            self.assertEqual(sb["protocols"][pid]["s"], "no", pid)
+        self.assertIn("xhttp", sb["protocols"]["vless-xhttp"]["note"], "у sing-box нет транспорта XHTTP")
+        self.assertEqual(sb["verified"]["date"], "2026-10-07")
+
+    def test_no_unify_clients(self):
+        cat = catalog()
+        self.assertEqual(cat.client("amneziavpn")["no_unify"], ["android"])
+        self.assertEqual(cat.client("incy")["no_unify"], ["android"])
+        raw = json.loads(clients.CATALOG_FILE.read_text(encoding="utf-8"))
+        raw["clients"][0]["no_unify"] = ["plan9"]
+        with self.assertRaises(clients.ClientsError):
+            clients.validate(raw)
 
     def test_per_app_steps_are_per_platform(self):
         cat = catalog()
@@ -346,7 +382,7 @@ class ClientsPageTest(AppTestBase):
     def test_matrix_marks(self):
         _, body = self.c.get("/clients")
         self.assertRegex(body, r'class="badge bad" title="не работает: [^"]*X25519MLKEM768')
-        self.assertIn('class="badge muted" title="не проверено: не проверено (04.10.2026)', body)
+        self.assertIn('class="badge muted" title="не проверено: в исследовании не проверяли', body)
 
     def card(self, body, title):
         card = body[body.index(f"<h3>{title}</h3>"):]
@@ -380,7 +416,11 @@ class ClientsPageTest(AppTestBase):
         self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>INCY</strong>"),
                         "рекомендованные — первыми")
         self.assertIn("<strong>Karing</strong>", android, "не рекомендованный, но умеющий протокол — в списке")
-        self.assertNotIn("<strong>Hiddify</strong>", android, "Hiddify на Android ничего не умеет: ✕ и ? в список не идут")
+        hid = android[android.index("<strong>Hiddify</strong>"):]
+        hid = hid[:hid.index("</tr>")]
+        self.assertNotIn(">VLESS + REALITY</span>", hid, "Hiddify VLESS не проходит: ✕ в список не идёт")
+        self.assertNotIn(">AmneziaWG</span>", hid)
+        self.assertIn(">Hysteria2</span>", hid)
 
     def test_check_now_button_and_request(self):
         clients.check_upstream(fetch=fake_fetch, now=lambda: time.time() - 7500)

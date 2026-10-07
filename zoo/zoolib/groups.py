@@ -29,6 +29,7 @@ v2rayN и Android-конфиги AmneziaWG (allowlist._apply); в отчёте �
 from __future__ import annotations
 
 import argparse
+import itertools
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -331,10 +332,12 @@ def check_members(new: list[tuple[str, str]], existing: list[str]) -> None:
 
 # ---------- каталог клиентов под протоколы группы ----------
 
-def client_options(cat: clientcat.Catalog, platform: str, protocols: list[str]) -> list[dict[str, Any]]:
+def client_options(cat: clientcat.Catalog, platform: str, protocols: list[str],
+                   prefer: Any = ()) -> list[dict[str, Any]]:
     """Клиенты платформы, которые заявлены для выбранных протоколов (ok/warn). Порядок: клиенты, которых нет
     в российском магазине платформы, — в конце (первым их не предлагаем, пока есть другие); затем охватившие
-    больше протоколов; при равенстве — рекомендованный каталогом для первого протокола группы по порядку
+    больше протоколов; затем уже выбранные на других устройствах группы (prefer: одно приложение на
+    несколько устройств); при равенстве — рекомендованный каталогом для первого протокола группы по порядку
     раздачи, затем остальные рекомендованные. recommended=True — у первого, если его рекомендует каталог."""
     real = [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
     rec = [c["id"] for c in (cat.recommended(platform, p) for p in real) if c]
@@ -349,7 +352,8 @@ def client_options(cat: clientcat.Catalog, platform: str, protocols: list[str]) 
         if covers:
             opts.append({"client": c, "covers": covers, "recommended": False,
                          "no_ru_store": cat.no_ru_store(c, platform)})
-    opts.sort(key=lambda o: (o["no_ru_store"], -len(o["covers"]), o["client"]["id"] != lead_id,
+    opts.sort(key=lambda o: (o["no_ru_store"], -len(o["covers"]), o["client"]["id"] not in prefer,
+                             o["client"]["id"] != lead_id,
                              rec.index(o["client"]["id"]) if o["client"]["id"] in rec else 99))
     if opts and opts[0]["client"]["id"] in rec:
         opts[0]["recommended"] = True
@@ -360,13 +364,14 @@ def _real(cat: clientcat.Catalog, protocols: list[str]) -> list[str]:
     return by_priority(p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo"))
 
 
-def suggest_clients(cat: clientcat.Catalog, platform: str, protocols: list[str]) -> list[str]:
+def suggest_clients(cat: clientcat.Catalog, platform: str, protocols: list[str], prefer: Any = ()) -> list[str]:
     """Минимальный набор клиентов платформы, вместе покрывающий протоколы (жадно). На каждом шаге: клиент не из
     российского магазина — только если иначе протокол не покрыть; затем покрывающий больше ещё не покрытых
-    протоколов; затем рекомендованный каталогом для них; затем порядок client_options. Результат — по порядку
-    протоколов по PRIORITY: первым идёт клиент самого приоритетного протокола."""
+    протоколов; затем уже выбранный на других устройствах (prefer); затем рекомендованный каталогом для них;
+    затем порядок client_options. Результат — по порядку протоколов по PRIORITY: первым идёт клиент самого
+    приоритетного протокола. Для всех устройств группы сразу — suggest_set (меньше разных приложений)."""
     real = _real(cat, protocols)
-    opts = client_options(cat, platform, protocols)
+    opts = client_options(cat, platform, protocols, prefer)
     todo = list(real)
     picked: list[tuple[int, str]] = []
     while todo:
@@ -377,7 +382,7 @@ def suggest_clients(cat: clientcat.Catalog, platform: str, protocols: list[str])
             if not new or any(cid == x for _, x in picked):
                 continue
             rec = sum(1 for p in new if (cat.recommended(platform, p) or {}).get("id") == cid)
-            key = (o["no_ru_store"], -len(new), -rec, pos)
+            key = (o["no_ru_store"], -len(new), cid not in prefer, -rec, pos)
             if best is None or key < best[0]:
                 best = (key, cid, new)
         if best is None:
@@ -387,13 +392,138 @@ def suggest_clients(cat: clientcat.Catalog, platform: str, protocols: list[str])
     return [cid for _, cid in sorted(picked, key=lambda x: x[0])]
 
 
+UNIFY_MAX_APPS = 14  # разных приложений в каталоге больше — перебор дорог, остаётся подбор по платформам
+
+
+def _covered(opts: list[dict[str, Any]]) -> set[str]:
+    return set().union(*(o["covers"] for o in opts)) if opts else set()
+
+
+def _platform_pool(cat: clientcat.Catalog, plat: str,
+                   protocols: list[str]) -> tuple[list[dict[str, Any]], set[str]] | None:
+    """Клиенты платформы, из которых собирается общий набор, и протоколы, которые на ней можно покрыть.
+    Иностранные магазины берутся, только если без них протокол не покрыть (как в suggest_clients);
+    клиент с no_unify для этой платформы идёт в набор, только если без него протокол не покрыть."""
+    opts = client_options(cat, plat, protocols)
+    if not opts:
+        return None
+    target = _covered(opts)
+    ru = [o for o in opts if not o["no_ru_store"]]
+    base = ru if _covered(ru) == target else opts
+    pool = [o for o in base if plat not in o["client"].get("no_unify", [])]
+    return (pool if _covered(pool) == target else base), target
+
+
+def _cheapest_cover(cat: clientcat.Catalog, plat: str, pool: list[dict[str, Any]], target: set[str],
+                    allowed: frozenset[str], max_k: int = CLIENTS_MAX,
+                    reach: dict[str, int] | None = None) -> list[dict[str, Any]] | None:
+    """Наименьший набор из allowed, покрывающий target и не длиннее max_k: меньше приложений, меньше
+    иностранных, приложения, доступные на большем числе устройств (reach), больше рекомендованных каталогом,
+    раньше в порядке client_options. Нет такого — None."""
+    reach = reach or {}
+    mine = [o for o in pool if o["client"]["id"] in allowed]
+    if _covered(mine) != target:
+        return None
+
+    def rec(o: dict[str, Any]) -> int:
+        return sum(1 for p in o["covers"] if (cat.recommended(plat, p) or {}).get("id") == o["client"]["id"])
+
+    for k in range(1, min(len(mine), max_k) + 1):
+        best: tuple[tuple[Any, ...], list[dict[str, Any]]] | None = None
+        for combo in itertools.combinations(mine, k):
+            if _covered(list(combo)) != target:
+                continue
+            key = (sum(o["no_ru_store"] for o in combo), -sum(reach.get(o["client"]["id"], 0) for o in combo),
+                   -sum(rec(o) for o in combo), [pool.index(o) for o in combo])
+            if best is None or key < best[0]:
+                best = (key, list(combo))
+        if best:
+            return best[1]
+    return None
+
+
+def suggest_set(cat: clientcat.Catalog, platforms: Any, protocols: list[str]) -> dict[str, list[str]]:
+    """Клиенты на каждую платформу так, чтобы на всех устройствах группы было как можно меньше РАЗНЫХ приложений
+    (одно кросс-платформенное, где оно покрывает выбранные протоколы). Охват протоколов и число приложений на
+    устройстве — как минимум у suggest_clients: ради общего приложения набор на устройстве не растёт. Из наборов с
+    равным числом разных приложений берётся тот, где меньше иностранных магазинов, приложения стоят на
+    большем числе устройств (сначала самое распространённое), больше рекомендованных каталогом, раньше по
+    порядку каталога. Порядок внутри платформы — как у suggest_clients (по PRIORITY)."""
+    real = _real(cat, protocols)
+    pools: dict[str, tuple[list[dict[str, Any]], set[str]]] = {}
+    min_k: dict[str, int] = {}
+    for plat in platforms:
+        got = _platform_pool(cat, plat, protocols)
+        if got:
+            pool, target = got
+            cover = _cheapest_cover(cat, plat, pool, target, frozenset(o["client"]["id"] for o in pool))
+            if cover:
+                pools[plat] = got
+                min_k[plat] = len(cover)
+    universe = list(dict.fromkeys(o["client"]["id"] for pool, _ in pools.values() for o in pool))
+    reach = {a: sum(1 for pool, _ in pools.values() if any(o["client"]["id"] == a for o in pool)) for a in universe}
+    if len(universe) > UNIFY_MAX_APPS:
+        return {plat: ids for plat in pools if (ids := suggest_clients(cat, plat, protocols))}
+    best: tuple[tuple[Any, ...], dict[str, list[dict[str, Any]]]] | None = None
+    for k in range(1, len(universe) + 1):
+        for combo in itertools.combinations(universe, k):
+            allowed = frozenset(combo)
+            chosen: dict[str, list[dict[str, Any]]] = {}
+            for plat, (pool, target) in pools.items():
+                cover = _cheapest_cover(cat, plat, pool, target, allowed, min_k[plat], reach)
+                if cover is None:
+                    break
+                chosen[plat] = cover
+            else:
+                used = [o["client"]["id"] for cover in chosen.values() for o in cover]
+                apps = set(used)
+                key = (len(apps),
+                       sum(o["no_ru_store"] for c in chosen.values() for o in c),
+                       tuple(-n for n in sorted((used.count(a) for a in apps), reverse=True)),
+                       -sum(1 for plat, c in chosen.items() for o in c for p in o["covers"]
+                            if (cat.recommended(plat, p) or {}).get("id") == o["client"]["id"]),
+                       sorted(universe.index(a) for a in apps))
+                if best is None or key < best[0]:
+                    best = (key, chosen)
+        if best:
+            break
+    out: dict[str, list[str]] = {}
+    for plat, cover in (best[1] if best else {}).items():
+        owner: dict[str, str] = {}
+        for o in cover:
+            for p in o["covers"]:
+                owner.setdefault(p, o["client"]["id"])
+        first = {o["client"]["id"]: min((real.index(p) for p, c in owner.items() if c == o["client"]["id"]),
+                                        default=len(real)) for o in cover}
+        out[plat] = sorted(first, key=lambda i: first[i])
+    return {plat: ids for plat in platforms if (ids := out.get(plat) or suggest_clients(cat, plat, protocols))}
+
+
 def default_clients(cat: clientcat.Catalog, protocols: list[str]) -> dict[str, list[str]]:
-    out = {}
-    for plat in cat.platforms:
-        ids = suggest_clients(cat, plat, protocols)
-        if ids:
-            out[plat] = ids
-    return out
+    return suggest_set(cat, cat.platforms, protocols)
+
+
+def apps_summary(cat: clientcat.Catalog, chosen: dict[str, list[str]]) -> tuple[str, str]:
+    """Итог выбора по устройствам: (заголовок, строка приложений). Заголовок «Одно приложение на всех
+    устройствах: X» — когда на каждом нужном устройстве стоит одно и то же единственное приложение; строка
+    «Приложений всего N: X — Android, Windows; Y — iPhone» — когда какое-то приложение стоит на нескольких
+    устройствах. Одно устройство или нечего объединять — ('', '')."""
+    sets = {plat: ids for plat, ids in chosen.items() if ids}
+    if len(sets) < 2:
+        return "", ""
+    where: dict[str, list[str]] = {}
+    for plat, ids in sets.items():
+        for cid in ids:
+            where.setdefault(cid, []).append(cat.platforms.get(plat, plat))
+
+    def name(cid: str) -> str:
+        return (cat.client(cid) or {}).get("name", cid)
+
+    if len(where) == 1:
+        return f"Одно приложение на всех устройствах: {name(next(iter(where)))}", ""
+    if all(len(v) == 1 for v in where.values()):
+        return "", ""
+    return "", f"Приложений всего {len(where)}: " + "; ".join(f"{name(c)} — {', '.join(v)}" for c, v in where.items())
 
 
 def coverage(cat: clientcat.Catalog, platform: str, protocols: list[str],

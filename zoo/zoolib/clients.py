@@ -121,6 +121,8 @@ def validate(raw: Any) -> None:
              f"{cid}: per_app_steps — словарь платформа → текст, без iOS и только для платформ клиента")
         no_ru = c.get("no_ru_store", [])
         need(isinstance(no_ru, list) and set(no_ru) <= set(c["platforms"]), f"{cid}: no_ru_store")
+        no_unify = c.get("no_unify", [])
+        need(isinstance(no_unify, list) and set(no_unify) <= set(c["platforms"]), f"{cid}: no_unify")
         v = c.get("verified") or {}
         need(bool(DATE_RE.fullmatch(str(v.get("date", "")))) and isinstance(v.get("device"), bool),
              f"{cid}: verified")
