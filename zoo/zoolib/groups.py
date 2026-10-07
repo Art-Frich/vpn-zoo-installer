@@ -51,6 +51,14 @@ NOTE_MAX = people.NOTE_MAX
 CLIENTS_MAX = 5       # клиентов на платформу
 MESSAGE_MAX = 3000    # знаков в тексте инструкции платформы
 KEEP: Any = object()  # «не менять» для update (None у allowlist значит «общий список»)
+INSTALL_MODES = ("self", "admin")   # кто ставит приложения: люди сами по инструкции / ИТ-администратор
+MAIN_DEVICES = ("android", "ios", "windows")
+SHAKY = ("ss2022",)   # в полевом тесте терял данные (D37): в готовые варианты не берётся
+MAX_APPS = 2          # приложений на устройство в наборе по умолчанию
+STORE_KINDS = ("play", "appstore")
+# транспорт протокола: «Надёжно» берёт пару из разных (TCP + UDP)
+TRANSPORT = {"vless-reality": "tcp", "vless-xhttp": "tcp", "ss2022": "tcp", "hysteria2": "udp",
+             "hysteria2-obfs": "udp", "amneziawg": "udp", "tuic": "udp"}
 
 
 class GroupError(users.UserError):
@@ -85,6 +93,10 @@ def clean_message(text: Any) -> str:
     return "\n".join(line.rstrip() for line in s.split("\n")).strip()
 
 
+def clean_mode(v: Any) -> str:
+    return v if v in INSTALL_MODES else "self"
+
+
 def _norm_protocols(ids: list[str]) -> list[str]:
     return [ALL] if ALL in ids or not ids else by_priority(ids)
 
@@ -102,6 +114,7 @@ class Group:
     allowlist: dict[str, list[str]] | None = None
     messages: dict[str, str] = field(default_factory=dict)
     msg_sigs: dict[str, str] = field(default_factory=dict)   # подпись набора клиентов на момент сохранения текста
+    install_mode: str = "self"   # «self» — люди ставят сами по инструкции, «admin» — приложения ставит ИТ
 
     def __post_init__(self) -> None:
         self.protocols = _norm_protocols(self.protocols)   # набор, не очередь: порядок — PRIORITY
@@ -127,11 +140,13 @@ class Group:
             clients={str(k): ids for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())
                      if (ids := client_ids(v))},
             allowlist=own if own and all(own.values()) else None,
-            messages=msgs, msg_sigs=sigs)
+            messages=msgs, msg_sigs=sigs, install_mode=clean_mode(d.get("install_mode")))
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.id, "name": self.name, "protocols": list(self.protocols),
                                "clients": {k: list(v) for k, v in self.clients.items()}, "allowlist": self.allowlist}
+        if self.install_mode != "self":
+            out["install_mode"] = self.install_mode
         if self.messages:
             out["messages"] = {k: {"text": m, "sig": self.msg_sigs.get(k)} for k, m in self.messages.items()}
         return out
@@ -393,17 +408,34 @@ def _covered(opts: list[dict[str, Any]]) -> set[str]:
     return set().union(*(o["covers"] for o in opts)) if opts else set()
 
 
-def _platform_pool(cat: clientcat.Catalog, plat: str,
-                   protocols: list[str]) -> tuple[list[dict[str, Any]], set[str]] | None:
+def in_store(client: dict[str, Any], plat: str) -> bool:
+    """У клиента на платформе есть страница в магазине приложений (Google Play, App Store)."""
+    return any(ln["kind"] in STORE_KINDS for ln in client["platforms"].get(plat, []))
+
+
+def _store_bound(plat: str, mode: str) -> bool:
+    """Магазин решает, что можно поставить: людям, которые ставят сами, и на iPhone (мимо App Store не
+    поставить даже админу). Админ на Android и компьютерах берёт APK и установщики с GitHub."""
+    return mode == "self" or plat == "ios"
+
+
+def _platform_pool(cat: clientcat.Catalog, plat: str, protocols: list[str],
+                   mode: str = "self") -> tuple[list[dict[str, Any]], set[str]] | None:
     """Клиенты платформы, из которых собирается общий набор, и протоколы, которые на ней можно покрыть.
-    Иностранные магазины берутся, только если без них протокол не покрыть (как в suggest_clients);
-    клиент с no_unify для этой платформы идёт в набор, только если без него протокол не покрыть."""
+    Приложения только из магазина и российский магазин берутся, пока ими покрыты все протоколы платформы
+    (иначе — любые); клиент с no_unify для этой платформы идёт в набор, только если без него протокол не покрыть."""
     opts = client_options(cat, plat, protocols)
     if not opts:
         return None
     target = _covered(opts)
-    ru = [o for o in opts if not o["no_ru_store"]]
-    base = ru if _covered(ru) == target else opts
+    base = opts
+    if _store_bound(plat, mode):
+        stored = [o for o in base if in_store(o["client"], plat)]
+        if _covered(stored) == target:
+            base = stored
+        ru = [o for o in base if not o["no_ru_store"]]
+        if _covered(ru) == target:
+            base = ru
     pool = [o for o in base if plat not in o["client"].get("no_unify", [])]
     return (pool if _covered(pool) == target else base), target
 
@@ -436,18 +468,21 @@ def _cheapest_cover(cat: clientcat.Catalog, plat: str, pool: list[dict[str, Any]
     return None
 
 
-def suggest_set(cat: clientcat.Catalog, platforms: Any, protocols: list[str]) -> dict[str, list[str]]:
+def suggest_set(cat: clientcat.Catalog, platforms: Any, protocols: list[str],
+                mode: str = "self") -> dict[str, list[str]]:
     """Клиенты на каждую платформу так, чтобы на всех устройствах группы было как можно меньше РАЗНЫХ приложений
     (одно кросс-платформенное, где оно покрывает выбранные протоколы). Охват протоколов и число приложений на
     устройстве — как минимум у suggest_clients: ради общего приложения набор на устройстве не растёт. Из наборов с
     равным числом разных приложений берётся тот, где меньше иностранных магазинов, приложения стоят на
     большем числе устройств (сначала самое распространённое), больше рекомендованных каталогом, раньше по
-    порядку каталога. Порядок внутри платформы — как у suggest_clients (по PRIORITY)."""
+    порядку каталога. Порядок внутри платформы — как у suggest_clients (по PRIORITY). Больше MAX_APPS на
+    устройстве не бывает: тогда берётся лучший набор из двух (client_sets) и строка устройства честно
+    говорит «без X». mode — кто ставит приложения (см. _platform_pool)."""
     real = _real(cat, protocols)
     pools: dict[str, tuple[list[dict[str, Any]], set[str]]] = {}
     min_k: dict[str, int] = {}
     for plat in platforms:
-        got = _platform_pool(cat, plat, protocols)
+        got = _platform_pool(cat, plat, protocols, mode)
         if got:
             pool, target = got
             cover = _cheapest_cover(cat, plat, pool, target, frozenset(o["client"]["id"] for o in pool))
@@ -490,11 +525,104 @@ def suggest_set(cat: clientcat.Catalog, platforms: Any, protocols: list[str]) ->
         first = {o["client"]["id"]: min((real.index(p) for p, c in owner.items() if c == o["client"]["id"]),
                                         default=len(real)) for o in cover}
         out[plat] = sorted(first, key=lambda i: first[i])
-    return {plat: ids for plat in platforms if (ids := out.get(plat) or suggest_clients(cat, plat, protocols))}
+    plan = {plat: ids for plat in platforms if (ids := out.get(plat) or suggest_clients(cat, plat, protocols))}
+    for plat in [p for p, ids in plan.items() if len(ids) > MAX_APPS]:
+        used = {a for p, ids in plan.items() if p != plat for a in ids}
+        top = client_sets(cat, plat, protocols, mode, prefer=used)
+        if top:
+            plan[plat] = top[0]["ids"]
+    return plan
 
 
-def default_clients(cat: clientcat.Catalog, protocols: list[str]) -> dict[str, list[str]]:
-    return suggest_set(cat, cat.platforms, protocols)
+def default_clients(cat: clientcat.Catalog, protocols: list[str], mode: str = "self") -> dict[str, list[str]]:
+    return suggest_set(cat, cat.platforms, protocols, mode)
+
+
+def _by_first_protocol(real: list[str], opts: list[dict[str, Any]]) -> list[str]:
+    """id клиентов набора: первым — тот, кто отвечает за самый приоритетный протокол."""
+    owner: dict[str, str] = {}
+    for o in opts:
+        for p in o["covers"]:
+            owner.setdefault(p, o["client"]["id"])
+    first = {o["client"]["id"]: min((real.index(p) for p, c in owner.items() if c == o["client"]["id"]),
+                                    default=len(real)) for o in opts}
+    return sorted(first, key=lambda i: first[i])
+
+
+def client_sets(cat: clientcat.Catalog, plat: str, protocols: list[str], mode: str = "self",
+                max_apps: int = MAX_APPS, prefer: Any = ()) -> list[dict[str, Any]]:
+    """Наборы из 1–max_apps приложений платформы, покрывающие хотя бы один протокол, лучшие первыми. Поля: ids
+    (по PRIORITY), covers, missing (протоколы без клиента), foreign (не из российского магазина), nostore
+    (не из магазина вообще), rec (рекомендовано каталогом). Порядок: меньше непокрытых, меньше «не из магазина»
+    и «не из РФ-магазина» (там, где магазин решает, см. _store_bound), меньше приложений, больше
+    рекомендованных, уже выбранные на других устройствах (prefer), порядок каталога. Набор, где приложение
+    ничего не добавляет, и набор, который строго хуже другого (то же покрытие при большем числе приложений),
+    отбрасываются."""
+    real = _real(cat, protocols)
+    opts = client_options(cat, plat, protocols)
+    bound = _store_bound(plat, mode)
+    any_store = bound and any(in_store(o["client"], plat) for o in opts)
+    prefer = frozenset(prefer)
+    rows: list[dict[str, Any]] = []
+    for k in range(1, min(max_apps, len(opts)) + 1):
+        for combo in itertools.combinations(range(len(opts)), k):
+            chosen = [opts[i] for i in combo]
+            covers = [set(o["covers"]) for o in chosen]
+            if any(not (covers[j] - set().union(*(c for m, c in enumerate(covers) if m != j))) for j in range(k)):
+                continue
+            ids = _by_first_protocol(real, chosen)
+            have = set().union(*covers)
+            rec = sum(1 for o in chosen for p in o["covers"] if (cat.recommended(plat, p) or {}).get("id") == o["client"]["id"])
+            rows.append({"ids": ids, "covers": [p for p in real if p in have], "missing": [p for p in real if p not in have],
+                         "foreign": sum(o["no_ru_store"] for o in chosen) if bound else 0,
+                         "nostore": sum(not in_store(o["client"], plat) for o in chosen) if any_store else 0,
+                         "rec": rec, "order": combo})
+    rows = [r for r in rows if not any(set(s["covers"]) >= set(r["covers"]) and len(s["ids"]) < len(r["ids"]) for s in rows)]
+    rows.sort(key=lambda r: (len(r["missing"]), r["nostore"], r["foreign"], len(r["ids"]), -r["rec"],
+                             -len(set(r["ids"]) & prefer), r["order"]))
+    return rows
+
+
+def easy_protocols(cat: clientcat.Catalog) -> set[str]:
+    """Протоколы, которые человек ставит сам без ручных правок: на телефоне есть приложение из магазина,
+    принимающее их из одного QR."""
+    return {p for c in cat.clients for plat in ("android", "ios") if plat in c["platforms"]
+            and in_store(c, plat) and "qr" in c.get("import", {})
+            for p, st in c["protocols"].items() if st.get("s") in ("ok", "warn") and p in cat.protocols
+            and not cat.protocols[p].get("pseudo")}
+
+
+def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
+            devices: Any = MAIN_DEVICES) -> list[dict[str, Any]]:
+    """Готовые варианты первого экрана мастера. «simple» — один протокол и одно приложение на устройство
+    (меньше всего разных приложений); «reliable» — два протокола, лучше TCP + UDP, не больше MAX_APPS на
+    устройство. Поля: id, protocols, plan {платформа: [клиенты]}, apps (число разных), per_device (наибольшее
+    число на устройстве), complete (все протоколы на всех устройствах покрыты). Протоколы людям, которые
+    ставят сами, — только из easy_protocols. Нет подходящего — варианта нет."""
+    devices = list(devices)
+    easy = easy_protocols(cat)
+    cands = [p for p in by_priority(available) if p in cat.protocols and not cat.protocols[p].get("pseudo")
+             and p not in SHAKY and (mode == "admin" or p in easy)]
+
+    def make(pid: str, protos: list[str]) -> dict[str, Any]:
+        plan = suggest_set(cat, devices, protos, mode)
+        miss = sum(len(coverage(cat, plat, protos, ids)[1]) for plat, ids in plan.items())
+        return {"id": pid, "protocols": protos, "plan": plan, "apps": len({a for v in plan.values() for a in v}),
+                "per_device": max((len(v) for v in plan.values()), default=0),
+                "complete": set(plan) == set(devices) and miss == 0}
+
+    out: list[dict[str, Any]] = []
+    simple = [make("simple", [p]) for p in cands]
+    simple = [x for x in simple if x["complete"] and x["per_device"] == 1]
+    if simple:
+        out.append(min(simple, key=lambda x: (x["apps"], cands.index(x["protocols"][0]))))
+    pairs = [make("reliable", list(by_priority(pair))) for pair in itertools.combinations(cands, 2)]
+    pairs = [x for x in pairs if x["plan"]]
+    if pairs:
+        out.append(min(pairs, key=lambda x: (not x["complete"], x["per_device"] > MAX_APPS,
+                                             TRANSPORT.get(x["protocols"][0]) == TRANSPORT.get(x["protocols"][1]),
+                                             x["apps"], sum(cands.index(p) for p in x["protocols"]))))
+    return out
 
 
 def apps_summary(cat: clientcat.Catalog, chosen: dict[str, list[str]]) -> tuple[str, str]:
@@ -684,11 +812,11 @@ def members_of(gs: Groups, ureg: users.Registry, gid: str) -> list[users.User]:
 # ---------- изменения ----------
 
 def create(name: str, protocols: list[str], clients: dict[str, Any] | None = None,
-           allow: dict[str, list[str]] | None = None) -> Group:
+           allow: dict[str, list[str]] | None = None, install_mode: str = "self") -> Group:
     with users._lock():
         gs, ureg = _open()
         g = Group(gs.free_id(), clean_name(name, gs), clean_protocols(protocols),
-                  clean_clients(clients or {}, protocols), clean_allow(allow))
+                  clean_clients(clients or {}, protocols), clean_allow(allow), install_mode=clean_mode(install_mode))
         gs.groups.append(g)
         gs.save()
         refresh_mirror(gs, ureg)
@@ -735,9 +863,9 @@ def _snapshot(ureg: users.Registry, names: list[str]) -> tuple[dict[str, list[st
 
 
 def update(ref: str, name: str | None = None, protocols: list[str] | None = None,
-           clients: dict[str, Any] | None = None, allow: Any = KEEP) -> GroupReport:
+           clients: dict[str, Any] | None = None, allow: Any = KEEP, install_mode: str | None = None) -> GroupReport:
     """Изменить группу и применить к участникам один раз. allow: KEEP — не менять, None — общий
-    список, словарь — свой список группы."""
+    список, словарь — свой список группы. install_mode: кто ставит приложения (участников не затрагивает)."""
     with users._lock():
         gs, ureg = _open()
         g = gs.require(ref)
@@ -752,6 +880,8 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         offer_changed = offered(new_protocols, sel) != offered(g.protocols, sel)
         allow_changed = new_allow != g.allowlist
         g.name, g.protocols, g.clients, g.allowlist = new_name, new_protocols, new_clients, new_allow
+        if install_mode is not None:
+            g.install_mode = clean_mode(install_mode)
         gs.save()
         rep = GroupReport(g, "сохранено")
         refresh_mirror(gs, ureg)
@@ -927,7 +1057,8 @@ def add_members(ref: str, new: list[tuple[str, str]], existing: list[str]) -> Gr
 
 
 def connect(name: str, protocols: list[str], clients: dict[str, Any] | None,
-            allow: dict[str, list[str]] | None, new: list[tuple[str, str]], existing: list[str]) -> GroupReport:
+            allow: dict[str, list[str]] | None, new: list[tuple[str, str]], existing: list[str],
+            install_mode: str = "self") -> GroupReport:
     """Мастер «Новая группа»: группа + пользователи, всё проверено до первого изменения.
     Исключение при добавлении людей не бросается наружу (rep.crashed): отчёт с ошибками и тем, что
     успело примениться. Если не добавлен никто, созданная пустая группа удаляется (rep.removed):
@@ -936,7 +1067,7 @@ def connect(name: str, protocols: list[str], clients: dict[str, Any] | None,
     if not new and not existing:
         raise GroupError("добавьте хотя бы одного пользователя")
     check_members(new, existing)
-    g = create(name, protocols, clients, allow)
+    g = create(name, protocols, clients, allow, install_mode)
     try:
         rep = add_members(g.id, new, existing)
     except Exception as e:  # noqa: BLE001 — отчёт важнее причины: частичное состояние нужно показать
@@ -1016,14 +1147,14 @@ def cmd_group_list(args: argparse.Namespace, cfg: Any) -> int:
         names = [u.name for u in members_of(gs, ureg, g.id)]
         data.append({**g.to_dict(), "members": names})
         rows.append([g.id, g.name, _fmt_protocols(g), ", ".join(f"{p}={'+'.join(c)}" for p, c in g.clients.items()) or "—",
-                     "свой" if g.allowlist else "общий", ", ".join(names) or "—"])
+                     "свой" if g.allowlist else "общий", g.install_mode, ", ".join(names) or "—"])
     if args.json:
         output.print_json({"path": str(gs.path), "groups": data})
         return 0
     if not rows:
         output.warn("групп нет: реестр пользователей ещё не создан (zoo setup)")
         return 0
-    print(output.table(rows, ["id", "название", "протоколы", "клиенты", "приложения", "участники"]))
+    print(output.table(rows, ["id", "название", "протоколы", "клиенты", "приложения", "ставит", "участники"]))
     return 0
 
 
@@ -1032,7 +1163,7 @@ def cmd_group_add(args: argparse.Namespace, cfg: Any) -> int:
     if args.allow:
         allow = _allow_lists(args.allow, allowlist.Allowlist.load())
     g = create(args.name, [ALL] if args.all_protocols or not args.proto else args.proto,
-               _parse_clients(args.client), allow)
+               _parse_clients(args.client), allow, args.install or "self")
     if args.json:
         output.print_json(g.to_dict())
     else:
@@ -1055,7 +1186,7 @@ def cmd_group_set(args: argparse.Namespace, cfg: Any) -> int:
         cur = Groups.load().require(args.group).clients
         clients = {**cur, **clients}
     protos = [ALL] if args.all_protocols else args.proto
-    rep = update(args.group, args.name, protos, clients, allow)
+    rep = update(args.group, args.name, protos, clients, allow, args.install)
     return _print_report(rep, args.json)
 
 

@@ -1,9 +1,9 @@
 """Мастер «Новая группа» (/connect/new) и страницы групп (/groups): веб поверх zoolib.groups.
 
-Мастер — один адрес и четыре шага без перезагрузки (форма data-swap): протоколы → клиенты →
-люди и приложения → раздача. Состояние между шагами лежит в скрытых полях формы (на сервере
-ничего не хранится), каждый шаг проверяется сервером, запись — одна, в конце третьего шага.
-Страница группы — те же блоки шагов 1–3 в одной форме."""
+Мастер — один адрес и пять шагов без перезагрузки (форма data-swap): кто ставит приложения и готовые
+варианты → протоколы → приложения (устройство → одна строка) → люди → раздача. Состояние между шагами
+лежит в скрытых полях формы (на сервере ничего не хранится), каждый шаг проверяется сервером, запись —
+одна, в конце третьего шага формы. Страница группы — те же блоки шагов 1–3 в одной форме."""
 
 from __future__ import annotations
 
@@ -16,14 +16,17 @@ from typing import TYPE_CHECKING, Any
 from .. import allowlist, clients, groups, manifests, people, protolib, users
 from ..fsutil import LockTimeout
 from ..probe import history, live, rank, verdicts
-from . import allowviews, clientviews, handoffviews, userviews
+from . import allowviews, clientviews, distviews, handoffviews, userviews
 from .html import Markup, badge, card, csrf_input, post_button, t, table
 from .views import alert_list, page_head
 
 if TYPE_CHECKING:
     from .app import App, Request, Response
 
-STEPS = ("Протоколы", "Клиенты", "Люди", "Раздача")
+STEPS = ("Кто ставит", "Протоколы", "Приложения", "Люди", "Раздача")
+MODE_TITLES = {"admin": "Приложения ставит ИТ (или я)", "self": "Люди ставят сами по инструкции"}
+PRESET_TITLES = {"simple": "Просто", "reliable": "Надёжно"}
+SETS_SHOWN = 4   # наборов в «сменить» (не считая «Не нужен»)
 LAYER = {"tcp": "TCP", "udp": "UDP", "tcp+udp": "TCP+UDP"}
 # Полевой тест 05.10.2026 (находка 7): у VLESS+Vision новые соединения рвутся на части путей,
 # Hysteria2 и XHTTP устойчивы: предвыбор — Hysteria2, XHTTP и AmneziaWG
@@ -41,7 +44,6 @@ TIPS = {
 ERRORS_SHOWN = 6
 DONE_ROWS_MAX = 10   # больше людей — на шаге раздачи не строки с QR каждого, а переход к карточкам
 CATCH = (groups.GroupError, users.UserError, allowlist.AllowlistError, LockTimeout, protolib.ProtoError)
-MAIN_PLATFORMS = clientviews.MAIN_PLATFORMS
 
 
 def _redirect(location: str) -> "Response":
@@ -60,7 +62,9 @@ class Draft:
     name: str = ""
     protocols: list[str] = field(default_factory=list)
     clients: dict[str, list[str]] = field(default_factory=dict)
-    clients_for: str = ""   # протоколы, под которые клиенты уже выбраны на шаге 2 (изменились — набор пересчитывается)
+    clients_for: str = ""   # протоколы, под которые приложения уже выбраны на шаге 3 (изменились — набор пересчитывается)
+    install_mode: str = "self"
+    devices: list[str] = field(default_factory=lambda: list(groups.MAIN_DEVICES))
     allow_mode: str = "common"
     allow: dict[str, list[str]] = field(default_factory=lambda: {p: [] for p in allowlist.PLATFORMS})
     new_users: str = ""
@@ -69,12 +73,30 @@ class Draft:
     @classmethod
     def from_form(cls, req: "Request") -> "Draft":
         f, m = req.form, req.multi
+        sets: dict[str, list[str]] = {}
+        gone: set[str] = set()
+        for k, vals in m.items():
+            if k.startswith("set:"):    # устройство → набор «A+B»; none — устройство не нужно
+                if vals and vals[-1] == "none":
+                    gone.add(k[4:])
+                elif ids := groups.client_ids(vals[-1][:200].split("+")[:groups.CLIENTS_MAX + 1]):
+                    sets[k[4:]] = ids
+        for k, vals in m.items():       # прежняя форма: галочки client:<платформа> (набор по умолчанию — set:)
+            if k.startswith("client:") and k[7:] not in sets and k[7:] not in gone:
+                if ids := groups.client_ids([v[:40] for v in vals][:groups.CLIENTS_MAX + 1]):
+                    sets[k[7:]] = ids
+        if f.get("devs") == "1":
+            devices = list(dict.fromkeys(p[:20] for p in m.get("dev", [])))[:10]
+        else:
+            devices = list(sets) or list(groups.MAIN_DEVICES)
+        devices = [p for p in devices if p not in gone]
         return cls(
             name=f.get("name", "")[:200].strip(),
             protocols=list(dict.fromkeys(p[:40] for p in m.get("proto", [])))[:20],
-            clients={k[7:]: ids for k, vals in m.items() if k.startswith("client:")
-                     if (ids := groups.client_ids([v[:40] for v in vals][:groups.CLIENTS_MAX + 1]))},
+            clients={p: ids for p, ids in sets.items() if p in devices},
             clients_for=f.get("clients_for", "")[:400],
+            install_mode=groups.clean_mode(f.get("mode")),
+            devices=devices,
             allow_mode="own" if f.get("allow_mode") == "own" else "common",
             allow={p: [v[:128] for v in m.get(p, [])][:allowlist.LIST_MAX + 1] for p in allowlist.PLATFORMS},
             new_users=f.get("users_new", "")[:people.TEXT_MAX],
@@ -82,7 +104,8 @@ class Draft:
 
     @classmethod
     def of_group(cls, g: groups.Group) -> "Draft":
-        d = cls(name=g.name, protocols=list(g.protocols), clients={p: list(v) for p, v in g.clients.items()})
+        d = cls(name=g.name, protocols=list(g.protocols), clients={p: list(v) for p, v in g.clients.items()},
+                install_mode=g.install_mode, devices=list(g.clients))
         if g.allowlist:
             d.allow_mode, d.allow = "own", {p: list(g.allowlist[p]) for p in allowlist.PLATFORMS}
         return d
@@ -95,22 +118,26 @@ class Draft:
 
 
 def _hidden(d: Draft, shown: int, own_allow: bool = True) -> list[Markup]:
-    """Состояние шагов, которых сейчас не видно, — скрытыми полями."""
+    """Состояние шагов, которых сейчас не видно, — скрытыми полями (shown — номер шага формы)."""
     out: list[Markup] = []
 
     def add(name: str, value: str) -> None:
         out.append(t("input", type="hidden", name=name, value=value))
 
-    if shown != 1:
+    add("mode", d.install_mode)
+    if shown not in (1, 3):
         add("name", d.name)
+    if shown != 1:
         for p in d.protocols:
             add("proto", p)
     if shown != 2:
         if d.clients_for:
             add("clients_for", d.clients_for)
+        add("devs", "1")
+        for plat in d.devices:
+            add("dev", plat)
         for plat, ids in d.clients.items():
-            for cid in ids:
-                add(f"client:{plat}", cid)
+            add(f"set:{plat}", "+".join(ids))
     if shown != 3:
         add("users_new", d.new_users)
         for n in d.existing:
@@ -193,8 +220,10 @@ def proto_facts() -> list[Fact]:
     return [fact(p) for p in groups.by_priority(users.selectable_protocols())]
 
 
-def suggest(facts: list[Fact]) -> list[str]:
-    """Предвыбор: топ по клиентским пробам (если они есть), иначе дефолты из рабочих протоколов."""
+def suggest(facts: list[Fact], only: set[str] | None = None) -> list[str]:
+    """Предвыбор: топ по клиентским пробам (если они есть), иначе дефолты из рабочих протоколов.
+    only — допустимые протоколы (людям, которые ставят сами, — те, что входят одним QR)."""
+    facts = [f for f in facts if only is None or f.id in only]
     ranked = sorted((f for f in facts if f.rank and f.rank["top"] and not f.down),
                     key=lambda f: (-f.rank["top"], -f.rank["score"] / max(f.rank["ctx"], 1)))  # type: ignore[index]
     ids = [f.id for f in ranked][:3]
@@ -235,115 +264,131 @@ def _not_selectable(shown: set[str]) -> list[tuple[str, str]]:
     return out
 
 
-# ---------- клиенты (шаг 2) ----------
+# ---------- приложения (шаг 3): устройство → одна строка ----------
 
-def _proto_names(cat: clients.Catalog) -> dict[str, str]:
-    """Названия протоколов: как в плитках сервера, для неизвестных серверу — из каталога клиентов."""
-    names = {p: d["title"] for p, d in cat.protocols.items()}
-    names.update({m.id: m.short for m in manifests.load_all()[0]})
-    return names
-
-
-def set_summary(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str],
-                names: dict[str, str]) -> tuple[str, str]:
-    """Строка над платформой: чем набор покрывает протоколы группы. Второе — вид: ok, warn, muted."""
-    if not ids:
-        return "Платформа не нужна: ничего не отмечено", "muted"
-    done, miss = groups.coverage(cat, plat, protocols, ids)
-    label = " + ".join((cat.client(i) or {}).get("name", i) for i in ids)
-    text = f"Набор: {label} — покрывает {len(done)} из {len(done) + len(miss)}"
-    if miss:
-        return text + ": для " + ", ".join(names.get(p, p) for p in miss) + " нет клиента", "warn"
-    return text, "ok"
+def _set_note(cat: clients.Catalog, plat: str, ids: list[str], mode: str) -> str:
+    """Подвох набора одной строкой: нет в российском магазине; людям, которые ставят сами, — приложение не из магазина."""
+    cs = [c for c in (cat.client(i) for i in ids) if c]
+    foreign = [c["name"] for c in cs if cat.no_ru_store(c, plat)]
+    if foreign:
+        return f"{', '.join(foreign)}: нет в {'App Store' if plat == 'ios' else 'магазине'} РФ"
+    if mode == "self" and any(groups.in_store(c, plat) for c in cat.clients if plat in c["platforms"]):
+        raw = [c["name"] for c in cs if not groups.in_store(c, plat)]
+        if raw:
+            return f"{', '.join(raw)}: не из магазина, ставится файлом"
+    return ""
 
 
-def _client_option(plat: str, o: dict[str, Any], checked: bool, suggested: bool, cache: dict[str, Any],
-                   cat: clients.Catalog, names: dict[str, str]) -> Markup:
-    c = o["client"]
-    cid = c["id"]
-    caveats = [f"{names.get(p, p)}: {c['protocols'][p]['note']}" for p in o["covers"] if c["protocols"][p].get("note")]
-    chips = [t("span", names.get(p, p), class_="chip warn" if c["protocols"][p]["s"] == "warn" else "chip ok",
-               title=c["protocols"][p].get("note") or "умеет этот протокол") for p in o["covers"]]
-    chips.append(t("span", "приложения: " + cat.raw["per_app"][c["per_app"]], class_="chip"))
-    if o["no_ru_store"]:
-        chips.append(t("span", "нет в App Store РФ", class_="chip warn", title=clientviews.FOREIGN_STORE))
-    if not c["verified"]["device"]:
-        chips.append(t("span", "на устройстве не проверено", class_="chip", title=clientviews.UNVERIFIED))
-    ver = clientviews._version_cell(c, cache, plat)
-    return t("label", t("input", type="checkbox", name=f"client:{plat}", value=cid, checked=checked,
-                        data_covers=" ".join(o["covers"]), data_name=c["name"]),
-             t("span", t("span", t("strong", c["name"]), " ", ver, " ",
-                         badge("рекомендуем", "ok") if suggested else None, class_="opt-title"),
-               t("div", chips, class_="chips"),
-               t("div", clientviews._link_anchors(c["platforms"][plat]), class_="chips"),
-               t("span", "; ".join(caveats), class_="hint") if caveats else None,
-               t("details", t("summary", "подробнее"), t("p", c["notes"], class_="hint"), class_="more")
-               if c.get("notes") else None, class_="opt-body"), class_="opt")
+def _device_options(cat: clients.Catalog, plat: str, protocols: list[str], current: list[str], plan: list[str],
+                    mode: str, used: set[str]) -> list[list[str]]:
+    """Наборы для «сменить»: выбранный сейчас, предложенный подбором и лучшие из client_sets (до четырёх из 1–2
+    приложений). Выбранный сейчас, даже если приложений больше двух (старая группа), идёт первым."""
+    out: list[list[str]] = []
+    for ids in (current, plan):
+        if ids and sorted(ids) not in [sorted(x) for x in out]:
+            out.append(ids)
+    for r in groups.client_sets(cat, plat, protocols, mode, prefer=used):
+        if len(out) >= SETS_SHOWN:
+            break
+        if sorted(r["ids"]) not in [sorted(x) for x in out]:
+            out.append(r["ids"])
+    return out
+
+
+def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str], chosen: list[str] | None,
+                options: list[list[str]], names: dict[str, str], mode: str) -> Markup:
+    if not options:
+        return t("div", t("strong", title, class_="dev-name"), t("span", "нет приложения под эти протоколы", class_="muted"),
+                 class_="dev-row")
+    ids = chosen or options[0]
+    label, kind = clientviews.coverage_label(cat, plat, protocols, ids, names)
+    radios = []
+    for opt in options:
+        lab, k = clientviews.coverage_label(cat, plat, protocols, opt, names)
+        note = _set_note(cat, plat, opt, mode)
+        radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="+".join(opt), checked=opt == ids,
+                                   data_auto=True),
+                        t("span", t("strong", clientviews.app_names(cat, opt)), " ", t("span", lab, class_=f"chip {k}"),
+                          class_="opt-title"),
+                        t("span", note, class_="hint") if note else None, class_="opt-row dev-opt"))
+    radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="none", data_auto=True),
+                    t("span", f"Не нужен: {title}", class_="opt-title"), class_="opt-row dev-opt"))
+    note = _set_note(cat, plat, ids, mode)
+    extra = distviews.ios_note() if plat == "ios" and mode == "admin" else None
+    return t("div",
+             t("div", t("strong", title, class_="dev-name"), t("span", clientviews.app_names(cat, ids), class_="dev-set"),
+               t("span", label, class_=f"plat-sum {kind}"),
+               t("details", t("summary", "сменить"), t("div", radios, class_="opts"), class_="more dev-change"),
+               class_="dev-head"),
+             t("p", "! " + note, class_="hint") if note else None, extra, class_="dev-row")
 
 
 def _clients_block(d: Draft, managed: list[str]) -> Markup:
+    """Шаг «Приложения»: чипы устройств; по строке на устройство (что поставить, «все N» / «без X», «сменить»);
+    «Итого» — каждое приложение один раз со своими устройствами. Любая смена радиокнопки или чипа пересобирает
+    блок: кнопка «Обновить», с JS она нажимается сама."""
     try:
         cat = clients.load()
     except clients.ClientsError as e:
         return alert_list([("bad", str(e))])
-    cache = clients.load_cache()
-    names = _proto_names(cat)
+    names = clientviews.proto_names(cat)
     protocols = d.resolved(managed)
-    real = [p for p in protocols if p in cat.protocols and not cat.protocols[p].get("pseudo")]
-    main_, other = [], []
-    plan = groups.default_clients(cat, protocols)
+    devices = [p for p in d.devices if p in cat.platforms]
+    plan = groups.suggest_set(cat, devices, protocols, d.install_mode)
+    chips = t("div", [t("label", t("input", type="checkbox", name="dev", value=p, checked=p in devices, data_auto=True),
+                        t("span", title), class_="chip-check") for p, title in cat.platforms.items()],
+              class_="dev-chips")
+    rows: list[Markup] = []
     picked: dict[str, list[str]] = {}
-    for plat, title in cat.platforms.items():
-        opts = {o["client"]["id"]: o for o in groups.client_options(cat, plat, protocols)}
-        if not opts:
-            body: Any = t("p", "Нет клиента под выбранные протоколы.", class_="muted small")
-            sum_attrs: dict[str, Any] = {}
-        else:
-            chosen = [i for i in d.clients.get(plat, []) if i in opts]
-            picked[plat] = chosen
-            sugg = plan.get(plat, [])
-            first = [*sugg, *[i for i in chosen if i not in sugg]]
-            rest = [i for i in opts if i not in first]
-            text, kind = set_summary(cat, plat, protocols, chosen, names)
-
-            def cards(ids: list[str]) -> list[Markup]:
-                return [_client_option(plat, opts[i], i in chosen, i in sugg, cache, cat, names) for i in ids]
-
-            body = t("div", t("p", text, class_="plat-sum " + kind, data_sumtext=True),
-                     t("div", cards(first), class_="opts"),
-                     t("details", t("summary", f"Другие клиенты ({len(rest)})"),
-                       t("div", cards(rest), class_="opts"), class_="more") if rest else None)
-            sum_attrs = {"data_sum": True, "data_protos": " ".join(real),
-                         "data_names": "|".join(names.get(p, p) for p in real)}
-        (main_ if plat in MAIN_PLATFORMS else other).append(
-            t("fieldset", t("legend", title), body, class_="plat", **sum_attrs))
-    head, line = groups.apps_summary(cat, picked)
-    return t("div", t("p", head or line, class_="plat-sum ok", data_unify=True, hidden=not (head or line) or None),
-             main_,
-             t("details", t("summary", "Другие платформы"), other, class_="more") if other else None,
-             t("p", clientviews.UNVERIFIED, class_="hint"))
+    for plat in cat.platforms:
+        if plat not in devices:
+            continue
+        chosen = [i for i in d.clients.get(plat, []) if cat.client(i)]
+        used = {a for p, ids in d.clients.items() if p != plat for a in ids}
+        opts = _device_options(cat, plat, protocols, chosen, plan.get(plat, []), d.install_mode, used)
+        rows.append(_device_row(cat, plat, cat.platforms[plat], protocols, chosen or None, opts, names, d.install_mode))
+        if opts:
+            picked[plat] = chosen or opts[0]
+    head, _ = groups.apps_summary(cat, picked)
+    where: dict[str, list[str]] = {}
+    for plat, ids in picked.items():
+        for cid in ids:
+            where.setdefault(cid, []).append(cat.platforms[plat])
+    total = (t("p", t("strong", f"Итого {len(where)}: "),
+               " · ".join(f"{(cat.client(c) or {}).get('name', c)} — {', '.join(v)}" for c, v in where.items()),
+               class_="dev-total") if where else t("p", "Устройства не выбраны.", class_="muted"))
+    unverified = any(not (cat.client(c) or {}).get("verified", {}).get("device", True) for c in where)
+    return t("div", t("span", "Устройства", class_="label"), chips,
+             t("p", head, class_="plat-sum ok") if head else None,
+             t("div", rows, class_="dev-rows"), total,
+             t("p", clientviews.UNVERIFIED, class_="hint") if unverified else None,
+             t("button", "Обновить", type="submit", name="go", value="refresh", class_="btn small", data_refresh=True))
 
 
 def normalize_clients(d: Draft, managed: list[str], fill: bool = True) -> None:
-    """Выбор клиентов под текущие протоколы: остаются подходящие. fill (мастер): пока клиенты не выбраны под эти
-    же протоколы (первый показ шага или протоколы сменили) — предлагается набор, покрывающий протоколы;
-    после — отмеченное сохраняется как есть, платформа без отметок — «не нужна»."""
+    """Выбор приложений под текущие протоколы и устройства: остаются подходящие. fill (мастер): пока приложения не
+    выбраны под эти же протоколы (первый показ шага или протоколы сменили) — предлагается подбор (suggest_set под
+    режим «кто ставит»); после — отмеченное сохраняется. Устройство без выбора (только что добавленный чип)
+    получает подбор; устройство, под которое приложений нет, остаётся без набора."""
     try:
         cat = clients.load()
     except clients.ClientsError:
         return
     protocols = d.resolved(managed)
     stale = fill and d.clients_for != ",".join(protocols)
-    plan = groups.default_clients(cat, protocols) if stale else {}
+    devices = [p for p in d.devices if p in cat.platforms]
+    plan = groups.suggest_set(cat, devices, protocols, d.install_mode)
     fixed: dict[str, list[str]] = {}
-    for plat in cat.platforms:
+    for plat in devices:
         opts = groups.client_options(cat, plat, protocols)
         if not opts:
             continue
         ids = {o["client"]["id"] for o in opts}
-        got = plan.get(plat, []) if stale else [i for i in d.clients.get(plat, []) if i in ids]
+        got = [] if stale else [i for i in d.clients.get(plat, []) if i in ids]
+        got = got or plan.get(plat, [])
         if got:
             fixed[plat] = got
+    d.devices = devices
     d.clients = fixed
     if fill:
         d.clients_for = ",".join(protocols)
@@ -372,6 +417,12 @@ def _apps_block(d: Draft) -> Markup:
                t("p", "Нужен хотя бы один пункт на Android и на Windows. Свой список пользователя "
                       "потом можно задать отдельно («Приложения»).", class_="hint"),
                open=own or None, class_="more"))
+
+
+def _mode_radios(mode: str) -> Markup:
+    return t("div", [t("label", t("input", type="radio", name="mode", value=m, checked=m == mode, data_auto=True),
+                      t("span", title, class_="opt-title"), class_="opt-row") for m, title in MODE_TITLES.items()],
+             class_="opts")
 
 
 def _picker(label: str, name: str, items: list[tuple[str, str, bool]]) -> Markup:
@@ -437,18 +488,59 @@ def _preview(app: "App", req: "Request", d: Draft, plan: people.Plan) -> "Respon
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
                class_="wiz-nav"),
              method="post", action="/connect/new", class_="stack", data_swap=True)
-    body = card("3. Люди: проверьте список", t("p", _preview_summary(plan, len(d.existing)), class_="hint"),
+    body = card("4. Люди: проверьте список", t("p", _preview_summary(plan, len(d.existing)), class_="hint"),
                 _preview_rows(plan), form)
-    return app.render(req, "Новая группа", t("div", [page_head("Новая группа"), _stepper(3), body], class_="wizard",
+    return app.render(req, "Новая группа", t("div", [page_head("Новая группа"), _stepper(4), body], class_="wizard",
                                               data_expanded=True), active="/groups")
 
 
 # ---------- мастер ----------
 
-def _stepper(step: int) -> Markup:
-    return t("ol", [t("li", t("span", str(i), class_="n"), name, class_="cur" if i == step else ("done" if i < step else None),
-                      aria_current="step" if i == step else None) for i, name in enumerate(STEPS, 1)],
+def _stepper(pos: int) -> Markup:
+    """pos — номер текущего шага в STEPS с единицы."""
+    return t("ol", [t("li", t("span", str(i), class_="n"), name, class_="cur" if i == pos else ("done" if i < pos else None),
+                      aria_current="step" if i == pos else None) for i, name in enumerate(STEPS, 1)],
              class_="stepper")
+
+
+def _mode_nav(mode: str) -> Markup:
+    return t("nav", [t("a", MODE_TITLES[m], href=f"/connect/new?mode={m}", class_="active" if m == mode else None)
+                     for m in groups.INSTALL_MODES], class_="seg", aria_label="Кто ставит приложения")
+
+
+def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str], facts: dict[str, Fact]) -> Markup:
+    """Готовый вариант: протоколы, сколько приложений на устройство и какие, цифры «с сервера», кнопка выбора."""
+    apps = [cid for ids in pr["plan"].values() for cid in ids]
+    apps = list(dict.fromkeys(apps))
+    per = pr["per_device"]
+    count = "1 приложение на устройство" if per == 1 else f"до {per} приложений на устройство"
+    foreign = [cat.platforms[p] for p, ids in pr["plan"].items() if any(cat.no_ru_store(cat.client(i) or {}, p) for i in ids)]
+    lines = [t("div", t("strong", names.get(p, p)), " ", facts[p].live_chip() if p in facts else None, class_="chips")
+             for p in pr["protocols"]]
+    notes = [t("span", f"{count}: {clientviews.app_names(cat, apps)}", class_="hint"),
+             t("span", f"! нет в магазине РФ: {', '.join(foreign)}", class_="hint") if foreign else None,
+             t("span", "! не на всех устройствах все протоколы", class_="hint") if not pr["complete"] else None]
+    return t("div", t("span", t("span", t("strong", PRESET_TITLES[pr["id"]]), class_="opt-title"), lines, notes,
+                      class_="opt-body"),
+             t("button", "Выбрать", type="submit", name="go", value=pr["id"], class_="btn primary"), class_="opt preset")
+
+
+def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
+    """Шаг 0: кто ставит приложения и готовые варианты («Просто», «Надёжно», «Свой набор»)."""
+    try:
+        cat = clients.load()
+    except clients.ClientsError as e:
+        return alert_list([("bad", str(e))])
+    names = clientviews.proto_names(cat)
+    by_id = {f.id: f for f in facts}
+    rows = [_preset_row(pr, cat, names, by_id) for pr in groups.presets(cat, managed, d.install_mode)]
+    rows.append(t("div", t("span", t("span", t("strong", "Свой набор"), class_="opt-title"),
+                           t("span", "Протоколы и приложения выбираю сам.", class_="hint"), class_="opt-body"),
+                  t("button", "Выбрать", type="submit", name="go", value="custom", class_="btn", formnovalidate=True),
+                  class_="opt preset"))
+    hint = ("Сервер скачает APK и установщики, раздать их можно из «Скачать дистрибутивы»." if d.install_mode == "admin"
+            else "Только приложения из магазинов; протоколы, которые входят одним QR без ручных правок.")
+    return t("div", _mode_nav(d.install_mode), t("p", hint, class_="hint"), t("div", rows, class_="opts"))
 
 
 def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] | None = None,
@@ -457,11 +549,15 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
     facts = proto_facts()
     managed = [f.id for f in facts]
     gs = groups.Groups.load()
-    if step == 1:
+    nav_next = True
+    if step == 0:
+        body, title, hint = [_start_block(d, facts, managed)], "Кто ставит приложения?", None
+        nav_next = False
+    elif step == 1:
         if not d.name:
             d.name = gs.next_name()
         if not d.protocols:
-            d.protocols = suggest(facts)
+            d.protocols = suggest(facts, _easy_only(d, managed))
         body = [t("div", t("label", "Название группы", for_="name"),
                   t("input", type="text", name="name", id="name", value=d.name, required=True, maxlength=str(groups.NAME_MAX),
                     autocomplete="off"), class_="field"),
@@ -469,28 +565,43 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
         title, hint = "Протоколы", None
     elif step == 2:
         normalize_clients(d, managed)
-        body = [t("input", type="hidden", name="clients_for", value=d.clients_for), _clients_block(d, managed)]
-        title = "Клиенты"
-        hint = ("Ни одно приложение не умеет все протоколы, поэтому отмечен набор, который вместе их покрывает. "
-                "Платформа, где ничего не отмечено, не нужна.")
+        body = [t("input", type="hidden", name="clients_for", value=d.clients_for),
+                t("p", MODE_TITLES[d.install_mode], class_="hint"), _clients_block(d, managed)]
+        title, hint = "Приложения", "Что поставить на каждое устройство."
     else:
-        body, title = [_users_block(d), t("h3", "Приложения через VPN", class_="sub-h"), _apps_block(d)], "Люди"
-        hint = "Кто подключается и какие приложения идут через VPN."
+        if not d.name:
+            d.name = gs.next_name()
+        body = [t("div", t("label", "Название группы", for_="name"),
+                  t("input", type="text", name="name", id="name", value=d.name, required=True, maxlength=str(groups.NAME_MAX),
+                    autocomplete="off"), class_="field"),
+                _users_block(d), t("h3", "Приложения через VPN", class_="sub-h"), _apps_block(d)]
+        title, hint = "Люди", "Кто подключается и какие приложения идут через VPN."
     last = step == 3
     nav = t("div",
             t("button", "Создать группу" if last else "Далее →", type="submit", name="go",
-              value="create" if last else "next", class_="btn primary"),
+              value="create" if last else "next", class_="btn primary") if nav_next else None,
             t("button", "← Назад", type="submit", name="go", value="back", class_="btn", formnovalidate=True)
-            if step > 1 else None, class_="wiz-nav")
+            if step > 0 else None, class_="wiz-nav")
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value=str(step)),
              _hidden(d, step), body, nav, method="post", action="/connect/new", class_="stack", data_swap=True)
-    parts: list[Any] = [page_head("Новая группа"), _stepper(step)]
+    parts: list[Any] = [page_head("Новая группа"), _stepper(step + 1)]
     if errors:
         parts.append(alert_list([("bad", e) for e in errors]))
-    parts.append(card(f"{step}. {title}", t("p", hint, class_="hint") if hint else None, form))
+    parts.append(card(f"{step + 1}. {title}", t("p", hint, class_="hint") if hint else None, form))
     # data-expanded: живое обновление не заменяет страницу, пока идёт мастер (иначе шаг сбросился бы на первый)
     return app.render(req, "Новая группа", t("div", parts, class_="wizard", data_expanded=True),
                       active="/groups", status=status)
+
+
+def _easy_only(d: Draft, managed: list[str]) -> set[str] | None:
+    """Протоколы по умолчанию: людям, которые ставят сами, — только те, что входят одним QR из магазинного приложения."""
+    if d.install_mode != "self":
+        return None
+    try:
+        easy = groups.easy_protocols(clients.load())
+    except clients.ClientsError:
+        return None
+    return {p for p in managed if p in easy} or None
 
 
 def connect_page(app: "App", req: "Request") -> "Response":
@@ -502,15 +613,16 @@ def connect_page(app: "App", req: "Request") -> "Response":
         groups.ensure()
     except CATCH:
         pass
-    return _wizard(app, req, 1, Draft())
+    return _wizard(app, req, 0, Draft(install_mode=groups.clean_mode(req.query.get("mode"))))
 
 
 def _check(d: Draft, step: int) -> list[str]:
     """Первая ошибка шага (и предыдущих): сервер не верит скрытым полям."""
     try:
         gs = groups.Groups.load()
-        groups.clean_name(d.name, gs)
-        groups.clean_protocols(d.protocols)
+        if step >= 1:
+            groups.clean_name(d.name, gs)
+            groups.clean_protocols(d.protocols)
         if step >= 2:
             groups.clean_clients(d.clients, d.protocols)
         if step >= 3:
@@ -523,6 +635,24 @@ def _check(d: Draft, step: int) -> list[str]:
     return []
 
 
+def _start(app: "App", req: "Request", d: Draft, go: str) -> "Response":
+    """Шаг 0: выбран готовый вариант («Просто», «Надёжно») — протоколы заданы, дальше сразу приложения; «Свой
+    набор» — шаг протоколов с предвыбором под режим."""
+    facts = proto_facts()
+    managed = [f.id for f in facts]
+    d.devices, d.clients, d.clients_for = list(groups.MAIN_DEVICES), {}, ""
+    d.name = d.name or groups.Groups.load().next_name()
+    if go == "custom":
+        d.protocols = suggest(facts, _easy_only(d, managed))
+        return _wizard(app, req, 1, d)
+    try:
+        pr = next(p for p in groups.presets(clients.load(), managed, d.install_mode) if p["id"] == go)
+    except (StopIteration, clients.ClientsError):
+        return _wizard(app, req, 0, d, ["Такого варианта нет: выберите ещё раз"], 422)
+    d.protocols = list(pr["protocols"])
+    return _wizard(app, req, 2, d)
+
+
 def connect_post(app: "App", req: "Request") -> "Response":
     try:
         groups.ensure()
@@ -530,14 +660,18 @@ def connect_post(app: "App", req: "Request") -> "Response":
         pass
     d = Draft.from_form(req)
     try:
-        step = min(max(int(req.form.get("step", "1")), 1), 3)
+        step = min(max(int(req.form.get("step", "1")), 0), 3)
     except ValueError:
         step = 1
     go = req.form.get("go", "next")
     if go == "back":
-        return _wizard(app, req, max(step - 1, 1), d)
+        return _wizard(app, req, max(step - 1, 0), d)
     if go == "edit":
         return _wizard(app, req, 3, d)
+    if step == 0:
+        return _start(app, req, d, go)
+    if go == "refresh" and step == 2:
+        return _wizard(app, req, 2, d)
     errors = _check(d, step)
     if errors:
         return _wizard(app, req, step, d, errors, 422)
@@ -547,7 +681,7 @@ def connect_post(app: "App", req: "Request") -> "Response":
     if plan.rows and not req.form.get("confirm"):
         return _preview(app, req, d, plan)
     try:
-        rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), plan.pairs(), d.existing)
+        rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), plan.pairs(), d.existing, d.install_mode)
     except CATCH as e:
         return _wizard(app, req, 3, d, [_err(e)], 422)
     app.invalidate("status")
@@ -571,9 +705,11 @@ def connect_done(app: "App", req: "Request") -> "Response":
     wanted = [n for n in req.query.get("u", "").split(",") if n][:groups.NEW_USERS_MAX * 2]
     members = [u for u in ureg.visible() if u.group == g.id and u.name in wanted]
     ctx = clientviews.Ctx.load()
+    dist = distviews.card_for(gs, g.id, "/connect/done?" + urllib.parse.urlencode({"group": g.id, "u": req.query.get("u", "")}),
+                              req.session.csrf if req.session else "") if g.install_mode == "admin" else None
     rows: list[Any] = []
     if len(members) > DONE_ROWS_MAX:
-        return _done_many(app, req, g, members, ctx)
+        return _done_many(app, req, g, members, ctx, dist)
     for u in members:
         links, _ = userviews._cached_links(app, u.name)
         panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-") if ctx else None
@@ -584,7 +720,7 @@ def connect_done(app: "App", req: "Request") -> "Response":
                       name="conn-user", open=len(members) == 1 or None, class_="urow"))
     summary = card(f"Группа «{g.name}»", _summary(g),
                    extra=t("a", "Настроить", href=f"/groups/{g.id}", class_="btn small", data_swap=True))
-    body = [page_head("Новая группа", "готово: раздайте пакеты"), _stepper(4), summary,
+    body = [page_head("Новая группа", "готово: раздайте пакеты"), _stepper(len(STEPS)), summary, dist,
             _texts_card(g, ctx) if ctx else None,
             card("Кому что отправить", t("div", rows, class_="urows"), clientviews.hints(ctx) if ctx else None,
                  help="Откройте человека: его QR и ссылки, приложения и текст с его именем.")
@@ -593,7 +729,7 @@ def connect_done(app: "App", req: "Request") -> "Response":
 
 
 def _done_many(app: "App", req: "Request", g: groups.Group, members: list[users.User],
-               ctx: clientviews.Ctx | None) -> "Response":
+               ctx: clientviews.Ctx | None, dist: Markup | None = None) -> "Response":
     """Шаг раздачи для команды: строка с QR на каждого не нужна — все карточки одной страницей и архивом."""
     st = handoffviews.connection([u.name for u in members])
     link = "/handoff?" + urllib.parse.urlencode({"group": g.id})
@@ -605,7 +741,7 @@ def _done_many(app: "App", req: "Request", g: groups.Group, members: list[users.
               t("p", clientviews.SEND_WARN, class_="hint"))
     summary = card(f"Группа «{g.name}»", _summary(g),
                    extra=t("a", "Настроить", href=f"/groups/{g.id}", class_="btn small", data_swap=True))
-    body = [page_head("Новая группа", "готово: раздайте пакеты"), _stepper(4), summary, go,
+    body = [page_head("Новая группа", "готово: раздайте пакеты"), _stepper(len(STEPS)), summary, dist, go,
             _texts_card(g, ctx) if ctx else None]
     return app.render(req, "Новая группа", body, active="/groups")
 
@@ -637,7 +773,8 @@ def _summary(g: groups.Group) -> Markup:
     chips = [t("span", titles.get(p, p), class_="chip") for p in g.offered(selectable)]
     cl = [t("span", f"{plat.get(p, p)}: {n}", class_="chip info") for p, n in names.items()]
     return t("div", t("div", chips, class_="chips"), t("div", cl, class_="chips") if cl else None,
-             t("p", "приложения: " + ("свой список группы" if g.allowlist else "общий список"), class_="hint"))
+             t("p", "приложения через VPN: " + ("свой список группы" if g.allowlist else "общий список")
+               + " · ставит: " + ("ИТ" if g.install_mode == "admin" else "люди сами"), class_="hint"))
 
 
 def _list(names: list[str], limit: int = 8) -> str:
@@ -705,12 +842,14 @@ def groups_list(app: "App", req: "Request") -> "Response":
         elif people:
             people[-1] = people[-1][0]
         rows.append([t("a", t("strong", g.name), href=f"/groups/{g.id}", data_swap=True), protos, cl,
-                     "свой список" if g.allowlist else "общий", people or t("span", "пусто", class_="muted"),
+                     "свой список" if g.allowlist else "общий", "ИТ" if g.install_mode == "admin" else "сами",
+                     people or t("span", "пусто", class_="muted"),
                      _delete_link(g, "btn small danger")])
     head = t("a", "Новая группа", href="/connect/new", class_="btn primary", data_swap=True,
              title="Протоколы, клиенты, люди и что им отправить")
     parts: list[Any] = [page_head("Группы", f"{len(gs.groups)}", head),
-                        card("Список", table(["группа", "протоколы", "клиенты", "приложения", "участники", ""], rows,
+                        card("Список", table(["группа", "протоколы", "клиенты", "приложения", ("ставит", "кто ставит приложения: ИТ или люди сами"),
+                                              "участники", ""], rows,
                                              stack=True, empty="групп нет"),
                              help="Группа задаёт протоколы, клиентов и приложения через VPN сразу всем участникам.")]
     lone = [u.name for u in ureg.visible() if not u.group]
@@ -820,11 +959,15 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
         return app.error(req, 500, "Список приложений не читается", str(e))
     normalize_clients(d, managed, fill=False)
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value="save"),
+             t("input", type="hidden", name="devs", value="1"),
+             t("button", "Сохранить", type="submit", hidden=True, tabindex="-1"),   # Enter в названии сохраняет, а не «Обновить»
              t("div", t("label", "Название", for_="name"),
                t("input", type="text", name="name", id="name", value=d.name, required=True,
                  maxlength=str(groups.NAME_MAX), autocomplete="off"), class_="field"),
              t("h3", "Протоколы", class_="sub-h"), _protocols_block(facts, selected),
-             t("h3", "Клиенты", class_="sub-h"), _clients_block(Draft(protocols=selected, clients=d.clients), managed),
+             t("h3", "Приложения", class_="sub-h"), _mode_radios(d.install_mode),
+             _clients_block(Draft(protocols=selected, clients=d.clients, devices=d.devices, install_mode=d.install_mode),
+                            managed),
              t("h3", "Приложения через VPN", class_="sub-h"), _apps_block(d),
              t("div", t("button", "Сохранить", type="submit", class_="btn primary"), class_="actions"),
              method="post", action=f"/groups/{g.id}", class_="stack", data_swap=True)
@@ -857,7 +1000,8 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
         parts.append(alert_list([("bad", e) for e in errors]))
     ctx = clientviews.Ctx.load()
     parts += [_members_card(g, gs, ureg, al, csrf),
-              add, _messages_card(g, ctx, csrf, req.query.get("m", "")) if ctx else None,
+              add, distviews.card_for(gs, g.id, f"/groups/{g.id}", csrf) if g.install_mode == "admin" else None,
+              _messages_card(g, ctx, csrf, req.query.get("m", "")) if ctx else None,
               card("Настройки группы", form,
                         help="Сохранение применяется ко всем участникам один раз; в сообщении — кому нужен новый QR."),
               t("div", delete, merge, class_="actions")]
@@ -881,11 +1025,14 @@ def group_save(app: "App", req: "Request", gid: str) -> "Response":
     if g is None:
         return app.error(req, 404, "Нет группы", f"Группы «{gid}» нет.")
     d = Draft.from_form(req)
+    if req.form.get("go") == "refresh":
+        return group_page(app, req, gid, d)
     try:
         selectable = users.selectable_protocols()
         # «Основная» следует за включением протоколов, пока в форме отмечено всё включённое
         protos = [groups.ALL] if g.all_protocols and set(selectable) <= set(d.protocols) else d.protocols
-        rep = groups.update(g.id, name=d.name, protocols=protos, clients=d.clients, allow=d.allow_arg())
+        rep = groups.update(g.id, name=d.name, protocols=protos, clients=d.clients, allow=d.allow_arg(),
+                            install_mode=d.install_mode)
     except CATCH as e:
         return group_page(app, req, gid, d, [_err(e)], 422)
     return _done(app, req, rep, f"/groups/{g.id}")

@@ -1,6 +1,7 @@
 """Объём данных zoo: разделы, общий бюджет, чистка по лимиту (docs/PLAN-admin.md §13).
 
-Разделы: трафик, журнал атак, история проб (в ней же таблица live), логи установки.
+Разделы: трафик, журнал атак, история проб (в ней же таблица live), логи установки, дистрибутивы клиентов
+(каталог dist, их скачивает `zoo clients --fetch-dist`; чистка — версиями, самые старые, свежая версия клиента последней).
 Бюджет — `ZOO_DATA_LIMIT` в config.env (по умолчанию 1 ГБ, но не больше 5 % диска), у каждого
 раздела своя доля. Чистка начинается, только когда превышен общий бюджет: режется раздел,
 который сильнее всех вылез за свою долю, самые старые записи (у трафика и журнала сначала
@@ -22,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import geoip, journal, output, paths, traffic
+from . import dist, geoip, journal, output, paths, traffic
 from .config import Config, config_set
 from .fsutil import LockTimeout, atomic_write_json, file_lock
 from .probe import history
@@ -33,7 +34,7 @@ MIN_LIMIT = 16 << 20        # меньше — чистка съест всё п
 MAX_DISK_SHARE = 0.05       # умолчание не больше 5 % диска
 LOW_DISK = 0.10             # меньше свободного — тревога
 HYSTERESIS = 0.9            # режем до 90 % бюджета, чтобы не чистить каждые 5 минут
-SHARES = {"traffic": 30, "journal": 30, "probe": 30, "logs": 10}
+SHARES = {"traffic": 20, "journal": 20, "probe": 20, "logs": 10, "dist": 30}
 JOURNALD_DIRS = ("/var/log/journal", "/run/log/journal")
 STATE_FILE = "storage.json"
 KEEP_TRIMS = 7 * 86400
@@ -223,6 +224,57 @@ class LogsSection(Section):
         return done
 
 
+class DistSection(Section):
+    """Версии дистрибутивов клиентов (dist/<клиент>/<версия>): запись — одна версия. Сначала уходят версии, которые
+    не последние у своего клиента, самые старые первыми; последние — только если иначе не уложиться."""
+    id, title = "dist", "Дистрибутивы"
+
+    @property
+    def available(self) -> bool:   # type: ignore[override]
+        """Раздела нет, пока ни одной группы «ставит ИТ» не было: на странице данных его не видно."""
+        return dist.root().is_dir()
+
+    def _versions(self) -> list[tuple[bool, float, Path]]:
+        out = []
+        try:
+            clients_ = [d for d in dist.root().iterdir() if d.is_dir() and not d.is_symlink()]
+        except OSError:
+            return []
+        for c in clients_:
+            have = dist.versions(c.name)
+            latest = have[0][0] if have else None
+            try:
+                for v in c.iterdir():
+                    if v.is_dir() and not v.is_symlink():
+                        out.append((v == latest, v.stat().st_mtime, v))
+            except OSError:
+                pass
+        return sorted(out)
+
+    def files(self) -> list[Path]:
+        try:
+            return [f for f in dist.root().rglob("*") if f.is_file() and not f.is_symlink()]
+        except OSError:
+            return []
+
+    def path(self) -> str:
+        return str(dist.root())
+
+    def oldest(self) -> int | None:
+        have = self._versions()
+        return int(min(m for _, m, _ in have)) if have else None
+
+    def rows(self) -> int:
+        return len(self._versions())
+
+    def delete_oldest(self, n: int) -> int:
+        done = 0
+        for _, _, d in self._versions()[:n]:
+            shutil.rmtree(d, ignore_errors=True)
+            done += 1
+        return done
+
+
 def sections() -> list[Section]:
     steps_t = [("DELETE FROM traffic WHERE rowid IN (SELECT rowid FROM traffic WHERE res = ? "
                 "ORDER BY ts LIMIT ?)", (res,)) for res in traffic.RESOLUTIONS]
@@ -242,6 +294,7 @@ def sections() -> list[Section]:
                       [("DELETE FROM live WHERE rowid IN (SELECT rowid FROM live ORDER BY ts LIMIT ?)", ()),
                        ("DELETE FROM reports WHERE id IN (SELECT id FROM reports ORDER BY ts LIMIT ?)", ())]),
         LogsSection(),
+        DistSection(),
     ]
 
 

@@ -552,6 +552,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--client", action="append", metavar="ПЛАТФОРМА=КЛИЕНТ[,КЛИЕНТ]",
                        help="набор клиентов платформы из каталога (android=happ,amneziawg; zoo clients); "
                             "вместе они должны покрывать протоколы группы")
+        p.add_argument("--install", choices=groups.INSTALL_MODES,
+                       help="кто ставит приложения: self — люди сами по инструкции, admin — ИТ (сервер кэширует "
+                            "дистрибутивы: zoo clients --fetch-dist)")
         p.add_argument("--allow", action="append", metavar="ПРИЛОЖЕНИЕ",
                        help="свой список приложений группы (ключ каталога, пакет, процесс); не указанная "
                             "платформа остаётся как есть")

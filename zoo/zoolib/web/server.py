@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import gzip
 import ipaddress
+import os
+import shutil
 import socket
 import sys
 import urllib.parse
@@ -15,6 +17,7 @@ from .auth import parse_cookies
 MAX_BODY = 5 * 1024 * 1024
 GZIP_MIN = 1000  # короче — выигрыш меньше заголовков
 GZIP_LEVEL = 5
+FILE_CHUNK = 1 << 20
 
 
 def is_loopback(host: str) -> bool:
@@ -80,7 +83,32 @@ class Handler(BaseHTTPRequestHandler):
                 return q.replace(" ", "").lower() not in ("q=0", "q=0.0", "q=0.00", "q=0.000")
         return False
 
+    def _send_file(self, resp: Response, head: bool) -> None:
+        """Файл потоком, без чтения в память (дистрибутивы до сотен МБ). Без сжатия."""
+        try:
+            fd = os.open(resp.file, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))  # type: ignore[arg-type]
+            f = os.fdopen(fd, "rb")
+            size = os.fstat(fd).st_size
+        except OSError:
+            self._send(text("файл недоступен", 404), head)
+            return
+        with f:
+            self.send_response(resp.status)
+            self.send_header("Content-Type", resp.content_type)
+            self.send_header("Content-Length", str(size))
+            for k, v in resp.headers:
+                self.send_header(k, v)
+            self.end_headers()
+            if not head:
+                try:
+                    shutil.copyfileobj(f, self.wfile, FILE_CHUNK)
+                except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                    self.close_connection = True
+
     def _send(self, resp: Response, head: bool = False) -> None:
+        if resp.file is not None and resp.status == 200:
+            self._send_file(resp, head)
+            return
         body, headers = resp.body, list(resp.headers)
         ctype = resp.content_type.split(";", 1)[0].strip().lower()
         compressible = ctype.startswith("text/") or "javascript" in ctype or ctype == "image/svg+xml"
