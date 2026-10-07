@@ -6,7 +6,7 @@
 Android — APK (универсальный, иначе arm64), Windows — установщик x64 (иначе архив), macOS и Linux — если
 устройство есть в группе. В каталоге версии лежит meta.json: имя, платформа, размер, sha256 (digest из
 GitHub API, если он есть и сошёлся, иначе посчитанный при скачивании). Хранятся две последние версии
-клиента; общий размер не больше CAP (в бюджете данных это раздел «Дистрибутивы», storage.py).
+клиента; общий размер не больше cap(): CAP и доля раздела в бюджете данных (в бюджете данных это раздел «Дистрибутивы», storage.py).
 Админка только читает каталог и отдаёт файлы залогиненному администратору (/dist/…), в сеть не ходит."""
 
 from __future__ import annotations
@@ -214,6 +214,17 @@ def versions(cid: str) -> list[tuple[Path, dict[str, Any]]]:
     return sorted(out, key=lambda x: (x[1].get("fetched") or 0, x[0].name), reverse=True)
 
 
+def cap() -> int:
+    """Сколько держать: CAP, но не больше доли «Дистрибутивы» в бюджете данных (storage). Иначе чистка по бюджету
+    удаляла бы скачанное, а zoo-clients качал бы его снова — каждый день."""
+    from . import config, storage
+    try:
+        share = storage.budget(config.load())["limit"] * storage.SHARES["dist"] // 100
+    except (OSError, config.ConfigError):
+        return CAP
+    return min(CAP, share)
+
+
 def total_size() -> int:
     n = 0
     try:
@@ -290,6 +301,7 @@ def fetch_all(cat: clientcat.Catalog | None = None, gs: Any = None,
     fetch = fetch or fetch_release
     dl = dl or download
     want = needed(gs, cat)
+    limit = cap()
     res: dict[str, Any] = {"downloaded": [], "kept": [], "errors": {}}
     if want:
         root().mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -319,10 +331,11 @@ def fetch_all(cat: clientcat.Catalog | None = None, gs: Any = None,
             if any(f["name"] == name and (vdir / name).is_file() for f in meta["files"]):
                 res["kept"].append(key)
                 continue
-            if total_size() + asset["size"] > CAP:
+            if total_size() + asset["size"] > limit:
                 _prune_all(1)
-            if total_size() + asset["size"] > CAP:
-                res["errors"][key] = f"не помещается в лимит {CAP >> 20} МБ"
+            if total_size() + asset["size"] > limit:
+                res["errors"][key] = (f"не помещается в лимит {limit >> 20} МБ"
+                                      + (" (доля дистрибутивов в бюджете данных, ZOO_DATA_LIMIT)" if limit < CAP else ""))
                 continue
             vdir.mkdir(mode=0o755, parents=True, exist_ok=True)
             try:

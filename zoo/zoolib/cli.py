@@ -568,6 +568,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--name", help="новое название")
     group_options(p)
     p.add_argument("--no-client", action="append", metavar="ПЛАТФОРМА", help="убрать клиентов платформы (платформа не нужна)")
+    p.add_argument("--drop-proto", action="append", metavar="ID",
+                   help="убрать из группы выключенный на сервере протокол (иначе он вернётся участникам при включении)")
     p.add_argument("--allow-common", action="store_true", help="вернуть группу на общий список приложений")
     p = gadd("move", groups.cmd_group_move, "перевести пользователя в группу (или вернуть ему настройки группы)")
     p.add_argument("user", metavar="ИМЯ")

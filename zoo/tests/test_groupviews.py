@@ -9,7 +9,7 @@ from tests.helpers import needs_bash
 from tests.test_groups import no_hiddify_qr
 from tests.test_live import seed_live
 from tests.test_web import AppTestBase, Client, header
-from zoolib import allowlist, groups, paths, users
+from zoolib import allowlist, clients, groups, paths, users
 from zoolib.web import clientviews, groupviews
 
 PROTOS = ("vless-reality", "hysteria2", "amneziawg")
@@ -324,6 +324,44 @@ class WizardTest(GroupWebBase):
         self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0]["clients"],
                          {"android": ["happ"], "windows": ["v2rayn"]})
         self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0].get("install_mode", "self"), "self")
+
+    def test_self_mode_is_honest_about_github_on_computers(self):
+        cat = clients.load()
+        self.assertIn("установщик с GitHub", groupviews._set_note(cat, "windows", ["hiddify"], "self"))
+        self.assertEqual(groupviews._set_note(cat, "windows", ["hiddify"], "admin"), "")
+        _, body = self.c.get("/connect/new?mode=self")
+        self.assertNotIn("Только приложения из магазинов", body)
+        self.assertIn("на компьютерах — установщик с GitHub", body)
+
+    def test_wizard_device_chips_add_and_remove_devices(self):
+        _, body = self.wiz(1, name="Офис", proto=["hysteria2", "vless-reality"])
+        self.assertEqual(body.count('name="devs" value="1"'), 1, "шаг 2 сам говорит, что чипы устройств в форме")
+        sets = {p: "+".join(self.checked(body, p)) for p in ("android", "ios", "windows") if self.checked(body, p)}
+        self.assertEqual(set(sets), {"android", "ios", "windows"})
+        cf = re.search(r'name="clients_for" value="([^"]*)"', body).group(1)
+        fields = dict(name="Офис", proto=["hysteria2", "vless-reality"], clients_for=cf, devs="1",
+                      dev=["android", "windows", "macos"], **{f"set__{p}": v for p, v in sets.items()})
+        _, body = self.wiz(2, go="refresh", **fields)
+        self.assertTrue(self.checked(body, "macos"), "отмеченный чип macOS добавил строку")
+        self.assertFalse(self.checked(body, "ios"), "снятый чип iPhone убрал строку")
+        fields["set__macos"] = "+".join(self.checked(body, "macos"))
+        _, body = self.wiz(2, go="next", **fields)
+        self.assertNotIn('name="dev" value="ios"', body)
+        self.assertIn('name="dev" value="macos"', body)
+
+    def test_disabled_protocol_is_shown_and_can_be_dropped(self):
+        self.post("/connect/new", {"step": ["3"], "go": ["create"], "name": ["Офис"],
+                                   "proto": ["hysteria2", "vless-reality"], "users_new": ["masha"],
+                                   "allow_mode": ["common"], "confirm": ["1"]})
+        self.env.add_manifest("hysteria2", enabled=False)
+        _, gp = self.c.get("/groups/g1")
+        self.assertIn('name="drop" value="hysteria2"', gp)
+        self.post("/groups/g1", {"name": ["Офис"], "proto": ["vless-reality"]})
+        self.assertIn("hysteria2", [x for x in self.groups_json() if x["id"] == "g1"][0]["protocols"])
+        self.post("/groups/g1", {"name": ["Офис"], "proto": ["vless-reality"], "drop": ["hysteria2"]})
+        self.assertEqual([x for x in self.groups_json() if x["id"] == "g1"][0]["protocols"], ["vless-reality"])
+        _, gp = self.c.get("/groups/g1")
+        self.assertNotIn('name="drop"', gp)
 
     def test_step2_validation(self):
         for client, msg in (("happ", "не поддерживает выбранные протоколы"), ("ghost", "нет в каталоге")):

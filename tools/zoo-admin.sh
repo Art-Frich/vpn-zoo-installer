@@ -22,10 +22,16 @@ if ! info="$(ssh "$@" "$host" "$remote")"; then
     echo "не удалось спросить сервер: zoo установлен? SSH-ключ добавлен? sudo без пароля?" >&2
     exit 1
 fi
-port="$(printf '%s\n' "$info" | sed -n 's/.*"port": *"\{0,1\}\([0-9][0-9]*\).*/\1/p' | head -n 1)"
+port="$(printf '%s\n' "$info" | sed -n 's/.*"port": *"\{0,1\}\([0-9][0-9]*\)"\{0,1\} *[,}].*/\1/p' | head -n 1)"
 link="$(printf '%s\n' "$info" | sed -n 's/.*"link": *"\([^"]*\)".*/\1/p' | head -n 1)"
 if [ -z "$port" ] || [ -z "$link" ]; then
     echo "сервер ответил неожиданно — обновите zoo на сервере (sudo zoo upgrade --pull --apply)" >&2
+    exit 1
+fi
+# ответу сервера не доверяем: ссылка уходит в open/start/xdg-open
+link_re="^http://127\\.0\\.0\\.1:${port}/login\\?once=[A-Za-z0-9._-]+\$"
+if [ "${#port}" -gt 5 ] || [ "$((10#$port))" -lt 1 ] || [ "$((10#$port))" -gt 65535 ] || ! [[ "$link" =~ $link_re ]]; then
+    echo "сервер вернул странный порт или ссылку — остановились (обновите zoo на сервере)" >&2
     exit 1
 fi
 

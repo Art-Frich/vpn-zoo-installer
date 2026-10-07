@@ -15,7 +15,7 @@ from unittest import mock
 from tests.helpers import REPO, ZooEnv, needs_bash
 from tests.test_cli import run_cli
 from tests.test_web import AppTestBase, Client, header
-from zoolib import clients, dist, groups, storage, users
+from zoolib import clients, config, dist, groups, storage, users
 from zoolib.web import server
 
 
@@ -358,16 +358,44 @@ class StorageTest(unittest.TestCase):
                                                                       asset("amneziawg-universal.apk", repo=r)]),
                            fake_dl, lambda i=i: 100 + i)
         sec = storage.section("dist")
-        self.assertEqual(sec.rows(), 4)
+        self.assertEqual(sec.rows(), 2, "в чистку бюджетом идут только не последние версии")
         self.assertGreater(sec.size(), 0)
         self.assertEqual(sec.path(), str(dist.root()))
         self.assertIsNotNone(sec.oldest())
         self.assertEqual(sec.delete_oldest(1), 1)
         left = {(c, m["version"]) for c in ("hiddify", "amneziawg") for _, m in dist.versions(c)}
         self.assertEqual(len(left), 3)
-        sec.delete_oldest(10)
+        self.assertEqual(sec.delete_oldest(10), 1)
         self.assertEqual(sec.rows(), 0)
+        left = {(c, m["version"]) for c in ("hiddify", "amneziawg") for _, m in dist.versions(c)}
+        self.assertEqual(left, {("hiddify", "1.1"), ("amneziawg", "1.1")}, "последние версии остаются")
+        self.assertGreater(sec.size(), 0)
+        self.assertEqual(storage.clear("dist")["removed"], 2, "явная очистка раздела убирает и последние")
         self.assertEqual(sec.size(), 0)
+
+    def test_budget_never_deletes_only_installer(self):
+        gs = office(android=["hiddify", "amneziawg"])
+        dist.fetch_all(clients.load(), gs, lambda r: rel("1.0", [asset("Hiddify-Android-universal.apk", repo=r),
+                                                                 asset("amneziawg-universal.apk", repo=r)]),
+                       fake_dl, lambda: 100)
+        before = {c: [m["version"] for _, m in dist.versions(c)] for c in ("hiddify", "amneziawg")}
+        cfg = config.Config(values={storage.LIMIT_KEY: "16M"})
+        with mock.patch.object(storage.DistSection, "size", return_value=200 << 20):
+            res = storage.enforce(cfg)
+        self.assertNotIn("dist", res["trimmed"])
+        self.assertEqual({c: [m["version"] for _, m in dist.versions(c)] for c in ("hiddify", "amneziawg")}, before)
+
+    def test_download_limit_follows_budget_share(self):
+        self.env.write_config({storage.LIMIT_KEY: "100M"})
+        self.assertEqual(dist.cap(), (100 << 20) * storage.SHARES["dist"] // 100)
+        self.env.write_config({storage.LIMIT_KEY: "10G"})
+        self.assertEqual(dist.cap(), dist.CAP)
+        self.env.write_config({storage.LIMIT_KEY: "16M"})
+        gs = office(android=["hiddify"])
+        res = dist.fetch_all(clients.load(), gs,
+                             lambda r: rel("1.0", [asset("Hiddify-Android-universal.apk", repo=r, size=6 << 20)]),
+                             fake_dl, lambda: 100)
+        self.assertIn("ZOO_DATA_LIMIT", res["errors"]["hiddify/android"])
 
     def test_download_in_progress_and_only_windows_file_survive_trim(self):
         gs = office(android=["hiddify"], windows=["hiddify"])
@@ -383,7 +411,7 @@ class StorageTest(unittest.TestCase):
         partial.mkdir()
         (partial / "Hiddify-Android-universal.apk.part").write_bytes(b"x" * 10)
         sec = storage.section("dist")
-        self.assertEqual(sec.rows(), 3, "незаконченная версия в чистку не попадает")
+        self.assertEqual(sec.rows(), 1, "незаконченная и последние версии платформ в чистку не попадают")
         self.assertEqual(sec.delete_oldest(1), 1)
         self.assertTrue(partial.is_dir(), "каталог, куда сейчас качают, не трогается")
         self.assertEqual(sorted(m["version"] for _, m in dist.versions("hiddify")), ["1.0", "1.2"])

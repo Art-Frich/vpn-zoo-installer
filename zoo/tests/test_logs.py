@@ -868,6 +868,13 @@ class ExecutorTest(unittest.TestCase):
         self.assertEqual((st["id"], st["status"], st["freed"], st["before"], st["after"]), (rid, "ok", 3800, 5000, 1200))
         self.assertEqual(logctl.pending(), [])
 
+    def test_request_is_removed_even_when_state_write_fails(self):
+        logctl.submit("vacuum-time", "7d")
+        with mock.patch.object(logctl, "atomic_write_json", side_effect=OSError(28, "No space left on device")):
+            self.assertEqual(logctl.run_queue(), 1)
+        self.assertEqual(logctl.pending(), [], "иначе zoo-logs.path перезапускает заявку до trigger-limit-hit")
+        self.assertEqual(len([c for c in self.calls if c[1].startswith("--vacuum")]), 1)
+
     def test_size_rule(self):
         logctl.submit("vacuum-size", "200M")
         logctl.run_queue()
