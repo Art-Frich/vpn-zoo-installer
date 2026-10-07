@@ -10,6 +10,7 @@ from collections import OrderedDict
 
 # Предел QR версии 40 с уровнем L — 2953 байта; AWG .conf и ссылки заметно меньше
 MAX_BYTES = 2900
+PNG_MAGIC = bytes([0x89]) + b"PNG"
 
 
 class QrError(Exception):
@@ -20,7 +21,7 @@ def available() -> bool:
     return shutil.which("qrencode") is not None
 
 
-def _encode(text: str, fmt: str, extra: list[str] | None = None) -> str:
+def _run(text: str, fmt: str, extra: list[str] | None = None) -> bytes:
     if not available():
         raise QrError("нет qrencode (apt install qrencode)")
     data = text.encode("utf-8")
@@ -33,7 +34,19 @@ def _encode(text: str, fmt: str, extra: list[str] | None = None) -> str:
         raise QrError(f"qrencode: {e}") from None
     if cp.returncode != 0:
         raise QrError("qrencode: " + cp.stderr.decode("utf-8", "replace").strip())
-    return cp.stdout.decode("utf-8", "replace")
+    return cp.stdout
+
+
+def _encode(text: str, fmt: str, extra: list[str] | None = None) -> str:
+    return _run(text, fmt, extra).decode("utf-8", "replace")
+
+
+def png(text: str, size: int = 8) -> bytes:
+    """PNG-картинка QR (для файлов раздачи); без поддержки PNG в qrencode — QrError, тогда берут svg()."""
+    out = _run(text, "PNG", ["-s", str(size), "-m", "3"])
+    if not out.startswith(PNG_MAGIC):
+        raise QrError("qrencode: не PNG")
+    return out
 
 
 def utf8(text: str, invert: bool = False) -> str:

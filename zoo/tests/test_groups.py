@@ -398,7 +398,7 @@ class ModelTest(GroupsBase):
         users.add_user("petya")
         rep = groups.connect("Семья", ["hysteria2", "amneziawg"], {"android": "happ"},
                              {"android": ["com.whatsapp"], "windows": ["Discord.exe"]},
-                             groups.parse_new_users("masha сестра Маша\nkolya"), ["petya"])
+                             groups.parse_new_users("masha; сестра Маша\nkolya"), ["petya"])
         self.assertTrue(rep.ok, rep.errors)
         self.assertEqual((rep.created, rep.moved), (["masha", "kolya"], ["petya"]))
         self.assertEqual(sorted(rep.needs_qr), ["kolya", "masha", "petya"])
@@ -441,9 +441,12 @@ class ModelTest(GroupsBase):
         self.assertNotIn("masha", self.registry())
 
     def test_parse_new_users(self):
-        self.assertEqual(groups.parse_new_users("  Masha  сестра \n\n kolya\n"), [("masha", "сестра"), ("kolya", "")])
+        self.assertEqual(groups.parse_new_users("  Masha ; сестра \n\n kolya\n"), [("masha", "сестра"), ("kolya", "")])
+        self.assertEqual(groups.parse_new_users("a\na\nowner"), [("a", ""), ("a-2", ""), ("owner-2", "")])
         with self.assertRaises(groups.GroupError):
             groups.parse_new_users("\n".join(f"u{i}" for i in range(groups.NEW_USERS_MAX + 1)))
+        with self.assertRaises(groups.GroupError):
+            groups.parse_new_users("***")
 
     def test_client_options(self):
         cat = clients.load()

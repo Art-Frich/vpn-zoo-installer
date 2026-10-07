@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import allowlist, clients as clientcat, output, paths, protolib, users
+from . import allowlist, clients as clientcat, output, paths, people, protolib, users
 from .fsutil import atomic_write_json, read_json
 
 SCHEMA = 1
@@ -46,8 +46,8 @@ ALL = "*"
 PRIORITY = ("hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 NAME_MAX = 40
-NEW_USERS_MAX = 20
-NOTE_MAX = 200
+NEW_USERS_MAX = people.LINES_MAX
+NOTE_MAX = people.NOTE_MAX
 CLIENTS_MAX = 5       # клиентов на платформу
 MESSAGE_MAX = 3000    # знаков в тексте инструкции платформы
 KEEP: Any = object()  # «не менять» для update (None у allowlist значит «общий список»)
@@ -294,17 +294,11 @@ def clean_allow(lists: dict[str, list[str]] | None) -> dict[str, list[str]] | No
 
 
 def parse_new_users(text: str) -> list[tuple[str, str]]:
-    """Строки «имя» или «имя заметка…» → [(имя, заметка)]; имя проверяет users.validate_name."""
-    out: list[tuple[str, str]] = []
-    for line in (text or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        name, _, note = line.partition(" ")
-        out.append((name.lower(), note.strip()[:NOTE_MAX]))
-    if len(out) > NEW_USERS_MAX:
-        raise GroupError(f"за раз — не больше {NEW_USERS_MAX} новых пользователей")
-    return out
+    """Список людей (people.build) → [(id, заметка)]; негодная строка или больше people.LINES_MAX — отказ."""
+    plan = people.plan_for_registry(text)
+    if not plan.ok:
+        raise GroupError(plan.error)
+    return plan.pairs()
 
 
 def check_members(new: list[tuple[str, str]], existing: list[str]) -> None:
@@ -918,12 +912,7 @@ def add_members(ref: str, new: list[tuple[str, str]], existing: list[str]) -> Gr
     check_members(new, existing)
     g = Groups.load().require(ref)
     rep = GroupReport(g, "готово")
-    for name, note in new:
-        try:
-            r = users.add_user(name, note=note, group=g.id)
-        except (users.UserError, protolib.ProtoError) as e:
-            rep.errors.append(f"{name}: {e}")
-            continue
+    for r, (name, _) in zip(users.add_many(new, g.id) if new else [], new):
         if r.ok:
             rep.created.append(name)
             rep.needs_qr.append(name)
