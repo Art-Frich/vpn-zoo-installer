@@ -54,6 +54,10 @@ class GroupError(users.UserError):
     """Неверный ввод или состояние групп."""
 
 
+class MembersChanged(GroupError):
+    """Состав группы не тот, что человек видел на странице подтверждения."""
+
+
 def client_ids(v: Any) -> list[str]:
     """Набор клиентов платформы из файла или формы: список id или (старый формат) одна строка;
     порядок сохраняется, пустые и повторы убираются."""
@@ -608,12 +612,15 @@ def set_message(ref: str, platform: str, text: str | None, sig: str | None = Non
         return g
 
 
-def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group) -> GroupReport:
-    """Перевод в группу под блокировкой: реестры сохраняются, настройки группы применяются один раз."""
+def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group, keep_custom: bool = False) -> GroupReport:
+    """Перевод в группу под блокировкой: реестры сохраняются, настройки группы применяются один раз.
+    keep_custom — «свой набор протоколов» остаётся (меняется только группа); иначе набор возвращается к группе."""
     before = _snapshot(ureg, names)
     for n in names:
         u = ureg.require(n)
-        u.group, u.custom = g.id, False
+        u.group = g.id
+        if not keep_custom:
+            u.custom = False
     ureg.save()
     refresh_mirror(gs, ureg)
     rep = GroupReport(g, "готово")
@@ -638,10 +645,12 @@ def move_many(names: list[str], ref: str) -> GroupReport:
 MAIN_KEEP = f"«{MAIN_NAME}» не удаляется: в неё переходят участники удалённых групп и попадают новые пользователи"
 
 
-def delete_group(ref: str, members: str = "move") -> GroupReport:
+def delete_group(ref: str, members: str = "move", expected: list[str] | None = None) -> GroupReport:
     """Удалить группу и решить судьбу участников: «move» — перевести в «Основную», «delete» — удалить
     пользователей (owner не удаляется никогда — он переводится). Всё под одной блокировкой, настройки
-    «Основной» применяются к переведённым один раз. Кто-то не удалился — группа остаётся, в отчёте ошибки."""
+    «Основной» применяются к переведённым один раз. Кто-то не удалился — группа остаётся, в отчёте ошибки.
+    Переведённые со «своим набором протоколов» его сохраняют (меняется только группа).
+    expected — состав группы, который видел человек на странице подтверждения: изменился — отказ, ничего не тронуто."""
     if members not in ("move", "delete"):
         raise GroupError(f"участники: «move» или «delete», получено «{members[:20]}»")
     with users._lock():
@@ -653,6 +662,11 @@ def delete_group(ref: str, members: str = "move") -> GroupReport:
         if main is None:
             raise GroupError(f"группы «{MAIN_NAME}» нет: переводить участников некуда")
         mem = [u.name for u in members_of(gs, ureg, g.id)]
+        if expected is not None and set(expected) != set(mem):
+            was = ", ".join(sorted(expected)) or "никого"
+            now = ", ".join(sorted(mem)) or "никого"
+            raise MembersChanged(f"состав группы «{g.name}» изменился, пока вы подтверждали удаление (было: {was}; стало: {now}). "
+                             "Ничего не удалено и не переведено — откройте страницу удаления заново")
         doomed = [n for n in mem if n != users.OWNER] if members == "delete" else []
         rep = GroupReport(main, "группа удалена")
         for n in doomed:
@@ -667,7 +681,7 @@ def delete_group(ref: str, members: str = "move") -> GroupReport:
             return rep
         keep = [n for n in mem if n not in doomed]
         if keep:
-            mv = _move_in(gs, ureg, keep, main)
+            mv = _move_in(gs, ureg, keep, main, keep_custom=True)
             rep.moved, rep.skipped, rep.allow, rep.needs_qr = mv.moved, mv.skipped, mv.allow, mv.needs_qr
             rep.errors += mv.errors
         gs.groups.remove(g)
@@ -680,7 +694,8 @@ def delete_group(ref: str, members: str = "move") -> GroupReport:
 
 def merge_groups(src: str, dst: str) -> GroupReport:
     """Объединить: участники src переходят в dst (протоколы и приложения — как у dst), src удаляется,
-    настройки dst не меняются. Одна блокировка, одно применение. «Основная» как src не годится."""
+    настройки dst не меняются; «свой набор протоколов» у переведённых сохраняется. Одна блокировка, одно применение.
+    «Основная» как src не годится."""
     with users._lock():
         gs, ureg = _open()
         s, d = gs.require(src), gs.require(dst)
@@ -689,7 +704,7 @@ def merge_groups(src: str, dst: str) -> GroupReport:
         if s.id == MAIN_ID:
             raise GroupError(MAIN_KEEP + ". Объедините другую группу с ней")
         names = [u.name for u in members_of(gs, ureg, s.id)]
-        rep = _move_in(gs, ureg, names, d) if names else GroupReport(d)
+        rep = _move_in(gs, ureg, names, d, keep_custom=True) if names else GroupReport(d)
         gs.groups.remove(s)
         gs.save()
         refresh_mirror(gs, ureg)

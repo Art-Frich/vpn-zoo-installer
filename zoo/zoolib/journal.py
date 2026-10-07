@@ -770,6 +770,60 @@ def _scope_split(rows: Any, own: set[str], include_local: bool) -> tuple[set[str
     return hidden, counts
 
 
+def scope_reason(ip: str, own: dict[str, int], ignore: list[Any], server: list[Any]) -> tuple[str, str, Any] | None:
+    """Почему адрес «свой» или «служебный» — тот же порядок проверок, что у scope_of.
+    → (scope, причина, подробность) или None для внешнего. Причины: ssh-login (подробность — когда заходили),
+    ignore-file (сеть из journal-ignore.txt), server (адрес сервера), reserved (диапазон), loopback, link-local,
+    private (частная сеть, контейнеры), other, not-ip."""
+    if ip in own:
+        return "own", "ssh-login", own[ip]
+    a = _addr(ip)
+    if a is None:
+        return "local", "not-ip", ""
+    for why, nets in (("ignore-file", ignore), ("server", server)):
+        for n in nets:
+            if n.version == a.version and a in n:
+                return "own", why, str(n)
+    if _is_global(ip):
+        return None
+    for n in RESERVED_NETS:
+        if n.version == a.version and a in n:
+            return "local", "reserved", str(n)
+    why = "loopback" if a.is_loopback else "link-local" if a.is_link_local else "private" if a.is_private else "other"
+    return "local", why, ""
+
+
+def own_report(period: str = "24h", now: float | None = None, limit: int = 200) -> dict[str, Any]:
+    """Адреса, чьи попытки не учтены в сводке (свои и служебные), с причиной по каждому: то, что стоит
+    в строке «не учтены» страницы. {period, title, total (событий), ips (адресов), rows, more (не поместилось)}."""
+    period = resolve_period(period)
+    since, _step, _n, res = traffic.window(period, now)
+    out: dict[str, Any] = {"period": period, "title": traffic.PERIOD_TITLES[period], "total": 0, "ips": 0,
+                           "rows": [], "more": 0}
+    con = _con()
+    if con is None:
+        out["empty"] = True
+        return out
+    try:
+        own = {r["ip"]: r["ts"] for r in con.execute("SELECT ip, ts FROM own")}
+        rows = con.execute("SELECT ip, SUM(n), MAX(ts) FROM hits WHERE res = ? AND ts >= ? AND kind NOT IN (%s) "
+                           "GROUP BY ip" % ",".join("?" * len(DEFENCE_KINDS)), (res, since, *DEFENCE_KINDS)).fetchall()
+    finally:
+        con.close()
+    ignore, server = load_ignore(), server_nets()
+    found = []
+    for ip, n, last in rows:
+        r = scope_reason(ip, own, ignore, server)
+        if r is not None:
+            found.append({"ip": ip, "n": int(n), "last": int(last), "scope": r[0], "why": r[1], "detail": r[2]})
+    found.sort(key=lambda d: (-d["n"], d["ip"]))
+    out["total"] = sum(d["n"] for d in found)
+    out["ips"] = len(found)
+    out["rows"] = found[:limit]
+    out["more"] = max(0, len(found) - limit)
+    return out
+
+
 def _hidden_ips(con: sqlite3.Connection, since: int, res: int, include_local: bool) -> tuple[set[str], dict[str, int]]:
     """Адреса, которые скрываем (свои и локальные), и сколько событий они дали."""
     own = {r[0] for r in con.execute("SELECT ip FROM own")}

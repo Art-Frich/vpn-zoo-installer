@@ -16,19 +16,27 @@ journald — другое дело: `journalctl --vacuum-*` пишет в /var/l
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from . import output, paths, system
 from .fsutil import LockTimeout, UnsafePath, atomic_write_json, check_real_dirs, file_lock, read_text_nofollow
 
+try:
+    import fcntl
+except ImportError:  # Windows: только для локальных юнит-тестов
+    fcntl = None  # type: ignore[assignment]
+
 JOURNALD_DIRS = ("/var/log/journal", "/run/log/journal")
 INSTALL_RE = re.compile(r"^install-[A-Za-z0-9._-]{1,100}\.log\Z")
+STAMP_RE = re.compile(r"^install-(\d{8})-(\d{6})\.log\Z")
 ID_RE = re.compile(r"^[0-9a-f]{32}\Z")
 KEEP_STATES = 20
 PENDING_STALE = 10 * 60
@@ -88,20 +96,58 @@ def check(action: str, value: str) -> tuple[str, str]:
 
 # ---------- логи установки (админка делает сама) ----------
 
+def log_stamp(f: Path) -> float:
+    """Когда начата установка: по времени в имени install-YYYYMMDD-HHMMSS.log (mtime меняют и обрезка, и
+    дописывание); имя не разобралось — по mtime."""
+    m = STAMP_RE.match(f.name)
+    if m:
+        try:
+            return datetime.strptime(m[1] + m[2], "%Y%m%d%H%M%S").timestamp()
+        except (ValueError, OverflowError, OSError):
+            pass
+    try:
+        return f.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def install_logs() -> list[Path]:
-    """install-*.log, старые первыми."""
+    """install-*.log, старые первыми (по времени в имени)."""
     d = paths.log_dir()
     try:
         files = [f for f in d.iterdir() if INSTALL_RE.match(f.name) and f.is_file() and not f.is_symlink()]
-        return sorted(files, key=lambda f: (f.stat().st_mtime, f.name))
+        return sorted(files, key=lambda f: (log_stamp(f), f.name))
     except OSError:
         return []
 
 
+def install_running() -> bool:
+    """Держит ли кто-то /run/vpn-setup.lock (install.sh или откат SSH): тогда в самый свежий лог идёт запись.
+    Пробный неблокирующий flock; нет файла блокировки — никто не держит."""
+    if fcntl is None:
+        return False
+    try:
+        fd = os.open(paths.setup_lock(), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True   # не смогли проверить — считаем, что занято: лучше отказать, чем обрезать лог на лету
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 def clean_files(names: list[str] | None = None, older_days: int | None = None, keep: int = 1,
                 now: float | None = None) -> dict[str, Any]:
-    """Удалить логи установки: выбранные по имени и/или старше older_days. Самые свежие `keep` (не меньше одного)
-    остаются всегда. → {deleted: [имена], freed: байты, skipped: [имена], errors: [текст]}."""
+    """Удалить логи установки: выбранные по имени и/или старше older_days (по времени в имени). Самые свежие
+    `keep` (не меньше одного) остаются всегда.
+    → {deleted: [имена], freed: байты, skipped: [имена], errors: [текст]}."""
     now = time.time() if now is None else now
     files = install_logs()
     protected = {f.name for f in files[max(0, len(files) - max(1, keep)):]}
@@ -117,11 +163,8 @@ def clean_files(names: list[str] | None = None, older_days: int | None = None, k
         if older_days not in OLDER_DAYS:
             raise CleanError("такого срока нет")
         for f in files:
-            try:
-                if f.stat().st_mtime < now - older_days * 86400:
-                    pick[f.name] = f
-            except OSError:
-                continue
+            if log_stamp(f) < now - older_days * 86400:
+                pick[f.name] = f
     for name, f in pick.items():
         if name in protected:
             out["skipped"].append(name)
@@ -137,35 +180,62 @@ def clean_files(names: list[str] | None = None, older_days: int | None = None, k
     return out
 
 
+def _tail_of(fh: Any, size: int, lines: int) -> tuple[bytes, bool]:
+    """Последние `lines` строк файла длиной size → (хвост, весь ли файл уже короче)."""
+    pos, found = size, 0
+    while pos > 0 and found <= lines + 1:   # с конца блоками, пока не наберётся достаточно строк
+        step = min(65536, pos)
+        pos -= step
+        fh.seek(pos)
+        found += fh.read(step).count(b"\n")
+    fh.seek(pos)
+    data = fh.read(size - pos)
+    nl = b"\n" if data.endswith(b"\n") else b""
+    parts = (data[:-1] if nl else data).split(b"\n")
+    if pos == 0 and len(parts) <= lines:
+        return data, True
+    return b"\n".join(parts[-lines:]) + nl, False
+
+
 def trim_file(name: str, lines: int = TAIL_LINES) -> dict[str, Any]:
-    """Оставить в логе установки последние `lines` строк. Файл переписывается на месте (тот же inode):
-    идущая установка дописывает в него и дальше. → {freed, kept, trimmed}; trimmed=False — и так короче."""
-    f = next((f for f in install_logs() if f.name == name), None)
+    """Оставить в логе установки последние `lines` строк. Файл переписывается на месте (тот же inode),
+    время изменения возвращается прежним. Самый свежий лог, пока держится блокировка install.sh, не трогаем:
+    установка дописывает в него через tee -a. Что дописали между чтением и записью — переносится в хвост.
+    → {freed, kept, trimmed}; trimmed=False — и так короче."""
+    files = install_logs()
+    f = next((f for f in files if f.name == name), None)
     if f is None:
         raise CleanError("такого лога установки нет")
+    if f == files[-1] and install_running():
+        raise CleanError(f"{name}: сейчас идёт установка и она пишет в этот лог — обрежьте после её окончания")
     flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
         fd = os.open(f, flags)
     except OSError as e:
         raise CleanError(f"{name}: {e.strerror or e}") from None
     with os.fdopen(fd, "r+b") as fh:
-        size = os.fstat(fd).st_size
-        pos, found = size, 0
-        while pos > 0 and found <= lines + 1:   # с конца блоками, пока не наберётся достаточно строк
-            step = min(65536, pos)
-            pos -= step
-            fh.seek(pos)
-            found += fh.read(step).count(b"\n")
-        fh.seek(pos)
-        data = fh.read()
-        nl = b"\n" if data.endswith(b"\n") else b""
-        parts = (data[:-1] if nl else data).split(b"\n")
-        if pos == 0 and len(parts) <= lines:
-            return {"freed": 0, "kept": len(parts), "trimmed": False}
-        tail = b"\n".join(parts[-lines:]) + nl
+        st = os.fstat(fd)
+        size = st.st_size
+        tail, short = _tail_of(fh, size, lines)
+        if short:
+            return {"freed": 0, "kept": tail.count(b"\n") + (0 if tail.endswith(b"\n") or not tail else 1),
+                    "trimmed": False}
+        now = os.fstat(fd).st_size
+        if now > size:   # пока читали, в конец дописали: переносим, иначе оно пропадёт при truncate
+            fh.seek(size)
+            tail += fh.read(now - size)
         fh.seek(0)
         fh.write(tail)
         fh.truncate(len(tail))
+        fh.flush()
+        try:
+            if os.utime in os.supports_fd:
+                os.utime(fd, ns=(st.st_atime_ns, st.st_mtime_ns))
+        except OSError:
+            pass
+    if os.utime not in os.supports_fd:
+        with contextlib.suppress(OSError):
+            os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
     return {"freed": max(0, size - len(tail)), "kept": lines, "trimmed": True}
 
 

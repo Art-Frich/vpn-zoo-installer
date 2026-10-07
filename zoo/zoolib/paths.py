@@ -79,6 +79,11 @@ def log_dir() -> Path:
     return _env_path("LOG_DIR", Path("/var/log/vpn-zoo"))
 
 
+def setup_lock() -> Path:
+    """Блокировка install.sh (flock, пока идёт установка или откат SSH): тот же путь, что в scripts/install.sh."""
+    return _env_path("ZOO_SETUP_LOCK", Path("/run/vpn-setup.lock"))
+
+
 def lock_file() -> Path:
     """Блокировка изменяющих операций zoo (пользователи, конфиги протоколов)."""
     default = Path("/run/lock/vpn-zoo.lock")

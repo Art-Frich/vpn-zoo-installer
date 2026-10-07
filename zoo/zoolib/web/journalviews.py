@@ -42,15 +42,19 @@ def _state(req: "Request") -> dict[str, Any]:
     return {"period": period, "q": g("q", "").strip()[:journal.QUERY_MAX],
             "svc": svc if svc in journal.SERVICES else "", "kind": kind if kind in journal.KINDS else "",
             "sort": sort if sort in journal.SORTS else "n", "n": rows if rows in journal.ROWS else journal.ROWS[0],
-            "after": g("after", "")[:90], "ip": journal.norm_ip(g("ip", "")) or ""}
+            "after": g("after", "")[:90], "ip": journal.norm_ip(g("ip", "")) or "", "own": "1" if g("own") == "1" else ""}
 
 
 def _url(st: dict[str, Any], **over: Any) -> str:
     """Ссылка на страницу с тем же состоянием, кроме over; значения по умолчанию в адрес не попадают."""
     st = {**st, **over}
-    default = {"q": "", "svc": "", "kind": "", "sort": "n", "n": journal.ROWS[0], "after": "", "ip": ""}
-    args = [(k, st[k]) for k in ("ip", "q", "svc", "kind", "sort", "n", "after") if st[k] != default[k]]
+    default = {"q": "", "svc": "", "kind": "", "sort": "n", "n": journal.ROWS[0], "after": "", "ip": "", "own": ""}
+    args = [(k, st[k]) for k in ("own", "ip", "q", "svc", "kind", "sort", "n", "after") if st[k] != default[k]]
     return "/journal?" + urlencode([("period", st["period"]), *args])
+
+
+_STATE0 = {"period": "24h", "q": "", "svc": "", "kind": "", "sort": "n", "n": journal.ROWS[0], "after": "", "ip": "",
+           "own": ""}
 
 
 def _selector(st: dict[str, Any]) -> Markup:
@@ -284,6 +288,47 @@ def _fmt_bucket(ts: int, res: int) -> str:
     return datetime.fromtimestamp(ts).strftime("%d.%m %H:%M" if res < 86400 else "%d.%m")
 
 
+# ---------- свои и служебные адреса ----------
+
+def _why(row: dict[str, Any]) -> str:
+    why, d = row["why"], row["detail"]
+    if why == "ssh-login":
+        return "заходили по SSH-ключу" + (f", последний вход {_fmt_ts(d)}" if d else "")
+    if why == "ignore-file":
+        return f"в списке {journal.ignore_file().name}: {d}"
+    if why == "reserved":
+        return f"зарезервированный диапазон {d}: это не интернет"
+    return {"server": "адрес самого сервера", "loopback": "сам сервер (loopback)",
+            "link-local": "локальный канал (link-local)", "private": "частная сеть или контейнер",
+            "not-ip": "не IP-адрес"}.get(why, "не из публичного интернета")
+
+
+def _own_page(app: "App", req: "Request", st: dict[str, Any]) -> "Response":
+    """Только чтение: какие адреса не вошли в сводку и почему."""
+    back = t("a", "← журнал", href=_url(st, own=""), class_="btn small", data_swap=True)
+    head = page_head("Атаки", None, join(_selector(st), back))
+    key = ("journal-own", st["period"], journal.last_run_ts())
+    d = app.cache_get(key, 120)
+    if d is None:
+        d = journal.own_report(st["period"])
+        app.cache_put(key, d, 120)
+    if d.get("empty"):
+        return app.render(req, "Атаки", [head, card("Не учтены", empty("Нет данных · сбор каждые 5 мин"))], active="/journal")
+    rows = [[t("a", t("code", r["ip"]), href=_url(st, own="", ip=r["ip"], after=""), data_swap=True,
+                title="Что делал этот адрес"),
+             badge(*SCOPE_BADGE[r["scope"]]), _why(r), charts.count_label(r["n"]), ago(r["last"])] for r in d["rows"]]
+    total = (f"За период {d['title']}: {charts.count_label(d['total'])} с {_ru(d['ips'], 'адреса', 'адресов', 'адресов')}. "
+             "Эти попытки не входят ни в числа, ни в графики, ни в тревоги."
+             if d["ips"] else "За период своих и служебных адресов не было.")
+    more = t("p", f"и ещё адресов: {d['more']}", class_="muted small") if d["more"] else None
+    body = card("Не учтены: ваши входы и служебные адреса", t("p", total, class_="hint"),
+                table(["адрес", "метка", "почему не учтён", "попыток", "последний раз"], rows, num=[3],
+                      empty="Таких адресов нет", stack=True) if rows else None, more,
+                help=t("p", OWN_TITLE + " Добавить свой адрес вручную: ", t("code", str(journal.ignore_file())),
+                       " (адрес или сеть в строке)."))
+    return app.render(req, "Атаки", [head, body], active="/journal")
+
+
 # ---------- страница ----------
 
 def _build(data: dict[str, Any], app: "App") -> tuple[list[Any], list[Any]]:
@@ -309,8 +354,9 @@ def _build(data: dict[str, Any], app: "App") -> tuple[list[Any], list[Any]]:
               _tile("Чаще всего", top["ip"] if top else "—",
                     f"{top['n']}" + (f" · {top['cc']}" if top["cc"] else "") if top else "тихо"),
               class_="tiles")
-    skip = t("p", "не учтены: ваши входы и служебные адреса — " + charts.count_label(skipped), class_="muted small",
-             title=OWN_TITLE, id="skipped")
+    skip = t("p", t("a", "не учтены: ваши входы и служебные адреса — " + charts.count_label(skipped),
+                    href=_url({**_STATE0, "period": data["period"]}, own="1"), data_swap=True),
+             class_="muted small", title=OWN_TITLE, id="skipped")
     above = [alert_list(problems), tiles, skip, _group_cards(data), card("По времени", _timeline(data))]
     below = [t("div", card("Порты", _ports_table(data)), card("Страны", _countries_table(data)), class_="cols")]
     return above, below
@@ -320,6 +366,8 @@ def journal_page(app: "App", req: "Request") -> "Response":
     st = _state(req)
     if st["ip"]:
         return _ip_page(app, req, st)
+    if st["own"]:
+        return _own_page(app, req, st)
     head = page_head("Атаки", None, _selector(st))
     stamp = journal.last_run_ts()  # данные меняются только с разбором коллектора
     key = ("journal", st["period"], stamp)
