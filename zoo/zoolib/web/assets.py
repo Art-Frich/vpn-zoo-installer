@@ -110,10 +110,11 @@ details.help > .hint p { margin: 0 0 6px; } details.help > .hint ul { margin: 0 
 .empty-state { min-height: 96px; display: grid; place-content: center; justify-items: center; gap: 6px;
   text-align: center; color: var(--muted); }
 .empty-state p { margin: 0; }
-.btn-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }
+.btn-grid { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
 .btn-grid form.inline { display: block; }
 .btn-grid .btn { width: 100%; justify-content: center; }
-@media (min-width: 960px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 960px) { .cols { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cols.maint { grid-template-columns: 230px minmax(0, 1fr); } }
 .stack > * + * { margin-top: 16px; }
 
 /* показатели: плитка — сетка из строк, место под полоску занято всегда, подписи в одну строку */
@@ -450,11 +451,6 @@ mark.hitline { background: var(--accent-soft); }
 .search details { flex: 1 1 100%; }
 .search details input { width: auto; display: inline-block; margin: 4px 8px 0 0; }
 .hitcell { font-family: var(--mono); font-size: .8rem; word-break: break-word; }
-.logclean { display: grid; gap: 10px; }
-.logclean form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.logclean select { width: auto; }
-.logclean ul { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; width: 100%; }
-.logclean li label { display: inline-flex; gap: 6px; align-items: center; font-size: .86rem; }
 .side { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
 @media (min-width: 900px) { .side { grid-template-columns: 260px minmax(0, 1fr); } }
 .list { list-style: none; margin: 0; padding: 0; }
@@ -464,6 +460,24 @@ mark.hitline { background: var(--accent-soft); }
 .list li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .list .group { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
   padding: 10px 10px 4px; }
+.list .group, .list .src { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.list .src > a { flex: 1; min-width: 0; }
+details.menu { position: relative; flex: none; }
+details.menu > summary { list-style: none; cursor: pointer; user-select: none; width: 26px; height: 26px; display: grid;
+  place-content: center; border-radius: 6px; color: var(--muted); font-size: 1rem; line-height: 1; text-transform: none; }
+details.menu > summary::-webkit-details-marker { display: none; }
+details.menu > summary:hover, details.menu[open] > summary { background: var(--surface-2); color: var(--text); }
+.menu-pop { position: absolute; right: 0; top: 28px; z-index: 6; width: 240px; display: grid; gap: 2px; padding: 6px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  text-transform: none; letter-spacing: 0; font-size: .86rem; font-weight: 400; }
+.menu-pop .hint { margin: 2px 4px 6px; }
+.menu-pop form.inline { display: block; }
+.menu-item { display: block; width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: 6px; background: none;
+  color: var(--text-2); font: inherit; cursor: pointer; }
+.menu-item:hover:not(:disabled) { background: var(--surface-2); }
+.menu-item.danger { color: var(--bad); }
+.menu-item:disabled { color: var(--muted); cursor: not-allowed; opacity: .6; }
+.menu-off { display: block; }
 
 dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: .92rem; }
 dl.kv dt { color: var(--muted); }
@@ -632,6 +646,14 @@ JS = r"""
       go((f.getAttribute('action') || location.pathname) + '?' + qs.toString());
     }
   });
+  // меню «⋯»: закрывается щелчком мимо и по Esc
+  function closeMenus(except) {
+    document.querySelectorAll('details.menu[open]').forEach(function (d) { if (d !== except) d.open = false; });
+  }
+  document.addEventListener('click', function (ev) {
+    closeMenus(ev.target.closest ? ev.target.closest('details.menu') : null);
+  });
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') closeMenus(null); });
   // обработчики делегированы: страница подменяется целиком (live, переключатель периода)
   document.addEventListener('focusin', function (ev) {
     var inp = ev.target;

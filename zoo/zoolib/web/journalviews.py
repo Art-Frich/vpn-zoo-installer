@@ -21,14 +21,14 @@ KIND_BADGE = {"port-scan": "warn", "ssh-auth": "bad", "ssh-scan": "warn", "ssh-l
 
 
 SORT_TITLES = {"n": "по числу", "last": "по давности"}
-OWN_TITLE = ("Свои: адреса, с которых вы входили по SSH-ключу, и сам сервер. Служебные: локальные сети и контейнеры, "
-             "тестовые и зарезервированные диапазоны (например, 192.0.2.0/24). Это не атаки, поэтому по умолчанию "
-             "скрыты и в итоги не входят.")
+OWN_TITLE = ("Ваши входы: адреса, с которых вы заходили по SSH-ключу, и сам сервер. Служебные: локальные сети и "
+             "контейнеры, тестовые и зарезервированные диапазоны (например, 192.0.2.0/24). Это не атаки, поэтому они "
+             "не входят ни в числа, ни в графики, ни в тревоги.")
 SEARCH_HINT = "IP или начало, cc:NL, :22, ssh"
 
 
 def _state(req: "Request") -> dict[str, Any]:
-    """Всё состояние страницы — в query-строке: период, свои, поиск, фильтры, сортировка, число строк, курсор, адрес."""
+    """Всё состояние страницы — в query-строке: период, поиск, фильтры, сортировка, число строк, курсор, адрес."""
     g = req.query.get
     try:
         period = journal.resolve_period(g("period", "24h"))
@@ -39,7 +39,7 @@ def _state(req: "Request") -> dict[str, Any]:
         rows = int(g("n", ""))
     except ValueError:
         rows = journal.ROWS[0]
-    return {"period": period, "all": g("all") == "1", "q": g("q", "").strip()[:journal.QUERY_MAX],
+    return {"period": period, "q": g("q", "").strip()[:journal.QUERY_MAX],
             "svc": svc if svc in journal.SERVICES else "", "kind": kind if kind in journal.KINDS else "",
             "sort": sort if sort in journal.SORTS else "n", "n": rows if rows in journal.ROWS else journal.ROWS[0],
             "after": g("after", "")[:90], "ip": journal.norm_ip(g("ip", "")) or ""}
@@ -48,9 +48,8 @@ def _state(req: "Request") -> dict[str, Any]:
 def _url(st: dict[str, Any], **over: Any) -> str:
     """Ссылка на страницу с тем же состоянием, кроме over; значения по умолчанию в адрес не попадают."""
     st = {**st, **over}
-    default = {"all": False, "q": "", "svc": "", "kind": "", "sort": "n", "n": journal.ROWS[0], "after": "", "ip": ""}
-    args = [(k, "1" if k == "all" else st[k]) for k in ("ip", "q", "svc", "kind", "sort", "n", "after", "all")
-            if st[k] != default[k]]
+    default = {"q": "", "svc": "", "kind": "", "sort": "n", "n": journal.ROWS[0], "after": "", "ip": ""}
+    args = [(k, st[k]) for k in ("ip", "q", "svc", "kind", "sort", "n", "after") if st[k] != default[k]]
     return "/journal?" + urlencode([("period", st["period"]), *args])
 
 
@@ -186,7 +185,7 @@ def _chip(label: str, href: str, on: bool) -> Markup:
 def _toolbar(st: dict[str, Any]) -> Markup:
     """Поле поиска (GET-форма: без JS — обычный переход) и чипы сервисов и видов."""
     hidden = [t("input", type="hidden", name=k, value=v) for k, v in (
-        ("period", st["period"]), ("all", "1" if st["all"] else ""), ("svc", st["svc"]), ("kind", st["kind"]),
+        ("period", st["period"]), ("svc", st["svc"]), ("kind", st["kind"]),
         ("sort", st["sort"] if st["sort"] != "n" else ""), ("n", st["n"] if st["n"] != journal.ROWS[0] else ""))
         if v]
     reset = (t("a", "сбросить", href=_url(st, q="", svc="", kind="", after=""), class_="btn small", data_swap=True)
@@ -287,7 +286,7 @@ def _fmt_bucket(ts: int, res: int) -> str:
 
 # ---------- страница ----------
 
-def _build(data: dict[str, Any], app: "App", show_all: bool) -> tuple[list[Any], list[Any]]:
+def _build(data: dict[str, Any], app: "App") -> tuple[list[Any], list[Any]]:
     """Тело страницы без форм и данных сессии — его можно держать в кэше: что выше таблицы источников и что ниже."""
     problems: list[tuple[str, Any]] = [_verdict(data)]
     problems += [("warn", h) for h in app.cached("journal-health", 60, journal.health)]
@@ -302,21 +301,17 @@ def _build(data: dict[str, Any], app: "App", show_all: bool) -> tuple[list[Any],
     problems += app.cached("journal-alerts", 60, journal.alerts)
     t_ = data["totals"]
     top = data["top_ips"][0] if data["top_ips"] else None
-    hid = data["hidden"]
-    hidden_txt = []
-    if not show_all and hid["local"]:
-        hidden_txt.append(f"служебных {hid['local']}")
-    if not show_all and hid["own"]:
-        hidden_txt.append(f"своих {hid['own']}")
+    skipped = data["hidden"]["own"] + data["hidden"]["local"]
     tiles = t("div",
-              _tile("Попыток", charts.count_label(t_["events"]),
-                    title="скрыты свои и служебные адреса — " + ", ".join(hidden_txt) if hidden_txt else "извне на сервер"),
+              _tile("Попыток", charts.count_label(t_["events"]), title="извне на сервер"),
               _tile("Адресов", str(t_["ips"]), title="разных источников"),
               _tile("Банов fail2ban", str(t_["bans"]), title="по SSH"),
               _tile("Чаще всего", top["ip"] if top else "—",
                     f"{top['n']}" + (f" · {top['cc']}" if top["cc"] else "") if top else "тихо"),
               class_="tiles")
-    above = [alert_list(problems), tiles, _group_cards(data), card("По времени", _timeline(data))]
+    skip = t("p", "не учтены: ваши входы и служебные адреса — " + charts.count_label(skipped), class_="muted small",
+             title=OWN_TITLE, id="skipped")
+    above = [alert_list(problems), tiles, skip, _group_cards(data), card("По времени", _timeline(data))]
     below = [t("div", card("Порты", _ports_table(data)), card("Страны", _countries_table(data)), class_="cols")]
     return above, below
 
@@ -325,24 +320,22 @@ def journal_page(app: "App", req: "Request") -> "Response":
     st = _state(req)
     if st["ip"]:
         return _ip_page(app, req, st)
-    toggle = t("a", "свои и служебные адреса: " + ("скрыть" if st["all"] else "показать"),
-               href=_url(st, all=not st["all"], after=""), title=OWN_TITLE, class_="btn small", data_swap=True)
-    head = page_head("Атаки", None, join(_selector(st), toggle))
+    head = page_head("Атаки", None, _selector(st))
     stamp = journal.last_run_ts()  # данные меняются только с разбором коллектора
-    key = ("journal", st["period"], st["all"], stamp)
+    key = ("journal", st["period"], stamp)
     body = app.cache_get(key, 600)
     if body is None:
-        data = journal.report(st["period"], include_local=st["all"])
+        data = journal.report(st["period"])
         if data.get("empty"):
             nodata = empty("Нет данных · сбор каждые 5 мин", t("code", "sudo zoo journal --collect"))
             return app.render(req, "Атаки", [head, card("Атаки", nodata)], active="/journal")
-        body = (*_build(data, app, st["all"]), data)
+        body = (*_build(data, app), data)
         app.cache_put(key, body, 600)
     above, below, data = body
     skey = ("journal-src", tuple(sorted(st.items())), stamp)
     src = app.cache_get(skey, 120)
     if src is None:
-        res = journal.search(st["period"], st["q"], st["svc"], st["kind"], st["sort"], st["after"], st["n"], st["all"])
+        res = journal.search(st["period"], st["q"], st["svc"], st["kind"], st["sort"], st["after"], st["n"])
         src = _sources(st, res, data)
         app.cache_put(skey, src, 120)
     return app.render(req, "Атаки", [head, *above, src, *below, _kind_dialogs()], active="/journal")

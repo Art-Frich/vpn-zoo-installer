@@ -321,7 +321,7 @@ class ClientsPageTest(AppTestBase):
         clients.check_upstream(fetch=fake_fetch)
         _, body = self.c.get("/clients")
         self.assertIn("9.9.9", body)
-        self.assertIn("проверены", body)
+        self.assertIn("предложены последние версии · ", body)
         self.assertIn('href="https://github.com/2dust/v2rayNG/releases"', body)
         self.assertIn('rel="noopener noreferrer"', body)
         self.assertIn("в магазине", body, "у INCY версий нет: только магазин")
@@ -372,7 +372,10 @@ class ClientsPageTest(AppTestBase):
         incy = android[android.index("<strong>INCY</strong>"):]
         incy = incy[:incy.index("</tr>")]
         self.assertIn("рекомендуем</span>", happ)
-        self.assertRegex(happ, r'class="chip ok" title="рекомендуем для этого протокола">VLESS')
+        basis = "по документации и исследованию 04.10.2026, на устройстве не проверено"
+        self.assertIn(f'class="badge ok" title="{basis}">рекомендуем</span>', happ)
+        self.assertRegex(happ, r'class="chip ok" title="рекомендуем для этого протокола — ' + basis + '">VLESS')
+        self.assertIn("рекомендуем — " + basis, self.c.get("/clients")[1], "легенда")
         self.assertNotIn("рекомендуем", incy, "INCY на Android каталог не рекомендует")
         self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>INCY</strong>"),
                         "рекомендованные — первыми")
@@ -382,7 +385,7 @@ class ClientsPageTest(AppTestBase):
     def test_check_now_button_and_request(self):
         clients.check_upstream(fetch=fake_fetch, now=lambda: time.time() - 7500)
         _, body = self.c.get("/clients")
-        self.assertIn("версии проверены 2 ч", body)
+        self.assertIn("предложены последние версии · 2 ч", body)
         self.assertRegex(body, r'<form method="post" action="/clients/check"[^>]*>.*?Проверить сейчас')
         resp, _ = self.c.post("/clients/check")
         self.assertEqual(header(resp, "Location"), ["/clients"])
@@ -400,7 +403,7 @@ class ClientsPageTest(AppTestBase):
     def test_recent_check_disables_button(self):
         clients.check_upstream(fetch=fake_fetch)
         _, body = self.c.get("/clients")
-        self.assertIn("версии проверены только что", body)
+        self.assertIn("предложены последние версии · только что", body)
         self.assertIn("версии проверяли меньше 10 минут назад", body)
         self.c.post("/clients/check")
         self.assertFalse(clients.req_file().exists())
