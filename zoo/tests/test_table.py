@@ -228,7 +228,7 @@ class SqlPageTest(unittest.TestCase):
 class MemoryPageTest(unittest.TestCase):
     def setUp(self):
         self.rows = [{"name": n, "note": note, "day": d, "access": a} for n, note, d, a in (
-            ("anna", "мама", 30, "включён"), ("boris", "", 10, "отключён"), ("clara", "подруга Анны", 20, "включён"),
+            ("anna", "бухгалтерия", 30, "включён"), ("boris", "", 10, "отключён"), ("clara", "подруга Анны", 20, "включён"),
             ("dmitry", "", None, "включён"))]
         self.sp = tbl.Spec("/u", [
             tbl.Col("name", "имя", sort=True, search=True, find=lambda r: r["note"]),
@@ -595,7 +595,7 @@ class PagesTest(AppTestBase):
         users.bootstrap()
         self.c.login()
         for name in ("masha", "petya", "anna"):
-            self.c.post("/users", {"name": name, "note": "мама" if name == "masha" else ""})
+            self.c.post("/users", {"name": name, "note": "бухгалтерия" if name == "masha" else ""})
         self.c.post("/users/petya/disable", {"back": "/users"})
         _, body = self.c.get("/users")
         self.assertRegex(body, r'<tr data-href="/users/masha">')
