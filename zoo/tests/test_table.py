@@ -604,7 +604,7 @@ class PagesTest(AppTestBase):
         self.assertIn(">включён</a>", body)
         names = lambda b: re.findall(r'<tr data-href="/users/([a-z]+)"', b)  # noqa: E731
         self.assertEqual(names(body), ["anna", "masha", "owner", "petya"])
-        self.assertEqual(names(self.c.get("/users?q=" + urllib.parse.quote("МАМА"))[1]), ["masha"])
+        self.assertEqual(names(self.c.get("/users?q=" + urllib.parse.quote("БУХГАЛТЕРИЯ"))[1]), ["masha"])
         self.assertEqual(names(self.c.get("/users?q=a")[1]), ["anna", "masha", "petya"])
         self.assertEqual(names(self.c.get("/users?sort=-name")[1]), ["petya", "owner", "masha", "anna"])
         self.assertEqual(names(self.c.get("/users?f_access=" + urllib.parse.quote("отключён"))[1]), ["petya"])
