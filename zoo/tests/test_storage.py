@@ -362,9 +362,13 @@ class CliTest(StorageBase):
 
     def test_storage_in_collector_unit(self):
         unit = (Path(__file__).resolve().parent.parent / "systemd" / "zoo-collector.service").read_text(encoding="utf-8")
-        # до трафика: ExecStartPost после упавшего снятия трафика не запускается, а чистка нужна именно при полном диске
-        self.assertIn("ExecStartPre=-/usr/local/bin/zoo storage --enforce", unit)
-        self.assertNotRegex(unit, r"(?m)^ExecStartPost=")
+        # трафик первым; журнал и чистка — после него, но и при его сбое (ExecStartPost после сбоя не идёт,
+        # а чистка нужна именно при полном диске), каждый под своим timeout внутри TimeoutStartSec
+        steps = [ln.split("=", 1)[1] for ln in unit.splitlines() if ln.startswith("ExecStart")]
+        self.assertEqual(steps, ["-/usr/local/bin/zoo traffic --collect",
+                                 "-/usr/bin/timeout --kill-after=10 75 /usr/local/bin/zoo journal --collect",
+                                 "-/usr/bin/timeout --kill-after=10 75 /usr/local/bin/zoo storage --enforce"])
+        self.assertIn("TimeoutStartSec=4min", unit)
         self.assertIn("/var/log/vpn-zoo", unit)
 
 

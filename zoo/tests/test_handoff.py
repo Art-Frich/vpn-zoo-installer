@@ -8,7 +8,7 @@ from unittest import mock
 
 from tests.test_groupviews import GroupWebBase, text_of
 from tests.test_web import Client, header
-from zoolib import protolib, qr, traffic, users
+from zoolib import paths, protolib, qr, traffic, users
 from zoolib.web import handoffviews, userviews
 
 PNG = bytes([0x89]) + b"PNG fake "
@@ -219,16 +219,17 @@ class CardsPageTest(Base):
         self.post("/groups/g1", {"name": ["Семья"], "proto": ["hysteria2"], "client:android": ["hiddify"],
                                 "client:ios": ["hiddify"], "client:windows": ["hiddify"], "client:macos": ["hiddify"]})
         _, body = self.c.get("/handoff?group=g1")
-        self.assertEqual(body.count(">Windows, macOS</h4>"), 2, "одинаковое всё — один блок, по блоку на человека")
-        # у телефонов свои магазины и шаги: не сливаются ни друг с другом, ни с компьютерами
-        blocks = dict(re.findall(r'<h4 class="plat-title">([^<]+)</h4>(.*?)</section>', body, re.S)[:3])
-        self.assertEqual(sorted(blocks), ["Android", "Windows, macOS", "iPhone"])
+        # у телефонов свои магазины и шаги, у компьютеров — свой файл релиза: блоки не сливаются
+        blocks = dict(re.findall(r'<h4 class="plat-title">([^<]+)</h4>(.*?)</section>', body, re.S)[:4])
+        self.assertEqual(sorted(blocks), ["Android", "Windows", "iPhone", "macOS"])
+        self.assertIn("hiddify-app/releases/latest — в «Assets» скачайте файл для Windows", blocks["Windows"])
+        self.assertIn("файл «.dmg»", blocks["macOS"])
         self.assertIn("App Store", blocks["iPhone"])
         self.assertIn("нет в App Store РФ", blocks["iPhone"])
         self.assertNotIn("App Store", blocks["Android"])
         self.assertIn("Google Play", blocks["Android"])
         self.assertIn("Прокси для приложений", blocks["Android"])
-        self.assertNotIn("Прокси для приложений", blocks["iPhone"] + blocks["Windows, macOS"])
+        self.assertNotIn("Прокси для приложений", blocks["iPhone"] + blocks["Windows"] + blocks["macOS"])
         # люди ставят сами: на Android — из Google Play, а не APK с GitHub (D49)
         self.assertRegex(blocks["Android"], r"Установите «Hiddify»[^<]*play\.google\.com")
         self.assertIn('src="/users/masha/qr/', blocks["Android"] + blocks["iPhone"], "на телефоне — QR")
@@ -414,6 +415,50 @@ class ExportTest(Base):
         self.assertIn("lena/amneziawg.conf", [r[3] for r in rows])
         self.assertIn("файл: amneziawg.conf", z.read("lena/instruction.txt").decode("utf-8"))
 
+    def test_v2rayn_rules_file_goes_into_zip(self):
+        resp, _ = self.create_group(name="Надёжно", proto=["vless-reality"], client__windows="v2rayn",
+                                    users_new="ivan", confirm="1")
+        self.assertEqual(resp.status, 303)
+        rules = paths.clients_dir() / "ivan" / "v2rayn-routing.json"
+        self.assertTrue(rules.is_file())
+        _, z = self.zip_of("", group="g2")
+        self.assertIn("ivan/v2rayn-routing.json", z.namelist())
+        self.assertEqual(z.read("ivan/v2rayn-routing.json"), rules.read_bytes())
+        text = z.read("ivan/instruction.txt").decode("utf-8")
+        self.assertIn("файл: v2rayn-routing.json", text)
+        rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
+        self.assertTrue(set(r[3] for r in rows[1:] if not r[3].startswith(("vless://", "hysteria2://")))
+                        <= set(z.namelist()), "строки CSV с файлами указывают только на то, что в архиве")
+        rules.unlink()
+        _, z = self.zip_of("", group="g2")
+        self.assertNotIn("ivan/v2rayn-routing.json", z.namelist())
+        rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
+        self.assertNotIn("ivan/v2rayn-routing.json", [r[3] for r in rows])
+
+    def test_per_app_step_uses_group_list(self):
+        resp, _ = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"],
+                                            "allow_mode": ["own"], "android": ["com.whatsapp"],
+                                            "windows": ["Discord.exe"], "client:android": ["happ"]})
+        self.assertEqual(resp.status, 303)
+        _, z = self.zip_of("", group="g1")
+        text = z.read("masha/instruction.txt").decode("utf-8")
+        self.assertIn("отметьте WhatsApp.", text)
+        self.assertNotIn("Brave", text, "Brave нет в списке группы")
+        _, body = self.c.get("/handoff?group=g1")
+        self.assertIn("отметьте WhatsApp.", body)
+
+    def test_failed_qr_reported_once_per_key(self):
+        resp, _ = self.create_group(name="Везде", proto=["hysteria2"], client__android="hiddify",
+                                    client__ios="hiddify", client__windows="hiddify", users_new="ivan", confirm="1")
+        self.assertEqual(resp.status, 303)
+        with mock.patch.object(qr, "png", side_effect=qr.QrError("нет")), \
+                mock.patch.object(qr, "svg", side_effect=qr.QrError("нет qrencode")):
+            _, z = self.zip_of("", group="g2")
+        readme = z.read("README.txt").decode("utf-8")
+        self.assertEqual(readme.count("ivan: QR «Протокол hysteria2» не построен"), 1, readme)
+        text = z.read("ivan/instruction.txt").decode("utf-8")
+        self.assertEqual(text.count("  Протокол hysteria2\n"), 1, text)
+
     def test_png_falls_back_to_svg_then_skips(self):
         with mock.patch.object(qr, "png", side_effect=qr.QrError("нет PNG")):
             _, z = self.zip_of("", group="g1")
@@ -452,6 +497,22 @@ class ExportTest(Base):
         resp, _ = self.post("/handoff/export", {"group": ["nope"], "fmt": ["zip"]})
         self.assertEqual(resp.status, 303)
         self.assertEqual(header(resp, "Location"), ["/groups"])
+
+    def test_owner_keys_never_handed_out(self):
+        users.add_user("vera")
+        self.assertEqual(self.reg()["owner"]["group"], "main")
+        sel = handoffviews.select("main", "", "")
+        self.assertEqual(sel.names, ["vera"])
+        self.assertEqual(handoffviews.select("", "owner,vera", "").names, ["vera"])
+        self.assertEqual(handoffviews.select("", "owner,vera", "").query["u"], "vera")
+        _, z = self.zip_of("", group="main")
+        self.assertEqual({n.split("/")[0] for n in z.namelist()} - {"README.txt", "index.csv"}, {"vera"})
+        self.assertNotIn("owner", z.read("index.csv").decode("utf-8"))
+        resp, _ = self.post("/handoff/export", {"group": ["main"], "fmt": ["csv"]})
+        self.assertEqual(resp.status, 200)
+        self.assertNotIn(b"owner", resp.body)
+        _, body = self.c.get("/handoff?group=main")
+        self.assertNotIn('data-name="owner"', body)
 
     def test_zip_names_cannot_escape(self):
         _, z = self.zip_of("", group="g1")

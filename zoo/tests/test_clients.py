@@ -121,7 +121,7 @@ class CatalogTest(unittest.TestCase):
         av = cat.client("amneziavpn")
         self.assertIsNone(cat.per_app_steps(av, "windows"), "на Windows у AmneziaVPN только исключение приложений")
         self.assertIn("только приложения из списка", cat.per_app_steps(av, "android"))
-        self.assertIn("Brave", cat.per_app_steps(cat.client("happ"), "android"))
+        self.assertIn("{apps}", cat.per_app_steps(cat.client("happ"), "android"), "приложения — из списка группы")
 
     def test_store_flag(self):
         cat = catalog()
@@ -509,6 +509,27 @@ class PackTest(unittest.TestCase):
         self.assertIn("github.com/amnezia-vpn/amneziawg-android", s.install, "проверенные ссылки — раньше")
         self.assertIn("Brave", s.check)
         self.assertIn("2ip.ru", s.check, "у AWG echo-правила нет: адрес сервера виден")
+
+    def test_per_app_step_names_the_group_list_not_brave(self):
+        from zoolib import allowlist
+        al = allowlist.Allowlist(Path("x"), ["com.brave.browser", "org.telegram.messenger"], ["brave.exe"],
+                                 titles={"com.example.crm": "CRM"})
+        args = (catalog(), {"checked": None, "versions": {}}, "android", [VLESS], [], {"android": ["happ"]})
+        s = clientviews.build_pack(*args, al=al).sections[0]
+        self.assertIn("отметьте Brave и Telegram.", " ".join(s.steps), "без списка группы — общий список")
+        self.assertIn("Brave", s.check)
+        s = clientviews.build_pack(*args, al=al, apps=["com.whatsapp", "com.example.crm"]).sections[0]
+        steps = " ".join(s.steps)
+        self.assertIn("отметьте WhatsApp и CRM.", steps)
+        self.assertNotIn("Brave", steps + s.check, "Brave нет в списке группы — проверка не в нём")
+        self.assertIn("приложении из списка", s.check)
+        self.assertNotIn("{apps}", steps)
+        many = [f"com.x.app{i}" for i in range(9)]
+        steps = " ".join(clientviews.build_pack(*args, al=al, apps=many).sections[0].steps)
+        self.assertIn("ещё 4 из списка", steps)
+        self.assertNotEqual(clientviews.pack_sig(clientviews.build_pack(*args, al=al)),
+                            clientviews.pack_sig(clientviews.build_pack(*args, al=al, apps=["com.whatsapp"])),
+                            "другой список — другой текст: текст группы не подставляется человеку со своим списком")
 
     def gpack(self, plat, links, prefer, order=None):
         return clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, plat, links, [], prefer, order)

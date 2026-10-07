@@ -243,24 +243,30 @@ def _proto_row(f: Fact, checked: bool) -> Markup:
              class_="opt")
 
 
-def _protocols_block(facts: list[Fact], selected: list[str]) -> Markup:
-    """Все выбираемые протоколы сервера строками-чекбоксами (Salamander — отдельная строка); выключенные — серые."""
+def _protocols_block(facts: list[Fact], selected: list[str], carried: list[str] | tuple = ()) -> Markup:
+    """Все выбираемые протоколы сервера строками-чекбоксами (Salamander — отдельная строка); выключенные — серые.
+    carried — протоколы группы: выключенный, но оставшийся в группе, можно убрать отметкой «drop»."""
     items = [_proto_row(f, f.id in selected) for f in facts]
     if not items:
         return alert_list([("warn", "Нет включённых протоколов с пользователями.")])
-    for title, why in _not_selectable({f.id for f in facts}):
-        items.append(t("div", t("span", t("span", t("strong", title), class_="opt-title"),
-                                t("span", why, class_="hint"), class_="opt-body"), class_="opt off"))
+    for pid, title, why in _not_selectable({f.id for f in facts}):
+        kept = pid in carried and why.startswith("выключен")
+        body = t("span", t("span", t("strong", title), class_="opt-title"),
+                 t("span", why + (" В группе остаётся и вернётся участникам при включении; отметьте, чтобы убрать."
+                                  if kept else ""), class_="hint"), class_="opt-body")
+        items.append(t("label", t("input", type="checkbox", name="drop", value=pid), body, class_="opt off")
+                     if kept else t("div", body, class_="opt off"))
     return t("div", items, class_="opts")
 
 
-def _not_selectable(shown: set[str]) -> list[tuple[str, str]]:
+def _not_selectable(shown: set[str]) -> list[tuple[str, str, str]]:
     """Протоколы сервера, которых нет среди выбираемых: выключенные — серой строкой, чтобы были видны все."""
     out = []
     for m in manifests.load_all()[0]:
         if m.id in shown:
             continue
-        out.append((m.short, "выключен на сервере — включается на «Обзоре»" if not m.enabled else "без учёток пользователей"))
+        out.append((m.id, m.short,
+                    "выключен на сервере — включается на «Обзоре»." if not m.enabled else "без учёток пользователей"))
     return out
 
 
@@ -272,10 +278,12 @@ def _set_note(cat: clients.Catalog, plat: str, ids: list[str], mode: str) -> str
     foreign = [c["name"] for c in cs if cat.no_ru_store(c, plat)]
     if foreign:
         return f"{', '.join(foreign)}: нет в {'App Store' if plat == 'ios' else 'магазине'} РФ"
-    if mode == "self" and any(groups.in_store(c, plat) for c in cat.clients if plat in c["platforms"]):
+    if mode == "self":
         raw = [c["name"] for c in cs if not groups.in_store(c, plat)]
-        if raw:
+        if raw and any(groups.in_store(c, plat) for c in cat.clients if plat in c["platforms"]):
             return f"{', '.join(raw)}: не из магазина, ставится файлом"
+        if raw:
+            return f"{', '.join(raw)}: в магазине нет — установщик с GitHub (в инструкции сказано, какой файл)"
     return ""
 
 
@@ -545,7 +553,8 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
                   t("button", "Выбрать", type="submit", name="go", value="custom", class_="btn", formnovalidate=True),
                   class_="opt preset"))
     hint = ("Сервер скачает APK и установщики, раздать их можно из «Скачать дистрибутивы»." if d.install_mode == "admin"
-            else "Только приложения из магазинов; протоколы, которые входят одним QR без ручных правок.")
+            else "На телефонах — приложения из магазинов, на компьютерах — установщик с GitHub (в инструкции — "
+                 "ссылка и какой файл взять); протоколы, которые входят одним QR без ручных правок.")
     return t("div", _mode_nav(d.install_mode), t("p", hint, class_="hint"), t("div", rows, class_="opts"))
 
 
@@ -572,6 +581,7 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
     elif step == 2:
         normalize_clients(d, managed)
         body = [t("input", type="hidden", name="clients_for", value=d.clients_for),
+                t("input", type="hidden", name="devs", value="1"),   # чипы устройств — источник правды, как на странице группы
                 t("p", MODE_TITLES[d.install_mode], class_="hint"), _clients_block(d, managed)]
         title, hint = "Приложения", "Что поставить на каждое устройство."
     else:
@@ -903,10 +913,12 @@ def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: 
              t("div", acts, class_="actions"), method="post", action=f"/groups/{g.id}/move", class_="stack",
              data_swap=True)
     cards_url = "/handoff?" + urllib.parse.urlencode({"group": g.id})
-    left = len(mem) - len(st.on)
-    go = t("div", t("a", "Карточки для раздачи", href=cards_url, class_="btn small primary", data_swap=True),
+    hand = [u.name for u in mem if u.name != users.OWNER]   # owner в раздачу не идёт (handoffviews.select)
+    left = sum(1 for n in hand if not st.connected(n))
+    go = t("div", t("a", "Карточки для раздачи", href=cards_url, class_="btn small primary", data_swap=True)
+           if hand else None,
            t("a", f"Ещё не подключились: {left}", href=cards_url + "&only=pending", class_="btn small", data_swap=True)
-           if st.known and 0 < left < len(mem) else None, class_="actions")
+           if st.known and 0 < left < len(hand) else None, class_="actions")
     return card("Участники", t("div", chips, class_="chips"),
                 t("p", "Зелёные уже подключились (трафик за 30 дней).", class_="hint") if st.on else None,
                 go,
@@ -970,7 +982,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
              t("div", t("label", "Название", for_="name"),
                t("input", type="text", name="name", id="name", value=d.name, required=True,
                  maxlength=str(groups.NAME_MAX), autocomplete="off"), class_="field"),
-             t("h3", "Протоколы", class_="sub-h"), _protocols_block(facts, selected),
+             t("h3", "Протоколы", class_="sub-h"), _protocols_block(facts, selected, g.protocols),
              t("h3", "Приложения", class_="sub-h"), _mode_radios(d.install_mode),
              _clients_block(Draft(protocols=selected, clients=d.clients, devices=d.devices, install_mode=d.install_mode),
                             managed),
@@ -1038,7 +1050,7 @@ def group_save(app: "App", req: "Request", gid: str) -> "Response":
         # «Основная» следует за включением протоколов, пока в форме отмечено всё включённое
         protos = [groups.ALL] if g.all_protocols and set(selectable) <= set(d.protocols) else d.protocols
         rep = groups.update(g.id, name=d.name, protocols=protos, clients=d.clients, allow=d.allow_arg(),
-                            install_mode=d.install_mode)
+                            install_mode=d.install_mode, drop=req.multi.get("drop", [])[:20])
     except CATCH as e:
         return group_page(app, req, gid, d, [_err(e)], 422)
     return _done(app, req, rep, f"/groups/{g.id}")

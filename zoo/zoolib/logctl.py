@@ -327,18 +327,20 @@ def _run_one(req: Path) -> None:
     st: dict[str, Any] = {"id": rid, "action": str(data.get("action") or ""), "value": str(data.get("value") or ""),
                           "started": int(time.time())}
     try:
-        if data.get("id") != rid:
-            raise CleanError("заявка повреждена")
-        st.update(vacuum(st["action"], st["value"]), status="ok")
-    except CleanError as e:
-        st.update(status="fail", error=str(e))
-    st["finished"] = int(time.time())
-    state_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
-    atomic_write_json(state_dir() / f"{rid}.json", st, 0o600)
-    try:
-        req.unlink()
-    except OSError:
-        pass
+        try:
+            if data.get("id") != rid:
+                raise CleanError("заявка повреждена")
+            st.update(vacuum(st["action"], st["value"]), status="ok")
+        except CleanError as e:
+            st.update(status="fail", error=str(e))
+        st["finished"] = int(time.time())
+        state_dir().mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write_json(state_dir() / f"{rid}.json", st, 0o600)
+    finally:
+        try:   # заявка уходит всегда, даже если упала запись состояния: иначе path-юнит крутит её до упора
+            req.unlink()
+        except OSError:
+            pass
     _prune()
 
 

@@ -92,7 +92,7 @@ class Selection:
 
 def select(group: str, listed: str, only: str) -> Selection:
     """Кого раздавать: участники группы или перечисленные имена. Сервер ничему не верит: имена — по реестру,
-    служебные и отключённые не берутся, больше HANDOFF_MAX — отказ."""
+    служебные, owner (ключи самого админа) и отключённые не берутся, больше HANDOFF_MAX — отказ."""
     ureg = users.list_users()
     sel = Selection(only_pending=only == "pending")
     if group:
@@ -112,7 +112,10 @@ def select(group: str, listed: str, only: str) -> Selection:
                 sel.notes.append(f"«{n[:32]}» нет в реестре — пропущен")
             else:
                 cand.append(u)
-        sel.query["u"] = ",".join(u.name for u in cand)
+        sel.query["u"] = ",".join(u.name for u in cand if u.name != users.OWNER)
+    if any(u.name == users.OWNER for u in cand):
+        sel.notes.append(f"{users.OWNER} — ключи администратора, в раздачу не идут (они на его странице)")
+        cand = [u for u in cand if u.name != users.OWNER]
     off = [u.name for u in cand if not u.enabled]
     cand = [u for u in cand if u.enabled]
     if off:
@@ -197,7 +200,8 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
     prefer, order = clientviews.group_prefs(g)
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
-        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, clientviews.store_first(g))
+        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
+                                      clientviews.store_first(g), ctx.al, ctx.apps_for(plat, g, user.name))
         if pack is None:
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
@@ -366,8 +370,9 @@ def _cell(v: str) -> str:
     return "'" + v if v.startswith(FORMULA) else v
 
 
-def csv_bytes(cards: list[Card], with_files: bool = False) -> bytes:
-    """index.csv: имя;заметка;протокол;ссылка. Файловые ключи — путь внутри архива (with_files), без ссылки — пропуск."""
+def csv_bytes(cards: list[Card], with_files: dict[str, dict[str, str]] | None = None) -> bytes:
+    """index.csv: имя;заметка;протокол;ссылка. Файловые ключи — путь внутри архива (with_files: {имя: {файл ключа:
+    имя в папке}} — только то, что в архив попало), без ссылки — пропуск."""
     buf = io.StringIO(newline="")
     w = csv.writer(buf, delimiter=";", lineterminator="\n")
     w.writerow(["имя", "заметка", "протокол", "ссылка"])
@@ -376,7 +381,8 @@ def csv_bytes(cards: list[Card], with_files: bool = False) -> bytes:
         for b in c.blocks:
             for a in b.apps:
                 for k in a.keys:
-                    link = k.uri or (f"{c.user.name}/{k.file}" if k.file and with_files else "")
+                    put_as = (with_files or {}).get(c.user.name, {}).get(k.file or "")
+                    link = k.uri or (f"{c.user.name}/{put_as}" if put_as else "")
                     if link and (k.title, link) not in seen:
                         seen.add((k.title, link))
                         w.writerow([c.user.name, _cell(c.user.note), k.title, link])
@@ -403,20 +409,22 @@ def instruction_text(c: Card, qr_files: dict[Any, str], files: dict[str, str]) -
         out += [f"  {i}) {words(s, 'из этой папки')}" for i, s in enumerate(b.steps, 1)]
         out.append("")
     out.append("Ключи доступа (никому не пересылайте):")
-    seen: set[Any] = set()
+    # один ключ на нескольких платформах — одна запись, QR-картинки собираются к ней
+    keys: dict[Any, list[str]] = {}
     for b in c.blocks:
         for a in b.apps:
             for k in a.keys:
-                if (k.title, k.uri, k.file, k.qr) in seen:
-                    continue
-                seen.add((k.title, k.uri, k.file, k.qr))
-                out.append(f"  {k.title}")
-                if k.qr is not None and (k.title, k.qr) in qr_files:
-                    out.append(f"    QR: {qr_files[(k.title, k.qr)]}")
-                if k.uri:
-                    out.append(f"    ссылка: {k.uri}")
-                if k.file and k.file in files:
-                    out.append(f"    файл: {files[k.file]}")
+                qrs = keys.setdefault((k.title, k.uri, k.file), [])
+                pic = qr_files.get((k.title, k.qr)) if k.qr is not None else None
+                if pic and pic not in qrs:
+                    qrs.append(pic)
+    for (title, uri, file), qrs in keys.items():
+        out.append(f"  {title}")
+        out += [f"    QR: {q}" for q in qrs]
+        if uri:
+            out.append(f"    ссылка: {uri}")
+        if file and file in files:
+            out.append(f"    файл: {files[file]}")
     out += ["", clientviews.SEND_WARN]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip() + "\n"
 
@@ -447,6 +455,7 @@ def build_zip(app: "App", cards: list[Card], skipped: list[str], budget: float =
             total += len(data)
 
         done: list[Card] = []
+        archived: dict[str, dict[str, str]] = {}
         for c in cards:
             if time.monotonic() - start > budget or total > ZIP_MAX:
                 left.append(c.user.name)
@@ -456,12 +465,14 @@ def build_zip(app: "App", cards: list[Card], skipped: list[str], budget: float =
                 continue
             name = c.user.name
             qr_files: dict[Any, str] = {}
+            qr_failed: set[Any] = set()   # платформы с тем же ключом — одна строка в README, не по строке на блок
             files: dict[str, str] = {}
+            missing: set[str] = set()
             used: set[str] = set()
             for b in c.blocks:
                 for a in b.apps:
                     for k in a.keys:
-                        if k.qr is not None and (k.title, k.qr) not in qr_files:
+                        if k.qr is not None and (k.title, k.qr) not in qr_files and (k.title, k.qr) not in qr_failed:
                             payload = userviews._payload(c.links[k.qr], name) if k.qr < len(c.links) else None
                             base = _free_base(f"qr-{people.slug(k.title)}".strip("-"), used)
                             made = _qr_file(payload, base) if payload else None
@@ -470,21 +481,28 @@ def build_zip(app: "App", cards: list[Card], skipped: list[str], budget: float =
                                 put(f"{name}/{made[0]}", made[1])
                                 qr_files[(k.title, k.qr)] = made[0]
                             else:
+                                qr_failed.add((k.title, k.qr))
                                 problems.append(f"{name}: QR «{k.title}» не построен (нет qrencode или ключ длинный)")
                         if k.file and k.file not in files and clientviews.FILE_NAME_RE.fullmatch(k.file):
+                            # .conf и правила v2rayN (v2rayn-routing.json): инструкция велит импортировать оба
                             f = userviews._file_ok(str(paths.clients_dir() / name / k.file), name)
-                            if f is not None and f.suffix == ".conf":
+                            if f is None:
+                                if k.file not in missing:
+                                    missing.add(k.file)
+                                    problems.append(f"{name}: файла {k.file} нет на сервере — в архив не вошёл")
+                            else:
                                 try:
                                     put(f"{name}/{f.name}", f.read_bytes())
                                     files[k.file] = f.name
                                 except OSError as e:
                                     problems.append(f"{name}: {k.file}: {e}")
             put(f"{name}/instruction.txt", instruction_text(c, qr_files, files).encode("utf-8"))
+            archived[name] = files
             done.append(c)
-        put("index.csv", csv_bytes(done, with_files=True))
+        put("index.csv", csv_bytes(done, with_files=archived))
         readme = ["Раздача VPN: " + str(len(done)) + " человек.", "", NOTE_WARN, "",
                   "index.csv — имя;заметка;протокол;ссылка (откройте в Excel: разделитель «;»).",
-                  "В папке человека: QR-картинки, файлы .conf (где нужны) и instruction.txt.", ""]
+                  "В папке человека: QR-картинки, файлы ключей (.conf, правила v2rayN — где нужны) и instruction.txt.", ""]
         if left:
             readme += [f"Не вошли (не хватило времени, повторите): {', '.join(left)}", ""]
         if skipped:

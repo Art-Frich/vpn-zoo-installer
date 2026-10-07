@@ -275,6 +275,7 @@ class Pack:
     platform: str
     platform_title: str
     sections: list[Section]
+    apps: str = ""   # приложения «через VPN» в тексте шага (список группы или человека) — входят в подпись набора
 
     @property
     def message(self) -> str:
@@ -382,22 +383,63 @@ def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have:
     return _assign(platform, links, have, rec, protos)
 
 
+# GitHub: страница последнего релиза (не список всех) и какой файл из «Assets» брать — человек ставит сам
+GITHUB_FILE = {"android": "файл «.apk» (universal или arm64-v8a)",
+               "windows": "файл для Windows с «x64» — установщик «.exe» (Setup), если его нет — «.zip»",
+               "macos": "файл «.dmg»", "linux": "файл «.AppImage» или «.deb» с «x64» / «amd64»"}
+
+
+def _install_target(ln: dict[str, Any], platform: str) -> str:
+    url = ln["url"]
+    if ln.get("kind") != "github":
+        return url
+    if re.fullmatch(r"https://github\.com/[^/]+/[^/]+/releases/?", url):
+        url = url.rstrip("/") + "/latest"
+    hint = GITHUB_FILE.get(platform)
+    return f"{url} — в «Assets» скачайте {hint}" if hint else url
+
+
+BRAVE_IDS = {"com.brave.browser", "brave.exe"}
+VIA_LIST = "приложении из списка «через VPN»"
+APPS_SHOWN = 6
+
+
+def via_vpn_names(al: allowlist.Allowlist | None, platform: str, ids: list[str]) -> list[str]:
+    """Названия приложений списка «через VPN» для текста: своё название, из каталога (до « — »), иначе идентификатор."""
+    out = []
+    for i in ids:
+        name = (al.titles.get(i.lower(), "") if al else "") or allowlist.title_of(platform, i) or i
+        out.append(name.split(" — ")[0])
+    return list(dict.fromkeys(out))
+
+
+def join_names(names: list[str]) -> str:
+    if len(names) > APPS_SHOWN:
+        names = names[:APPS_SHOWN - 1] + [f"ещё {len(names) - APPS_SHOWN + 1} из списка"]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " и " + names[-1]
+
+
 def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links: list[protolib.Link],
                mans: list[Any], prefer: dict[str, list[str]] | None = None, order: list[str] | None = None,
-               stores: bool = False) -> Pack | None:
+               stores: bool = False, al: allowlist.Allowlist | None = None, apps: list[str] | None = None) -> Pack | None:
     """prefer — наборы клиентов группы по платформам, order — протоколы группы (по PRIORITY);
-    без них — рекомендованные клиенты и порядок раздачи из каталога. stores — ссылки магазинов первыми."""
+    без них — рекомендованные клиенты и порядок раздачи из каталога. stores — ссылки магазинов первыми.
+    apps — список «через VPN» этой платформы (группы или человека; None — общий из al): его названия идут
+    в шаг выбора приложений, а проверка «в Brave» — только если Brave в нём есть."""
     have = {ln.variant for ln in links}
     plan = _plan(cat, platform, links, have, prefer, order)
     if not plan:
         return None
+    if apps is None and al is not None and platform in allowlist.PLATFORMS:
+        apps = al.common(platform)
+    names = join_names(via_vpn_names(al, platform, apps)) if apps else ""
     sections = []
     for c, mine in plan:
         items = [Item(proto, method, _tile_title(cat, mans, proto)) for proto, method in mine]
         sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform], stores), items)
         ver = f" (версия {sec.version})" if sec.version else ""
         foreign = f" {FOREIGN_STORE}" if cat.no_ru_store(c, platform) else ""
-        sec.install = f"Установите «{c['name']}»{ver}: {sec.links[0]['url']}{foreign}"
+        sec.install = f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform)}{foreign}"
         sec.steps += [c["import"][m] for m in dict.fromkeys(i.method for i in items)]
         for ex in c.get("extra", []):
             if ex["platform"] == platform and ex["proto"] in have:
@@ -405,13 +447,15 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
                 sec.extras.append(Item(ex["proto"], "file", _tile_title(cat, mans, ex["proto"])))
         app_step = cat.per_app_steps(c, platform)
         if app_step:
-            sec.steps.append("Приложения через VPN: " + app_step)
+            sec.steps.append("Приложения через VPN: " + app_step.replace("{apps}", names or "нужные приложения"))
         # Brave — «приложение под VPN»: только там, где клиент умеет пускать в туннель выбранные приложения
         brave = (c.get("per_app") in ("config", "rules") and platform != "ios") or bool(app_step)
         browser = "Brave" if brave else "любом браузере"
+        if brave and apps is not None and not any(i.lower() in BRAVE_IDS for i in apps):
+            browser = VIA_LIST   # Brave нет в списке: в нём сайт пойдёт мимо VPN
         sec.check = (cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]).replace("{browser}", browser)
         sections.append(sec)
-    return Pack(platform, cat.platforms[platform], sections)
+    return Pack(platform, cat.platforms[platform], sections, names)
 
 
 def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]], list[str] | None]:
@@ -435,7 +479,7 @@ def pack_sig(pack: "Pack | None") -> str:
     """Подпись набора: какие клиенты и за какие протоколы отвечают. Версии не входят: текст от них не «устаревает»."""
     if pack is None:
         return "-"
-    raw = ";".join(f"{s.client['id']}:{','.join(i.proto for i in s.items)}" for s in pack.sections)
+    raw = ";".join(f"{s.client['id']}:{','.join(i.proto for i in s.items)}" for s in pack.sections) + "|" + pack.apps
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -456,6 +500,23 @@ class Ctx:
         return cls(cat, clients.load_cache(), manifests.load_all()[0])
 
     @cached_property
+    def al(self) -> allowlist.Allowlist | None:
+        try:
+            return allowlist.Allowlist.load()
+        except allowlist.AllowlistError:
+            return None
+
+    def apps_for(self, plat: str, g: groups.Group | None = None, user: str | None = None) -> list[str] | None:
+        """Список «через VPN» платформы: человека (свой → группы → общий), иначе группы, иначе общий."""
+        if self.al is None or plat not in allowlist.PLATFORMS:
+            return None
+        if user:
+            return self.al.effective(plat, user)
+        if g is not None and g.allowlist:
+            return list(g.allowlist.get(plat, []))
+        return self.al.common(plat)
+
+    @cached_property
     def selectable(self) -> list[str]:
         return users.selectable_protocols()
 
@@ -464,7 +525,7 @@ class Ctx:
         if key not in self.packs:
             prefer, order = group_prefs(g)
             self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.offered(self.selectable)), self.mans,
-                                         prefer, order, store_first(g))
+                                         prefer, order, store_first(g), self.al, self.apps_for(plat, g))
         return self.packs[key]
 
     def group_sig(self, g: groups.Group, plat: str) -> str:
@@ -547,7 +608,8 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
     panels: list[Markup] = []
     plats: list[tuple[str, str]] = []
     for plat, title in ctx.cat.platforms.items():
-        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g))
+        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g), ctx.al,
+                          ctx.apps_for(plat, g, name))
         if pack is None:
             continue
         group_text = ctx.text(g, plat) if g else None

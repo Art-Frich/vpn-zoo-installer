@@ -1,7 +1,8 @@
 """Объём данных zoo: разделы, общий бюджет, чистка по лимиту (docs/PLAN-admin.md §13).
 
 Разделы: трафик, журнал атак, история проб (в ней же таблица live), логи установки, дистрибутивы клиентов
-(каталог dist, их скачивает `zoo clients --fetch-dist`; чистка — версиями, самые старые, свежая версия клиента последней).
+(каталог dist, их скачивает `zoo clients --fetch-dist`; чистка — версиями, самые старые; последняя версия платформы
+бюджетом не удаляется, а качается не больше доли раздела — dist.cap()).
 Бюджет — `ZOO_DATA_LIMIT` в config.env (по умолчанию 1 ГБ, но не больше 5 % диска), у каждого
 раздела своя доля. Чистка начинается, только когда превышен общий бюджет: режется раздел,
 который сильнее всех вылез за свою долю, самые старые записи (у трафика и журнала сначала
@@ -226,16 +227,18 @@ class LogsSection(Section):
 
 
 class DistSection(Section):
-    """Версии дистрибутивов клиентов (dist/<клиент>/<версия>): запись — одна версия. Сначала уходят версии, которые
-    не последние у своего клиента, самые старые первыми; последние — только если иначе не уложиться."""
+    """Версии дистрибутивов клиентов (dist/<клиент>/<версия>): запись — одна версия, самые старые первыми.
+    Последняя версия платформы бюджетом не удаляется (иначе zoo-clients скачает её снова и так каждый день,
+    а между этим установщика нет); её убирает только явная очистка раздела (keep_latest=False)."""
     id, title = "dist", "Дистрибутивы"
+    keep_latest = True
 
     @property
     def available(self) -> bool:   # type: ignore[override]
         """Раздела нет, пока ни одной группы «ставит ИТ» не было: на странице данных его не видно."""
         return dist.root().is_dir()
 
-    def _versions(self) -> list[tuple[bool, float, Path]]:
+    def _versions(self, everything: bool = False) -> list[tuple[bool, float, Path]]:
         out = []
         try:
             clients_ = [d for d in dist.root().iterdir() if d.is_dir() and not d.is_symlink()]
@@ -251,7 +254,8 @@ class DistSection(Section):
                     mtime = v.stat().st_mtime
                     if not (v / dist.META).exists() and now - mtime < DIST_PARTIAL_AGE:
                         continue   # zoo-clients сейчас качает сюда первый файл (meta.json пишется после него)
-                    out.append((v in latest, mtime, v))
+                    if everything or not (self.keep_latest and v in latest):
+                        out.append((v in latest, mtime, v))
             except OSError:
                 pass
         return sorted(out)
@@ -266,7 +270,7 @@ class DistSection(Section):
         return str(dist.root())
 
     def oldest(self) -> int | None:
-        have = self._versions()
+        have = self._versions(everything=True)
         return int(min(m for _, m, _ in have)) if have else None
 
     def rows(self) -> int:
@@ -437,6 +441,8 @@ def clear(sid: str) -> dict[str, Any]:
     if not sec.available:
         return {"section": sid, "removed": 0, "size": 0}
     before = sec.size()
+    if isinstance(sec, DistSection):
+        sec.keep_latest = False
     with file_lock(paths.state_dir() / "storage.lock", timeout=60):
         removed = trim(sec, 0)
     return {"section": sid, "removed": removed, "before": before, "size": sec.size()}

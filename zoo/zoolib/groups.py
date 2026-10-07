@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import allowlist, clients as clientcat, output, paths, people, protolib, users
+from . import allowlist, clients as clientcat, manifests, output, paths, people, protolib, users
 from .fsutil import atomic_write_json, read_json
 
 SCHEMA = 1
@@ -880,9 +880,11 @@ def _snapshot(ureg: users.Registry, names: list[str]) -> tuple[dict[str, list[st
 
 
 def update(ref: str, name: str | None = None, protocols: list[str] | None = None,
-           clients: dict[str, Any] | None = None, allow: Any = KEEP, install_mode: str | None = None) -> GroupReport:
+           clients: dict[str, Any] | None = None, allow: Any = KEEP, install_mode: str | None = None,
+           drop: list[str] | None = None) -> GroupReport:
     """Изменить группу и применить к участникам один раз. allow: KEEP — не менять, None — общий
-    список, словарь — свой список группы. install_mode: кто ставит приложения (участников не затрагивает)."""
+    список, словарь — свой список группы. install_mode: кто ставит приложения (участников не затрагивает).
+    drop: убрать из группы выключенные на сервере протоколы (включённые убираются через protocols)."""
     with users._lock():
         gs, ureg = _open()
         g = gs.require(ref)
@@ -890,10 +892,18 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         before = _snapshot(ureg, names)
         new_name = clean_name(name, gs, g.id) if name is not None else g.name
         sel = users.selectable_protocols()
+        drop = [p for p in (drop or []) if p in g.protocols and p not in sel]
         new_protocols = clean_protocols(protocols) if protocols is not None else g.protocols
         if protocols is not None and new_protocols != [ALL]:
-            # выключенный сейчас протокол в форме не выбрать: он остаётся в группе и вернётся участникам при включении
-            new_protocols = by_priority(new_protocols + [p for p in g.protocols if p != ALL and p not in sel])
+            # выключенный сейчас протокол (манифест есть, enabled=false) в форме не выбрать: он остаётся в группе и
+            # вернётся участникам при включении, пока его не убрали явно (drop); неизвестные id отпадают
+            off = {m.id for m in manifests.load_all()[0] if not m.enabled}
+            new_protocols = by_priority(new_protocols + [p for p in g.protocols
+                                                         if p != ALL and p not in sel and p in off and p not in drop])
+        elif drop:
+            new_protocols = [p for p in g.protocols if p not in drop]
+            if not new_protocols:
+                raise GroupError("выберите хотя бы один протокол")
         new_clients = clean_clients(clients, new_protocols) if clients is not None else g.clients
         new_allow = clean_allow(allow) if allow is not KEEP else g.allowlist
         protos_changed = new_protocols != g.protocols
@@ -1206,7 +1216,7 @@ def cmd_group_set(args: argparse.Namespace, cfg: Any) -> int:
         cur = Groups.load().require(args.group).clients
         clients = {**cur, **clients}
     protos = [ALL] if args.all_protocols else args.proto
-    rep = update(args.group, args.name, protos, clients, allow, args.install)
+    rep = update(args.group, args.name, protos, clients, allow, args.install, drop=args.drop_proto)
     return _print_report(rep, args.json)
 
 

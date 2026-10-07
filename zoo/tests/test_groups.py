@@ -184,6 +184,27 @@ class MigrationTest(GroupsBase):
         self.assertIn("hysteria2", groups.Groups.load().require(g.id).resolve(*[users.managed_protocols()[0],
                                                                               users.variant_modules()]))
 
+    def test_disabled_protocol_can_be_dropped_and_unknown_is_not_carried(self):
+        users.bootstrap()
+        groups.ensure()
+        g = groups.create("Офис", ["hysteria2", "amneziawg", "vless-reality"])
+        gs = groups.Groups.load()
+        gs.require(g.id).protocols = ["amneziawg", "ghost", "hysteria2", "vless-reality"]   # манифест ghost удалён
+        gs.save()
+        self.env.add_manifest("hysteria2", enabled=False)
+        groups.update(g.id, protocols=["amneziawg", "vless-reality"])
+        self.assertEqual(sorted(groups.Groups.load().require(g.id).protocols),
+                         ["amneziawg", "hysteria2", "vless-reality"], "неизвестный id отпал, выключенный остался")
+        groups.update(g.id, protocols=["amneziawg", "vless-reality"], drop=["hysteria2"])
+        self.assertNotIn("hysteria2", groups.Groups.load().require(g.id).protocols)
+        self.env.add_manifest("hysteria2")
+        g2 = groups.create("Склад", ["hysteria2", "amneziawg"])   # создана, пока hysteria2 была включена
+        self.env.add_manifest("hysteria2", enabled=False)
+        groups.update(g2.id, drop=["hysteria2", "amneziawg"])     # включённый через drop не убирается
+        self.assertEqual(groups.Groups.load().require(g2.id).protocols, ["amneziawg"])
+        code, _, _ = run_cli("group", "set", g.id, "--drop-proto", "hysteria2")
+        self.assertEqual(code, 0)
+
     def test_idempotent_and_leaves_system_user_alone(self):
         users.bootstrap()
         users.ensure_probe_user()
