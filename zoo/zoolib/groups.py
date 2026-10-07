@@ -402,7 +402,8 @@ class GroupReport:
     errors: list[str] = field(default_factory=list)
     allow: dict[str, Any] = field(default_factory=dict)
     crashed: bool = False   # добавление людей упало исключением: часть могла примениться
-    removed: bool = False   # мастер удалил созданную пустую группу
+    removed: bool = False   # группа удалена (мастер убрал созданную пустую; delete_group)
+    deleted: list[str] = field(default_factory=list)   # пользователи, удалённые вместе с группой
 
     @property
     def ok(self) -> bool:
@@ -411,7 +412,8 @@ class GroupReport:
     def to_dict(self) -> dict[str, Any]:
         return {"group": self.group.to_dict(), "ok": self.ok, "message": self.message, "created": self.created,
                 "moved": self.moved, "needs_qr": self.needs_qr, "skipped": self.skipped,
-                "errors": self.errors, "allow": self.allow, "removed": self.removed}
+                "errors": self.errors, "allow": self.allow, "removed": self.removed,
+                "deleted": self.deleted}
 
 
 def _errors(reports: list[users.OpReport]) -> list[str]:
@@ -606,6 +608,20 @@ def set_message(ref: str, platform: str, text: str | None, sig: str | None = Non
         return g
 
 
+def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group) -> GroupReport:
+    """Перевод в группу под блокировкой: реестры сохраняются, настройки группы применяются один раз."""
+    before = _snapshot(ureg, names)
+    for n in names:
+        u = ureg.require(n)
+        u.group, u.custom = g.id, False
+    ureg.save()
+    refresh_mirror(gs, ureg)
+    rep = GroupReport(g, "готово")
+    rep.moved = list(names)
+    _settle(rep, gs, ureg, names, before[0], before[1], True)
+    return rep
+
+
 def move_many(names: list[str], ref: str) -> GroupReport:
     """Перевести пользователей в группу: у них её протоколы и её список приложений
     (в том числе ставший «своим» набор протоколов возвращается к группе)."""
@@ -616,15 +632,69 @@ def move_many(names: list[str], ref: str) -> GroupReport:
             u = ureg.get(n)
             if u is None or u.system:
                 raise GroupError(f"пользователя «{n[:32]}» нет в реестре")
-        before = _snapshot(ureg, names)
-        for n in names:
-            u = ureg.require(n)
-            u.group, u.custom = g.id, False
-        ureg.save()
+        return _move_in(gs, ureg, names, g)
+
+
+MAIN_KEEP = f"«{MAIN_NAME}» не удаляется: в неё переходят участники удалённых групп и попадают новые пользователи"
+
+
+def delete_group(ref: str, members: str = "move") -> GroupReport:
+    """Удалить группу и решить судьбу участников: «move» — перевести в «Основную», «delete» — удалить
+    пользователей (owner не удаляется никогда — он переводится). Всё под одной блокировкой, настройки
+    «Основной» применяются к переведённым один раз. Кто-то не удалился — группа остаётся, в отчёте ошибки."""
+    if members not in ("move", "delete"):
+        raise GroupError(f"участники: «move» или «delete», получено «{members[:20]}»")
+    with users._lock():
+        gs, ureg = _open()
+        g = gs.require(ref)
+        main = gs.get(MAIN_ID)
+        if g.id == MAIN_ID:
+            raise GroupError(MAIN_KEEP)
+        if main is None:
+            raise GroupError(f"группы «{MAIN_NAME}» нет: переводить участников некуда")
+        mem = [u.name for u in members_of(gs, ureg, g.id)]
+        doomed = [n for n in mem if n != users.OWNER] if members == "delete" else []
+        rep = GroupReport(main, "группа удалена")
+        for n in doomed:
+            r = users._delete_in(ureg, n)
+            if r.ok:
+                rep.deleted.append(n)
+            else:
+                rep.errors.append(f"{n}: {r.message}" + "".join(f" ({s.proto_id}: {s.error})" for s in r.failed))
+        if rep.errors:
+            refresh_mirror(gs, ureg)
+            rep.message = f"группа «{g.name}» не удалена: не все участники удалены"
+            return rep
+        keep = [n for n in mem if n not in doomed]
+        if keep:
+            mv = _move_in(gs, ureg, keep, main)
+            rep.moved, rep.skipped, rep.allow, rep.needs_qr = mv.moved, mv.skipped, mv.allow, mv.needs_qr
+            rep.errors += mv.errors
+        gs.groups.remove(g)
+        gs.save()
         refresh_mirror(gs, ureg)
-        rep = GroupReport(g, "готово")
-        rep.moved = list(names)
-        _settle(rep, gs, ureg, names, before[0], before[1], True)
+        rep.message = f"группа «{g.name}» удалена"
+        rep.removed = True
+        return rep
+
+
+def merge_groups(src: str, dst: str) -> GroupReport:
+    """Объединить: участники src переходят в dst (протоколы и приложения — как у dst), src удаляется,
+    настройки dst не меняются. Одна блокировка, одно применение. «Основная» как src не годится."""
+    with users._lock():
+        gs, ureg = _open()
+        s, d = gs.require(src), gs.require(dst)
+        if s.id == d.id:
+            raise GroupError("выберите другую группу: сама с собой не объединяется")
+        if s.id == MAIN_ID:
+            raise GroupError(MAIN_KEEP + ". Объедините другую группу с ней")
+        names = [u.name for u in members_of(gs, ureg, s.id)]
+        rep = _move_in(gs, ureg, names, d) if names else GroupReport(d)
+        gs.groups.remove(s)
+        gs.save()
+        refresh_mirror(gs, ureg)
+        rep.group = d
+        rep.message = f"«{s.name}» объединена с «{d.name}»"
         return rep
 
 
@@ -669,7 +739,7 @@ def add_members(ref: str, new: list[tuple[str, str]], existing: list[str]) -> Gr
 
 def connect(name: str, protocols: list[str], clients: dict[str, Any] | None,
             allow: dict[str, list[str]] | None, new: list[tuple[str, str]], existing: list[str]) -> GroupReport:
-    """Мастер «Новое подключение»: группа + пользователи, всё проверено до первого изменения.
+    """Мастер «Новая группа»: группа + пользователи, всё проверено до первого изменения.
     Исключение при добавлении людей не бросается наружу (rep.crashed): отчёт с ошибками и тем, что
     успело примениться. Если не добавлен никто, созданная пустая группа удаляется (rep.removed):
     повтор мастера с тем же названием не должен упереться в «уже есть». Обычные отказы по отдельным
@@ -698,8 +768,8 @@ def connect(name: str, protocols: list[str], clients: dict[str, Any] | None,
             rep.removed = True
         except Exception as e:  # noqa: BLE001
             rep.errors.append(f"пустая группа «{g.name}» не удалена: {e}")
-    rep.message = ("подключение создано" if rep.ok else
-                   "подключение не создано" if rep.removed else "подключение создано с ошибками")
+    rep.message = ("группа создана" if rep.ok else
+                   "группа не создана" if rep.removed else "группа создана с ошибками")
     return rep
 
 
@@ -715,6 +785,8 @@ def _print_report(rep: GroupReport, as_json: bool) -> int:
         return 0 if rep.ok else 1
     for n in rep.created:
         output.ok(f"{n}: создан в группе «{rep.group.name}»")
+    for n in rep.deleted:
+        output.ok(f"{n}: удалён")
     for n in rep.moved:
         output.ok(f"{n}: в группе «{rep.group.name}»")
     for n in rep.skipped:
@@ -802,7 +874,15 @@ def cmd_group_move(args: argparse.Namespace, cfg: Any) -> int:
     return _print_report(move_many([args.user], args.group), args.json)
 
 
+def cmd_group_merge(args: argparse.Namespace, cfg: Any) -> int:
+    return _print_report(merge_groups(args.src, args.dst), args.json)
+
+
 def cmd_group_rm(args: argparse.Namespace, cfg: Any) -> int:
+    if args.move_members or args.delete_members:
+        return _print_report(delete_group(args.group, "delete" if args.delete_members else "move"), args.json)
+    if Groups.load().require(args.group).id == MAIN_ID:
+        raise GroupError(MAIN_KEEP)
     g = remove(args.group)
     if args.json:
         output.print_json(g.to_dict())

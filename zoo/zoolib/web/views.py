@@ -279,7 +279,9 @@ def overview(app: "App", req: "Request") -> "Response":
     if st["exposed"]:
         rows.append(("лишние открытые порты", ", ".join(f"{e['port']}/{e['proto']}" for e in st["exposed"])))
     sys_card = card("Сервер", kv(rows), table(["файл", "до", ""], certs) if certs else None)
-    body = [page_head("Обзор", None, None if alerts else badge("✓ всё в порядке", "ok")),
+    start = t("a", "Get started", href="/connect/new", class_="btn primary", data_swap=True,
+              title="Новая группа: протоколы, клиенты, люди и что им отправить")
+    body = [page_head("Обзор", None, [start, None if alerts else badge("✓ всё в порядке", "ok")]),
             alert_list(alerts) if alerts else None,
             tiles, t("h2", "Протоколы"), protoviews.caption(pctx), protos,
             protoviews.off_block(off, pctx, csrf),

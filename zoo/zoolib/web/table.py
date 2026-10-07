@@ -82,6 +82,8 @@ class Spec:
     paged: bool = True
     export: bool = True
     name: str = "table"
+    select: str = ""        # имя поля формы: первая колонка — галочки строк (значение — id строки), «выбрать все» в шапке
+    select_form: str = ""   # id формы вне таблицы (атрибут form=): панель массовых действий
 
     def col(self, key: str) -> Col | None:
         return next((c for c in self.cols if c.key == key), None)
@@ -405,12 +407,18 @@ def _td_class(c: Col) -> str | None:
     return " ".join(x for x in ("num" if c.num and not c.left else "", "sec" if c.secondary else "") if x) or None
 
 
+def _pick(spec: Spec, row: Any) -> Markup:
+    rid = str(row.get(spec.id_key, ""))
+    return t("td", t("input", type="checkbox", name=spec.select, value=rid, form=spec.select_form or None,
+                     data_pick=True, aria_label=f"Выбрать {rid}"), class_="pick")
+
+
 def _row(spec: Spec, row: Any) -> list[Markup]:
     to = spec.href(row) if spec.href else None
     shown = [c for c in spec.cols if not c.hidden]
     sec = [c for c in shown if c.secondary]
     det = not to and bool(spec.detail or sec)
-    cells = []
+    cells = [_pick(spec, row)] if spec.select else []
     for n, c in enumerate(shown):
         # кнопка раскрытия — в первой ячейке: доступна с клавиатуры, жестов не требует
         exp = (t("button", type="button", class_="exp", aria_expanded="false", aria_label="Подробности",
@@ -421,7 +429,7 @@ def _row(spec: Spec, row: Any) -> list[Markup]:
     if not det:
         return [tr]
     kv = t("dl", [[t("dt", c.title), t("dd", _inner(c, row))] for c in sec], class_="kv sec-kv") if sec else None
-    body = t("td", kv, spec.detail(row) if spec.detail else None, colspan=len(shown))
+    body = t("td", kv, spec.detail(row) if spec.detail else None, colspan=len(shown) + (1 if spec.select else 0))
     return [tr, t("tr", body, class_="det", hidden=True)]
 
 
@@ -450,7 +458,9 @@ def render(spec: Spec, st: State, page: Page) -> Markup:
     if not page.rows:
         text = spec.empty_filtered if st.filtered else spec.empty
         return join(toolbar, t("div", empty(text), id=box_id, data_more_box=True))
-    head = t("tr", [_th(spec, st, c) for c in spec.cols if not c.hidden])
+    head = t("tr", t("th", t("input", type="checkbox", data_pick_all=True, aria_label="Выбрать всех"), class_="pick",
+                     scope="col") if spec.select else None,
+             [_th(spec, st, c) for c in spec.cols if not c.hidden])
     body = [tr for r in page.rows for tr in _row(spec, r)]
     count, exports = _count(spec, st, page), _exports(spec, st, any(c.private for c in spec.cols))
     more = (t("p", t("a", "показать ещё", href=href(spec, st, after=page.next), class_="btn small", data_more=True),

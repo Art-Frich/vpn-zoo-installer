@@ -67,7 +67,9 @@ class NavTest(GroupWebBase):
     def test_nav_and_users_page(self):
         resp, body = self.c.get("/users")
         self.assertIn('<a href="/groups">Группы</a>', body)
-        self.assertRegex(body, r'<a href="/connect/new"[^>]*class="btn small primary"[^>]*>Новое подключение</a>')
+        self.assertNotIn("Новое подключение", body)
+        self.assertNotIn("/connect/new", body, "мастер — с «Обзора» и «Групп», не со списка пользователей")
+        self.assertIn("Проверить учётки", body)
         self.assertIn(">группа<", body)
         self.assertIn('<select name="group" id="group"', body)
         self.assertRegex(body, r'<option value="main" selected data-protos="[^"]*">Основная</option>')
@@ -273,7 +275,8 @@ class WizardTest(GroupWebBase):
         self.assertIn('name="existing" value="owner"', body, "уже заведённые — можно добавить")
         self.assertIn('name="allow_mode" value="common" checked', body)
         self.assertIn('name="android" value="com.brave.browser"', body)
-        self.assertIn("Создать подключение", body)
+        self.assertIn("Создать группу", body)
+        self.assertNotIn("Создать подключение", body)
         self.assertRegex(body, r'type="hidden" name="client:android" value="happ"')
         # назад на шаг 2: введённое на шаге 3 не пропадает
         resp, body = self.wiz(3, go="back", name="Семья", proto=["vless-reality"], client__android="happ",
@@ -298,7 +301,7 @@ class WizardTest(GroupWebBase):
         # раздача: пакет на каждого, ссылки на страницы
         resp, body = self.c.get(loc)
         self.assertEqual(resp.status, 200)
-        self.assertIn("«Семья» создано", text_of(body).replace("«Семья»: подключение создано", "«Семья» создано"))
+        self.assertIn("«Семья» создано", text_of(body).replace("«Семья»: группа создана", "«Семья» создано"))
         # текст группы — один раз сверху; люди — свёрнутыми строками, по одной открытой за раз
         self.assertEqual(body.count("Текст для группы"), 1)
         self.assertRegex(body, r'<h3>Текст для группы</h3>.*<pre class="msg-pre">имя, VPN на Android')
@@ -415,7 +418,8 @@ class GroupsPagesTest(GroupWebBase):
         self.assertIn('href="/groups/g1"', body)
         self.assertIn('href="/users/masha"', body)
         self.assertIn("Android: Happ", text)
-        self.assertIn("Новое подключение", body)
+        self.assertRegex(body, r'<a href="/connect/new"[^>]*class="btn primary"[^>]*>Новая группа</a>')
+        self.assertNotIn("Новое подключение", body)
         self.assertIn("общий", text)
 
     def test_edit_group_applies_once_and_reports_qr(self):
@@ -495,27 +499,161 @@ class GroupsPagesTest(GroupWebBase):
         self.assertIn(">группа<", page)
         self.assertIn('href="/groups/main"', page)
 
-    def test_delete_only_empty(self):
+    def reg(self):
+        return {u["name"]: u for u in self.env.users_json()["users"]}
+
+    def test_members_are_chips_and_one_multiselect(self):
         _, page = self.c.get("/groups/g1")
-        self.assertIn("Удалить можно только пустую группу", page)
-        self.assertNotIn("/groups/g1/delete", page)
-        resp, _ = self.c.post("/groups/g1/delete")
-        self.assertEqual(header(resp, "Location"), ["/groups/g1"])
-        _, page = self.c.get("/groups/g1")
-        self.assertIn("masha", page)
-        self.assertIn("сначала переведите", page)
-        for n in ("masha", "kolya"):
-            self.c.post("/groups/g1/move", {"user": n, "to": "main"})
-        _, page = self.c.get("/groups/g1")
+        card = page.split("<h3>Участники</h3>")[1].split("Добавить участников")[0]
+        self.assertNotIn("<table", card, "участники — не длинный список строк")
+        self.assertIn('<a href="/users/masha" class="chip">masha</a>', card)
+        self.assertEqual(card.count('type="checkbox" name="user"'), 2, "один список с галочками на всех")
+        self.assertIn("data-picker", card)
+        self.assertIn('data-find="masha "', card)
+        self.assertIn('name="act" value="move"', card)
+        self.assertIn('name="act" value="remove"', card)
+        self.assertIn("Объединить с…", page)
+        self.assertRegex(page, r'<a href="/groups/g1/delete"[^>]*>Удалить группу…</a>')
+
+    def test_move_selected_in_one_go(self):
+        resp, _ = self.post("/groups/g1/move", {"user": ["masha", "kolya"], "to": ["main"], "act": ["move"]})
+        self.assertEqual(resp.status, 303)
+        reg = self.reg()
+        self.assertEqual((reg["masha"]["group"], reg["kolya"]["group"]), ("main", "main"))
+        _, page = self.c.get("/groups/main")
+        self.assertIn("переведено: masha, kolya", page)
+        # «убрать из группы» — в «Основную»; из «Основной» убирать некуда
+        self.post("/groups/main/move", {"user": ["masha"], "to": ["g1"], "act": ["move"]})
+        self.assertEqual(self.reg()["masha"]["group"], "g1")
+        self.post("/groups/g1/move", {"user": ["masha"], "act": ["remove"]})
+        self.assertEqual(self.reg()["masha"]["group"], "main")
+        self.post("/groups/main/move", {"user": ["masha"], "act": ["remove"]})
+        _, page = self.c.get("/groups/main")
+        self.assertIn("убирать некуда", page)
+
+    def test_move_selected_validates(self):
+        for multi, msg in (({"to": ["main"]}, "Никого не выбрано"),
+                           ({"user": ["owner"], "to": ["main"]}, "не из этой группы"),
+                           ({"user": ["masha", "<script>x</script>"], "to": ["main"]}, "не из этой группы"),
+                           ({"user": ["masha"], "to": ["нет"]}, "нет")):
+            resp, _ = self.post("/groups/g1/move", multi)
+            self.assertEqual(resp.status, 303, multi)
+            _, page = self.c.get("/groups/g1")
+            self.assertIn(msg, page)
+            self.assertNotIn("<script>x", page)
+        self.assertEqual({self.reg()[n]["group"] for n in ("masha", "kolya")}, {"g1"}, "ничего не сдвинулось")
+
+    def test_delete_group_confirm_page(self):
+        resp, page = self.c.get("/groups/g1/delete")
+        self.assertEqual(resp.status, 200)
+        self.assertRegex(page, r'<input type="radio" name="members" value="move" checked>')
+        self.assertIn('name="members" value="delete"', page)
+        self.assertIn("Перевести в «Основная»", text_of(page))
+        self.assertIn("(masha, kolya)", text_of(page), "кого удалим — названо")
         self.assertIn('action="/groups/g1/delete"', page)
-        self.assertIn("data-confirm", page)
-        resp, _ = self.c.post("/groups/g1/delete")
+        self.assertIn('name="csrf"', page)
+        self.assertEqual(self.c.get("/groups/nope/delete")[0].status, 404)
+        # «Основная» не удаляется: ни страница, ни кнопки
+        _, main = self.c.get("/groups/main/delete")
+        self.assertIn("не удаляется", main)
+        self.assertNotIn('name="members"', main)
+        _, page = self.c.get("/groups/main")
+        self.assertRegex(page, r'<span class="btn danger" aria-disabled="true" title="[^"]*не удаляется[^"]*">Удалить группу</span>')
+        self.assertNotIn("/groups/main/delete", page)
+
+    def test_delete_group_moves_members_by_default(self):
+        resp, _ = self.c.post("/groups/g1/delete", {"members": "move"})
         self.assertEqual(header(resp, "Location"), ["/groups"])
         _, page = self.c.get("/groups")
         self.assertIn("удалена", page)
+        self.assertIn("переведены в «Основная»: masha, kolya", page)
         self.assertEqual([g["id"] for g in self.groups_json()], ["main"])
-        resp, _ = self.c.get("/groups/g1")
-        self.assertEqual(resp.status, 404)
+        reg = self.reg()
+        self.assertEqual((reg["masha"]["group"], sorted(reg["masha"]["protocols"])), ("main", sorted(PROTOS)))
+        self.assertEqual(self.c.get("/groups/g1")[0].status, 404)
+
+    def test_delete_group_with_members_keeps_owner(self):
+        self.post("/groups/g1/members", {"existing": ["owner"]})
+        resp, _ = self.c.post("/groups/g1/delete", {"members": "delete"})
+        self.assertEqual(header(resp, "Location"), ["/groups"])
+        _, page = self.c.get("/groups")
+        self.assertIn("удалены: masha, kolya", page)
+        reg = self.reg()
+        self.assertNotIn("masha", reg)
+        self.assertNotIn("kolya", reg)
+        self.assertEqual(reg["owner"]["group"], "main", "owner не удаляется — переведён")
+        for pid in PROTOS:
+            self.assertEqual(set(self.env.proto_users(pid)), {"owner"})
+
+    def test_delete_group_failure_keeps_group(self):
+        self.env.fail("amneziawg:user_del")
+        resp, _ = self.c.post("/groups/g1/delete", {"members": "delete"})
+        self.assertEqual(header(resp, "Location"), ["/groups/g1"])
+        _, page = self.c.get("/groups/g1")
+        self.assertRegex(page, r'class="bad"')
+        self.assertIn("g1", [g["id"] for g in self.groups_json()])
+
+    def test_delete_group_guards(self):
+        resp, _ = self.c.post("/groups/main/delete", {"members": "move"})
+        self.assertEqual(header(resp, "Location"), ["/groups/main"])
+        _, page = self.c.get("/groups/main")
+        self.assertIn("не удаляется", page)
+        resp, _ = self.c.post("/groups/g1/delete", {"members": "everything"})
+        self.assertEqual(header(resp, "Location"), ["/groups/g1"])
+        resp, _ = self.c.req("POST", "/groups/g1/delete", {"csrf": "wrong", "members": "delete"})
+        self.assertEqual(resp.status, 403)
+        resp, _ = Client(self.app).get("/groups/g1/delete")
+        self.assertEqual(resp.status, 303)
+        resp, _ = Client(self.app).post("/groups/g1/merge", csrf=False)
+        self.assertEqual(resp.status, 401)
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main", "g1"])
+        self.assertEqual(self.reg()["masha"]["group"], "g1")
+
+    def test_list_has_delete_actions(self):
+        _, body = self.c.get("/groups")
+        self.assertIn('href="/groups/g1/delete"', body)
+        self.assertRegex(body, r'aria-disabled="true" title="[^"]*не удаляется')
+        self.assertNotIn('href="/groups/main/delete"', body)
+
+    def test_merge_groups_page(self):
+        g2 = groups.create("Друзья", ["amneziawg"])
+        before = self.groups_json()[2]
+        _, page = self.c.get("/groups/g1")
+        self.assertRegex(page, rf'<option value="{g2.id}">Друзья</option>')
+        self.assertIn('action="/groups/g1/merge"', page)
+        self.assertRegex(page, r'data-confirm="[^"]*masha[^"]*Семья[^"]*будет удалена')
+        _, main = self.c.get("/groups/main")
+        self.assertNotIn("/merge", main, "«Основную» нельзя объединить в другую: она не удаляется")
+        resp, _ = self.c.post("/groups/g1/merge", {"to": g2.id})
+        self.assertEqual(header(resp, "Location"), [f"/groups/{g2.id}"])
+        _, page = self.c.get(f"/groups/{g2.id}")
+        self.assertIn("«Семья» объединена с «Друзья»", page)
+        reg = self.reg()
+        self.assertEqual({reg[n]["group"] for n in ("masha", "kolya")}, {g2.id})
+        self.assertEqual(reg["masha"]["protocols"], ["amneziawg"], "протоколы — как у Друзей")
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main", g2.id])
+        self.assertEqual(self.groups_json()[1], before, "настройки целевой группы не изменились")
+
+    def test_merge_errors(self):
+        for gid, to in (("g1", "g1"), ("g1", "нет"), ("main", "g1"), ("g1", "")):
+            resp, _ = self.c.post(f"/groups/{gid}/merge", {"to": to})
+            self.assertEqual(resp.status, 303, (gid, to))
+        self.assertEqual([g["id"] for g in self.groups_json()], ["main", "g1"])
+        self.assertEqual(self.reg()["masha"]["group"], "g1")
+        resp, _ = self.c.req("POST", "/groups/g1/merge", {"csrf": "wrong", "to": "main"})
+        self.assertEqual(resp.status, 403)
+        self.assertEqual(self.reg()["masha"]["group"], "g1")
+
+    def test_existing_users_are_a_searchable_multiselect(self):
+        _, page = self.c.get("/groups/main")
+        self.assertIn("data-picker", page)
+        self.assertRegex(page, r'<input type="search" data-filter')
+        self.assertIn('<label class="pick-item" data-find="masha семья"><input type="checkbox" name="existing" value="masha">'
+                      '<span>masha</span><span class="muted small">Семья</span></label>', page)
+        _, wiz = self.wiz(2, name="X", proto=["vless-reality"], client__android="happ")
+        self.assertIn("data-picker", wiz)
+        self.assertRegex(wiz, r'name="existing" value="masha"[^>]*><span>masha</span><span class="muted small">Семья</span>')
+        self.assertNotIn('class="checks"', wiz.split("Уже есть")[1].split("Приложения через VPN")[0])
 
     def test_add_members(self):
         resp, _ = self.post("/groups/g1/members", {"users_new": ["petya друг"], "existing": ["owner"]})
@@ -736,6 +874,71 @@ class GroupsPagesTest(GroupWebBase):
         s2 = self.c.get("/api/stamp?page=/groups")[1]
         self.assertNotEqual(s1, s2)
         self.assertNotEqual(self.c.get("/api/stamp?page=/users")[1], "")
+
+
+class ProtocolRowsTest(GroupWebBase):
+    """Шаг 1 и страница группы: все семь протоколов сервера — отдельными строками."""
+
+    def setUp(self):
+        super().setUp()
+        for pid in ("vless-xhttp", "tuic"):
+            self.env.add_protocol(pid)
+        self.env.add_manifest("hysteria2-obfs", layer="udp", users_backend="hysteria-command", engine="hysteria",
+                              name="Hysteria2 + Salamander", short="HY2 + Salamander")
+        self.env.add_manifest("ss2022", enabled=False, name="Shadowsocks-2022", short="SS-2022")
+
+    def rows(self, body):
+        return re.findall(r'<label class="opt(?: off)?">.*?</label>|<div class="opt off">.*?</div></div>', body, re.S)
+
+    def test_wizard_lists_all_seven(self):
+        _, body = self.c.get("/connect/new")
+        titles = [re.sub(r"<[^>]+>", " ", r) for r in self.rows(body)]
+        text = " ".join(titles)
+        for name in ("Протокол vless-reality", "Протокол vless-xhttp", "Протокол hysteria2", "HY2 + Salamander",
+                     "Протокол amneziawg", "Протокол tuic", "SS-2022"):
+            self.assertIn(name, text, name)
+        self.assertEqual(len(self.rows(body)), 7)
+
+    def test_salamander_is_its_own_row_linked_to_hysteria2(self):
+        _, body = self.c.get("/connect/new")
+        hy = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked>', body)
+        sal = re.search(r'<input type="checkbox" name="proto" value="hysteria2" checked data-variant="hysteria2-obfs">', body)
+        self.assertTrue(hy and sal, "обе строки отмечены вместе: одно значение поля")
+        self.assertLess(hy.start(), sal.start(), "Salamander — сразу под Hysteria2")
+        row = body[sal.start():]
+        row = row[:row.index("</label>")]
+        self.assertIn("HY2 + Salamander", row)
+        self.assertIn("Общая учётка с Протокол hysteria2", row)
+        self.assertNotIn("основной", row)
+        self.assertIn("data-variant", body)
+        # выключенный — серой строкой, без галочки
+        off = body[body.index('class="opt off"'):]
+        self.assertIn("SS-2022", off)
+        self.assertNotIn('value="ss2022"', body)
+        self.assertNotIn('value="hysteria2-obfs"', body, "отдельного значения у Salamander нет")
+
+    def test_either_row_selects_hysteria2_and_duplicates_are_harmless(self):
+        resp, body = self.wiz(1, name="Семья", proto=["hysteria2", "hysteria2", "amneziawg"])
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(body.count('type="hidden" name="proto" value="hysteria2"'), 1)
+        resp, body = self.wiz(1, name="Семья", proto=["hysteria2-obfs"])
+        self.assertEqual(resp.status, 422, "в форме только общие значения")
+
+    def test_off_without_hysteria2_no_row(self):
+        (self.env.etc / "protocols.d" / "hysteria2.json").unlink()
+        _, body = self.c.get("/connect/new")
+        self.assertNotIn("data-variant", body)
+
+    def test_group_page_has_the_same_rows(self):
+        _, body = self.c.get("/groups/main")
+        self.assertIn('data-variant="hysteria2-obfs"', body)
+        self.assertIn("SS-2022", body)
+
+    def test_js_links_rows_by_value(self):
+        from zoolib.web import assets
+        self.assertIn("input[type=checkbox][name=proto]", assets.JS)
+        self.assertIn("o.value === box.value", assets.JS)
+        self.assertIn("[data-picker]", assets.JS)
 
 
 if __name__ == "__main__":

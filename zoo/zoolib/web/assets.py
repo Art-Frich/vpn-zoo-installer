@@ -302,7 +302,7 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .checks label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
 .hint { color: var(--muted); font-size: .82rem; }
 
-/* мастер «Новое подключение» и группы */
+/* мастер «Новая группа» и группы */
 .stepper { display: flex; flex-wrap: wrap; gap: 6px 18px; list-style: none; padding: 0; margin: 0 0 14px; color: var(--muted); font-size: .9rem; }
 .stepper li { display: inline-flex; align-items: center; gap: 6px; }
 .stepper .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
@@ -478,6 +478,28 @@ dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 .cmd { display: block; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; overflow-x: auto; white-space: pre; }
 .danger-zone { border-color: var(--bad); }
+.opt.off { margin-top: 0; cursor: default; opacity: .55; background: var(--surface-2); }
+.btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.btn[aria-disabled="true"]:hover { background: none; }
+/* выбор строк таблицы и панель массовых действий */
+th.pick, td.pick { width: 1%; padding-right: 0; }
+.bulkbar { position: sticky; bottom: 8px; z-index: 6; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  margin-top: 12px; padding: 8px 10px; background: var(--surface); border: 1px solid var(--accent);
+  border-radius: var(--radius); box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+.bulk-move { position: relative; }
+.bulk-move > summary { list-style: none; }
+.bulk-move > summary::-webkit-details-marker { display: none; }
+.bulk-move .menu { position: absolute; bottom: calc(100% + 6px); left: 0; display: grid; gap: 4px; min-width: 160px;
+  max-height: 50vh; overflow: auto; padding: 6px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+.bulk-move .menu .btn { text-align: left; }
+/* список с поиском и галочками */
+.picker .pick-head { display: flex; gap: 10px; align-items: center; }
+.picker .pick-find { max-width: 260px; }
+.pick-list { max-height: 15rem; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.pick-item { display: flex; gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; font-size: .9rem; }
+.pick-item:hover { background: var(--surface-2); }
+.pick-item:has(input:checked) { background: var(--accent-soft); }
 footer { max-width: 1200px; margin: 0 auto; padding: 0 16px 24px; color: var(--muted); font-size: .8rem; }
 @media (max-width: 600px) {
   body { font-size: 14px; }
@@ -664,6 +686,53 @@ JS = r"""
       box.querySelectorAll('.variant').forEach(function (v) { v.hidden = v.id !== tab.getAttribute('data-tab'); });
       showQr(box);
     }
+  });
+  // Salamander и Hysteria2 — две строки с одной учёткой: отметка одной отмечает обе (одно значение поля proto)
+  document.addEventListener('change', function (ev) {
+    var box = ev.target;
+    if (!box.matches || !box.matches('input[type=checkbox][name=proto]') || !box.form) return;
+    box.form.querySelectorAll('input[type=checkbox][name=proto]').forEach(function (o) {
+      if (o !== box && o.value === box.value) o.checked = box.checked;
+    });
+  });
+  // список с поиском и галочками: строка поиска прячет несовпавшие, счётчик показывает отмеченных
+  function pickCount(p) {
+    var n = p.querySelectorAll('input[type=checkbox]:checked').length, out = p.querySelector('[data-picked]');
+    if (out) out.textContent = n ? 'Выбрано: ' + n : '';
+  }
+  document.addEventListener('input', function (ev) {
+    var f = ev.target, p = f.closest && f.closest('[data-picker]');
+    if (!p || !f.hasAttribute('data-filter')) return;
+    var words = f.value.toLowerCase().split(/\s+/).filter(Boolean);
+    p.querySelectorAll('.pick-item').forEach(function (it) {
+      var hay = it.getAttribute('data-find') || '';
+      it.hidden = !words.every(function (w) { return hay.indexOf(w) >= 0; });
+    });
+  });
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' && ev.target.matches && ev.target.matches('input[data-filter]')) ev.preventDefault();
+  });
+  document.addEventListener('change', function (ev) {
+    var p = ev.target.closest && ev.target.closest('[data-picker]');
+    if (p) pickCount(p);
+  });
+  // таблица с выбором строк: «выбрать все» в шапке; панель действий видна, пока что-то отмечено
+  function bulkSync() {
+    var bar = document.querySelector('[data-bulk-bar]');
+    if (!bar) return;
+    var all = document.querySelectorAll('input[data-pick]'), on = document.querySelectorAll('input[data-pick]:checked'),
+        head = document.querySelector('input[data-pick-all]'), n = bar.querySelector('[data-bulk-n]');
+    bar.hidden = !on.length;
+    if (n) n.textContent = on.length ? ' (' + on.length + ')' : '';
+    if (head) { head.checked = !!on.length && on.length === all.length; head.indeterminate = !!on.length && on.length < all.length; }
+  }
+  document.addEventListener('change', function (ev) {
+    var box = ev.target;
+    if (!box.matches) return;
+    if (box.matches('input[data-pick-all]')) {
+      document.querySelectorAll('input[data-pick]').forEach(function (c) { c.checked = box.checked; });
+      bulkSync();
+    } else if (box.matches('input[data-pick]')) bulkSync();
   });
   // форма входа по одноразовой ссылке отправляется сама
   document.querySelectorAll('form[data-autosubmit]').forEach(function (f) { f.submit(); });
@@ -858,6 +927,8 @@ JS = r"""
       refreshDraft(f);
     });
     initConn();
+    bulkSync();
+    document.querySelectorAll('[data-picker]').forEach(pickCount);
   }
   function el(tag, cls, text) {
     var e = document.createElement(tag);
@@ -1045,7 +1116,7 @@ JS = r"""
     if (document.hidden || held || document.body.classList.contains('busy')) return true;
     var a = document.activeElement, main = document.querySelector('main');
     if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return true;
-    if (!main || main.querySelector('details[open], [data-expanded], tr.det:not([hidden])') || document.querySelector('dialog[open]')) return true;
+    if (!main || main.querySelector('details[open], [data-expanded], tr.det:not([hidden]), input[data-pick]:checked') || document.querySelector('dialog[open]')) return true;
     if (/[?&]verify=/.test(location.search)) return true;  // сверка зовёт модули протоколов: не по таймеру
     return dirty() || typed(main);
   }

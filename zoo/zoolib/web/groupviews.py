@@ -1,4 +1,4 @@
-"""Мастер «Новое подключение» (/connect/new) и страницы групп (/groups): веб поверх zoolib.groups.
+"""Мастер «Новая группа» (/connect/new) и страницы групп (/groups): веб поверх zoolib.groups.
 
 Мастер — один адрес и четыре шага без перезагрузки (форма data-swap): протоколы → клиенты →
 люди и приложения → раздача. Состояние между шагами лежит в скрытых полях формы (на сервере
@@ -35,6 +35,7 @@ TIPS = {
     "hysteria2": "UDP; ориентир — мобильная сеть.",
     "amneziawg": "UDP; ориентир — запасной вариант.",
     "tuic": "UDP.",
+    "hysteria2-obfs": "UDP; Hysteria2 с обфускацией Salamander.",
     "ss2022": "По умолчанию выключен: в полевом тесте соединения теряли данные.",
 }
 TIPS_NOTE = "Подсказки без цифр — ориентир, не замер: смотрите «с сервера» и «у клиентов»."
@@ -69,7 +70,7 @@ class Draft:
         f, m = req.form, req.multi
         return cls(
             name=f.get("name", "")[:200].strip(),
-            protocols=[p[:40] for p in m.get("proto", [])][:20],
+            protocols=list(dict.fromkeys(p[:40] for p in m.get("proto", [])))[:20],
             clients={k[7:]: ids for k, vals in m.items() if k.startswith("client:")
                      if (ids := groups.client_ids([v[:40] for v in vals][:groups.CLIENTS_MAX + 1]))},
             clients_for=f.get("clients_for", "")[:400],
@@ -150,6 +151,7 @@ class Fact:
     live: dict[str, Any] | None
     rank: dict[str, float] | None
     now: float
+    variants: list["Fact"] = field(default_factory=list)   # включённые варианты с общей учёткой (Salamander у Hysteria2)
 
     @property
     def down(self) -> bool:
@@ -182,9 +184,19 @@ class Fact:
 def proto_facts() -> list[Fact]:
     managed, _ = users.managed_protocols()
     mans = {m.id: m for m in manifests.load_all()[0]}
+    libs = set(protolib.list_libs())
     latest, ranks, now = live.summary(), _rank_facts(), time.time()
-    return [Fact(p, mans[p].short if p in mans else p, LAYER.get(mans[p].layer, "") if p in mans else "",
-                 latest.get(p), ranks.get(p), now) for p in managed]
+
+    def fact(pid: str) -> Fact:
+        m = mans.get(pid)
+        return Fact(pid, m.short if m else pid, LAYER.get(m.layer, "") if m else "", latest.get(pid), ranks.get(pid), now)
+
+    out = []
+    for p in managed:
+        f = fact(p)
+        f.variants = [fact(m.id) for m in mans.values() if m.enabled and m.id != p and users.shared_module(m, libs) == p]
+        out.append(f)
+    return out
 
 
 def suggest(facts: list[Fact]) -> list[str]:
@@ -198,47 +210,50 @@ def suggest(facts: list[Fact]) -> list[str]:
     return ([p for p in DEFAULT_PROTOS if p in ok] or ok)[:3]
 
 
+def _proto_row(f: Fact, pid: str, checked: bool, primary: bool, host: Fact | None = None) -> Markup:
+    """Строка протокола. Вариант с общей учёткой (host) — своя строка, но галочка та же, что у host:
+    значение поля — id host, и отметка одной строки отмечает обе (app.js)."""
+    chips = [t("span", f.layer, class_="chip") if f.layer else None, f.live_chip(), f.rank_chip()]
+    tip = TIPS.get(f.id)
+    if host is not None:
+        tip = (tip + " " if tip else "") + f"Общая учётка с {host.title}: отмечается и снимается вместе с ним."
+    return t("label", t("input", type="checkbox", name="proto", value=pid, checked=checked,
+                        data_variant=f.id if host is not None else None),
+             t("span", t("span", t("strong", f.title), " ", badge("основной", "info") if primary else None,
+                         class_="opt-title"),
+               t("div", chips, class_="chips"),
+               t("span", tip, class_="hint") if tip else None, class_="opt-body"),
+             class_="opt")
+
+
 def _protocols_block(facts: list[Fact], selected: list[str]) -> Markup:
-    """Карточки-чекбоксы протоколов: выбранные первыми, первый выбранный — основной."""
+    """Все протоколы сервера строками-чекбоксами: выбранные первыми, первый выбранный — основной;
+    Salamander — своя строка под Hysteria2; выключенные — серые."""
     by_id = {f.id: f for f in facts}
     order = [p for p in selected if p in by_id] + [f.id for f in facts if f.id not in selected]
     first = next((p for p in order if p in selected), None)
     items = []
+    shown = set(by_id)
     for pid in order:
         f = by_id[pid]
-        chips = [t("span", f.layer, class_="chip") if f.layer else None, f.live_chip(), f.rank_chip()]
-        tip = TIPS.get(pid)
-        extra = _variants(pid)
-        if extra:
-            tip = (tip + " " if tip else "") + "В той же учётке: " + ", ".join(extra) + "."
-        items.append(t("label", t("input", type="checkbox", name="proto", value=pid, checked=pid in selected),
-                       t("span", t("span", t("strong", f.title), " ",
-                                   badge("основной", "info") if pid == first else None,
-                                   class_="opt-title"),
-                         t("div", chips, class_="chips"),
-                         t("span", tip, class_="hint") if tip else None, class_="opt-body"),
-                       class_="opt"))
+        on = pid in selected
+        items.append(_proto_row(f, pid, on, pid == first))
+        for v in f.variants:
+            shown.add(v.id)
+            items.append(_proto_row(v, pid, on, False, host=f))
     if not items:
         return alert_list([("warn", "Нет включённых протоколов с пользователями.")])
-    for title, why in _not_selectable(set(by_id)):
+    for title, why in _not_selectable(shown):
         items.append(t("div", t("span", t("span", t("strong", title), class_="opt-title"),
                                 t("span", why, class_="hint"), class_="opt-body"), class_="opt off"))
     return t("div", t("div", items, class_="opts"), t("p", TIPS_NOTE, class_="hint"))
 
 
-def _variants(pid: str) -> list[str]:
-    """Включённые варианты с общими учётками (hysteria2-obfs у hysteria2): выбираются вместе с ним."""
-    libs = set(protolib.list_libs())
-    return [m.short for m in manifests.load_all()[0]
-            if m.enabled and m.id != pid and users.shared_module(m, libs) == pid]
-
-
 def _not_selectable(shown: set[str]) -> list[tuple[str, str]]:
     """Протоколы сервера, которых нет среди выбираемых: выключенные — серой строкой, чтобы были видны все."""
-    libs = set(protolib.list_libs())
     out = []
     for m in manifests.load_all()[0]:
-        if m.id in shown or (m.enabled and users.shared_module(m, libs)):
+        if m.id in shown:
             continue
         out.append((m.short, "выключен на сервере — включается на «Обзоре»" if not m.enabled else "без учёток пользователей"))
     return out
@@ -377,17 +392,24 @@ def _apps_block(d: Draft) -> Markup:
                open=own or None, class_="more"))
 
 
+def _picker(label: str, name: str, items: list[tuple[str, str, bool]]) -> Markup:
+    """Список с поиском и галочками: (значение, пояснение справа, отмечен). Без JS — просто прокручиваемый
+    список галочек; с JS — строка поиска и счётчик отмеченных (app.js, [data-picker])."""
+    rows = [t("label", t("input", type="checkbox", name=name, value=v, checked=on), t("span", v),
+              t("span", sub, class_="muted small") if sub else None, class_="pick-item",
+              data_find=f"{v} {sub}".lower()) for v, sub, on in items]
+    return t("div", t("span", label, class_="label"),
+             t("div", t("input", type="search", data_filter=True, placeholder="найти", autocomplete="off",
+                        aria_label="Найти в списке", class_="pick-find"),
+               t("span", data_picked=True, class_="muted small"), class_="pick-head"),
+             t("div", rows, class_="pick-list"), class_="field picker", data_picker=True)
+
+
 def _existing_block(d: Draft, group_id: str | None = None) -> Markup | None:
     gs = groups.Groups.load()
-    boxes = []
-    for u in users.list_users().visible():
-        if group_id and u.group == group_id:
-            continue
-        g = gs.get(u.group)
-        boxes.append(t("label", t("input", type="checkbox", name="existing", value=u.name, checked=u.name in d.existing),
-                       u.name, t("span", f" {g.name}" if g else "", class_="muted small")))
-    return t("div", t("span", "Уже есть (перейдут в группу):", class_="label"), t("div", boxes, class_="checks"),
-             class_="field") if boxes else None
+    items = [(u.name, g.name if (g := gs.get(u.group)) else "", u.name in d.existing)
+             for u in users.list_users().visible() if not (group_id and u.group == group_id)]
+    return _picker("Уже есть (перейдут в группу):", "existing", items) if items else None
 
 
 def _users_block(d: Draft, group_id: str | None = None) -> Markup:
@@ -434,24 +456,24 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
         hint = "Кто подключается и какие приложения идут через VPN."
     last = step == 3
     nav = t("div",
-            t("button", "Создать подключение" if last else "Далее →", type="submit", name="go",
+            t("button", "Создать группу" if last else "Далее →", type="submit", name="go",
               value="create" if last else "next", class_="btn primary"),
             t("button", "← Назад", type="submit", name="go", value="back", class_="btn", formnovalidate=True)
             if step > 1 else None, class_="wiz-nav")
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value=str(step)),
              _hidden(d, step), body, nav, method="post", action="/connect/new", class_="stack", data_swap=True)
-    parts: list[Any] = [page_head("Новое подключение", "от «хочу VPN для мамы» до «мама подключена»"), _stepper(step)]
+    parts: list[Any] = [page_head("Новая группа", "от «хочу VPN для мамы» до «мама подключена»"), _stepper(step)]
     if errors:
         parts.append(alert_list([("bad", e) for e in errors]))
     parts.append(card(f"{step}. {title}", t("p", hint, class_="hint"), form))
     # data-expanded: живое обновление не заменяет страницу, пока идёт мастер (иначе шаг сбросился бы на первый)
-    return app.render(req, "Новое подключение", t("div", parts, class_="wizard", data_expanded=True),
+    return app.render(req, "Новая группа", t("div", parts, class_="wizard", data_expanded=True),
                       active="/groups", status=status)
 
 
 def connect_page(app: "App", req: "Request") -> "Response":
     if not users.managed_protocols()[0]:
-        return app.render(req, "Новое подключение", [page_head("Новое подключение"), card(
+        return app.render(req, "Новая группа", [page_head("Новая группа"), card(
             "Нет протоколов", alert_list([("warn", "Нет включённых протоколов, куда можно добавить пользователя.")]))],
             active="/groups")
     try:
@@ -534,12 +556,12 @@ def connect_done(app: "App", req: "Request") -> "Response":
                       name="conn-user", open=len(members) == 1 or None, class_="urow"))
     summary = card(f"Группа «{g.name}»", _summary(g),
                    extra=t("a", "Настроить", href=f"/groups/{g.id}", class_="btn small", data_swap=True))
-    body = [page_head("Новое подключение", "готово: раздайте пакеты"), _stepper(4), summary,
+    body = [page_head("Новая группа", "готово: раздайте пакеты"), _stepper(4), summary,
             _texts_card(g, ctx) if ctx else None,
             card("Кому что отправить", t("div", rows, class_="urows"), clientviews.hints(ctx) if ctx else None,
                  help="Откройте человека: его QR и ссылки, приложения и текст с его именем.")
             if rows else alert_list([("warn", "Никого не добавили — раздавать нечего.")])]
-    return app.render(req, "Новое подключение", body, active="/groups")
+    return app.render(req, "Новая группа", body, active="/groups")
 
 
 def _texts_card(g: groups.Group, ctx: clientviews.Ctx) -> Markup | None:
@@ -621,10 +643,12 @@ def groups_list(app: "App", req: "Request") -> "Response":
         elif people:
             people[-1] = people[-1][0]
         rows.append([t("a", t("strong", g.name), href=f"/groups/{g.id}", data_swap=True), protos, cl,
-                     "свой список" if g.allowlist else "общий", people or t("span", "пусто", class_="muted")])
-    head = t("a", "Новое подключение", href="/connect/new", class_="btn primary", data_swap=True)
+                     "свой список" if g.allowlist else "общий", people or t("span", "пусто", class_="muted"),
+                     _delete_link(g, "btn small danger")])
+    head = t("a", "Новая группа", href="/connect/new", class_="btn primary", data_swap=True,
+             title="Протоколы, клиенты, люди и что им отправить")
     parts: list[Any] = [page_head("Группы", f"{len(gs.groups)}", head),
-                        card("Список", table(["группа", "протоколы", "клиенты", "приложения", "участники"], rows,
+                        card("Список", table(["группа", "протоколы", "клиенты", "приложения", "участники", ""], rows,
                                              stack=True, empty="групп нет"),
                              help="Группа задаёт протоколы, клиентов и приложения через VPN сразу всем участникам.")]
     lone = [u.name for u in ureg.visible() if not u.group]
@@ -633,24 +657,42 @@ def groups_list(app: "App", req: "Request") -> "Response":
     return app.render(req, "Группы", parts, active="/groups")
 
 
-def _member_rows(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: allowlist.Allowlist,
-                 csrf: str) -> list[list[Any]]:
+def _delete_link(g: groups.Group, cls: str) -> Markup:
+    """«Удалить группу…» — страница подтверждения; «Основная» не удаляется (кнопка серая, причина в подсказке)."""
+    small = "small" in cls
+    if g.id == groups.MAIN_ID:
+        return t("span", "Удалить" if small else "Удалить группу", class_=cls, aria_disabled="true",
+                 title=groups.MAIN_KEEP)
+    return t("a", "Удалить…" if small else "Удалить группу…", href=f"/groups/{g.id}/delete", class_=cls,
+             data_swap=True)
+
+
+def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: allowlist.Allowlist,
+                  csrf: str) -> Markup:
+    """Участники: число и имена чипами; действия над отмеченными — одним списком с поиском."""
     others = [x for x in gs.groups if x.id != g.id]
-    rows = []
-    for u in groups.members_of(gs, ureg, g.id):
-        proto = (t("span", "свой набор", class_="chip warn", title="протоколы заданы вручную, группа их не меняет")
-                 if u.custom else t("span", "как у группы", class_="chip"))
-        apps = (t("a", "свой список", href=f"/apps?user={u.name}", class_="chip info") if al.own(u.name)
-                else t("span", "как у группы" if g.allowlist else "общий", class_="chip"))
-        move = t("form", csrf_input(csrf), t("input", type="hidden", name="user", value=u.name),
-                 t("select", [t("option", x.name, value=x.id) for x in others], name="to", aria_label="В группу"),
-                 t("button", "Перевести", type="submit", class_="btn small"),
-                 method="post", action=f"/groups/{g.id}/move", class_="inline", data_swap=True) if others else None
-        reset = post_button(f"/groups/{g.id}/move", "Как у группы", csrf, "btn small", {"user": u.name, "to": g.id},
-                            title="Вернуть протоколы группы") if u.custom else None
-        rows.append([t("a", t("strong", u.name), href=f"/users/{u.name}"), proto, apps,
-                     t("div", move, reset, class_="actions")])
-    return rows
+    mem = groups.members_of(gs, ureg, g.id)
+    if not mem:
+        return card("Участники", t("p", "В группе никого нет.", class_="muted"))
+    chips = []
+    for u in mem:
+        notes = (["свой набор протоколов: группа его не меняет"] if u.custom else []) + (
+            ["свой список приложений"] if al.own(u.name) else [])
+        chips.append(t("a", u.name, href=f"/users/{u.name}", class_="chip warn" if u.custom else "chip",
+                       title="; ".join(notes) or None))
+    acts = [t("select", [t("option", x.name, value=x.id) for x in others], name="to", aria_label="В группу")
+            if others else None,
+            t("button", "Перевести", type="submit", name="act", value="move", class_="btn small") if others else None,
+            t("button", "Убрать из группы", type="submit", name="act", value="remove", class_="btn small",
+              title=f"Перевести в «{groups.MAIN_NAME}»") if g.id != groups.MAIN_ID else None,
+            t("button", "Как у группы", type="submit", name="act", value="reset", class_="btn small",
+              title="Вернуть протоколы и приложения группы") if any(u.custom for u in mem) else None]
+    form = t("form", csrf_input(csrf), _picker("Отметьте участников:", "user", [(u.name, "", False) for u in mem]),
+             t("div", acts, class_="actions"), method="post", action=f"/groups/{g.id}/move", class_="stack",
+             data_swap=True)
+    return card("Участники", t("div", chips, class_="chips"),
+                t("details", t("summary", "Действия с участниками"), form, class_="more"),
+                extra=t("span", str(len(mem)), class_="chip"))
 
 
 def _messages_card(g: groups.Group, ctx: clientviews.Ctx, csrf: str, open_plat: str) -> Markup | None:
@@ -711,26 +753,33 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
              t("h3", "Приложения через VPN", class_="sub-h"), _apps_block(d),
              t("div", t("button", "Сохранить", type="submit", class_="btn primary"), class_="actions"),
              method="post", action=f"/groups/{g.id}", class_="stack", data_swap=True)
-    members = _member_rows(g, gs, ureg, al, csrf)
     add = t("details", t("summary", "＋ Добавить участников"),
             t("form", csrf_input(csrf), _users_block(Draft(new_users="", existing=[]), g.id),
               t("button", "Добавить", type="submit", class_="btn primary"),
               method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True), class_="card more")
-    if members:
-        delete: Any = t("p", "Удалить можно только пустую группу.", class_="hint")
-    else:
-        delete = post_button(f"/groups/{g.id}/delete", "Удалить группу", csrf, "btn danger",
-                             confirm=f"Удалить группу «{g.name}»?")
+    others = [x for x in gs.groups if x.id != g.id]
+    names = [u.name for u in groups.members_of(gs, ureg, g.id)]
+    who = ", ".join(names[:8]) + (f" и ещё {len(names) - 8}" if len(names) > 8 else "")
+    merge = t("details", t("summary", "Объединить с…"),
+              t("form", csrf_input(csrf),
+                t("p", "Участники этой группы перейдут в выбранную и получат её протоколы и приложения, эта группа "
+                       "будет удалена, настройки выбранной не изменятся.", class_="hint"),
+                t("select", [t("option", x.name, value=x.id) for x in others], name="to", aria_label="Объединить с группой"),
+                t("button", "Объединить", type="submit", class_="btn small"),
+                method="post", action=f"/groups/{g.id}/merge", class_="actions", data_swap=True,
+                data_confirm=f"Объединить: участники «{g.name}» ({who or 'никого нет'}) перейдут в выбранную "
+                             f"группу и получат её протоколы и приложения, «{g.name}» будет удалена. Отменить нельзя."),
+              class_="more") if others and g.id != groups.MAIN_ID else None
+    delete = _delete_link(g, "btn danger")
     parts: list[Any] = [page_head(g.name, "группа", t("a", "← Группы", href="/groups", class_="btn small", data_swap=True))]
     if errors:
         parts.append(alert_list([("bad", e) for e in errors]))
     ctx = clientviews.Ctx.load()
-    parts += [card("Участники", table(["пользователь", "протоколы", "приложения", ""], members, stack=True,
-                                      empty="в группе никого нет")),
+    parts += [_members_card(g, gs, ureg, al, csrf),
               add, _messages_card(g, ctx, csrf, req.query.get("m", "")) if ctx else None,
               card("Настройки группы", form,
                         help="Сохранение применяется ко всем участникам один раз; в сообщении — кому нужен новый QR."),
-              t("div", delete, class_="actions")]
+              t("div", delete, merge, class_="actions")]
     return app.render(req, g.name, parts, active="/groups", status=status)
 
 
@@ -793,10 +842,26 @@ def group_members(app: "App", req: "Request", gid: str) -> "Response":
     return _done(app, req, rep, f"/groups/{g.id}")
 
 
+def _names(req: "Request", key: str) -> list[str]:
+    return list(dict.fromkeys(n[:32] for n in req.multi.get(key, [])[:200]))
+
+
 def group_move(app: "App", req: "Request", gid: str) -> "Response":
-    name, to = req.form.get("user", "")[:32], req.form.get("to", "")[:40]
+    act = req.form.get("act", "move")
+    to = {"remove": groups.MAIN_ID, "reset": gid}.get(act, req.form.get("to", "")[:40])
+    names = _names(req, "user")
+    if act == "remove" and gid == groups.MAIN_ID:
+        req.session.flash("bad", f"Из «{groups.MAIN_NAME}» убирать некуда: переведите в другую группу")
+        return _redirect(f"/groups/{gid}")
+    if not names:
+        req.session.flash("warn", "Никого не выбрано")
+        return _redirect(f"/groups/{gid}")
     try:
-        rep = groups.move_many([name], to)
+        gs = groups.Groups.load()
+        here = {u.name for u in groups.members_of(gs, users.list_users(), gid)}
+        if any(n not in here for n in names):
+            raise groups.GroupError("отмеченные не из этой группы: обновите страницу")
+        rep = groups.move_many(names, to)
     except CATCH as e:
         req.session.flash("bad", _err(e))
         return _redirect(f"/groups/{gid}")
@@ -804,11 +869,73 @@ def group_move(app: "App", req: "Request", gid: str) -> "Response":
     return _done(app, req, rep, f"/groups/{gid}")
 
 
+def group_delete_confirm(app: "App", req: "Request", gid: str) -> "Response":
+    gs = groups.Groups.load()
+    g = gs.get(gid)
+    if g is None:
+        return app.error(req, 404, "Нет группы", f"Группы «{gid}» нет.")
+    csrf = req.session.csrf if req.session else ""
+    back = t("a", "Отмена", href=f"/groups/{g.id}", class_="btn", data_swap=True)
+    if g.id == groups.MAIN_ID:
+        body = card(f"«{g.name}» не удаляется", t("p", groups.MAIN_KEEP + "."), back)
+        return app.render(req, "Удаление группы", [page_head("Удаление группы"), body], active="/groups")
+    mem = [u.name for u in groups.members_of(gs, users.list_users(), g.id)]
+    if mem:
+        gone = [n for n in mem if n != users.OWNER]
+        choice: Any = t("div",
+                        t("label", t("input", type="radio", name="members", value="move", checked=True),
+                          t("span", f"Перевести в «{groups.MAIN_NAME}»",
+                            t("span", f" ({len(mem)}): " + ", ".join(mem), class_="muted small"), class_="opt-title"),
+                          class_="opt-row"),
+                        t("label", t("input", type="radio", name="members", value="delete"),
+                          t("span", "Удалить вместе с группой",
+                            t("span", " (" + (", ".join(gone) or "никого") + ")", class_="muted small"),
+                            t("span", f"{users.OWNER} не удаляется — он перейдёт в «{groups.MAIN_NAME}»", class_="hint")
+                            if users.OWNER in mem else None,
+                            t("span", "Креды удалённых будут стёрты из протоколов, ссылки и QR перестанут работать.",
+                              class_="hint") if gone else None, class_="opt-title"),
+                          class_="opt-row"))
+    else:
+        choice = t("input", type="hidden", name="members", value="move")
+    form = t("form", csrf_input(csrf), choice,
+             t("div", t("button", "Удалить группу", type="submit", class_="btn danger-solid"), back, class_="actions"),
+             method="post", action=f"/groups/{g.id}/delete", class_="stack", data_swap=True)
+    body = card(f"Удалить группу «{g.name}»?",
+                t("p", f"В группе участников: {len(mem)}. Что с ними сделать?" if mem else
+                  "В группе никого нет. Группа будет удалена."), form, cls="danger-zone")
+    return app.render(req, "Удаление группы", [page_head("Удаление группы"), body], active="/groups")
+
+
 def group_delete(app: "App", req: "Request", gid: str) -> "Response":
+    mode = req.form.get("members", "move")
+    s = req.session
     try:
-        g = groups.remove(gid)
+        if mode not in ("move", "delete"):
+            raise groups.GroupError("выберите, что сделать с участниками")
+        rep = groups.delete_group(gid, mode)
+    except CATCH as e:
+        s.flash("bad", _err(e))
+        return _redirect(f"/groups/{gid}")
+    app.invalidate("status")
+    app.invalidate_links()
+    parts = [rep.message]
+    if rep.deleted:
+        parts.append("удалены: " + ", ".join(rep.deleted))
+    if rep.moved:
+        parts.append(f"переведены в «{rep.group.name}»: " + ", ".join(rep.moved))
+    s.flash("ok" if rep.removed and not rep.errors else "warn", ". ".join(parts))
+    if rep.skipped:
+        s.flash("warn", "Свой набор протоколов, группа его не тронула: " + ", ".join(rep.skipped))
+    for e in rep.errors:
+        s.flash("bad", e)
+    return _redirect("/groups" if rep.removed else f"/groups/{gid}")
+
+
+def group_merge(app: "App", req: "Request", gid: str) -> "Response":
+    to = req.form.get("to", "")[:40]
+    try:
+        rep = groups.merge_groups(gid, to)
     except CATCH as e:
         req.session.flash("bad", _err(e))
         return _redirect(f"/groups/{gid}")
-    req.session.flash("ok", f"Группа «{g.name}» удалена")
-    return _redirect("/groups")
+    return _done(app, req, rep, f"/groups/{rep.group.id}")

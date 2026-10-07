@@ -569,8 +569,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = gadd("move", groups.cmd_group_move, "перевести пользователя в группу (или вернуть ему настройки группы)")
     p.add_argument("user", metavar="ИМЯ")
     p.add_argument("group", metavar="ГРУППА")
-    p = gadd("rm", groups.cmd_group_rm, "удалить пустую группу")
+    p = gadd("rm", groups.cmd_group_rm, "удалить группу («Основная» не удаляется)")
     p.add_argument("group", metavar="ГРУППА")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--move-members", action="store_true", help="участников перевести в «Основную»")
+    g.add_argument("--delete-members", action="store_true",
+                   help="участников удалить вместе с группой (owner не удаляется, он переводится)")
+    p = gadd("merge", groups.cmd_group_merge, "объединить: участники ИЗ переходят в В, группа ИЗ удаляется")
+    p.add_argument("src", metavar="ИЗ", help="группа, которая исчезнет")
+    p.add_argument("dst", metavar="В", help="группа, которая останется (её настройки не меняются)")
 
     p = add("traffic", traffic.cmd_traffic, "трафик по пользователям и протоколам")
     traffic.add_arguments(p)

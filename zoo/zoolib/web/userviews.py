@@ -101,13 +101,23 @@ def _created_local(created: str) -> str:
 
 # ---------- список ----------
 
-def _proto_chip(u: users.User, managed: list[str]) -> Markup:
-    have = [p for p in managed if p in u.protocols]
-    missing = [p for p in managed if p not in u.protocols]
+def _expected_protocols(u: users.User, managed: list[str], gs: groups.Groups) -> list[str]:
+    """Что у пользователя должно быть: протоколы его группы среди включённых; «*» или нет группы — все
+    включённые; свой набор — тоже все включённые (его отличие от них и есть то, что стоит показать)."""
+    g = None if u.custom else gs.get(u.group)
+    return list(managed) if g is None or g.all_protocols else g.resolve(managed)
+
+
+def _proto_chip(u: users.User, managed: list[str], gs: groups.Groups) -> Markup:
+    want = _expected_protocols(u, managed, gs)
+    have = [p for p in want if p in u.protocols]
+    missing = [p for p in want if p not in u.protocols]
     if not missing:
-        return t("span", f"{len(have)}/{len(managed)}", class_="chip", title=", ".join(have) or None)
+        return t("span", f"{len(have)}/{len(want)}", class_="chip", title=", ".join(have) or None)
     shown = ", ".join(missing[:2]) + ("…" if len(missing) > 2 else "")
-    return t("span", f"нет: {shown}", class_="chip warn", title=f"{len(have)}/{len(managed)}; нет в: {', '.join(missing)}")
+    return t("span", f"нет: {shown}", class_="chip warn",
+             title=f"{len(have)}/{len(want)}; нет в: {', '.join(missing)}"
+                   + ("; свой набор — сверка со всеми включёнными" if u.custom else ""))
 
 
 def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tbl.Spec:
@@ -128,7 +138,7 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
                 sort=True, search=True),
         tbl.Col("access", "доступ", sort=True, chip=True, hidden=True),
         tbl.Col("group", "группа", cell=lambda r: _group_cell(gs, r["user"]), sort=True, chip=True),
-        tbl.Col("protos", "протоколы", cell=lambda r: _proto_chip(r["user"], managed),
+        tbl.Col("protos", "протоколы", cell=lambda r: _proto_chip(r["user"], managed, gs),
                 value=lambda r: ", ".join(r["user"].protocols), secondary=True),
         tbl.Col("day", "24 ч", cell=lambda r: human_bytes(r["day"]), value=lambda r: r["day"], num=True, sort=True,
                 first_desc=True),
@@ -142,7 +152,8 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
     ]
     return tbl.Spec(path="/users", cols=cols, sort="name", id_key="name", paged=False, empty="пользователей нет",
                     placeholder="имя или заметка", href=lambda r: f"/users/{r['name']}",
-                    row_cls=lambda r: None if r["user"].enabled else "off", name="users")
+                    row_cls=lambda r: None if r["user"].enabled else "off", name="users",
+                    select="names", select_form="bulk")
 
 
 def _user_rows(shown: list[users.User], gs: groups.Groups) -> list[dict[str, Any]]:
@@ -201,8 +212,7 @@ def users_list(app: "App", req: "Request") -> "Response":
                  if protos else alert_list([("warn", "Нет протоколов, куда можно добавить пользователя.")]),
                  method="post", action="/users", class_="stack", data_swap=True)
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
-    head_actions = t("div", t("a", "Новое подключение", href="/connect/new", class_="btn small primary", data_swap=True,
-                              title="Группа, клиенты, люди и пакеты раздачи за четыре шага"),
+    head_actions = t("div",
                      t("a", "Проверить учётки", href="/users?verify=1", class_="btn small", data_swap=True,
                               title="Есть ли у каждого пользователя учётка во всех включённых протоколах. Если чего-то не хватает, появится кнопка, которая заведёт недостающее"),
                      post_button("/users/sync", "Синхронизировать", csrf, "btn small",
@@ -211,7 +221,7 @@ def users_list(app: "App", req: "Request") -> "Response":
     parts: list[Any] = [page_head("Пользователи", f"{sum(u.enabled for u in shown)}/{len(shown)} включено", head_actions)]
     if verify:
         parts.append(verify)
-    parts.append(card("Список", tbl_html))
+    parts.append(card("Список", tbl_html, bulk_bar(csrf, gs) if rows else None))
     parts.append(t("details", t("summary", "＋ Добавить пользователя"), add_form, class_="card more"))
     notes = [t("span", f"не участвует: {k}", class_="chip", title=v) for k, v in skipped.items()]
     notes += [t("a", f"служебный: {u.name}", href=f"/users/{u.name}", class_="chip",
@@ -221,6 +231,22 @@ def users_list(app: "App", req: "Request") -> "Response":
     if notes:
         parts.append(t("div", notes, class_="chips"))
     return app.render(req, "Пользователи", parts, active="/users")
+
+
+def bulk_bar(csrf: str, gs: groups.Groups) -> Markup:
+    """Панель действий над отмеченными строками: без JS — обычная форма (галочки привязаны атрибутом form=),
+    с JS — прячется, пока ничего не отмечено, и липнет к низу экрана."""
+    move = t("details", t("summary", "В группу ▾", class_="btn small"),
+             t("div", [t("button", g.name, type="submit", name="action", value=f"move:{g.id}", class_="btn small")
+                       for g in gs.groups], class_="menu"), class_="bulk-move") if gs.groups else None
+    return t("form", csrf_input(csrf),
+             t("button", "Удалить", t("span", data_bulk_n=True), type="submit", name="action", value="delete",
+               class_="btn small danger", title="Спросим подтверждение; owner и служебные не удаляются"),
+             t("button", "Отключить", type="submit", name="action", value="disable", class_="btn small",
+               title="Ссылки сохранятся, подключиться они не смогут; owner не отключается"),
+             t("button", "Включить", type="submit", name="action", value="enable", class_="btn small"),
+             move, method="post", action="/users/bulk", class_="bulkbar", id="bulk", data_swap=True, data_bulk_bar=True,
+             aria_label="Действия с отмеченными")
 
 
 def verify_card() -> tuple[Markup, bool]:
@@ -320,6 +346,79 @@ def user_delete(app: "App", req: "Request", name: str) -> "Response":
     app.invalidate("status")
     app.invalidate_links(name)
     return _redirect("/users" if rep and rep.ok else f"/users/{name}")
+
+
+BULK_MAX = 300
+BULK_DONE = {"delete": "Удалено", "disable": "Отключено", "enable": "Включено"}
+
+
+def _bulk_confirm(req: "Request", app: "App", names: list[str], skipped: list[str]) -> "Response":
+    csrf = req.session.csrf if req.session else ""
+    form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value="delete"),
+             t("input", type="hidden", name="confirm", value="1"),
+             [t("input", type="hidden", name="names", value=n) for n in names],
+             t("button", "Удалить навсегда", type="submit", class_="btn danger-solid"),
+             method="post", action="/users/bulk", class_="inline", data_swap=True)
+    body = card(f"Удалить пользователей: {len(names)}?",
+                t("p", "Их креды будут удалены из всех протоколов, ссылки и QR перестанут работать. Отменить нельзя — "
+                       "только создать заново с новыми ключами."),
+                t("div", [t("span", n, class_="chip") for n in names], class_="chips"),
+                t("p", "Пропущены: " + "; ".join(skipped), class_="hint") if skipped else None,
+                t("div", form, t("a", "Отмена", href="/users", class_="btn", data_swap=True), class_="actions"),
+                cls="danger-zone")
+    return app.render(req, "Удаление", [page_head("Удаление пользователей"), body], active="/users")
+
+
+def users_bulk(app: "App", req: "Request") -> "Response":
+    """Одно действие над отмеченными: delete (через страницу подтверждения), disable, enable, move:<группа>.
+    Сервер ничему из формы не верит: имена проверяются по реестру, owner и служебные для удаления и
+    отключения отклоняются, остальные идут дальше; итог — одно сообщение, отказы — отдельными."""
+    s = req.session
+    action = req.form.get("action", "")[:60]
+    op, _, gid = action.partition(":")
+    if op not in (*users.BULK_OPS, "move") or (op == "move") != bool(gid):
+        s.flash("bad", "Неизвестное действие")
+        return _redirect("/users")
+    names = list(dict.fromkeys(req.multi.get("names", [])[:BULK_MAX]))
+    if not names:
+        s.flash("warn", "Никого не выбрано")
+        return _redirect("/users")
+    reg = users.list_users()
+    todo: list[str] = []
+    errors: list[str] = []
+    for n in names:
+        why = "некорректное имя" if not users.NAME_RE.match(n) else users.bulk_refusal(reg, n, op)
+        if why:
+            errors.append(f"{n[:32]}: {why}")
+        else:
+            todo.append(n)
+    if op == "delete" and todo and not req.form.get("confirm"):
+        return _bulk_confirm(req, app, todo, errors)
+    done: list[str] = []
+    verb = BULK_DONE.get(op, "")
+    try:
+        if todo and op == "move":
+            rep = groups.move_many(todo, gid)
+            done, errors, verb = rep.moved, errors + rep.errors, f"В группе «{rep.group.name}»"
+        elif todo:
+            for r in users.bulk(op, todo):
+                if r.ok:
+                    done.append(r.user)
+                else:
+                    errors.append(f"{r.user}: {r.message}" + "".join(f" ({st.proto_id}: {st.error})" for st in r.failed))
+    except (users.UserError, LockTimeout) as e:
+        errors.append(str(e))
+    except protolib.ProtoError as e:
+        errors.append(f"{e} {e.short()}")
+    app.invalidate("status")
+    app.invalidate_links()
+    if done:
+        s.flash("ok" if len(done) == len(names) else "warn", f"{verb}: {len(done)} из {len(names)} — {', '.join(done)}")
+    for e in errors:
+        s.flash("bad", e)
+    if not done and not errors:
+        s.flash("warn", "Ничего не изменилось")
+    return _redirect("/users")
 
 
 # ---------- страница пользователя ----------

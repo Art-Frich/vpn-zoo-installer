@@ -325,6 +325,46 @@ class RenderTest(unittest.TestCase):
         self.assertNotIn("<img", html)
         self.assertIn("&lt;img", html)
 
+    def test_select_column_header_checkbox_and_form_bound_row_checkboxes(self):
+        sp, rows, opts = self.sample(select="names", select_form="bulk")
+        st = tbl.parse(sp, {}, opts)
+        html = tbl.render(sp, st, tbl.memory_page(sp, st, rows, opts))
+        self.assertIn('<th class="pick" scope="col"><input type="checkbox" data-pick-all aria-label="Выбрать всех"></th>', html)
+        self.assertNotIn('data-pick-all name=', html, "общая галочка в форму не уходит")
+        for r in ("x", "y"):
+            self.assertIn(f'<td class="pick"><input type="checkbox" name="names" value="{r}" form="bulk" data-pick '
+                          f'aria-label="Выбрать {r}"></td>', html)
+        # раскрывающаяся строка занимает и колонку галочек
+        self.assertEqual(html.count('<td colspan="4">'), 2)
+        # клик по галочке не открывает строку: app.js пропускает input, кнопка раскрытия остаётся в первой колонке данных
+        self.assertRegex(html, r'<td class="pick">.*?</td><td><button type="button" class="exp"')
+
+    def test_no_select_column_by_default(self):
+        sp, rows, opts = self.sample()
+        st = tbl.parse(sp, {}, opts)
+        html = tbl.render(sp, st, tbl.memory_page(sp, st, rows, opts))
+        self.assertNotIn("data-pick", html)
+        self.assertNotIn('class="pick"', html)
+
+    def test_select_hostile_ids_are_escaped_and_export_has_no_checkbox_column(self):
+        sp = tbl.Spec("/x", [tbl.Col("a", "имя", sort=True)], sort="a", id_key="a", select="names", select_form="bulk")
+        evil = '"><script>alert(1)</script>'
+        rows = [{"a": evil}]
+        st = tbl.parse(sp, {})
+        html = tbl.render(sp, st, tbl.memory_page(sp, st, rows))
+        self.assertNotIn("<script>", html)
+        self.assertIn("&quot;&gt;&lt;script&gt;", html)
+        self.assertNotRegex(html, r"\son[a-z]+=|\sstyle=")
+        body, _, _ = tbl.download(sp.cols, rows, "csv")
+        self.assertNotIn(b"pick", body)
+
+    def test_select_js_contract(self):
+        self.assertIn("input[data-pick]:checked", assets.JS)
+        self.assertIn("a, button, input, select, textarea, label, summary, form", assets.JS,
+                      "клик по галочке строки не уводит на страницу")
+        self.assertIn(".bulkbar", assets.CSS)
+        self.assertIn("position: sticky", assets.CSS)
+
 
 class ExportTest(unittest.TestCase):
     cols = [tbl.Col("name", "имя"), tbl.Col("ip", "адрес", private=True), tbl.Col("bar", "", export=False),

@@ -501,6 +501,260 @@ class UsersViewTest(AppTestBase):
         self.assertIn("owner", self.env.proto_users("amneziawg"))
 
 
+@needs_bash
+class BulkUsersTest(AppTestBase):
+    """Таблица пользователей: галочки, панель действий, /users/bulk."""
+
+    def setUp(self):
+        super().setUp()
+        for pid in ("vless-reality", "amneziawg"):
+            self.env.add_protocol(pid)
+        from zoolib import users
+        users.bootstrap()
+        self.c.login()
+        for n in ("masha", "kolya", "petya"):
+            self.c.post("/users", {"name": n})
+
+    def bulk(self, action, names, csrf=None, **extra):
+        self.c.get("/users")
+        token = self.c.csrf if csrf is None else csrf
+        multi = {"action": [action], "names": list(names), "csrf": [token], **{k: [v] for k, v in extra.items()}}
+        return self.c.req("POST", "/users/bulk", {k: v[-1] for k, v in multi.items() if v}, multi=multi)
+
+    def enabled(self, name, pid="vless-reality"):
+        return self.env.proto_users(pid).get(name)
+
+    def flashes(self):
+        return self.c.get("/users")[1]
+
+    def test_selection_ui(self):
+        _, body = self.c.get("/users")
+        self.assertIn('<input type="checkbox" name="names" value="masha" form="bulk" data-pick aria-label="Выбрать masha">', body)
+        self.assertIn('<th class="pick" scope="col"><input type="checkbox" data-pick-all aria-label="Выбрать всех">', body)
+        bar = body[body.index('<form method="post" action="/users/bulk"'):]
+        bar = bar[:bar.index("</form>")]
+        for text in (">Удалить<", ">Отключить<", ">Включить<", "В группу ▾", 'value="move:main"', 'name="csrf"'):
+            self.assertIn(text, bar)
+        self.assertIn('id="bulk"', bar)
+        self.assertIn("data-bulk-bar", bar)
+        self.assertNotIn("Новое подключение", body, "кнопки мастера на странице пользователей больше нет")
+        self.assertNotIn("/connect/new", body)
+        self.assertNotRegex(body, r"\sstyle=|\son[a-z]+=")
+
+    def test_disable_and_enable_selected(self):
+        resp, _ = self.bulk("disable", ["masha", "kolya"])
+        self.assertEqual(header(resp, "Location"), ["/users"])
+        self.assertEqual((self.enabled("masha"), self.enabled("kolya"), self.enabled("petya")), ("false", "false", "true"))
+        self.assertEqual(self.enabled("masha", "amneziawg"), "false")
+        body = self.flashes()
+        self.assertIn("Отключено: 2 из 2 — masha, kolya", body)
+        self.assertEqual(body.count('class="ok"'), 1, "одно итоговое сообщение, не по сообщению на человека")
+        self.bulk("enable", ["masha", "kolya"])
+        self.assertEqual((self.enabled("masha"), self.enabled("kolya")), ("true", "true"))
+        self.assertIn("Включено: 2 из 2", self.flashes())
+
+    def test_delete_goes_through_confirm_page_listing_names(self):
+        resp, body = self.bulk("delete", ["masha", "kolya"])
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Удалить пользователей: 2?", body)
+        for n in ("masha", "kolya"):
+            self.assertIn(f'<span class="chip">{n}</span>', body)
+            self.assertIn(f'<input type="hidden" name="names" value="{n}">', body)
+        self.assertIn('name="confirm" value="1"', body)
+        self.assertIn("Удалить навсегда", body)
+        self.assertNotIn("petya</span>", body)
+        self.assertEqual((self.enabled("masha"), self.enabled("kolya")), ("true", "true"), "до подтверждения ничего не удалено")
+        resp, _ = self.bulk("delete", ["masha", "kolya"], confirm="1")
+        self.assertEqual(header(resp, "Location"), ["/users"])
+        for pid in ("vless-reality", "amneziawg"):
+            self.assertEqual(set(self.env.proto_users(pid)), {"owner", "petya"})
+        self.assertIn("Удалено: 2 из 2 — masha, kolya", self.flashes())
+        self.assertEqual(set(self.env.users_json()["users"][i]["name"] for i in range(2)), {"owner", "petya"})
+
+    def test_owner_and_system_are_refused_for_delete_and_disable(self):
+        from zoolib import users
+        users.ensure_probe_user()
+        resp, body = self.bulk("delete", ["owner", "masha", "zoo-probe"])
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Удалить пользователей: 1?", body)
+        self.assertIn("owner: owner не удаляется", body)
+        self.assertIn("zoo-probe: служебный", body)
+        self.assertNotIn('name="names" value="owner"', body)
+        self.assertNotIn('name="names" value="zoo-probe"', body)
+        # подтверждение с теми же именами: отказы повторяются на сервере, скрытым полям он не верит
+        resp, _ = self.bulk("delete", ["owner", "masha", "zoo-probe"], confirm="1")
+        self.assertEqual(resp.status, 303)
+        body = self.flashes()
+        self.assertIn("owner: owner не удаляется", body)
+        self.assertIn("zoo-probe: служебный", body)
+        self.assertIn("Удалено: 1 из 3 — masha", body)
+        names = {u["name"] for u in self.env.users_json()["users"]}
+        self.assertEqual(names, {"owner", "kolya", "petya", "zoo-probe"})
+        resp, _ = self.bulk("delete", ["owner"], confirm="1")
+        self.assertEqual(resp.status, 303, "один owner: страницы подтверждения нет, только отказ")
+        self.assertIn("owner не удаляется", self.flashes())
+        self.assertIn("owner", self.env.proto_users("amneziawg"))
+        self.bulk("disable", ["owner", "zoo-probe", "kolya"])
+        body = self.flashes()
+        self.assertIn("owner: owner не отключается", body)
+        self.assertEqual((self.enabled("owner"), self.enabled("kolya")), ("true", "false"))
+        self.assertEqual(self.enabled("zoo-probe"), "true")
+
+    def test_errors_are_reported_per_user(self):
+        self.env.fail("amneziawg:user_enable")
+        self.bulk("disable", ["masha", "kolya"])
+        body = self.flashes()
+        self.assertIn("masha: состояние не изменено", body)
+        self.assertIn("kolya: состояние не изменено", body)
+        self.assertEqual((self.enabled("masha"), self.enabled("kolya")), ("true", "true"))
+        # смешанный итог: один отказ owner, остальные прошли
+        os.environ.pop("FAKE_FAIL")
+        self.bulk("disable", ["owner", "masha"])
+        body = self.flashes()
+        self.assertIn("Отключено: 1 из 2 — masha", body)
+        self.assertIn('class="warn"', body)
+
+    def test_move_to_group(self):
+        from zoolib import groups
+        g = groups.create("Телефон", ["amneziawg"])
+        self.bulk(f"move:{g.id}", ["masha", "kolya"])
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((reg["masha"]["group"], reg["masha"]["protocols"]), (g.id, ["amneziawg"]))
+        self.assertEqual(reg["kolya"]["group"], g.id)
+        self.assertEqual(reg["petya"]["group"], "main")
+        self.assertIn("В группе «Телефон»: 2 из 2 — masha, kolya", self.flashes())
+        self.bulk("move:nope", ["petya"])
+        self.assertIn("нет", self.flashes())
+        self.assertEqual(self.env.users_json()["users"][3]["group"], "main")
+        # владельца переводить можно, служебного — нет
+        self.bulk("move:main", ["owner", "zoo-probe"])
+        self.assertIn("zoo-probe: нет в реестре", self.flashes())
+
+    def test_hostile_input(self):
+        evil = '<script>alert(1)</script>'
+        for names in ([evil], ["../etc/passwd"], ["a" * 500], ["masha\nkolya"], [""]):
+            for action in ("disable", "delete"):
+                resp, body = self.bulk(action, names, confirm="1")
+                self.assertNotIn("<script>alert", body)
+                self.assertEqual(resp.status, 303)
+        body = self.flashes()
+        self.assertNotIn("<script>alert", body)
+        self.assertIn("некорректное имя", body)
+        for action in ("", "evil", "move:", "delete:x", "enable:main", "move:a b"):
+            resp, _ = self.bulk(action, ["masha"])
+            self.assertEqual(resp.status, 303, action)
+            self.assertIn("Неизвестное действие", self.flashes()) if action != "move:a b" else None
+        resp, _ = self.bulk("disable", [])
+        self.assertIn("Никого не выбрано", self.flashes())
+        self.assertEqual({self.enabled(n) for n in ("masha", "kolya", "petya")}, {"true"})
+        self.assertEqual(len(self.env.users_json()["users"]), 4)
+        # очень длинный список режется, а не раздувает работу
+        resp, _ = self.bulk("disable", [f"u{i}" for i in range(2000)])
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(self.enabled("masha"), "true")
+
+    def test_csrf_origin_and_login(self):
+        resp, _ = self.bulk("disable", ["masha"], csrf="wrong")
+        self.assertEqual(resp.status, 403)
+        resp, _ = self.bulk("delete", ["masha"], csrf="", confirm="1")
+        self.assertEqual(resp.status, 403)
+        self.c.get("/users")
+        resp, _ = self.c.post("/users/bulk", {"action": "disable", "names": "masha"}, headers={"Origin": "http://evil.example"})
+        self.assertEqual(resp.status, 403)
+        resp, _ = Client(self.app).post("/users/bulk", {"action": "disable", "names": "masha"}, csrf=False)
+        self.assertEqual(resp.status, 401)
+        resp, _ = self.c.get("/users/bulk")
+        self.assertEqual(resp.status, 404, "это не страница пользователя «bulk»")
+        self.assertEqual({self.enabled(n) for n in ("masha", "kolya", "petya")}, {"true"})
+        self.assertEqual(len(self.env.users_json()["users"]), 4)
+
+    def test_one_lock_for_the_whole_batch(self):
+        from zoolib import users
+        self.c.get("/users")
+        self.c.get("/users")
+        real = users._lock
+        multi = {"action": ["disable"], "names": ["masha", "kolya", "petya"], "csrf": [self.c.csrf]}
+        with mock.patch.object(users, "_lock", side_effect=real) as lock:
+            self.c.req("POST", "/users/bulk", {"action": "disable", "csrf": self.c.csrf}, multi=multi)
+        self.assertEqual(lock.call_count, 1)
+        self.assertEqual({self.enabled(n) for n in ("masha", "kolya", "petya")}, {"false"})
+
+    def test_live_pauses_while_rows_are_selected(self):
+        from zoolib.web import assets
+        self.assertIn("input[data-pick]:checked", assets.JS)
+        self.assertIn("data-pick-all", assets.JS)
+        self.assertIn("bulkSync", assets.JS)
+
+
+@needs_bash
+class ProtoChipTest(AppTestBase):
+    """Чип протоколов: сравнение с ожидаемым набором пользователя, а не со всем сервером."""
+
+    def setUp(self):
+        super().setUp()
+        for pid in ("vless-reality", "amneziawg"):
+            self.env.add_protocol(pid)
+        from zoolib import groups, users
+        users.bootstrap()
+        self.g = groups.create("Телефон", ["vless-reality", "amneziawg"])
+        users.add_user("masha", group=self.g.id)
+        self.env.add_protocol("tuic", users=())   # включили позже: у группы Телефон его нет
+        self.c.login()
+
+    def test_group_without_new_protocol_is_not_warned(self):
+        _, body = self.c.get("/users")
+        self.assertIn('<span class="chip" title="vless-reality, amneziawg">2/2</span>', body)
+        self.assertIn('<span class="chip warn" title="2/3; нет в: tuic">нет: tuic</span>', body, "owner в «Основной»: ждёт все три")
+
+    def test_all_protocols_group_and_no_group_expect_everything(self):
+        from zoolib import users
+        reg = users.Registry.load()
+        reg.get("masha").group = ""
+        reg.save()
+        _, body = self.c.get("/users")
+        self.assertEqual(body.count("нет: tuic"), 2)
+        reg.get("masha").group = "main"
+        reg.save()
+        _, body = self.c.get("/users")
+        self.assertEqual(body.count("нет: tuic"), 2)
+
+    def test_custom_set_is_compared_with_all_enabled(self):
+        from zoolib import users
+        reg = users.Registry.load()
+        u = reg.get("masha")
+        u.custom, u.protocols = True, ["amneziawg"]
+        reg.save()
+        _, body = self.c.get("/users")
+        m = re.search(r'<span class="chip warn" title="([^"]*)">нет: tuic, vless-reality</span>', body)
+        self.assertIsNotNone(m)
+        self.assertIn("1/3; нет в: tuic, vless-reality", m.group(1))
+        self.assertIn("свой набор", m.group(1))
+
+    def test_expected_set_unit(self):
+        from zoolib import groups, users
+        from zoolib.web import userviews
+        managed = ["a", "b", "c"]
+        gs = groups.Groups(None, [groups.Group("x", "X", ["b", "gone"]), groups.Group("all", "Все", ["*"])])
+        mk = lambda **kw: users.User("u", protocols=kw.pop("protocols", ["b"]), **kw)
+        self.assertEqual(userviews._expected_protocols(mk(group="x"), managed, gs), ["b"], "только включённые из группы")
+        self.assertEqual(userviews._expected_protocols(mk(group="all"), managed, gs), managed)
+        self.assertEqual(userviews._expected_protocols(mk(group=""), managed, gs), managed)
+        self.assertEqual(userviews._expected_protocols(mk(group="nope"), managed, gs), managed)
+        self.assertEqual(userviews._expected_protocols(mk(group="x", custom=True), managed, gs), managed)
+        self.assertEqual(str(userviews._proto_chip(mk(group="x"), managed, gs)), '<span class="chip" title="b">1/1</span>')
+        self.assertEqual(str(userviews._proto_chip(mk(group="all", protocols=[]), managed, gs)),
+                         '<span class="chip warn" title="0/3; нет в: a, b, c">нет: a, b…</span>')
+
+
+@needs_bash
+class OverviewStartTest(AppTestBase):
+    def test_get_started_button(self):
+        self.c.login()
+        _, body = self.c.get("/")
+        self.assertIn('<a href="/connect/new" class="btn primary" data-swap title="Новая группа: протоколы, клиенты, люди и что им отправить">Get started</a>', body)
+        self.assertEqual(body.count("Get started"), 1)
+
+
 class ProbeViewTest(AppTestBase):
     def test_compare(self):
         self.c.login()
