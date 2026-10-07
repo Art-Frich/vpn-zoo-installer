@@ -420,6 +420,8 @@ class UsersViewTest(AppTestBase):
         self.assertEqual(resp.status, 200)
         self.assertIn("пользователь создан", body)
         self.assertIn("сестра &lt;3", body)
+        self.assertIn("<h1>masha</h1>", body, "страница пользователя сохраняет заголовок")
+        self.assertNotIn("<h1>", self.c.get("/users")[1], "раздел меню не дублирует меню заголовком")
         self.assertIn('value="vless://masha@', body)
         self.assertIn("data-copy=", body)
         self.assertNotIn("<svg", body, "QR отдельной картинкой, не в странице")

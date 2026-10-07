@@ -537,7 +537,7 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name), tiles,
                  t("p", "Ссылки и QR — ключи доступа: показывайте только самому пользователю.", class_="hint"),
                  class_="card more", open=connect is None or None) if tiles else None
-    body = [page_head(name, user.note or None, actions), err_list, connect, advanced,
+    body = [page_head(name, user.note or None, actions, top=False), err_list, connect, advanced,
             None if connect or advanced else card("Подключить", t("p", "Ссылок нет.", class_="muted")),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")

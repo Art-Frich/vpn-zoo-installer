@@ -20,6 +20,7 @@ from . import assets, logs, stamp
 from .auth import ABSOLUTE_TTL, Auth, Session, cookie, cookie_names, host_allowed, new_token, same
 from .html import Markup, csrf_input, t
 from .jobs import Jobs
+from .views import NAV
 
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
@@ -32,8 +33,6 @@ SECURITY_HEADERS = [
     ("Cross-Origin-Resource-Policy", "same-origin"),
     ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()"),
 ]
-NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", "Группы"), ("/apps", "Приложения"), ("/clients", "Клиенты"), ("/traffic", "Трафик"),
-       ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
 MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")

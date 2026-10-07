@@ -307,8 +307,8 @@ class SearchTest(unittest.TestCase):
         self.addCleanup(p.stop)
         self.clean = logs.cleaner(None)
 
-    def find(self, text, regex=False, ci=True, files=None, units=None, **kw):
-        q = logread.compile_query(text, regex, ci)
+    def find(self, text, files=None, units=None, **kw):
+        q = logread.compile_query(text)
         return logread.search(q, self.clean, files=[self.f1, self.f2] if files is None else files,
                               units=["a.service", "b.service"] if units is None else units, **kw)
 
@@ -330,65 +330,32 @@ class SearchTest(unittest.TestCase):
         self.assertEqual(ts, sorted(ts, reverse=True), "свежие первыми")
         self.assertEqual(len(self.find("всё хорошо").hits), 1)
 
-    def test_case_toggle(self):
+    def test_search_ignores_case(self):
         self.assertEqual(len(self.find("error", files=[self.f2], units=[]).hits), 1)
-        self.assertEqual(len(self.find("error", ci=False, files=[self.f2], units=[]).hits), 0)
-        self.assertEqual(len(self.find("ERROR", ci=False, files=[self.f2], units=[]).hits), 1)
+        self.assertEqual(len(self.find("ERROR", files=[self.f2], units=[]).hits), 1)
         self.assertEqual(len(self.find("ПРИВЕТ", files=[self.f1], units=[]).hits), 0)
         self.assertEqual(len(self.find("ОШИБКА", files=[self.f1], units=[]).hits), 1, "кириллица без учёта регистра")
 
-    def test_substring_is_literal_regex_is_not(self):
+    def test_substring_is_literal(self):
         self.assertEqual(self.find("timeout 1.").hits, [])
         self.assertEqual(len(self.find("timeout 1.", files=[self.f2], units=[]).hits), 0, "точка — просто точка")
-        self.assertEqual(len(self.find(r"timeout \d+", True, files=[self.f2], units=[]).hits), 1)
-        self.assertEqual(len(self.find(r"error|ошибка", True).hits), 3)
+        self.assertEqual(len(self.find(r"timeout \d+", files=[self.f2], units=[]).hits), 0)
         self.assertEqual(self.find("a+b").hits, [])
+        self.assertEqual(self.find("error|ошибка").hits, [])
 
-    def test_regex_errors_and_limits(self):
-        for bad, why in (("[", "ошибка"), ("(a+)+b", "вложенные"), ("(a|aa)+c", "«или»"), ("(?P<x>a)(?P=x)", "ссылки"),
-                         ("a*", "пустой"), ("x.*y.*z.*w", ".*"), ("(", "ошибка"), ("*a", "ошибка"), ("x" * 121, "длиннее"),
-                         ("   ", "пустой")):
+    def test_query_limits(self):
+        for bad, why in (("x" * 121, "длиннее"), ("   ", "пустой")):
             with self.assertRaises(logread.LogError, msg=bad) as cm:
-                logread.compile_query(bad, True)
+                logread.compile_query(bad)
             self.assertIn(why, str(cm.exception), bad)
-        with self.assertRaises(logread.LogError):
-            logread.compile_query("x" * 121, False)
-        for ok in ("error", r"\d{1,3}\.\d+", "foo.*bar", "a|b", "(foo|bar)", "(?i)tim"):
-            logread.compile_query(ok, True)
-
-    def test_slow_regex_input_cannot_hang(self):
-        # «экспоненциальные» шаблоны отклонены до запуска; длинная строка с ним не соприкасается
-        t0 = time.monotonic()
-        self.f1.write_text("a" * 500 + "!\n", encoding="utf-8")
-        with self.assertRaises(logread.LogError):
-            self.find(r"(a+)+$", True)
-        self.assertEqual(len(self.find(r"a+!", True, files=[self.f1], units=[]).hits), 1)
-        self.assertLess(time.monotonic() - t0, 3)
-
-    def test_regex_guard_bypass_patterns_are_rejected_before_running(self):
-        # размножители без «.*»: раньше проходили проверку, а re на длинной строке держал GIL минутами
-        t0 = time.monotonic()
-        for bad in ("a*a*a*a*b", "[a-z]*[a-z]*[a-z]*!", "(?:a{0,50}){0,50}b", "a{0,50}a{0,50}a{0,50}b", r"\w*\w*\w*!",
-                    r"(?:\w{1,3}\w)*x", "(?:a?){60}a{60}", "(?:a*){0,5}b", "x+x+x+y", "[ab]+[bc]+[cd]+z"):
-            with self.assertRaises(logread.LogError, msg=bad):
-                logread.compile_query(bad, True)
-        self.assertLess(time.monotonic() - t0, 1)
-        self.f1.write_text("a" * 1000 + "\n", encoding="utf-8")
-        self.assertEqual(self.find(r"a{1,50}b", True, files=[self.f1], units=[]).hits, [])
-
-    def test_regex_guard_keeps_normal_patterns(self):
-        for ok in (r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", r"(?:\d{1,3}\.){3}\d{1,3}", "foo.*bar.*baz", ".{0,50}foo.{0,50}",
-                   "[0-9a-f]{64}", r"ERROR.*(timeout|refused)", r"\bfail(ed|ure)?\b.*port \d+", "colou?r.*fail"):
-            logread.compile_query(ok, True)
-        self.assertEqual(len(self.find(r"(?:\d{1,3}\.){3}\d{1,3}", True, files=[self.f2], units=[]).hits), 0)
-        self.f2.write_text("peer 10.0.0.12 up\n", encoding="utf-8")
-        self.assertEqual(len(self.find(r"(?:\d{1,3}\.){3}\d{1,3}", True, files=[self.f2], units=[]).hits), 1)
+        for ok in ("[", "(a+)+b", "a*", "x.*y.*z.*w", "x" * 120):
+            logread.compile_query(ok)
 
     def test_qr_rows_are_masked_in_single_line_hits(self):
         qr = ["█▀▀▀▀▀█ ▄▄ █▀▀▀▀▀█", "█ ███ █ ▀▀ █ ███ █", "▀▀▀▀▀▀▀ ▀▄ ▀▀▀▀▀▀▀"]
         write_lines(self.f1, ["до", *qr, "после QR"])
-        for query, regex in (("█", False), (r"█+", True), ("▄", False)):
-            self.assertEqual(self.find(query, regex, files=[self.f1], units=[]).hits, [], query)
+        for query in ("█", "█▀", "▄"):
+            self.assertEqual(self.find(query, files=[self.f1], units=[]).hits, [], query)
         res = self.find("QR", files=[self.f1], units=[])
         self.assertTrue(res.hits)
         self.assertNotRegex(" ".join(h.text for h in res.hits), "[█▀▄]")
@@ -605,12 +572,16 @@ class WebLogsTest(AppTestBase):
         body = self.body(f"/logs?src=file:install-20261001-100000.log&at={at}")
         self.assertIn('<mark id="hit" class="hitline">timeout здесь</mark>', body)
 
-    def test_search_regex_period_and_errors(self):
-        body = self.body("/logs?src=file:install-20261001-100000.log&q=" + "t[a-z]%2Bout&rx=1")
+    def test_search_is_plain_substring_ignoring_case(self):
+        body = self.body("/logs?src=file:install-20261001-100000.log&q=TIMEOUT")
         self.assertIn("Найдено: 1", body)
-        for bad in ("%5B", "(a%2B)%2Bb", "a%7Cb%7C" * 3 + "(x%7Cxx)%2B"):
-            body = self.body("/logs?src=file:install-20261001-100000.log&rx=1&q=" + bad)
-            self.assertIn('class="bad"', body)
+        body = self.body("/logs?src=file:install-20261001-100000.log&q=t[a-z]%2Bout&rx=1&cs=1")
+        self.assertIn("Ничего не нашлось", body)
+        self.assertNotIn('name="rx"', body)
+        self.assertNotIn('name="cs"', body)
+        self.assertNotIn("rx=1", self.body("/logs?src=file:install-20261001-100000.log&q=a&rx=1&cs=1"))
+
+    def test_search_period_and_errors(self):
         body = self.body("/logs?q=timeout&in=all&per=1h")
         self.assertIn("Ничего не нашлось", body)
         body = self.body("/logs?q=timeout&in=all&since=2000-01-01&until=2999-01-01")
@@ -619,6 +590,35 @@ class WebLogsTest(AppTestBase):
         self.assertIn("не понял дату", body)
         body = self.body("/logs?q=timeout&in=all&since=2026-10-05&until=2026-10-01")
         self.assertIn("начало периода позже конца", body)
+
+    def test_exact_period_uses_datetime_local_with_seconds(self):
+        body = self.body("/logs?q=timeout&in=all&since=2026-10-05T14:30&until=2026-10-07+08:15:20")
+        self.assertEqual(len(re.findall(r'<input type="datetime-local" step="1" name="(?:since|until)"', body)), 2)
+        self.assertIn('name="since" value="2026-10-05T14:30:00"', body)
+        self.assertIn('name="until" value="2026-10-07T08:15:20"', body)
+        self.assertIn("<label>с<input", body)
+        self.assertIn("<label>по<input", body)
+        self.assertNotIn("placeholder=\"с:", body)
+        body = self.body("/logs?q=timeout&in=all&until=2026-10-07")
+        self.assertIn('name="until" value="2026-10-07T23:59:59"', body)
+        self.assertNotIn('name="since" value=', body)
+        for ok in ("2026-10-05T14:30", "2026-10-05T14:30:15", "2026-10-05 14:30"):
+            self.assertNotIn("не понял дату", self.body("/logs?q=timeout&in=all&since=" + ok.replace(" ", "+")), ok)
+        self.assertIn("не понял дату", self.body("/logs?q=timeout&in=all&since=2026-10-05T25:99"))
+
+    def test_lines_selector_is_in_log_card_head(self):
+        body = self.body("/logs?src=file:install-20261001-100000.log&lines=100")
+        head = re.search(r'<div class="card-head"><h3[^>]*>install-20261001-100000.log</h3>(.*?)</div></div>', body, re.S).group(1)
+        self.assertIn('class="seg small"', head)
+        self.assertIn("скачать", head)
+        self.assertEqual(re.findall(r'>(\d+)</a>', head), ['100', '300', '1000'])
+        self.assertRegex(head, r'<a href="[^"]*" class="active">100</a>')
+        self.assertIn("lines=1000", head)
+        self.assertNotIn('aria-label="Строк"', body.split('class="card-head"')[0])
+
+    def test_top_pages_do_not_repeat_nav_as_h1(self):
+        for path in ("/", "/users", "/groups", "/apps", "/clients", "/traffic", "/probe", "/journal", "/logs", "/settings"):
+            self.assertNotIn("<h1>", self.body(path), path)
 
     def test_masking_on_every_output(self):
         for path in ("/logs?src=file:install-20261003-100000.log", "/logs?q=token&in=all", "/logs?q=vless&in=all",
@@ -683,7 +683,7 @@ class WebLogsTest(AppTestBase):
         self.assertEqual(self.c.get("/logs/export?src=file:nope.log")[0].status, 404)
         resp, body = self.c.get("/logs/export?q=timeout&in=all")
         self.assertIn("timeout", body)
-        self.assertEqual(self.c.get("/logs/export?q=%5B&rx=1&in=all")[0].status, 400)
+        self.assertEqual(self.c.get("/logs/export?q=timeout")[0].status, 400)
 
     def test_live_tail_view_has_tip_for_appending(self):
         body = self.body("/logs?src=unit:zoo-web.service")

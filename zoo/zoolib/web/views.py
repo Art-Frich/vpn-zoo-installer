@@ -45,12 +45,24 @@ def users_line(p: dict[str, Any]) -> Markup:
              class_="muted small", title=NL.join(tip))
 
 
+NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", "Группы"), ("/apps", "Приложения"), ("/clients", "Клиенты"), ("/traffic", "Трафик"),
+       ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
+NAV_TITLES = frozenset(label for _, label in NAV)
 USERS_TRAFFIC_TITLE = "трафик пользователей сегодня (без служебного пробника)"
 
 
 # ---------- общие куски ----------
 
-def page_head(title: str, sub: Any = None, actions: Any = None) -> Markup:
+def page_head(title: str, sub: Any = None, actions: Any = None, top: bool | None = None) -> Markup:
+    """Заголовок страницы. Раздел верхнего меню (title совпадает с пунктом меню) не повторяет его в h1: остаются
+    подпись и кнопки справа, а если их нет — ничего. top=False — страница глубже раздела с произвольным названием."""
+    if top is None:
+        top = title in NAV_TITLES
+    if top:
+        if not (sub or actions):
+            return Markup("")
+        return t("div", t("div", sub, class_="sub") if sub else None, t("div", actions, class_="actions") if actions else None,
+                 class_="page-head top")
     return t("div", t("div", t("h1", title), t("div", sub, class_="sub") if sub else None),
              t("div", actions, class_="actions") if actions else None, class_="page-head")
 
@@ -854,5 +866,5 @@ def job_page(app: "App", req: "Request", job: str) -> "Response":
         parts += [t("h3", "Вывод"), t("pre", logs.sanitize(out, cfg) or "…", class_="log")]
     origin, back = JOB_ORIGIN.get(j.kind, ("/settings", "← настройки"))
     body = [page_head(j.title, "обновляется автоматически, пока идёт" if j.running else None,
-                      t("a", back, href=origin, class_="btn small")), card("Задача", *parts)]
+                      t("a", back, href=origin, class_="btn small"), top=False), card("Задача", *parts)]
     return app.render(req, j.title, body, active=origin, refresh=2 if j.running else None)

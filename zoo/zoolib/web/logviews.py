@@ -28,7 +28,8 @@ PERIODS = {"all": ("за всё время", None), "1h": ("за час", 3600),
            "7d": ("за 7 дней", 7 * 86400)}
 SRC_RE = re.compile(r"^(file|unit):[A-Za-z0-9@:._-]{1,120}\Z")
 TOK_RE = re.compile(r"(?:\d{1,15}|" + logread.CURSOR_RE.pattern[1:-2] + r")\Z")
-DT_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d")
+DT_FORMATS = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")
+DT_INPUT = "%Y-%m-%dT%H:%M:%S"  # формат поля datetime-local с секундами
 STOP_NOTE = {"time": "поиск остановлен по времени", "entries": "просмотрено максимум строк",
              "bytes": "просмотрено максимум данных"}
 UNIT_UNLOADED = "Нет юнита zoo-logs.path: обновите установку (install.sh --phase 09)."
@@ -54,7 +55,7 @@ def _state(req: "Request") -> dict[str, Any]:
     tok = {k: (g(k) if TOK_RE.match(g(k)) else "") for k in ("before", "after", "at")}
     per = g("per", 4)
     return {"src": g("src", 130), "lines": lines, "q": " ".join(g("q", 400).split())[:logread.QUERY_MAX],
-            "rx": g("rx", 1) == "1", "cs": g("cs", 1) == "1", "scope": "all" if g("in", 4) == "all" else "one",
+            "scope": "all" if g("in", 4) == "all" else "one",
             "per": per if per in PERIODS else "all", "since": g("since", 20).strip(), "until": g("until", 20).strip(),
             "lim": lim if lim in logread.HITS else logread.HITS[0], **tok}
 
@@ -68,7 +69,6 @@ def _url(st: dict[str, Any], path: str = "/logs", **over: Any) -> str:
         pairs.append(("lines", str(d["lines"])))
     if d["q"]:
         pairs.append(("q", d["q"]))
-        pairs += [(k, "1") for k in ("rx", "cs") if d[k]]
         if d["scope"] == "all":
             pairs.append(("in", "all"))
         if d["per"] != "all":
@@ -87,7 +87,16 @@ def _parse_dt(text: str, end: bool = False) -> float | None:
         except ValueError:
             continue
         return dt.timestamp() + (86399 if end and fmt == "%Y-%m-%d" else 0)
-    raise logread.LogError(f"не понял дату «{text[:20]}»: нужна запись вида 2026-10-07 14:30")
+    raise logread.LogError(f"не понял дату «{text[:20]}»: нужна запись вида 2026-10-07T14:30")
+
+
+def _dt_value(text: str, end: bool = False) -> str:
+    """Значение поля datetime-local: ISO с секундами; непонятную запись из ссылки поле не показывает."""
+    try:
+        ts = _parse_dt(text, end)
+    except logread.LogError:
+        return ""
+    return datetime.fromtimestamp(ts or 0).strftime(DT_INPUT)
 
 
 def _period(st: dict[str, Any], now: float) -> tuple[float | None, float | None]:
@@ -124,7 +133,7 @@ def _highlight(text: str, spans: list[tuple[int, int]]) -> Markup:
 
 def run_search(app: "App", st: dict[str, Any], sources: list[tuple[str, str, str]]) -> logread.Result:
     """Поиск по состоянию страницы; LogError — запрос не принят (текст для человека)."""
-    q = logread.compile_query(st["q"], st["rx"], not st["cs"])
+    q = logread.compile_query(st["q"])
     since, until = _period(st, time.time())
     keys = {k for _, k, _ in sources}
     if st["scope"] == "all":
@@ -193,10 +202,10 @@ def _search_form(st: dict[str, Any]) -> Markup:
     scopes = [t("option", "в этом логе", value="one", selected=st["scope"] == "one"),
               t("option", "во всех логах", value="all", selected=st["scope"] == "all")]
     exact = t("details", t("summary", "точный период"),
-              t("input", type="text", name="since", value=st["since"], placeholder="с: 2026-10-07 14:30", size="20",
-                maxlength=20, aria_label="Начало периода"),
-              t("input", type="text", name="until", value=st["until"], placeholder="по: 2026-10-08", size="20",
-                maxlength=20, aria_label="Конец периода"),
+              t("div", t("label", "с", t("input", type="datetime-local", step="1", name="since",
+                                         value=_dt_value(st["since"]) if st["since"] else None)),
+                t("label", "по", t("input", type="datetime-local", step="1", name="until",
+                                   value=_dt_value(st["until"], True) if st["until"] else None)), class_="dt-range"),
               open=bool(st["since"] or st["until"]))
     reset = t("a", "сбросить", href=_url(st, q="", since="", until="", at="", before="", after=""),
               class_="btn small", data_swap=True) if st["q"] else None
@@ -205,10 +214,6 @@ def _search_form(st: dict[str, Any]) -> Markup:
                autocomplete="off", aria_label="Поиск по логам"),
              t("select", scopes, name="in", aria_label="Где искать"),
              t("select", pers, name="per", aria_label="Период"),
-             t("label", t("input", type="checkbox", name="rx", value="1", checked=st["rx"]), "регулярка",
-               title="Выражение Python re; вложенные повторы и больше двух неограниченных («.*», «+») отклоняются"),
-             t("label", t("input", type="checkbox", name="cs", value="1", checked=st["cs"]), "регистр",
-               title="Учитывать регистр букв"),
              t("button", "Найти", type="submit", class_="btn small primary"), reset, exact,
              method="get", action="/logs", class_="search", data_get=True)
 
@@ -243,7 +248,10 @@ def _view_card(app: "App", st: dict[str, Any], kind: str, name: str, chunk: logr
         below.append(t("p", links, class_="logbar"))
     export = t("a", "скачать", href=_url(st, "/logs/export", q="", before="", after="", at=""), class_="btn small",
                title="конец лога в файл (до 20 000 строк), секреты скрыты")
-    return card(name, bar, pre, below, extra=export,
+    sizes = t("nav", [t("a", str(n), href=_url(st, lines=n, before="", after="", at=""),
+                        class_="active" if n == st["lines"] else None) for n in LINES], class_="seg small",
+              aria_label="Строк", title="строк за раз")
+    return card(name, bar, pre, below, extra=[sizes, export],
                 help="Весь доступный лог: ↑ или прокрутка вверх подгружает предыдущие строки. Ключи, пароли и ссылки скрыты.")
 
 
@@ -333,7 +341,8 @@ def logs_page(app: "App", req: "Request") -> "Response":
     group = None
     for g, k, label in sources:
         if g != group:
-            menu = _install_menu(csrf, st["src"]) if g == "Установка" else                 _services_menu(csrf, st["src"]) if g == "Сервисы" else None
+            menu = (_install_menu(csrf, st["src"]) if g == "Установка" else
+                    _services_menu(csrf, st["src"]) if g == "Сервисы" else None)
             nav.append(t("li", t("span", g), menu, class_="group"))
             group = g
         link = t("a", label, href=_url(st, src=k, before="", after="", at=""),
@@ -362,11 +371,9 @@ def logs_page(app: "App", req: "Request") -> "Response":
             content = card(name, empty("Не прочитать"))
     else:
         content = card("Лог", empty("Выберите лог слева" if sources else "Логов нет"))
-    sizes = t("nav", [t("a", str(n), href=_url(st, lines=n, before="", after="", at=""),
-                        class_="active" if n == st["lines"] else None) for n in LINES], class_="seg", aria_label="Строк")
-    search = card("Поиск", _search_form(st), help="Подстрока или регулярное выражение, по этому логу или по всем "
+    search = card("Поиск", _search_form(st), help="Подстрока без учёта регистра, по этому логу или по всем "
                   "(логи установки и сервисы). Секреты в результатах скрыты.")
-    body = [views.page_head("Логи", None, sizes),
+    body = [views.page_head("Логи"),
             t("div", card("Источники", t("ul", nav, class_="list")),
               t("div", views.alert_list(problems) if problems else None, search, results, content,
                 class_="col-stack"), class_="side")]

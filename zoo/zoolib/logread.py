@@ -20,11 +20,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-try:
-    import re._parser as _sre
-except ImportError:  # Python 3.10
-    import sre_parse as _sre  # type: ignore[no-redef]
-
 CHUNK = 300                 # строк на страницу по умолчанию
 CHUNK_MAX = 2000
 LINE_MAX = 4000             # длиннее — обрезается при чтении (память и ширина страницы)
@@ -43,10 +38,6 @@ UNIT_FIELDS = ("_SYSTEMD_UNIT", "UNIT", "OBJECT_SYSTEMD_UNIT", "COREDUMP_UNIT")
 JOURNAL_SRC = "journal:all"  # весь журнал без отбора по сервису: источник строки поиска, не нашедшей своего юнита
 SNIPPET = 600
 SPANS_MAX = 30
-RX_LINE = 1000              # строк длиннее regex видит только начало
-REPEAT_CAP = 50             # «неограниченным» считается повтор с верхней границей больше этой
-BIG_WEIGHT = 50             # во сколько раз неограниченный повтор «дороже» ограниченного
-COST_CAP = 10_000           # потолок: произведение вариантов × BIG_WEIGHT^неограниченных
 
 CURSOR_RE = re.compile(r"^s=[0-9a-f]+;i=[0-9a-f]+;b=[0-9a-f]+;m=[0-9a-f]+;t=([0-9a-f]+);x=[0-9a-f]+\Z")
 FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.log\Z")
@@ -415,89 +406,19 @@ def export(kind: str, name: str) -> list[Line]:
 
 # ---------- поиск ----------
 
-class _Cost:
-    """Накопленная «цена» шаблона: широкие повторы и произведение вариантов ограниченных."""
-    __slots__ = ("big", "ways")
-
-    def __init__(self) -> None:
-        self.big = 0
-        self.ways = 1
-
-
-def _walk(p: Any, cost: _Cost, mult: int = 1, inf: bool = False) -> None:
-    """Отказ шаблонам, на которых re уходит в экспоненту или в степень. re не прерывается по времени,
-    а зависший поиск остановил бы всю админку, поэтому проверка до запуска, а строки обрезаны до RX_LINE.
-    Считаем любой повтор с верхней границей больше REPEAT_CAP (не важно, что повторяется), вложенные
-    «переменные» повторы и произведение вариантов ограниченных повторов — по всему шаблону.
-    mult — во сколько раз самое большее повторяется объемлющее, inf — объемлющий повтор не ограничен."""
-    for op, av in p:
-        name = str(op)
-        if name in ("GROUPREF", "GROUPREF_EXISTS"):
-            raise LogError("обратные ссылки в шаблоне не поддерживаются")
-        if name in ("MAX_REPEAT", "MIN_REPEAT", "POSSESSIVE_REPEAT"):
-            lo, hi, sub = av
-            big = hi > REPEAT_CAP
-            if hi > lo:
-                if inf or mult > 1:
-                    if big or inf:
-                        raise LogError("вложенные повторы (например, (a+)+) не поддерживаются")
-                    if mult > 64:
-                        raise LogError("слишком сложные вложенные повторы — упростите")
-                    cost.ways *= (hi - lo + 1) ** mult
-                elif big:
-                    cost.big += 1
-                    if cost.big > 2:
-                        raise LogError("слишком много «.*» и других неограниченных повторов — уточните")
-                else:
-                    cost.ways *= hi - lo + 1
-            _walk(sub, cost, mult * hi if hi > 1 else mult, inf or (big and hi > lo))
-        elif name == "SUBPATTERN":
-            _walk(av[-1], cost, mult, inf)
-        elif name == "BRANCH":
-            alts = av[1]
-            if inf or mult > 8:
-                first = [alt[0] for alt in alts if len(alt)]
-                distinct = len({a for _, a in first}) == len(first)
-                if len(first) != len(alts) or not distinct or any(str(o) != "LITERAL" for o, _ in first):
-                    raise LogError("«или» внутри повтора не поддерживается — вынесите его или используйте [ab]")
-            for alt in alts:
-                _walk(alt, cost, mult, inf)
-        elif name in ("ASSERT", "ASSERT_NOT"):
-            _walk(av[-1], cost, mult, inf)
-        elif name == "ATOMIC_GROUP":
-            _walk(av, cost, mult, inf)
-
-
 @dataclass(frozen=True)
 class Query:
     rx: re.Pattern[str]
-    regex: bool
-    limit: int | None         # строки длиннее обрезаются при сверке (только для regex)
 
 
-def compile_query(text: str, regex: bool = False, ci: bool = True) -> Query:
-    """Шаблон поиска. Простой текст — подстрока; regex — выражение Python с ограничениями. Ошибка — LogError."""
+def compile_query(text: str) -> Query:
+    """Шаблон поиска: подстрока без учёта регистра. Ошибка — LogError."""
     text = text.strip()
     if not text:
         raise LogError("пустой запрос")
     if len(text) > QUERY_MAX:
         raise LogError(f"запрос длиннее {QUERY_MAX} символов")
-    flags = re.IGNORECASE if ci else 0
-    if not regex:
-        return Query(re.compile(re.escape(text), flags), False, None)
-    try:
-        cost = _Cost()
-        _walk(_sre.parse(text, flags), cost)
-        if cost.ways * BIG_WEIGHT ** cost.big > COST_CAP:
-            raise LogError("выражение слишком сложное — упростите")
-        rx = re.compile(text, flags)
-    except re.error as e:
-        raise LogError(f"ошибка в выражении: {e}") from None
-    except (RecursionError, OverflowError, ValueError):
-        raise LogError("выражение слишком сложное") from None
-    if rx.search(""):
-        raise LogError("выражение совпадает с пустой строкой — уточните")
-    return Query(rx, True, RX_LINE)
+    return Query(re.compile(re.escape(text), re.IGNORECASE))
 
 
 @dataclass
@@ -549,11 +470,11 @@ class Budget:
 def _make_hit(src: str, ts: float | None, tok: str, raw: str, q: Query, clean: Callable[[str], str],
               prefilter: bool, file_time: bool = False) -> Hit | None:
     probe = _ANSI_RE.sub("", raw) if "" in raw else raw
-    if prefilter and not q.rx.search(probe[:q.limit]):
+    if prefilter and not q.rx.search(probe):
         return None
     text = clean(raw)
     spans = []
-    for m in q.rx.finditer(text[:q.limit]):
+    for m in q.rx.finditer(text):
         if m.end() > m.start():
             spans.append((m.start(), m.end()))
             if len(spans) >= SPANS_MAX:
