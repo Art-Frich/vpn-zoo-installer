@@ -1,7 +1,9 @@
 # zoo-clients — раз в сутки спрашивает GitHub про последние версии клиентских приложений
-# (zoo clients --check-upstream, 10 с на запрос, без токена) и пишет кэш в /var/lib/vpn-zoo.
-# Запускает zoo-clients.timer и zoo-clients.path (кнопка «Проверить сейчас» на странице «Клиенты»);
-# страницы админки в сеть не ходят, читают только кэш.
+# (zoo clients --check-upstream, 10 с на запрос, без токена) и пишет кэш в /var/lib/vpn-zoo; затем
+# скачивает дистрибутивы клиентов групп «ставит ИТ» (--fetch-dist: APK и установщики с GitHub в
+# /var/lib/vpn-zoo/dist, две последние версии, не больше 300 МБ).
+# Запускает zoo-clients.timer и zoo-clients.path (кнопка «Проверить сейчас» на странице «Клиенты» и
+# «Обновить» у дистрибутивов); страницы админки в сеть не ходят, читают только кэш и каталог dist.
 # Сети нужен только исходящий HTTPS; запись — только в каталог данных zoo.
 [Unit]
 Description=vpn-zoo: последние версии клиентских приложений (GitHub)
@@ -10,10 +12,10 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/zoo clients --check-upstream
+ExecStart=/usr/local/bin/zoo clients --check-upstream --fetch-dist
 Nice=10
 IOSchedulingClass=idle
-TimeoutStartSec=3min
+TimeoutStartSec=20min
 UMask=0022
 
 NoNewPrivileges=yes

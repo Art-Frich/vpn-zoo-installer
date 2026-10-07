@@ -146,7 +146,7 @@ class StorageBase(unittest.TestCase):
 class ReportTest(StorageBase):
     def test_empty_install(self):
         d = storage.report(cfg())
-        self.assertEqual([s["id"] for s in d["sections"]], ["traffic", "journal", "probe", "logs"])
+        self.assertEqual([s["id"] for s in d["sections"]], ["traffic", "journal", "probe", "logs", "dist"])
         self.assertEqual(d["total"], 0)
         self.assertFalse(d["over"])
         self.assertTrue(all(s["oldest"] is None for s in d["sections"]))
@@ -166,7 +166,8 @@ class ReportTest(StorageBase):
         self.assertEqual(by["journal"]["oldest"], NOW - 19 * 3600)
         self.assertEqual(by["probe"]["oldest"], NOW - 2 * 3600)
         self.assertEqual(by["logs"]["size"], 500)
-        self.assertEqual(by["traffic"]["share_bytes"], (10 << 20) * 30 // 100)
+        self.assertEqual(by["traffic"]["share_bytes"], (10 << 20) * 20 // 100)
+        self.assertEqual(by["dist"]["share_bytes"], (10 << 20) * 30 // 100)
         self.assertEqual(d["total"], sum(s["size"] for s in d["sections"]))
         self.assertEqual([o["id"] for o in d["outside"]], ["geo-prev"])
         self.assertEqual(d["outside"][0]["size"], 4096)

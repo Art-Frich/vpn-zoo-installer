@@ -11,6 +11,7 @@ import time
 import traceback
 import urllib.parse
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 from .. import __version__, paths, qr
@@ -37,7 +38,7 @@ MSG_MAX = 300  # ошибки на странице короткие: длинн
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
 # ответ не страница (картинка QR, скачиваемый файл) или всегда редирект: отпечаток считать незачем
-NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /live/[^/]+/?|GET /logs/(?:chunk|export)/?|POST /logs/(?:clean|vacuum)/?")
+NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|GET /dist/[^/]+/[^/]+/[^/]+/?|POST /dist/refresh/?|POST /live/[^/]+/?|GET /logs/(?:chunk|export)/?|POST /logs/(?:clean|vacuum)/?")
 
 
 @dataclass
@@ -73,6 +74,7 @@ class Response:
     headers: list[tuple[str, str]] = field(default_factory=list)
     cache: bool = False
     gz: bytes | None = None  # то же тело, сжатое заранее (статика)
+    file: Path | None = None  # отдать файл с диска потоком (дистрибутивы): body пуст, длина — по размеру файла
 
 
 def redirect(location: str, status: int = 303) -> Response:
@@ -90,8 +92,8 @@ def clip(msg: str, limit: int = MSG_MAX) -> str:
 class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
-        from . import (allowviews, clientviews, groupviews, journalviews, logviews, probeviews, protoviews, userviews,
-                       views)  # маршруты ссылаются на App: импорт здесь
+        from . import (allowviews, clientviews, distviews, groupviews, journalviews, logviews, probeviews, protoviews,
+                       userviews, views)  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -133,6 +135,9 @@ class App:
             ("POST", r"/apps", allowviews.apps_post, True),
             ("GET", r"/clients", clientviews.clients_page, True),
             ("POST", r"/clients/check", clientviews.check_now, True),
+            ("GET", r"/dist/(?P<cid>[a-z0-9-]{1,40})/(?P<ver>[A-Za-z0-9][A-Za-z0-9._+-]{0,63})/"
+                    r"(?P<fname>[A-Za-z0-9][A-Za-z0-9._+-]{0,127})", distviews.download, True),
+            ("POST", r"/dist/refresh", distviews.refresh, True),
             ("GET", r"/traffic", views.traffic_page, True),
             ("GET", r"/probe", views.probe_page, True),
             ("POST", r"/probe/run", views.probe_run, True),

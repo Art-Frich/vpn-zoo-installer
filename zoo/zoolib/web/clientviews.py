@@ -12,15 +12,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import allowlist, clients, groups, manifests, protolib, qr, users
-from .html import Markup, badge, card, post_button, t, table
+from .html import Markup, card, post_button, t, table
 from .views import ago, alert_list, page_head
 
 if TYPE_CHECKING:
     from .app import App, Request, Response
 
 DESKTOP = {"windows", "macos", "linux"}
-MAIN_PLATFORMS = ("android", "ios", "windows")  # остальные — под «Другие платформы» на шаге «Клиенты»
-BADGE_KIND = {"ok": "ok", "warn": "warn", "no": "bad", "unk": "muted"}
+MAIN_PLATFORMS = groups.MAIN_DEVICES   # устройства по умолчанию в мастере и на /clients; остальные — чипы выключены
 LEGEND = "✓ заявлено поддерживаемым · ! с оговоркой · ✕ не работает · ? не проверено · — не заявлено"
 UNVERIFIED = "Шаги и статусы — по коду и документации клиентов, на устройстве не проверялись."
 RECOMMEND_BASIS = "по документации и исследованию 04.10.2026, на устройстве не проверено"
@@ -58,12 +57,24 @@ def _link_anchors(links: list[dict[str, Any]]) -> list[Markup]:
 
 # ---------- страница ----------
 
-def _status_cell(client: dict[str, Any], proto: str) -> Any:
-    st = client["protocols"].get(proto)
-    if not st:
-        return t("span", "—", class_="muted")
-    return t("span", clients.STATUS_MARK[st["s"]], class_=f"badge {BADGE_KIND[st['s']]}",
-             title=f"{clients.STATUS_TEXT[st['s']]}" + (f": {st['note']}" if st.get("note") else ""))
+def proto_names(cat: clients.Catalog) -> dict[str, str]:
+    """Названия протоколов: как в плитках сервера, для неизвестных серверу — из каталога клиентов."""
+    names = {p: d["title"] for p, d in cat.protocols.items()}
+    names.update({m.id: m.short for m in manifests.load_all()[0]})
+    return names
+
+
+def app_names(cat: clients.Catalog, ids: list[str]) -> str:
+    return " + ".join((cat.client(i) or {}).get("name", i) for i in ids)
+
+
+def coverage_label(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str],
+                   names: dict[str, str]) -> tuple[str, str]:
+    """«все N» / «готово» (зелёная) или «без X» (жёлтая): что набор приложений даёт по протоколам."""
+    done, miss = groups.coverage(cat, plat, protocols, ids)
+    if miss:
+        return "без " + ", ".join(names.get(p, p) for p in miss), "warn"
+    return (f"все {len(done)}" if len(done) > 1 else "готово"), "ok"
 
 
 def _version_cell(client: dict[str, Any], cache: dict[str, Any], platform: str | None = None) -> Any:
@@ -75,22 +86,6 @@ def _version_cell(client: dict[str, Any], cache: dict[str, Any], platform: str |
         return t("span", "—", class_="muted", title=v.get("error") or "ещё не проверялась")
     return t("span", v["version"], title=f"релиз от {v['published']}" if v.get("published") else None,
              class_="mono")
-
-
-def _proto_chips(cat: clients.Catalog, c: dict[str, Any], plat: str, protos: list[str]) -> Markup:
-    """Все протоколы клиента (✓ и !), рекомендованные каталогом для этой платформы — зелёные."""
-    chips = []
-    for p in protos:
-        st = c["protocols"].get(p, {})
-        if st.get("s") not in ("ok", "warn"):
-            continue
-        rec = (cat.recommended(plat, p) or {}).get("id") == c["id"]
-        why = [f"рекомендуем для этого протокола — {RECOMMEND_BASIS}"] if rec else []
-        if st.get("note"):
-            why.append(st["note"])
-        kind = "chip ok" if rec else ("chip warn" if st["s"] == "warn" else "chip")
-        chips.append(t("span", cat.protocols[p]["title"], class_=kind, title="; ".join(why) or None))
-    return t("div", chips, class_="chips")
 
 
 def _check_controls(cache: dict[str, Any], csrf: str) -> Markup:
@@ -106,6 +101,80 @@ def _check_controls(cache: dict[str, Any], csrf: str) -> Markup:
     return t("div", status, btn, class_="actions")
 
 
+def _dev_nav(cat: clients.Catalog, dev: str | None) -> Markup:
+    """Чипы устройств — ссылки ?dev= (без JS): таблица фильтруется, «Ставить» — про одно устройство."""
+    links = [t("a", "Все", href="/clients", class_="active" if not dev else None)]
+    links += [t("a", title, href=f"/clients?dev={p}", class_="active" if p == dev else None)
+              for p, title in cat.platforms.items()]
+    return t("nav", links, class_="seg", aria_label="Устройство")
+
+
+def _install_rows(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], devs: list[str]) -> Markup:
+    """«Ставить»: по устройству — набор приложений (тот же подбор, что в мастере для людей, которые ставят сами), метка
+    покрытия, у каждого приложения версия и ссылки."""
+    plan = groups.suggest_set(cat, devs, protos, "self")
+    names = proto_names(cat)
+    rows = []
+    for plat in devs:
+        ids = plan.get(plat)
+        title = cat.platforms[plat]
+        if not ids:
+            rows.append(t("div", t("strong", title, class_="dev-name"), t("span", "нет приложения под эти протоколы",
+                                                                          class_="muted"), class_="dev-row"))
+            continue
+        label, kind = coverage_label(cat, plat, protos, ids, names)
+        apps = []
+        for cid in ids:
+            c = cat.client(cid)
+            if c is None:
+                continue
+            foreign = t("span", "нет в магазине РФ", class_="chip warn", title=FOREIGN_STORE) if cat.no_ru_store(c, plat) else None
+            apps.append(t("div", t("strong", c["name"]), " ", _version_cell(c, cache, plat), " ", foreign,
+                          t("div", _link_anchors(c["platforms"][plat]), class_="chips"), class_="app-line"))
+        rows.append(t("div", t("div", t("strong", title, class_="dev-name"), t("span", app_names(cat, ids), class_="dev-set"),
+                               t("span", label, class_=f"plat-sum {kind}"), class_="dev-head"), apps, class_="dev-row"))
+    return t("div", rows, class_="dev-rows")
+
+
+def _proto_cell(cat: clients.Catalog, c: dict[str, Any], protos: list[str]) -> Markup:
+    """Протоколы клиента по каталогу: зелёный — заявлен, жёлтый — с оговоркой, красный — не работает; «стенд» — проверено прогоном."""
+    chips = []
+    for p in protos:
+        st = c["protocols"].get(p)
+        if not st:
+            continue
+        note = st.get("note") or ""
+        stand = "проверено на стенде" in note
+        kind = {"ok": "chip ok", "warn": "chip warn", "no": "chip bad"}.get(st["s"], "chip")
+        chips.append(t("span", cat.protocols[p]["title"], stand and " · стенд" or None, class_=kind,
+                       title=f"{clients.STATUS_TEXT[st['s']]}" + (f": {note}" if note else "")))
+    return t("div", chips, class_="chips") if chips else t("span", "—", class_="muted")
+
+
+def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], dev: str | None) -> Markup:
+    """«Все приложения»: строка = приложение; устройства, протоколы, версия; ссылки и заметка — в строке под спойлером."""
+    rec = {cat.recommended(p, q)["id"] for p in cat.platforms for q in protos if cat.recommended(p, q)}  # type: ignore[index]
+    rows = []
+    for c in sorted((c for c in cat.clients if not dev or dev in c["platforms"]), key=lambda c: c["id"] not in rec):
+        cells = []
+        for plat in groups.MAIN_DEVICES:
+            if plat not in c["platforms"]:
+                cells.append(t("span", "—", class_="muted"))
+            elif cat.no_ru_store(c, plat):
+                cells.append(t("span", "✓!", class_="chip warn", title=FOREIGN_STORE))
+            else:
+                cells.append(t("span", "✓", class_="chip ok"))
+        more = ", ".join(cat.platforms[p] for p in c["platforms"] if p not in groups.MAIN_DEVICES) or "—"
+        links = [t("div", t("span", cat.platforms[p], class_="muted small"), " ", _link_anchors(ln), class_="chips")
+                 for p, ln in c["platforms"].items()]
+        rows.append([t("span", t("strong", c["name"]),
+                       t("details", t("summary", "ссылки"), links, t("p", c["notes"], class_="hint") if c.get("notes") else None,
+                         class_="more"), class_="app-cell"),
+                     *cells, more, _proto_cell(cat, c, protos), _version_cell(c, cache)])
+    head = ["приложение", *[cat.platforms[p] for p in groups.MAIN_DEVICES], "ещё", "протоколы", "версия"]
+    return table(head, rows, stack=True, empty="нет приложений")
+
+
 def clients_page(app: "App", req: "Request") -> "Response":
     csrf = req.session.csrf if req.session else ""
     try:
@@ -116,32 +185,14 @@ def clients_page(app: "App", req: "Request") -> "Response":
     cache = clients.load_cache()
     enabled = {m.id for m in manifests.load_all()[0] if m.enabled}
     protos = [p for p in cat.real_protocols() if p in enabled] if enabled else cat.real_protocols()
+    dev = req.query.get("dev") if req.query.get("dev") in cat.platforms else None
+    devs = [dev] if dev else list(groups.MAIN_DEVICES)
 
-    cards: list[Markup] = []
-    for plat, plat_title in cat.platforms.items():
-        rec = {cat.recommended(plat, p)["id"] for p in protos if cat.recommended(plat, p)}  # type: ignore[index]
-        mine = [c for c in cat.clients if plat in c["platforms"]
-                and any(c["protocols"].get(p, {}).get("s") in ("ok", "warn") for p in protos)]
-        if not mine:
-            continue
-        mine.sort(key=lambda c: c["id"] not in rec)  # рекомендованные первыми, дальше порядок каталога
-        rows = [[t("span", t("strong", c["name"]), " ", t("span", "рекомендуем", class_="badge ok", title=RECOMMEND_BASIS) if c["id"] in rec else None),
-                 _proto_chips(cat, c, plat, protos), _version_cell(c, cache, plat),
-                 t("div", _link_anchors(c["platforms"][plat]), class_="chips")] for c in mine]
-        cards.append(card(plat_title, table(["клиент", "для протоколов", "версия", "скачать"], rows, stack=True)))
-
-    names = {c["id"]: c["name"] for c in cat.clients}
-    head = ["клиент", "платформы", *[cat.protocols[p]["title"] for p in protos], "приложения через VPN", "версия"]
-    rows = []
-    for c in cat.clients:
-        rows.append([
-            t("span", t("strong", c["name"]), t("span", c["notes"], class_="sub") if c.get("notes") else None),
-            ", ".join(cat.platforms[p] for p in c["platforms"]),
-            *[_status_cell(c, p) for p in protos],
-            t("span", cat.raw["per_app"][c["per_app"]], class_="small"),
-            _version_cell(c, cache)])
-    matrix = card("Что умеют клиенты", t("p", LEGEND, class_="hint"), table(head, rows, stack=True),
-                  help=UNVERIFIED)
+    install = card("Ставить", _install_rows(cat, cache, protos, devs),
+                   help="Подбор для людей, которые ставят сами: приложения из магазинов, протоколы сервера. "
+                        "В мастере «Новая группа» то же считается под выбранные протоколы.")
+    table_card = card("Все приложения", t("p", LEGEND, class_="hint"), _apps_table(cat, cache, protos, dev),
+                      help=UNVERIFIED)
 
     caveats = [("warn", f"{cat.protocols[p]['title']}: {cat.protocols[p]['caveat']}")
                for p in protos if cat.protocols[p].get("caveat")]
@@ -151,14 +202,15 @@ def clients_page(app: "App", req: "Request") -> "Response":
     notes = [alert_list(caveats) if caveats else None,
              t("details", t("summary", f"Почему ✕ и ! ({len(why)})"), alert_list(why), class_="more") if why else None]
 
+    names = {c["id"]: c["name"] for c in cat.clients}
     failed = [names.get(k, k) for k, v in cache["versions"].items() if v.get("error")]
     foot = t("p", "Версии из GitHub: раз в сутки и по кнопке, страница в сеть не ходит"
              + (f" · не удалось: {', '.join(failed)}" if failed else "") + f" · каталог от {cat.raw['updated']}",
              class_="hint")
-    intro = t("p", UNVERIFIED, " ", f"Зелёное: рекомендуем — {RECOMMEND_BASIS}. Жёлтое: с оговоркой (наведите).",
+    intro = t("p", UNVERIFIED, " ", "Зелёное — заявлено, жёлтое — с оговоркой (наведите), «стенд» — проверено прогоном на сервере.",
               class_="hint")
-    body = [page_head("Клиенты", "что ставить на устройство", _check_controls(cache, csrf)), intro, *cards, matrix,
-            *[n for n in notes if n], foot]
+    body = [page_head("Клиенты", "что ставить на устройство", _check_controls(cache, csrf)), _dev_nav(cat, dev), intro,
+            install, table_card, *[n for n in notes if n], foot]
     return app.render(req, "Клиенты", body, active="/clients")
 
 
