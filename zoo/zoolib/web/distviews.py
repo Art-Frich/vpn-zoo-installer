@@ -19,7 +19,8 @@ IOS_DETAILS = ("Мимо App Store приложение на iPhone не пос�
                "корпоративный Apple ID другой страны, под которым ставится всё нужное; Apple Business Manager и MDM "
                "(рассылка приложений сотрудникам) — условия и доступность в вашей стране уточните у Apple, мы это не "
                "проверяли. Файла-дистрибутива для iPhone нет.")
-BACK_RE = re.compile(r"/groups/[a-z0-9][a-z0-9_-]{0,31}|/connect/done\?[A-Za-z0-9=&%,._-]{0,400}")
+# в /connect/done — имена всей команды (до 2 × 200 по 32 знака): короткий потолок уводил большую команду на /groups
+BACK_RE = re.compile(r"/groups/[a-z0-9][a-z0-9_-]{0,31}|/connect/done\?[A-Za-z0-9=&%,._-]{0,16000}")
 
 
 def ios_note() -> Markup:

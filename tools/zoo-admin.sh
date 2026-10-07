@@ -41,8 +41,9 @@ echo "вход (ссылка одноразовая, 3 минуты): $link"
 if [ "${ZOO_ADMIN_NO_OPEN:-0}" != "1" ]; then
     case "$(uname -s)" in
         Darwin) open "$link" ;;
-        MINGW*|MSYS*|CYGWIN*) cmd.exe /c start "" "$link" >/dev/null 2>&1 ;;
+        # //c: иначе MSYS превращает /c в путь, cmd открывается интерактивно и скрипт «висит»
+        MINGW*|MSYS*|CYGWIN*) cmd.exe //c start "" "$link" </dev/null >/dev/null 2>&1 ;;
         *) xdg-open "$link" >/dev/null 2>&1 || echo "откройте ссылку в браузере вручную" ;;
     esac
 fi
-echo "дальше админка открывается по http://127.0.0.1:$port/ (вход запоминается на 30 дней)"
+echo "дальше админка открывается по http://127.0.0.1:$port/ (вход запоминается до 30 дней, без заходов — на 14; потом снова этот скрипт)"

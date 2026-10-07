@@ -244,7 +244,8 @@ class App:
                 continue
             if need_auth and req.session is None:
                 if req.method in ("GET", "HEAD"):
-                    return redirect("/login?" + urllib.parse.urlencode({"next": req.path}))
+                    back = req.path + ("?" + urllib.parse.urlencode(req.query) if req.query else "")   # /handoff?group=…
+                    return redirect("/login?" + urllib.parse.urlencode({"next": back}))
                 return self.error(req, 401, "Сессия истекла", "Войдите снова и повторите действие.")
             if req.method == "POST":
                 bad = self._post_guard(req, need_auth)

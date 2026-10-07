@@ -56,6 +56,7 @@ EOF
 }}
 mkdir() {{ :; }}
 install() {{ echo "INSTALL $*"; }}
+rm() {{ echo "RM $*"; case "$*" in *50-vpn-zoo*) ;; *) command rm "$@" ;; esac; }}
 systemctl() {{ return 0; }}
 cmp() {{ return 1; }}
 journald_limit
@@ -73,6 +74,14 @@ journald_limit
         out = self.run_limit("# /etc/systemd/journald.conf.d/10-host.conf\n[Journal]\nSystemMaxUse=2G\n"
                              "# /etc/systemd/journald.conf.d/50-vpn-zoo.conf\n[Journal]\nSystemMaxUse=500M\n")
         self.assertNotIn("INSTALL", out)
+
+    def test_owner_value_set_later_removes_our_dropin(self):
+        out = self.run_limit("# /etc/systemd/journald.conf\n[Journal]\nSystemMaxUse=2G\n"
+                             "# /etc/systemd/journald.conf.d/50-vpn-zoo.conf\n[Journal]\nSystemMaxUse=500M\n")
+        self.assertIn("RM -f /etc/systemd/journald.conf.d/50-vpn-zoo.conf", out, "наш drop-in перебил бы journald.conf")
+        self.assertNotIn("INSTALL", out)
+        out = self.run_limit("# /etc/systemd/journald.conf\n[Journal]\nSystemMaxUse=2G\n")
+        self.assertNotIn("RM", out, "своего drop-in нет — удалять нечего")
 
     def test_only_commented_default_or_our_dropin_installs(self):
         out = self.run_limit("# /etc/systemd/journald.conf\n[Journal]\n#SystemMaxUse=\n")

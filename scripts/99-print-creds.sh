@@ -182,7 +182,7 @@ if [ -n "${ZOO_WEB_PORT:-}" ]; then
     printf '%b\n' "${C_BLUE}-- Админка zoo: первый вход (на своём компьютере) --${C_RESET}"
     zoo_raw="https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools"
     echo "  Windows:      iwr $zoo_raw/zoo-admin.ps1 -OutFile zoo-admin.ps1"
-    echo "                powershell -ExecutionPolicy Bypass -File .\\zoo-admin.ps1 $ssh_user@$ssh_host${ssh_p:+ -SshArgs '-p','$ssh_port'}"
+    echo "                powershell -ExecutionPolicy Bypass -File .\\zoo-admin.ps1 $ssh_user@$ssh_host${ssh_p:+ -Port $ssh_port}"
     echo "  macOS/Linux:  curl -fsSLO $zoo_raw/zoo-admin.sh && bash zoo-admin.sh $ssh_user@$ssh_host$ssh_p"
     echo "  откроется браузер уже со входом; дальше «Обзор» → «Get started»"
     echo

@@ -18,7 +18,8 @@ from .xui import XuiClient, XuiError
 
 # ufw проверяется через `ufw status` (system.ufw_active), а не по юниту
 BASE_UNITS = ["x-ui.service", "fail2ban.service"]
-ZOO_UNITS = ["zoo-web.service", "zoo-collector.timer"]
+# .path — исполнители заявок админки (вкл/выкл протоколов, логи, замеры, клиенты): остановился — кнопки молча не работают
+ZOO_UNITS = ["zoo-web.service", "zoo-collector.timer", "zoo-job.path", "zoo-logs.path", "zoo-live.path", "zoo-clients.path"]
 CERT_GLOBS = ["/etc/hysteria/cert.pem"]
 CERT_WARN_DAYS = 14
 

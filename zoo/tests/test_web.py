@@ -303,6 +303,9 @@ class RoutingTest(AppTestBase):
             resp, _ = self.c.get(path)
             self.assertEqual(resp.status, 303, path)
             self.assertTrue(header(resp, "Location")[0].startswith("/login?next="), path)
+        resp, _ = self.c.get("/handoff?group=office&per=2")
+        self.assertEqual(header(resp, "Location"), ["/login?next=%2Fhandoff%3Fgroup%3Doffice%26per%3D2"],
+                         "закладка после истёкшей сессии ведёт туда же, с параметрами")
         resp, _ = self.c.post("/users", {"name": "x"})
         self.assertEqual(resp.status, 401)
 

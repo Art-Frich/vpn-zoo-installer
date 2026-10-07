@@ -356,7 +356,7 @@ def set_lists(lists: dict[str, list[str]], user: str | None = None, titles: dict
             key, title = ident.lower(), clean_title(title)
             if title and key not in catalog and any(key == x.lower() for p in PLATFORMS for x in new[p]):
                 al.titles[key] = title
-        used = {x.lower() for p in PLATFORMS for x in [*al.common(p), *(i for o in al.users.values()
+        used = {x.lower() for p in PLATFORMS for x in [*al.common(p), *(i for o in [*al.users.values(), *al.groups.values()]
                                                                         for i in o.get(p, []))]}
         al.titles = {k: v for k, v in al.titles.items() if k in used}
         if not (ch.added or ch.removed):

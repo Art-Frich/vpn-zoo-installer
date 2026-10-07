@@ -10,8 +10,8 @@
 через туннель, то есть это «скорость сервера по этому протоколу», а не канала до клиента.
 
 Результат — таблица `live` в probe-history.sqlite: 7 суток, чистится при каждом запуске, в выгрузку
-history/ и рейтинг не входит. Заявка ↻ — файл `live-req/<протокол>` (создаёт админка, у неё нет
-права на systemctl; запускает замер zoo-live.path).
+history/ и рейтинг не входит. Заявка ↻ — файл `live-req/<протокол>` (создаёт админка; замер запускает
+zoo-live.path — от root без песочницы, поэтому ссылки в каталоге состояния он не открывает, см. check_paths).
 """
 
 from __future__ import annotations
@@ -20,12 +20,13 @@ import argparse
 import contextlib
 import os
 import sqlite3
+import stat
 import time
 from pathlib import Path
 from typing import Any
 
 from .. import output, paths, users
-from ..fsutil import LockTimeout, file_lock
+from ..fsutil import LockTimeout, UnsafePath, check_real_dirs, file_lock
 from . import engine, history, verdicts
 
 KEEP_SECONDS = 7 * 86400
@@ -46,6 +47,20 @@ def lock_file() -> Path:
     return paths.state_dir() / "live.lock"
 
 
+def check_paths() -> None:
+    """Замер идёт от root без песочницы, а в каталог состояния пишет и админка: ссылка вместо каталога заявок,
+    базы истории или её -wal/-shm увела бы запись root в чужой файл (блокировка открывается с O_NOFOLLOW)."""
+    check_real_dirs(paths.state_dir(), req_dir())
+    db = history.db_path()
+    for p in (db, Path(f"{db}-wal"), Path(f"{db}-shm"), Path(f"{db}-journal")):
+        try:
+            st = os.lstat(p)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            raise UnsafePath(f"{p} — не обычный файл (ссылка?), замер не выполняется")
+
+
 def speed_bytes() -> int:
     try:
         return min(max(int(os.environ.get("ZOO_LIVE_SPEED_BYTES", SPEED_BYTES)), 100_000), 5_000_000)
@@ -59,7 +74,7 @@ def exclusive(timeout: float = 300.0):
     два клиента сразу мешали бы друг другу. Дольше timeout не ждём — работаем без блокировки."""
     with contextlib.ExitStack() as stack:
         try:
-            stack.enter_context(file_lock(lock_file(), timeout=timeout))
+            stack.enter_context(file_lock(lock_file(), timeout=timeout, nofollow=True))
         except LockTimeout:
             pass
         yield
@@ -322,7 +337,8 @@ def run(only: list[str] | None = None, from_requests: bool = False) -> list[dict
     """Один проход под блокировкой; заявки, пришедшие во время прохода, обрабатываются следующим."""
     from .. import probe as probe_pkg
     rows: list[dict[str, Any]] = []
-    with file_lock(lock_file(), timeout=240):  # LockTimeout: идёт `zoo probe --local` — выше его ловит CLI
+    check_paths()
+    with file_lock(lock_file(), timeout=240, nofollow=True):  # LockTimeout: идёт `zoo probe --local` — выше его ловит CLI
         for _ in range(3 if from_requests else 1):
             names = pending_requests() if from_requests else only
             if from_requests and not names:
@@ -366,6 +382,9 @@ def cmd_live(args: argparse.Namespace, cfg: Any) -> int:
                 clear_request(n)  # иначе zoo-live.path сразу запустил бы замер снова
             output.warn("замер пропущен: сейчас идёт проверка протоколов (zoo probe --local)")
             return 0
+        except UnsafePath as e:
+            output.error(str(e))
+            return 1
         if args.json:
             output.print_json({"rows": rows})
         elif rows:

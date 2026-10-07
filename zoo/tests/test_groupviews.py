@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from tests.helpers import needs_bash
+from tests.test_groups import no_hiddify_qr
 from tests.test_live import seed_live
 from tests.test_web import AppTestBase, Client, header
 from zoolib import allowlist, groups, paths, users
@@ -364,8 +365,11 @@ class WizardTest(GroupWebBase):
         self.assertEqual((g["name"], g["protocols"], g["clients"], g["allowlist"]),
                          ("Семья", ["amneziawg", "vless-reality"], {"android": ["happ"]}, None))
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
-        for n in ("masha", "kolya", "owner"):
+        for n in ("masha", "kolya"):
             self.assertEqual((reg[n]["group"], sorted(reg[n]["protocols"])), ("g1", ["amneziawg", "vless-reality"]), n)
+        # владельцу — всё включённое (как в sync_users), иначе sync пересоздал бы его учётки
+        self.assertEqual((reg["owner"]["group"], sorted(reg["owner"]["protocols"])),
+                         ("g1", ["amneziawg", "hysteria2", "vless-reality"]))
         self.assertNotIn("masha", self.env.proto_users("hysteria2"))
         self.assertEqual(reg["masha"]["note"], "сестра")
         # раздача: пакет на каждого, ссылки на страницы
@@ -777,9 +781,13 @@ class GroupsPagesTest(GroupWebBase):
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
         self.assertEqual((reg["petya"]["group"], reg["owner"]["group"]), ("g1", "g1"))
         self.assertEqual(sorted(reg["petya"]["protocols"]), ["amneziawg", "vless-reality"])
-        resp, _ = self.c.post("/groups/g1/members", {"users_new": "!!!", "confirm": "1"})
-        _, page = self.c.get("/groups/g1")
+        listing = "\n".join(f"worker{i}" for i in range(30)) + "\n!!!"
+        resp, page = self.c.post("/groups/g1/members", {"users_new": listing, "confirm": "1"})
+        self.assertEqual(resp.status, 422)
         self.assertIn("нет ни букв, ни цифр", page)
+        self.assertIn("worker29", page, "одна плохая строка не выбрасывает весь вставленный список")
+        self.assertRegex(page, r'<details class="card more" open>\s*<summary>＋ Добавить людей списком')
+        self.assertNotIn("worker0", {u["name"] for u in self.env.users_json()["users"]})
 
     def test_users_page_adds_into_group(self):
         resp, _ = self.c.post("/users", {"name": "vasya", "group": "g1"})
@@ -1084,7 +1092,7 @@ class StartStepTest(GroupWebBase):
         self.env.add_manifest("hysteria2-obfs", layer="udp", users_backend="hysteria-command", engine="hysteria",
                               name="Hysteria2 + Salamander", short="HY2 + Salamander")
         with mock.patch.object(groupviews, "_rank_facts", return_value={
-                "tuic": {"n": 9, "ok": 9, "top": 3, "score": 300.0, "ctx": 3}}):
+                "tuic": {"n": 9, "ok": 9, "top": 3, "score": 300.0, "ctx": 3}}),                 mock.patch.object(groupviews.clients, "load", no_hiddify_qr):
             _, own = self.wiz(0, go="custom", mode="self")
             _, admin = self.wiz(0, go="custom", mode="admin")
         self.assertNotRegex(own, r'name="proto" value="tuic" checked', "TUIC: людям без QR из магазина не предвыбирается")
@@ -1109,10 +1117,11 @@ class StartStepTest(GroupWebBase):
         for pid in PROTOS:
             (self.env.etc / "protocols.d" / f"{pid}.json").unlink()
         self.env.add_protocol("tuic")
-        _, body = self.c.get("/connect/new")
+        with mock.patch.object(groupviews.clients, "load", no_hiddify_qr):
+            _, body = self.c.get("/connect/new")
+            _, admin = self.c.get("/connect/new?mode=admin")
         self.assertIn("<strong>Свой набор</strong>", body)
         self.assertNotIn("<strong>Просто</strong>", body, "людям TUIC без QR из магазина не предлагаем")
-        _, admin = self.c.get("/connect/new?mode=admin")
         self.assertIn("<strong>Просто</strong>", admin)
         self.assertNotIn("<strong>Надёжно</strong>", admin, "пары протоколов нет")
 

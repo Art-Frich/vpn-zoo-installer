@@ -159,6 +159,31 @@ class MigrationTest(GroupsBase):
         users.sync_users()
         self.assertIn("tuic2", self.registry()["owner"]["protocols"], "custom у владельца sync не пропускает")
 
+    def test_owner_keeps_credentials_in_narrow_group(self):
+        users.bootstrap()
+        groups.ensure()
+        g = groups.create("Узкая", ["amneziawg"])
+        before = self.env.calls()
+        groups.move_many(["owner"], g.id)
+        groups.update(g.id, name="Узкая-2")
+        groups.update(g.id, protocols=["amneziawg", "hysteria2"])
+        users.sync_users()
+        new = self.env.calls()[len(before):]
+        self.assertFalse([c for c in new if "owner" in c and ("user_del" in c or "user_add" in c)],
+                         f"учётки владельца не удаляются и не пересоздаются: {new}")
+        self.assertEqual(sorted(self.registry()["owner"]["protocols"]), sorted(PROTOS))
+
+    def test_update_keeps_temporarily_disabled_protocol(self):
+        users.bootstrap()
+        groups.ensure()
+        g = groups.create("Офис", ["hysteria2", "amneziawg"])
+        self.env.add_manifest("hysteria2", enabled=False)
+        groups.update(g.id, name="Офис-2", protocols=["amneziawg"])   # форма видит только включённые
+        self.assertIn("hysteria2", groups.Groups.load().require(g.id).protocols)
+        self.env.add_manifest("hysteria2")
+        self.assertIn("hysteria2", groups.Groups.load().require(g.id).resolve(*[users.managed_protocols()[0],
+                                                                              users.variant_modules()]))
+
     def test_idempotent_and_leaves_system_user_alone(self):
         users.bootstrap()
         users.ensure_probe_user()
@@ -1253,6 +1278,16 @@ def mini_catalog(**changes):
     return cat
 
 
+_LOAD = clients.load   # тесты подменяют clients.load на no_hiddify_qr
+
+
+def no_hiddify_qr():
+    """Каталог, где ни одно приложение из магазина не берёт TUIC и Salamander по QR."""
+    cat = _LOAD()
+    cat.client("hiddify")["import"].pop("qr")
+    return cat
+
+
 class ClientSetsTest(unittest.TestCase):
     def test_sets_cover_at_most_two_apps_and_best_first(self):
         cat = clients.load()
@@ -1330,10 +1365,12 @@ class ClientSetsTest(unittest.TestCase):
             self.assertNotIn("ss2022", rel["protocols"], "SS-2022 терял данные в полевом тесте")
 
     def test_self_presets_only_protocols_that_import_by_one_qr_from_a_store_app(self):
-        cat = clients.load()
+        easy = groups.easy_protocols(clients.load())
+        self.assertIn("tuic", easy, "TUIC: Hiddify из Google Play берёт QR")
+        cat = no_hiddify_qr()
         easy = groups.easy_protocols(cat)
         self.assertEqual(easy, {"hysteria2", "vless-reality", "vless-xhttp", "amneziawg", "ss2022"})
-        self.assertNotIn("tuic", easy, "TUIC: ни одного приложения из магазина с QR")
+        self.assertNotIn("tuic", easy, "без QR в Hiddify: ни одного приложения из магазина с QR")
         self.assertNotIn("hysteria2-obfs", easy, "Salamander: QR только у v2rayNG (APK)")
         self.assertEqual(groups.presets(cat, ["tuic", "hysteria2-obfs"], "self"), [],
                          "людям нечего предложить без QR-протоколов")

@@ -1,6 +1,6 @@
 """Журнал атак «Кто нас щупал» (ARCHITECTURE §6, D32): кто и чем пробовал сервер снаружи.
 
-Коллектор (`zoo journal --collect`, его запускает zoo-collector.service после снятия трафика)
+Коллектор (`zoo journal --collect`, его запускает zoo-collector.service перед снятием трафика)
 читает журнал systemd и лог fail2ban с прошлого раза, раскладывает события по часам и суткам
 в SQLite (journal.sqlite рядом с traffic.sqlite). Отчёты (CLI и веб) читают только её.
 

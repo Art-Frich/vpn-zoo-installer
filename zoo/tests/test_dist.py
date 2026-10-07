@@ -74,6 +74,16 @@ class PickAssetTest(unittest.TestCase):
         self.assertEqual(self.pick("windows", [asset("hysteria-windows-amd64.exe"), asset("hysteria-windows-386.exe")]),
                          "hysteria-windows-amd64.exe")
 
+    def test_v2rayn_linux_and_amnezia_files(self):
+        v2 = [asset(n) for n in ("v2rayN-linux-64.deb", "v2rayN-linux-64.zip", "v2rayN-linux-arm64.deb",
+                                 "v2rayN-linux-loong64.deb", "v2rayN-linux-riscv64.deb", "v2rayN-linux-rhel-64.rpm")]
+        self.assertEqual(self.pick("linux", v2), "v2rayN-linux-64.deb")
+        am = [asset(n) for n in ("AmneziaVPN_5.0.3.0_android11+_arm64-v8a.apk", "AmneziaVPN_5.0.3.0_android9-10_arm64-v8a.apk",
+                                 "AmneziaVPN_5.0.3.0_linux_x64.run")]
+        self.assertEqual(self.pick("android", am), "AmneziaVPN_5.0.3.0_android9-10_arm64-v8a.apk",
+                         "сборка «android11+» не ставится на Android 9–10")
+        self.assertEqual(self.pick("linux", am), "AmneziaVPN_5.0.3.0_linux_x64.run")
+
     def test_nothing_suitable_is_none_not_a_wrong_file(self):
         junk = [asset("src.tar.gz"), asset("notes.txt"), asset("x.apk.sha256"), asset("a.msix"), asset("debug-symbols.zip")]
         for plat in dist.PLATFORMS:
@@ -359,6 +369,27 @@ class StorageTest(unittest.TestCase):
         self.assertEqual(sec.rows(), 0)
         self.assertEqual(sec.size(), 0)
 
+    def test_download_in_progress_and_only_windows_file_survive_trim(self):
+        gs = office(android=["hiddify"], windows=["hiddify"])
+        dist.fetch_all(clients.load(), gs, lambda r: rel("1.0", [asset("Hiddify-Android-universal.apk", repo=r),
+                                                                 asset("Hiddify-Windows-Setup-x64.exe", repo=r)]),
+                       fake_dl, lambda: 100)
+        # следующие версии: Android скачался, Windows — нет; прежняя с Windows остаётся и при KEEP_VERSIONS=2
+        for i, v in enumerate(("1.1", "1.2")):
+            dist.fetch_all(clients.load(), gs, lambda r, v=v: rel(v, [asset("Hiddify-Android-universal.apk", repo=r)]),
+                           fake_dl, lambda i=i: 200 + i)
+        # идёт скачивание следующей: каталог есть, meta.json ещё нет
+        partial = dist.root() / "hiddify" / "1.3"
+        partial.mkdir()
+        (partial / "Hiddify-Android-universal.apk.part").write_bytes(b"x" * 10)
+        sec = storage.section("dist")
+        self.assertEqual(sec.rows(), 3, "незаконченная версия в чистку не попадает")
+        self.assertEqual(sec.delete_oldest(1), 1)
+        self.assertTrue(partial.is_dir(), "каталог, куда сейчас качают, не трогается")
+        self.assertEqual(sorted(m["version"] for _, m in dist.versions("hiddify")), ["1.0", "1.2"])
+        plats = {f["platform"] for _, m in dist.versions("hiddify") for f in m["files"]}
+        self.assertEqual(plats, {"android", "windows"}, "версия с единственным файлом Windows — последняя для Windows")
+
     def test_empty_and_clear(self):
         sec = storage.section("dist")
         self.assertEqual((sec.size(), sec.rows(), sec.oldest()), (0, 0, None))
@@ -511,6 +542,10 @@ class DistWebTest(AppTestBase):
             dist.clear_request()
             resp, _ = self.c.post("/dist/refresh", {"back": "/connect/done?group=g1&u=masha%2Ckolya"})
             self.assertEqual(header(resp, "Location"), ["/connect/done?group=g1&u=masha%2Ckolya"])
+            team = "/connect/done?group=g1&u=" + "%2C".join(f"user{i:02d}.familiya-dlinnaya" for i in range(33))
+            dist.clear_request()
+            resp, _ = self.c.post("/dist/refresh", {"back": team})
+            self.assertEqual(header(resp, "Location"), [team], "команда из 33 человек возвращается на свою страницу")
 
     def test_group_page_lists_files_with_size_sha_and_link_instead_of_missing(self):
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("страница ходит в сеть")):

@@ -578,6 +578,26 @@ class PackTest(unittest.TestCase):
         done, miss = groups.coverage(cat, "android", ["hysteria2-obfs", "hysteria2"], ["happ"])
         self.assertEqual((done, miss), (["hysteria2"], ["hysteria2-obfs"]), "Happ не заявлен для Salamander")
 
+    def test_self_install_points_to_store_not_github(self):
+        hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
+        cache = {"checked": None, "versions": {}}
+        args = (catalog(), cache, "android", [hy2], [], {"android": ["hiddify"]}, ["hysteria2"])
+        own = clientviews.build_pack(*args, stores=True).sections[0]
+        self.assertIn("play.google.com", own.install, "люди ставят сами — из Google Play (D49)")
+        self.assertEqual(own.links[0]["kind"], "play")
+        it = clientviews.build_pack(*args).sections[0]
+        self.assertIn("github.com", it.install, "ИТ ставит файлом из релиза")
+
+    def test_warn_coverage_is_not_plain_ready(self):
+        cat = catalog()
+        names = clientviews.proto_names(cat)
+        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["hiddify"], names),
+                         ("готово, с оговоркой", "warn"))
+        self.assertIn("Hiddify", clientviews.caveat_note(cat, "android", ["hysteria2"], ["hiddify"], names))
+        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["happ"], names), ("готово", "ok"))
+        self.assertEqual(clientviews.caveat_note(cat, "android", ["hysteria2"], ["happ", "hiddify"], names), "",
+                         "есть приложение без оговорки — оговорки нет")
+
     def test_group_set_gives_one_section_per_client_with_own_protocols(self):
         hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
         p = self.gpack("android", [VLESS, hy2, AWG_ANDROID], {"android": ["happ", "amneziawg"]},

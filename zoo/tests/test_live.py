@@ -19,7 +19,7 @@ from tests.helpers import BASH, REPO, ZooEnv, needs_bash
 from tests.test_cli import run_cli
 from tests.test_probe import ENTRIES, HY, VLESS
 from tests.test_web import HEALTHY, TOKEN, AppTestBase, Client, patch_status
-from zoolib import config, manifests, protoctl, traffic, users
+from zoolib import config, manifests, paths, protoctl, traffic, users
 from zoolib import probe as probe_pkg
 from zoolib.probe import clients, engine, export, history, live, metrics, verdicts
 from zoolib.web.app import App
@@ -210,6 +210,28 @@ class RequestTest(unittest.TestCase):
     def setUp(self):
         self.env = ZooEnv().__enter__()
         self.addCleanup(self.env.__exit__, None, None, None)
+
+    def test_root_runner_refuses_symlinked_db_lock_and_dirs(self):
+        paths.state_dir().mkdir(parents=True, exist_ok=True)
+        victim = self.env.root / "victim.db"
+        victim.write_bytes(b"")
+        for link in (history.db_path(), Path(f"{history.db_path()}-wal")):
+            try:
+                link.symlink_to(victim)
+            except (OSError, NotImplementedError):
+                self.skipTest("нет символьных ссылок")
+            with mock.patch.object(live, "measure", side_effect=AssertionError("замер по ссылке")):
+                code, _, err = run_cli("live", "run")
+            self.assertEqual(code, 1, err)
+            self.assertIn("не обычный файл", err)
+            self.assertEqual(victim.read_bytes(), b"", "чужую базу не трогали")
+            link.unlink()
+        lock_victim = self.env.root / "lock-victim"
+        live.lock_file().symlink_to(lock_victim)
+        with self.assertRaises(OSError):
+            with live.exclusive(timeout=0):
+                pass
+        self.assertFalse(lock_victim.exists(), "блокировка по ссылке не создаёт файл root")
 
     def test_request_rate_limit_and_stale(self):
         t0 = 1_000_000.0
@@ -787,6 +809,48 @@ class RunnerTest(ProtoEnvTest):
         self.assertIsNone(protoctl.active(), "зависшая «выполняется» старше таймаута не блокирует")
         protoctl.run_queue()
         self.assertEqual(protoctl.get_state(stale)["status"], "fail")
+
+    def test_interrupted_job_is_not_replayed(self):
+        jid = protoctl.submit("tuic", "disable")
+        protoctl.state_dir().mkdir(parents=True, exist_ok=True)
+        (protoctl.state_dir() / f"{jid}.json").write_text(   # перезагрузка посреди фазы: заявка и «выполняется» на месте
+            json.dumps({"id": jid, "proto": "tuic", "action": "disable", "status": "running", "started": 1}),
+            encoding="utf-8")
+        protoctl.run_queue()
+        self.assertEqual(self.calls(), [], "оборванная задача сама не повторяется")
+        st = protoctl.get_state(jid)
+        self.assertEqual(st["status"], "fail")
+        self.assertIn("оборвана", st["error"])
+        self.assertIsNone(protoctl.active())
+
+    def test_unconsumed_queued_job_expires(self):
+        jid = protoctl.submit("tuic", "disable")
+        req = protoctl.jobs_dir() / f"{jid}.json"
+        data = json.loads(req.read_text(encoding="utf-8"))
+        data["created"] -= protoctl.QUEUE_STALE + 1
+        req.write_text(json.dumps(data), encoding="utf-8")
+        self.assertIsNone(protoctl.active(), "забытая заявка не держит переключатели")
+        self.assertEqual(protoctl.active_by_proto(), {})
+        protoctl.submit("tuic", "disable")   # не «Сейчас идёт…»
+        protoctl.run_queue()
+        self.assertEqual(self.calls(), ["--phase 04d-tuic"], "устаревшая не выполняется, свежая — да")
+        self.assertEqual(protoctl.get_state(jid)["status"], "fail")
+        self.assertFalse(req.exists())
+
+    def test_request_removed_even_if_state_write_fails(self):
+        jid = protoctl.submit("tuic", "disable")
+        real = protoctl._write_state
+        calls = []
+
+        def flaky(j, st):
+            calls.append(st["status"])
+            if st.get("finished"):
+                raise OSError(28, "No space left on device")
+            real(j, st)
+        with mock.patch.object(protoctl, "_write_state", flaky):
+            with self.assertRaises(OSError):
+                protoctl._run_one(protoctl.jobs_dir() / f"{jid}.json")
+        self.assertFalse((protoctl.jobs_dir() / f"{jid}.json").exists(), "иначе path-юнит крутит её до упора")
 
     def test_cli_job_list(self):
         protoctl.submit("tuic", "disable")

@@ -5,7 +5,7 @@
 #   scan — сканирование закрытых портов, мусор вместо баннера SSH, неверный ключ Hysteria2, простой TLS на 443;
 #   ssh  — перебор SSH (неверные пароли до бана fail2ban);
 #   own  — вход по ключу (адрес становится «своим»), затем стук в закрытые порты.
-# Потом `systemctl start zoo-collector.service` (журнал атак идёт ExecStartPost под песочницей юнита) и проверки:
+# Потом `systemctl start zoo-collector.service` (журнал атак идёт ExecStartPre под песочницей юнита) и проверки:
 # адреса источников, виды событий, порты, бан, «свой»/«локальный» (контейнеры стенда — приватные адреса),
 # страница админки, и то, чего в журнале быть не должно: паролей, имён, строк журнала, трафика VPN-интерфейсов,
 # назначений пользователей в логе Xray.
@@ -164,7 +164,7 @@ if sx bash -c "fail2ban-client status sshd | grep -q '$S2'"; then pass "fail2ban
 sleep 2
 info "systemctl start zoo-collector.service (трафик + журнал атак под песочницей юнита)"
 sx systemctl start zoo-collector.service || fail "zoo-collector.service завершился с ошибкой"
-sx systemctl show zoo-collector.service -p ExecStartPost | grep -q 'journal --collect' && pass "юнит запускает zoo journal --collect" || fail "в юните нет ExecStartPost=zoo journal --collect"
+sx systemctl show zoo-collector.service -p ExecStartPre | grep -q 'journal --collect' && pass "юнит запускает zoo journal --collect" || fail "в юните нет ExecStartPre=zoo journal --collect"
 run="$(sx sqlite3 /var/lib/vpn-zoo/journal.sqlite 'SELECT ok, events, lines, duration, errors FROM runs ORDER BY ts DESC LIMIT 1' | tr -d '\r')"
 info "последний разбор (ok|событий|строк|с|ошибки): $run"
 [ "${run%%|*}" = "1" ] && pass "разбор без ошибок источников" || fail "разбор с ошибками: $run"

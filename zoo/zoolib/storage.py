@@ -39,6 +39,7 @@ JOURNALD_DIRS = ("/var/log/journal", "/run/log/journal")
 STATE_FILE = "storage.json"
 KEEP_TRIMS = 7 * 86400
 TOO_OFTEN = 2               # чисток раздела за сутки — «бюджет мал»
+DIST_PARTIAL_AGE = 3600     # версия без meta.json моложе — её сейчас качают (zoo-clients: до 20 мин)
 
 _UNITS = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
 _CYR = {"К": "K", "М": "M", "Г": "G", "Т": "T"}
@@ -240,13 +241,17 @@ class DistSection(Section):
             clients_ = [d for d in dist.root().iterdir() if d.is_dir() and not d.is_symlink()]
         except OSError:
             return []
+        now = time.time()
         for c in clients_:
-            have = dist.versions(c.name)
-            latest = have[0][0] if have else None
+            latest = dist.newest_per_platform(dist.versions(c.name))
             try:
                 for v in c.iterdir():
-                    if v.is_dir() and not v.is_symlink():
-                        out.append((v == latest, v.stat().st_mtime, v))
+                    if not v.is_dir() or v.is_symlink():
+                        continue
+                    mtime = v.stat().st_mtime
+                    if not (v / dist.META).exists() and now - mtime < DIST_PARTIAL_AGE:
+                        continue   # zoo-clients сейчас качает сюда первый файл (meta.json пишется после него)
+                    out.append((v in latest, mtime, v))
             except OSError:
                 pass
         return sorted(out)

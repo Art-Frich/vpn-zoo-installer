@@ -12,7 +12,9 @@
 #    модулям не нужны setuid, модули ядра, sysctl и namespaces;
 #  - сеть не ограничена (IPAddressDeny нельзя): API 3x-ui и Hysteria на loopback,
 #    но smoke/пробник ходят на публичный IP сервера;
-#  - рестарт сервисов и обновление geo идут через systemctl: их выполняет PID 1 вне песочницы.
+#  - рестарт сервисов и обновление geo идут через systemctl, smoke и пробник — через systemd-run:
+#    их выполняет PID 1 вне песочницы. Поэтому песочница — от случайной записи, а не граница
+#    безопасности: взломанный веб-процесс доберётся до root через systemd (D42). Граница — вход.
 [Unit]
 Description=vpn-zoo: веб-админка (127.0.0.1)
 After=network-online.target x-ui.service
