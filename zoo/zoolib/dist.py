@@ -68,7 +68,9 @@ def _score(platform: str, name: str) -> int | None:
     if platform == "android":
         if ext != "apk" or re.search(r"x86|armeabi|armv7|arm32|mips", low):
             return None
-        return 0 if "universal" in low else 1 if re.search(r"arm64|v8a", low) else 2
+        base = 0 if "universal" in low else 1 if re.search(r"arm64|v8a", low) else 2
+        # «android11+» не ставится на Android 9–10: при выборе — сборка без нижней планки версии
+        return base * 2 + (1 if re.search(r"android[-_]?\d+\+", low) else 0)
     if platform == "windows":
         if ext not in ("exe", "msi", "zip") or not re.search(r"(?<![a-z])win", low) or BAD_ARCH.search(low):
             return None
@@ -80,9 +82,10 @@ def _score(platform: str, name: str) -> int | None:
             return None
         return 0 if "universal" in low else 1 if re.search(r"arm64|aarch|apple", low) else 2
     if platform == "linux":
-        if not re.search(r"amd64|x86_64|x64", low) or re.search(r"arm|aarch", low):
+        # v2rayN называет x64 просто «linux-64»
+        if not re.search(r"amd64|x86_64|x64|[-_]64(?=[-_.])", low) or re.search(r"arm|aarch|loong|riscv", low):
             return None
-        return {"appimage": 0, "deb": 1}.get(ext)
+        return {"appimage": 0, "deb": 1, "run": 2}.get(ext)
     return None
 
 
@@ -225,13 +228,28 @@ def total_size() -> int:
     return n
 
 
+def newest_per_platform(have: list[tuple[Path, dict[str, Any]]]) -> set[Path]:
+    """Версии (из versions(), свежие первыми), где лежит самый свежий файл хоть одной платформы: в новой версии мог
+    не скачаться файл Windows — тогда он есть только в прежней. Самая свежая версия входит всегда."""
+    out: set[Path] = set()
+    seen: set[str] = set()
+    for d, meta in have:
+        plats = {str(f.get("platform")) for f in meta.get("files", []) if isinstance(f, dict)}
+        if plats - seen or not out:
+            out.add(d)
+        seen |= plats
+    return out
+
+
 def prune(cid: str, keep: int = KEEP_VERSIONS) -> int:
-    """Оставить keep последних версий клиента, остальное (и каталоги без meta.json) удалить."""
+    """Оставить keep последних версий клиента и последние по каждой платформе, остальное (и каталоги без
+    meta.json) удалить."""
     base = root() / cid
     have = versions(cid)
-    drop = [d for d, _ in have[keep:]]
+    kept = {d for d, _ in have[:keep]} | newest_per_platform(have)
+    drop = [d for d, _ in have if d not in kept]
     try:
-        keep_names = {d.name for d, _ in have[:keep]}
+        keep_names = {d.name for d in kept}
         drop += [d for d in base.iterdir() if d.is_dir() and not d.is_symlink() and d.name not in keep_names
                  and d not in drop]
     except OSError:

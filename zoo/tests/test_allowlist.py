@@ -158,6 +158,17 @@ class ChangeTest(AllowlistEnvTest):
         allowlist.set_lists({"android": base.android, "windows": base.windows})
         self.assertNotIn("titles", self.registry())
 
+    def test_title_kept_while_a_group_list_uses_it(self):
+        base = allowlist.Allowlist.load()
+        with mock.patch.object(protolib, "manifest_refresh"):
+            allowlist.set_lists({"android": base.android + ["ru.crm.app"], "windows": base.windows},
+                                titles={"ru.crm.app": "CRM"})
+            al = allowlist.Allowlist.load()
+            al.groups = {"g": {"android": base.android + ["ru.crm.app"], "windows": base.windows}}
+            al.save()
+            allowlist.set_lists({"android": base.android, "windows": base.windows})
+        self.assertEqual(allowlist.Allowlist.load().titles, {"ru.crm.app": "CRM"}, "группа ещё держит приложение")
+
     def test_set_lists_validates(self):
         base = allowlist.Allowlist.load()
         ok = {"android": base.android, "windows": base.windows}

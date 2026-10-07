@@ -657,6 +657,20 @@ def coverage(cat: clientcat.Catalog, platform: str, protocols: list[str],
     return done, [p for p in real if p not in done]
 
 
+def caveats(cat: clientcat.Catalog, platform: str, protocols: list[str],
+            ids: list[str]) -> list[tuple[str, str, str]]:
+    """Протоколы, которые набор ids покрывает только «с оговоркой» (warn): [(протокол, приложение, заметка)]."""
+    have = [c for c in (cat.client(i) for i in ids) if c and platform in c["platforms"]]
+    out = []
+    for p in _real(cat, protocols):
+        sts = [(c, c["protocols"].get(p, {})) for c in have]
+        if not any(st.get("s") == "ok" for _, st in sts):
+            warn = next(((c, st) for c, st in sts if st.get("s") == "warn"), None)
+            if warn:
+                out.append((p, warn[0]["name"], warn[1].get("note", "")))
+    return out
+
+
 # ---------- зеркало списка приложений ----------
 
 def refresh_mirror(gs: Groups | None = None, ureg: users.Registry | None = None,
@@ -832,6 +846,9 @@ def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str]
         wanted: dict[str, list[str]] = {}
         for n in names:
             u = ureg.require(n)
+            if n == users.OWNER:   # как в sync_users: владельцу всё включённое, иначе sync пересоздаст учётки с новыми ключами
+                wanted[n] = list(managed)
+                continue
             if u.custom:
                 rep.skipped.append(n)
                 continue
@@ -872,11 +889,14 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         names = [u.name for u in members_of(gs, ureg, g.id)]
         before = _snapshot(ureg, names)
         new_name = clean_name(name, gs, g.id) if name is not None else g.name
+        sel = users.selectable_protocols()
         new_protocols = clean_protocols(protocols) if protocols is not None else g.protocols
+        if protocols is not None and new_protocols != [ALL]:
+            # выключенный сейчас протокол в форме не выбрать: он остаётся в группе и вернётся участникам при включении
+            new_protocols = by_priority(new_protocols + [p for p in g.protocols if p != ALL and p not in sel])
         new_clients = clean_clients(clients, new_protocols) if clients is not None else g.clients
         new_allow = clean_allow(allow) if allow is not KEEP else g.allowlist
         protos_changed = new_protocols != g.protocols
-        sel = users.selectable_protocols()
         offer_changed = offered(new_protocols, sel) != offered(g.protocols, sel)
         allow_changed = new_allow != g.allowlist
         g.name, g.protocols, g.clients, g.allowlist = new_name, new_protocols, new_clients, new_allow

@@ -2,8 +2,9 @@
 # Ставит фаза 09 из zoo/systemd/. Пишет только в /var/lib/vpn-zoo (traffic.sqlite, journal.sqlite),
 # поэтому файловая система для него read-only. Root нужен: токен 3x-ui и секрет Hysteria лежат
 # в /etc/vpn-setup (0700), `awg show` требует CAP_NET_ADMIN, журнал systemd и /var/log/fail2ban.log
-# читаются от root. Журнал атак и чистка по лимиту объёма (ExecStartPost) идут отдельными процессами:
-# их сбой трафик не ломает. Чистка читает /var/log/vpn-zoo (логи установки) — он тоже нужен на запись.
+# читаются от root. Журнал атак и чистка по лимиту объёма идут отдельными процессами ДО трафика (ExecStartPre
+# с «-»): их сбой трафик не ломает, а сбой трафика (замок, «диск полон») не отменяет чистку — ExecStartPost
+# после упавшего ExecStart не запускается. Чистка читает /var/log/vpn-zoo (логи установки) — он тоже нужен на запись.
 [Unit]
 Description=vpn-zoo: снятие счётчиков трафика
 After=network-online.target x-ui.service
@@ -11,9 +12,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+ExecStartPre=-/usr/local/bin/zoo journal --collect
+ExecStartPre=-/usr/local/bin/zoo storage --enforce
 ExecStart=/usr/local/bin/zoo traffic --collect
-ExecStartPost=-/usr/local/bin/zoo journal --collect
-ExecStartPost=-/usr/local/bin/zoo storage --enforce
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=4min

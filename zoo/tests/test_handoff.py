@@ -125,9 +125,8 @@ class BulkCreateTest(Base):
     def test_limits(self):
         self.create_group(users_new="masha")
         text = "\n".join(f"u{i}" for i in range(201))
-        resp, _ = self.post("/groups/g1/members", {"users_new": [text], "confirm": ["1"]})
-        self.assertEqual(resp.status, 303)
-        _, page = self.c.get("/groups/g1")
+        resp, page = self.post("/groups/g1/members", {"users_new": [text], "confirm": ["1"]})
+        self.assertEqual(resp.status, 422, "список остаётся в форме")
         self.assertIn("не больше 200", page)
         self.assertNotIn("u0", self.reg())
         resp, body = self.wizard_text(text, confirm="1")
@@ -217,12 +216,28 @@ class CardsPageTest(Base):
         self.assertIn('class="hcards per-3"', body3, "чужое значение отбрасывается")
 
     def test_same_app_on_several_devices_is_one_block(self):
-        self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"],
-                                "client:android": ["happ"], "client:ios": ["happ"]})
+        self.post("/groups/g1", {"name": ["Семья"], "proto": ["hysteria2"], "client:android": ["hiddify"],
+                                "client:ios": ["hiddify"], "client:windows": ["hiddify"], "client:macos": ["hiddify"]})
         _, body = self.c.get("/handoff?group=g1")
-        self.assertIn(">Android, iPhone</h4>", body)
-        self.assertEqual(body.count(">Android, iPhone</h4>"), 2, "по блоку на человека, не по платформе")
-        self.assertNotIn(">iPhone</h4>", body)
+        self.assertEqual(body.count(">Windows, macOS</h4>"), 2, "одинаковое всё — один блок, по блоку на человека")
+        # у телефонов свои магазины и шаги: не сливаются ни друг с другом, ни с компьютерами
+        blocks = dict(re.findall(r'<h4 class="plat-title">([^<]+)</h4>(.*?)</section>', body, re.S)[:3])
+        self.assertEqual(sorted(blocks), ["Android", "Windows, macOS", "iPhone"])
+        self.assertIn("App Store", blocks["iPhone"])
+        self.assertIn("нет в App Store РФ", blocks["iPhone"])
+        self.assertNotIn("App Store", blocks["Android"])
+        self.assertIn("Google Play", blocks["Android"])
+        self.assertIn("Прокси для приложений", blocks["Android"])
+        self.assertNotIn("Прокси для приложений", blocks["iPhone"] + blocks["Windows, macOS"])
+        # люди ставят сами: на Android — из Google Play, а не APK с GitHub (D49)
+        self.assertRegex(blocks["Android"], r"Установите «Hiddify»[^<]*play\.google\.com")
+        self.assertIn('src="/users/masha/qr/', blocks["Android"] + blocks["iPhone"], "на телефоне — QR")
+
+    def test_long_link_is_printed_whole(self):
+        uri = "hysteria2://" + "a" * 64 + "@1.2.3.4:443/?sni=x&insecure=1&pinSHA256=" + "b" * 64 + "#main"
+        html_ = str(handoffviews._key_html(handoffviews.CardKey("HY2", uri=uri), "masha"))
+        self.assertIn(uri.replace("&", "&amp;"), html_, "обрезанная ссылка на печати не работает")
+        self.assertNotIn("…", html_)
 
     def test_selection_by_names_is_checked_against_registry(self):
         users.add_user("lena", group="g1")

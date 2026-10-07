@@ -314,13 +314,15 @@ def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str
     radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="none", data_auto=True),
                     t("span", f"Не нужен: {title}", class_="opt-title"), class_="opt-row dev-opt"))
     note = _set_note(cat, plat, ids, mode)
+    warn = clientviews.caveat_note(cat, plat, protocols, ids, names)
     extra = distviews.ios_note() if plat == "ios" and mode == "admin" else None
     return t("div",
              t("div", t("strong", title, class_="dev-name"), t("span", clientviews.app_names(cat, ids), class_="dev-set"),
                t("span", label, class_=f"plat-sum {kind}"),
                t("details", t("summary", "сменить"), t("div", radios, class_="opts"), class_="more dev-change"),
                class_="dev-head"),
-             t("p", "! " + note, class_="hint") if note else None, extra, class_="dev-row")
+             t("p", "! " + note, class_="hint") if note else None,
+             t("p", "! " + warn, class_="hint") if warn else None, extra, class_="dev-row")
 
 
 def _clients_block(d: Draft, managed: list[str]) -> Markup:
@@ -517,9 +519,13 @@ def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str],
     foreign = [cat.platforms[p] for p, ids in pr["plan"].items() if any(cat.no_ru_store(cat.client(i) or {}, p) for i in ids)]
     lines = [t("div", t("strong", names.get(p, p)), " ", facts[p].live_chip() if p in facts else None, class_="chips")
              for p in pr["protocols"]]
+    warns = dict.fromkeys(f"{names.get(p, p)} в {app}" for plat, ids in pr["plan"].items()
+                          for p, app, _ in groups.caveats(cat, plat, pr["protocols"], ids))
     notes = [t("span", f"{count}: {clientviews.app_names(cat, apps)}", class_="hint"),
              t("span", f"! нет в магазине РФ: {', '.join(foreign)}", class_="hint") if foreign else None,
-             t("span", "! не на всех устройствах все протоколы", class_="hint") if not pr["complete"] else None]
+             t("span", "! не на всех устройствах все протоколы", class_="hint") if not pr["complete"] else None,
+             t("span", f"! с оговоркой: {', '.join(warns)} (подробности — на шаге «Приложения»)",
+               class_="hint") if warns else None]
     return t("div", t("span", t("span", t("strong", PRESET_TITLES[pr["id"]]), class_="opt-title"), lines, notes,
                       class_="opt-body"),
              t("button", "Выбрать", type="submit", name="go", value=pr["id"], class_="btn primary"), class_="opt preset")
@@ -1065,8 +1071,9 @@ def group_members(app: "App", req: "Request", gid: str) -> "Response":
     existing = [n[:32] for n in req.multi.get("existing", [])][:200]
     try:
         plan = people.plan_for_registry(text)
-        if not plan.ok:
-            raise groups.GroupError(plan.error)
+        if not plan.ok:   # список не теряется: форма открыта с тем же текстом
+            return group_page(app, req, gid, errors=[plan.error], status=422,
+                              add_draft=Draft(new_users=text, existing=existing))
         if req.form.get("go") == "edit":
             return group_page(app, req, gid, add_draft=Draft(new_users=text, existing=existing))
         if plan.rows and not req.form.get("confirm"):

@@ -1,6 +1,6 @@
 """Включить или выключить протокол из админки (D42).
 
-Админка работает в песочнице и без права на systemctl, поэтому сама ничего не запускает: кладёт
+Фаза протокола пишет за пределы песочницы админки (ufw, юниты, /etc), поэтому админка её не запускает: кладёт
 заявку `jobs/<uuid>.json` в каталог состояния. `zoo-job.path` видит файл и запускает
 `zoo-job.service` (root, без песочницы) → `zoo job run`: ключ ENABLE_* в config.env и
 `install.sh --phase <фаза протокола>` — тот же путь, что у владельца в консоли.
@@ -38,6 +38,7 @@ from .fsutil import (NOFOLLOW, LockTimeout, UnsafePath, atomic_write_json, check
                      open_append_nofollow, read_text_nofollow)
 
 JOB_TIMEOUT = 30 * 60
+QUEUE_STALE = 10 * 60   # заявку не забрали: исполнитель не работает — она не держит переключатели и не выполняется позже
 KEEP_STATES = 20
 ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PHASE_RE = re.compile(r"^\d{2}[a-z]?-[a-z0-9-]+$")
@@ -181,7 +182,13 @@ def _describe(d: dict[str, Any], status: str) -> dict[str, Any]:
     action = d.get("action") if d.get("action") in ACTIONS else "enable"
     return {"id": d.get("id"), "proto": proto, "action": action, "name": name, "status": status,
             "verb": VERB[action], "started": d.get("started"), "finished": d.get("finished"),
-            "rc": d.get("rc"), "error": d.get("error") or ""}
+            "rc": d.get("rc"), "error": d.get("error") or "", "created": d.get("created")}
+
+
+def _fresh(j: dict[str, Any], now: float) -> bool:
+    """В очереди меньше QUEUE_STALE (время — из заявки; нет времени — считаем свежей)."""
+    created = j.get("created")
+    return not isinstance(created, (int, float)) or now - created < QUEUE_STALE
 
 
 def queued() -> list[dict[str, Any]]:
@@ -218,14 +225,14 @@ def active() -> dict[str, Any] | None:
     for j in states():
         if j["status"] == "running" and now - (j["started"] or 0) < JOB_TIMEOUT + 120:
             return j
-    q = queued()
+    q = [j for j in queued() if _fresh(j, now)]
     return q[0] if q else None
 
 
 def active_by_proto() -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     now = time.time()
-    for j in queued() + [s for s in states() if s["status"] == "running" and now - (s["started"] or 0) < JOB_TIMEOUT + 120]:
+    for j in [q for q in queued() if _fresh(q, now)] + [s for s in states() if s["status"] == "running" and now - (s["started"] or 0) < JOB_TIMEOUT + 120]:
         out.setdefault(j["proto"], j)
     return out
 
@@ -422,8 +429,23 @@ def _run_one(req: Path) -> None:
                           "status": "running", "started": int(time.time())}
     log = state_dir() / f"{jid}.log"
     try:
+        _run_checked(jid, data, proto, action, st, log)
+    finally:
+        try:   # заявка уходит всегда, даже если упала запись состояния: иначе path-юнит крутит её до упора
+            req.unlink()
+        except OSError:
+            pass
+    _prune()
+
+
+def _run_checked(jid: str, data: dict[str, Any], proto: str, action: str, st: dict[str, Any],
+                 log: Path) -> None:
+    try:
         if data.get("id") != jid:
             raise JobError("заявка повреждена")
+        created = data.get("created")
+        if isinstance(created, (int, float)) and time.time() - created > QUEUE_STALE:
+            raise JobError("заявка пролежала дольше 10 минут (исполнитель не работал) — повторите из админки")
         ctl = check(proto, action)
         st["name"] = ctl.name
         _write_state(jid, st)
@@ -446,20 +468,21 @@ def _run_one(req: Path) -> None:
         st.update(status="fail", rc=st.get("rc", 1), error=str(e))
     st["finished"] = int(time.time())
     _write_state(jid, st)
-    try:
-        req.unlink()
-    except OSError:
-        pass
-    _prune()
 
 
 def _drain() -> None:
-    # «выполняется» без живого исполнителя (мы держим блокировку) — след оборванной задачи
+    # «выполняется» без живого исполнителя (мы держим блокировку) — след оборванной задачи; её заявку убираем,
+    # иначе она молча выполнится ещё раз (после перезагрузки, раньше x-ui) и затрёт «оборвана»
     for f in state_dir().glob("*.json") if state_dir().is_dir() else []:
         d = _read(f)
         if d and d.get("status") == "running":
-            d.update(status="fail", error="оборвана (перезагрузка или остановка юнита)", finished=int(time.time()))
+            d.update(status="fail", error="оборвана (перезагрузка или остановка юнита) — повторите из админки",
+                     finished=int(time.time()))
             atomic_write_json(f, d, 0o600)
+            try:
+                (jobs_dir() / f"{f.stem}.json").unlink()
+            except OSError:
+                pass
     for _ in range(50):
         _check_dirs()
         reqs = sorted((f for f in jobs_dir().glob("*.json") if ID_RE.match(f.stem)), key=lambda f: f.stat().st_mtime)

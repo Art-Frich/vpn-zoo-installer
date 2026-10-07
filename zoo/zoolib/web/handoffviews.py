@@ -197,19 +197,21 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
     prefer, order = clientviews.group_prefs(g)
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
-        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order)
+        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, clientviews.store_first(g))
         if pack is None:
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
-        sig = tuple((s.client["id"], tuple((k.title, k.qr, k.uri, k.file) for k in ks))
-                    for s, ks in zip(pack.sections, keys))
-        if sig in merged:
-            merged[sig].platforms.append(title)
-            continue
         apps = [CardApp(s.client["name"], s.version, ctx.cat.no_ru_store(s.client, plat), s.links,
                         [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
                 for s, ks in zip(pack.sections, keys)]
-        merged[sig] = Block([title], apps, _steps(ctx, g, plat, pack, user.name))
+        steps = _steps(ctx, g, plat, pack, user.name)
+        # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
+        sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
+                      tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps))
+        if sig in merged:
+            merged[sig].platforms.append(title)
+            continue
+        merged[sig] = Block([title], apps, steps)
     return list(merged.values())
 
 
@@ -272,8 +274,7 @@ def _key_html(k: CardKey, name: str) -> Markup:
                        alt=f"QR: {k.title}"))
     parts.append(t("div", k.title, class_="key-name"))
     if k.uri:
-        long = len(k.uri) > 140
-        parts.append(t("code", k.uri[:120] + "…" if long else k.uri, class_="hlink", title=k.uri if long else None))
+        parts.append(t("code", k.uri, class_="hlink"))   # целиком: обрезанная ссылка на печати не работает
     if k.file and clientviews.FILE_NAME_RE.fullmatch(k.file):
         parts.append(t("a", "Скачать файл", href=f"/users/{name}/file/{k.file}", class_="btn small noprint"))
     return t("div", parts, class_="hkey")
@@ -283,7 +284,7 @@ def _block_html(b: Block, name: str) -> Markup:
     apps = [t("div", t("strong", a.name), " " + a.version if a.version else None,
               t("span", " нет в App Store РФ", class_="chip warn", title=clientviews.FOREIGN_STORE) if a.foreign else None,
               t("div", [t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
-                          rel="noopener noreferrer", class_="chip info noprint") for ln in clientviews._sorted_links(a.stores)],
+                          rel="noopener noreferrer", class_="chip info noprint") for ln in a.stores],
                 class_="chips"),
               t("div", [_key_html(k, name) for k in a.keys], class_="hkeys"), class_="happ") for a in b.apps]
     return t("section", t("h4", ", ".join(b.platforms), class_="plat-title"), apps,

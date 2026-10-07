@@ -362,7 +362,9 @@ class CliTest(StorageBase):
 
     def test_storage_in_collector_unit(self):
         unit = (Path(__file__).resolve().parent.parent / "systemd" / "zoo-collector.service").read_text(encoding="utf-8")
-        self.assertIn("ExecStartPost=-/usr/local/bin/zoo storage --enforce", unit)
+        # до трафика: ExecStartPost после упавшего снятия трафика не запускается, а чистка нужна именно при полном диске
+        self.assertIn("ExecStartPre=-/usr/local/bin/zoo storage --enforce", unit)
+        self.assertNotRegex(unit, r"(?m)^ExecStartPost=")
         self.assertIn("/var/log/vpn-zoo", unit)
 
 

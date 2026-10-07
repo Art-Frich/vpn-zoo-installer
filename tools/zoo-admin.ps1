@@ -2,15 +2,21 @@
 # SSH-туннель до сервера + одноразовая ссылка входа (живёт 3 минуты) в браузере — токен не нужен.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\zoo-admin.ps1 root@СЕРВЕР
-#   powershell -ExecutionPolicy Bypass -File tools\zoo-admin.ps1 root@СЕРВЕР -SshArgs '-p','2222','-i','C:\Users\me\.ssh\vps'
+#   powershell -ExecutionPolicy Bypass -File tools\zoo-admin.ps1 root@СЕРВЕР -Port 2222 -Identity C:\Users\me\.ssh\vps
 #
+# Порт и ключ — отдельными параметрами: массив вида '-p','2222' через -File не разбирается (приходит одной строкой).
+# Прочие опции ssh — в ~/.ssh/config (Host СЕРВЕР).
 # Туннель — свёрнутое окно ssh; закрыть окно = закрыть туннель. -NoOpen — только напечатать ссылку.
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Server,
-    [string[]]$SshArgs = @(),
+    [int]$Port = 0,
+    [string]$Identity = '',
     [switch]$NoOpen
 )
 $ErrorActionPreference = 'Stop'
+$SshArgs = @()
+if ($Port -gt 0) { $SshArgs += @('-p', "$Port") }
+if ($Identity) { $SshArgs += @('-i', $Identity) }
 
 # root — напрямую, иначе через sudo; без кавычек: Windows PowerShell 5.1 портит кавычки в аргументах ssh
 $remote = 'zoo web --info --json 2>/dev/null || sudo zoo web --info --json'
@@ -44,4 +50,4 @@ if ($up) {
 
 Write-Host "вход (ссылка одноразовая, 3 минуты): $link"
 if (-not $NoOpen) { Start-Process $link }
-Write-Host "дальше админка открывается по http://127.0.0.1:$port/ (вход запоминается на 30 дней)"
+Write-Host "дальше админка открывается по http://127.0.0.1:$port/ (вход запоминается до 30 дней, без заходов — на 14; потом снова этот скрипт)"

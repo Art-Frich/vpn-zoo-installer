@@ -755,14 +755,23 @@ wait_port() {
 
 # journald: потолок объёма системного журнала (фазы 00 и 09 — чтобы доехал и до старых установок)
 journald_limit() {
-    local journald_new
+    local journald_new cfg=""
     local JOURNALD_DROPIN=/etc/systemd/journald.conf.d/50-vpn-zoo.conf
-    if command -v systemd-analyze >/dev/null 2>&1 \
-        && systemd-analyze cat-config systemd/journald.conf 2>/dev/null | awk '
+    if command -v systemd-analyze >/dev/null 2>&1; then
+        cfg="$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null || true)"
+    fi
+    if printf '%s\n' "$cfg" | awk '
             /^# \// { own = ($0 ~ /50-vpn-zoo\.conf$/); next }
             /^[[:space:]]*SystemMaxUse=/ && !own { found = 1 }
             END { exit !found }'; then
-        log_info "journald: SystemMaxUse уже задан чужой настройкой — свой потолок не добавляю"
+        # drop-in читается после journald.conf и перебил бы настройку владельца — свой убрать
+        if printf '%s\n' "$cfg" | grep -q '^# /.*/50-vpn-zoo\.conf$'; then
+            rm -f "$JOURNALD_DROPIN"
+            systemctl restart systemd-journald >/dev/null 2>&1 || true
+            log_info "journald: SystemMaxUse задан чужой настройкой — свой потолок убран"
+        else
+            log_info "journald: SystemMaxUse уже задан чужой настройкой — свой потолок не добавляю"
+        fi
         return 0
     fi
     journald_new="$(mktemp)"

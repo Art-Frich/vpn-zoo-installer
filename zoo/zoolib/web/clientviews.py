@@ -32,9 +32,14 @@ STALE = "набор клиентов изменился — проверьте �
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
-def _sorted_links(links: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Проверенные ссылки раньше собранных по id пакета."""
-    return sorted(links, key=lambda ln: not ln["checked"])
+def _sorted_links(links: list[dict[str, Any]], store_first: bool = False) -> list[dict[str, Any]]:
+    """Проверенные ссылки раньше собранных по id пакета; store_first — магазины раньше всего (люди ставят сами, D49)."""
+    return sorted(links, key=lambda ln: (store_first and ln["kind"] not in groups.STORE_KINDS, not ln["checked"]))
+
+
+def store_first(g: "groups.Group | None") -> bool:
+    """Люди ставят сами: ставить из магазина, а не APK со страницы релизов."""
+    return g is None or g.install_mode == "self"
 
 
 def _has_github(client: dict[str, Any], platform: str) -> bool:
@@ -45,9 +50,9 @@ def _version(client: dict[str, Any], platform: str, cache: dict[str, Any]) -> st
     return clients.version_of(cache, client["id"]) if _has_github(client, platform) else None
 
 
-def _link_anchors(links: list[dict[str, Any]]) -> list[Markup]:
+def _link_anchors(links: list[dict[str, Any]], presorted: bool = False) -> list[Markup]:
     out: list[Markup] = []
-    for ln in _sorted_links(links):
+    for ln in (links if presorted else _sorted_links(links)):
         out.append(t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
                      rel="noopener noreferrer", class_="chip info"))
         if not ln["checked"]:
@@ -70,11 +75,20 @@ def app_names(cat: clients.Catalog, ids: list[str]) -> str:
 
 def coverage_label(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str],
                    names: dict[str, str]) -> tuple[str, str]:
-    """«все N» / «готово» (зелёная) или «без X» (жёлтая): что набор приложений даёт по протоколам."""
+    """«все N» / «готово» (зелёная), «… с оговоркой» или «без X» (жёлтая): что набор приложений даёт по протоколам."""
     done, miss = groups.coverage(cat, plat, protocols, ids)
     if miss:
         return "без " + ", ".join(names.get(p, p) for p in miss), "warn"
-    return (f"все {len(done)}" if len(done) > 1 else "готово"), "ok"
+    label = f"все {len(done)}" if len(done) > 1 else "готово"
+    if groups.caveats(cat, plat, protocols, ids):
+        return label + ", с оговоркой", "warn"
+    return label, "ok"
+
+
+def caveat_note(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str], names: dict[str, str]) -> str:
+    """«Hysteria2 в Hiddify: <заметка каталога>» по протоколам, покрытым только с оговоркой (как жёлтое в «Все приложения»)."""
+    return "; ".join(f"{names.get(p, p)} в {app}: {note}" if note else f"{names.get(p, p)} в {app}: с оговоркой"
+                     for p, app, note in groups.caveats(cat, plat, protocols, ids))
 
 
 def _version_cell(client: dict[str, Any], cache: dict[str, Any], platform: str | None = None) -> Any:
@@ -369,9 +383,10 @@ def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have:
 
 
 def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links: list[protolib.Link],
-               mans: list[Any], prefer: dict[str, list[str]] | None = None, order: list[str] | None = None) -> Pack | None:
+               mans: list[Any], prefer: dict[str, list[str]] | None = None, order: list[str] | None = None,
+               stores: bool = False) -> Pack | None:
     """prefer — наборы клиентов группы по платформам, order — протоколы группы (по PRIORITY);
-    без них — рекомендованные клиенты и порядок раздачи из каталога."""
+    без них — рекомендованные клиенты и порядок раздачи из каталога. stores — ссылки магазинов первыми."""
     have = {ln.variant for ln in links}
     plan = _plan(cat, platform, links, have, prefer, order)
     if not plan:
@@ -379,7 +394,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     sections = []
     for c, mine in plan:
         items = [Item(proto, method, _tile_title(cat, mans, proto)) for proto, method in mine]
-        sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform]), items)
+        sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform], stores), items)
         ver = f" (версия {sec.version})" if sec.version else ""
         foreign = f" {FOREIGN_STORE}" if cat.no_ru_store(c, platform) else ""
         sec.install = f"Установите «{c['name']}»{ver}: {sec.links[0]['url']}{foreign}"
@@ -449,7 +464,7 @@ class Ctx:
         if key not in self.packs:
             prefer, order = group_prefs(g)
             self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.offered(self.selectable)), self.mans,
-                                         prefer, order)
+                                         prefer, order, store_first(g))
         return self.packs[key]
 
     def group_sig(self, g: groups.Group, plat: str) -> str:
@@ -516,7 +531,7 @@ def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.
              t("span", sec.version, class_="mono muted") if sec.version else None,
              t("span", "нет в App Store РФ", class_="chip warn", title=FOREIGN_STORE) if cat.no_ru_store(sec.client, plat)
              else None,
-             t("div", _link_anchors(sec.links), class_="chips"), class_="app-head")
+             t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
     return t("div", head, t("div", [_key_html(k, name, f"k-{uid}{plat}-{sec.client['id']}-{n}")
                                     for n, k in enumerate(keys)], class_="keys"), class_="app")
 
@@ -532,7 +547,7 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
     panels: list[Markup] = []
     plats: list[tuple[str, str]] = []
     for plat, title in ctx.cat.platforms.items():
-        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order)
+        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g))
         if pack is None:
             continue
         group_text = ctx.text(g, plat) if g else None
