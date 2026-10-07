@@ -690,6 +690,202 @@ class ZooAllowlistGroupsTest(GroupsBase):
             self.assertEqual(allowlist.Allowlist.load().effective("android", "masha"), ["com.brave.browser"])
 
 
+class DeleteGroupTest(GroupsBase):
+    def setUp(self):
+        super().setUp()
+        users.bootstrap()
+        self.g = groups.create("Семья", ["amneziawg"], allow={"android": ["com.whatsapp"], "windows": ["Discord.exe"]})
+        for n in ("masha", "kolya"):
+            users.add_user(n, group=self.g.id)
+
+    def ids(self):
+        return [g["id"] for g in self.groups_json()["groups"]]
+
+    def test_move_members_to_main_with_one_apply(self):
+        self.assertEqual(self.registry()["masha"]["protocols"], ["amneziawg"])
+        with mock.patch.object(users, "_apply_protocols", wraps=users._apply_protocols) as ap:
+            rep = groups.delete_group("Семья")
+        self.assertEqual(ap.call_count, 1, "настройки «Основной» применяются один раз на всех")
+        self.assertTrue(rep.ok and rep.removed, rep.to_dict())
+        self.assertEqual(sorted(rep.moved), ["kolya", "masha"])
+        self.assertEqual(self.ids(), ["main"])
+        reg = self.registry()
+        for n in ("masha", "kolya"):
+            self.assertEqual((reg[n]["group"], sorted(reg[n]["protocols"])), ("main", sorted(PROTOS)))
+        al = self.allow_json()
+        self.assertFalse(al.get("groups") or al.get("members"), "зеркало списка приложений чистое")
+        self.assertEqual(groups.delete_group.__defaults__, ("move",))
+
+    def test_delete_members_keeps_owner(self):
+        groups.move_many(["owner"], self.g.id)
+        rep = groups.delete_group(self.g.id, members="delete")
+        self.assertTrue(rep.ok and rep.removed, rep.to_dict())
+        self.assertEqual(sorted(rep.deleted), ["kolya", "masha"])
+        self.assertEqual(rep.moved, ["owner"])
+        reg = self.registry()
+        self.assertNotIn("masha", reg)
+        self.assertNotIn("kolya", reg)
+        self.assertEqual(reg["owner"]["group"], "main")
+        self.assertEqual(sorted(reg["owner"]["protocols"]), sorted(PROTOS))
+        for pid in PROTOS:
+            self.assertEqual(set(self.env.proto_users(pid)), {"owner"})
+        self.assertEqual(self.ids(), ["main"])
+
+    def test_delete_empty_group_any_mode(self):
+        for mode in ("move", "delete"):
+            g = groups.create("Пустая " + mode, ["amneziawg"])
+            rep = groups.delete_group(g.id, mode)
+            self.assertTrue(rep.removed)
+            self.assertEqual((rep.moved, rep.deleted), ([], []))
+        self.assertEqual(self.ids(), ["main", self.g.id])
+
+    def test_main_and_bad_input_are_refused(self):
+        for args in (("main",), ("Основная", "delete"), ("нет",), (self.g.id, "everything"), (self.g.id, "")):
+            with self.assertRaises(groups.GroupError, msg=args):
+                groups.delete_group(*args)
+        self.assertEqual(self.ids(), ["main", self.g.id])
+        self.assertEqual(self.registry()["masha"]["group"], self.g.id)
+
+    def test_failed_delete_keeps_group_and_reports(self):
+        self.env.fail("amneziawg:user_del")
+        rep = groups.delete_group(self.g.id, "delete")
+        self.assertFalse(rep.ok)
+        self.assertFalse(rep.removed)
+        self.assertEqual(rep.deleted, [])
+        self.assertEqual(len(rep.errors), 2)
+        self.assertIn(self.g.id, self.ids())
+        self.assertIn("не удалена", rep.message)
+        self.assertEqual(self.registry()["masha"]["group"], self.g.id)
+
+    def test_lock_is_taken_once(self):
+        real = users._lock
+        with mock.patch.object(users, "_lock", side_effect=real) as lock:
+            groups.delete_group(self.g.id, "delete")
+        self.assertEqual(lock.call_count, 1)
+
+
+class MergeGroupsTest(GroupsBase):
+    def setUp(self):
+        super().setUp()
+        users.bootstrap()
+        self.a = groups.create("Семья", ["amneziawg"], allow={"android": ["com.whatsapp"], "windows": ["Discord.exe"]})
+        self.b = groups.create("Друзья", ["hysteria2", "vless-reality"], {"android": ["happ"]})
+        groups.set_message(self.b.id, "android", "Привет, {name}!")
+        for n in ("masha", "kolya"):
+            users.add_user(n, group=self.a.id)
+        users.add_user("petya", group=self.b.id)
+
+    def group(self, gid):
+        return next(g for g in self.groups_json()["groups"] if g["id"] == gid)
+
+    def test_members_move_and_target_keeps_settings(self):
+        before = self.group(self.b.id)
+        with mock.patch.object(users, "_apply_protocols", wraps=users._apply_protocols) as ap:
+            rep = groups.merge_groups(self.a.id, "друзья")
+        self.assertEqual(ap.call_count, 1)
+        self.assertTrue(rep.ok, rep.to_dict())
+        self.assertEqual(rep.group.id, self.b.id)
+        self.assertEqual(sorted(rep.moved), ["kolya", "masha"])
+        self.assertIn("«Семья» объединена с «Друзья»", rep.message)
+        self.assertEqual([g["id"] for g in self.groups_json()["groups"]], ["main", self.b.id])
+        self.assertEqual(self.group(self.b.id), before, "протоколы, клиенты, приложения и тексты цели не тронуты")
+        reg = self.registry()
+        for n in ("masha", "kolya"):
+            self.assertEqual((reg[n]["group"], sorted(reg[n]["protocols"])), (self.b.id, ["hysteria2", "vless-reality"]))
+            self.assertNotIn("custom", reg[n])
+        self.assertEqual(reg["petya"]["group"], self.b.id)
+        al = self.allow_json()
+        self.assertFalse(al.get("groups") or al.get("members"), "список исчезнувшей группы из зеркала убран")
+
+    def test_custom_members_return_to_group(self):
+        reg = users.Registry.load()
+        reg.get("masha").custom = True
+        reg.save()
+        groups.merge_groups(self.a.id, self.b.id)
+        self.assertNotIn("custom", self.registry()["masha"])
+
+    def test_empty_source_is_just_removed(self):
+        e = groups.create("Пустая", ["amneziawg"])
+        rep = groups.merge_groups(e.id, self.a.id)
+        self.assertEqual(rep.moved, [])
+        self.assertNotIn(e.id, [g["id"] for g in self.groups_json()["groups"]])
+
+    def test_refusals(self):
+        for args in ((self.a.id, self.a.id), ("main", self.a.id), (self.a.id, "нет"), ("нет", self.a.id)):
+            with self.assertRaises(groups.GroupError, msg=args):
+                groups.merge_groups(*args)
+        self.assertEqual(len(self.groups_json()["groups"]), 3)
+        self.assertEqual(self.registry()["masha"]["group"], self.a.id)
+
+    def test_into_main(self):
+        groups.merge_groups(self.a.id, "main")
+        reg = self.registry()
+        self.assertEqual((reg["masha"]["group"], sorted(reg["masha"]["protocols"])), ("main", sorted(PROTOS)))
+
+    def test_lock_is_taken_once(self):
+        real = users._lock
+        with mock.patch.object(users, "_lock", side_effect=real) as lock:
+            groups.merge_groups(self.a.id, self.b.id)
+        self.assertEqual(lock.call_count, 1)
+
+
+class GroupDeleteMergeCliTest(GroupsBase):
+    def setUp(self):
+        super().setUp()
+        users.bootstrap()
+        run_cli("group", "add", "Семья", "--proto", "amneziawg")
+        run_cli("group", "add", "Друзья", "--proto", "hysteria2")
+        run_cli("user", "add", "masha", "--group", "g1")
+        run_cli("user", "add", "kolya", "--group", "g1")
+
+    def ids(self):
+        return [g["id"] for g in self.groups_json()["groups"]]
+
+    def test_rm_move_members(self):
+        code, out, err = run_cli("group", "rm", "g1")
+        self.assertEqual(code, 1, "с участниками без флага — по-прежнему отказ")
+        self.assertIn("masha", err)
+        code, out, err = run_cli("group", "rm", "g1", "--move-members")
+        self.assertEqual(code, 0, err)
+        self.assertIn("masha: в группе «Основная»", out + err)
+        self.assertEqual(self.ids(), ["main", "g2"])
+        self.assertEqual(self.registry()["masha"]["group"], "main")
+
+    def test_rm_delete_members(self):
+        code, out, err = run_cli("group", "rm", "Семья", "--delete-members")
+        self.assertEqual(code, 0, err)
+        self.assertIn("masha: удалён", out + err)
+        self.assertNotIn("masha", self.registry())
+        self.assertEqual(set(self.env.proto_users("amneziawg")), {"owner"})
+        code, out, _ = run_cli("group", "rm", "g2", "--delete-members", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["deleted"], [])
+
+    def test_rm_main_and_flag_conflict(self):
+        for flags in ((), ("--move-members",), ("--delete-members",)):
+            code, out, err = run_cli("group", "rm", "main", *flags)
+            self.assertEqual(code, 1, flags)
+            self.assertIn("не удаляется", err)
+        self.assertEqual(self.ids(), ["main", "g1", "g2"])
+        with self.assertRaises(SystemExit):
+            run_cli("group", "rm", "g1", "--move-members", "--delete-members")
+
+    def test_merge(self):
+        code, out, err = run_cli("group", "merge", "g1", "g2")
+        self.assertEqual(code, 0, err)
+        self.assertIn("masha: в группе «Друзья»", out + err)
+        self.assertIn("«Семья» объединена с «Друзья»", out + err)
+        self.assertEqual(self.ids(), ["main", "g2"])
+        self.assertEqual(self.registry()["kolya"]["protocols"], ["hysteria2"])
+        for argv in (("group", "merge", "g2", "g2"), ("group", "merge", "main", "g2"), ("group", "merge", "g2", "нет")):
+            code, _, err = run_cli(*argv)
+            self.assertEqual(code, 1, argv)
+            self.assertTrue(err, argv)
+        code, out, _ = run_cli("group", "merge", "g2", "main", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["group"]["id"], "main")
+
+
 class ProtocolUsersTest(GroupsBase):
     """Счётчики пользователей на карточках «Обзора»: включённые, обычные, у которых протокол в реестре."""
 

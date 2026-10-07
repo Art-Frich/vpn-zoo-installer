@@ -308,83 +308,128 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
 
 def delete_user(name: str, force: bool = False) -> OpReport:
     with _lock():
-        reg = _load_registry()
-        user = reg.require(name)
-        if name == OWNER and not force:
-            raise UserError("owner нельзя удалить: на нём ссылки по умолчанию (--force, если очень нужно)")
-        if user.system and not force:
-            raise UserError(f"{name} — служебный пользователь пробника, его креды нужны zoo probe и "
-                            f"export-probe. Удалить: zoo user del {name} --force (пробник перейдёт на owner; "
-                            "завести заново: sudo bash scripts/install.sh --phase 09 из каталога клона)")
-        rep = OpReport("del", name)
-        left: list[str] = []
-        for pid in user.protocols:
-            if not protolib.available(pid):
-                rep.steps.append(Step(pid, "del", False, "нет модуля протокола"))
+        return _delete_in(_load_registry(), name, force)
+
+
+def _delete_in(reg: Registry, name: str, force: bool = False) -> OpReport:
+    """Удаление под уже взятой блокировкой; реестр сохраняется здесь."""
+    user = reg.require(name)
+    if name == OWNER and not force:
+        raise UserError("owner нельзя удалить: на нём ссылки по умолчанию (--force, если очень нужно)")
+    if user.system and not force:
+        raise UserError(f"{name} — служебный пользователь пробника, его креды нужны zoo probe и "
+                        f"export-probe. Удалить: zoo user del {name} --force (пробник перейдёт на owner; "
+                        "завести заново: sudo bash scripts/install.sh --phase 09 из каталога клона)")
+    rep = OpReport("del", name)
+    left: list[str] = []
+    for pid in user.protocols:
+        if not protolib.available(pid):
+            rep.steps.append(Step(pid, "del", False, "нет модуля протокола"))
+            left.append(pid)
+            continue
+        try:
+            protolib.user_del(pid, name)
+            rep.steps.append(Step(pid, "del", True))
+        except protolib.ProtoError as e:
+            if _present(pid, name) is False:
+                rep.steps.append(Step(pid, "del", True, "уже отсутствовал"))
+            else:
+                rep.steps.append(Step(pid, "del", False, _err(e)))
                 left.append(pid)
-                continue
-            try:
-                protolib.user_del(pid, name)
-                rep.steps.append(Step(pid, "del", True))
-            except protolib.ProtoError as e:
-                if _present(pid, name) is False:
-                    rep.steps.append(Step(pid, "del", True, "уже отсутствовал"))
-                else:
-                    rep.steps.append(Step(pid, "del", False, _err(e)))
-                    left.append(pid)
-        if left and not force:
-            user.protocols = left
-            reg.save()
-            rep.ok = False
-            rep.message = "удалён не везде, остался в: " + ", ".join(left)
-            return rep
-        reg.remove(name)
+    if left and not force:
+        user.protocols = left
         reg.save()
-        from . import allowlist
-        allowlist.forget_user(name)
-        _cleanup_client_dir(name)
-        rep.ok = not left
-        rep.message = "пользователь удалён" if rep.ok else "удалён из реестра (--force), ошибки: " + ", ".join(left)
-        if _drop_probe_export(name):
-            rep.message += (f"; пакет пробника {paths.probe_export_file()} с его ключами удалён "
-                            "(новый: sudo zoo probe --local --summary --export "
-                            f"{paths.probe_export_file()})")
+        rep.ok = False
+        rep.message = "удалён не везде, остался в: " + ", ".join(left)
         return rep
+    reg.remove(name)
+    reg.save()
+    from . import allowlist
+    allowlist.forget_user(name)
+    _cleanup_client_dir(name)
+    rep.ok = not left
+    rep.message = "пользователь удалён" if rep.ok else "удалён из реестра (--force), ошибки: " + ", ".join(left)
+    if _drop_probe_export(name):
+        rep.message += (f"; пакет пробника {paths.probe_export_file()} с его ключами удалён "
+                        "(новый: sudo zoo probe --local --summary --export "
+                        f"{paths.probe_export_file()})")
+    return rep
 
 
 def set_enabled(name: str, enabled: bool, partial: bool = False) -> OpReport:
+    with _lock():
+        return _set_enabled_in(_load_registry(), name, enabled, partial)
+
+
+def _set_enabled_in(reg: Registry, name: str, enabled: bool, partial: bool = False) -> OpReport:
+    """Вкл/выкл под уже взятой блокировкой; реестр сохраняется здесь."""
     action = "enable" if enabled else "disable"
+    user = reg.require(name)
+    if user.system and not enabled:
+        raise UserError(f"{name} — служебный пользователь пробника, его не отключают: "
+                        "без него самопроверка перейдёт на креды owner")
+    rep = OpReport(action, name)
+    done: list[str] = []
+    failed: list[str] = []
+    for pid in user.protocols:
+        try:
+            protolib.user_enable(pid, name, enabled)
+            rep.steps.append(Step(pid, action, True))
+            done.append(pid)
+        except protolib.ProtoError as e:
+            rep.steps.append(Step(pid, action, False, _err(e)))
+            failed.append(pid)
+            if not partial:
+                break
+    if failed and not partial:
+        prev = user.enabled
+        _rollback(rep, done, lambda pid: protolib.user_enable(pid, name, prev))
+        rep.ok = False
+        rep.message = "состояние не изменено: ошибка в " + ", ".join(failed)
+        return rep
+    user.enabled = enabled
+    reg.save()
+    rep.ok = not failed
+    verb = "включён" if enabled else "отключён"
+    rep.message = f"пользователь {verb}" if rep.ok else f"{verb} частично, ошибки: " + ", ".join(failed)
+    return rep
+
+
+BULK_OPS = ("delete", "disable", "enable")
+
+
+def bulk_refusal(reg: Registry, name: str, op: str) -> str | None:
+    """Почему пакетная операция не для этого пользователя (None — можно). Owner и служебный не удаляются и не отключаются."""
+    user = reg.get(name)
+    if user is None:
+        return "нет в реестре"
+    if user.system:
+        return "служебный пользователь пробника: его не трогают из админки"
+    if name == OWNER and op == "delete":
+        return "owner не удаляется: на нём ссылки по умолчанию"
+    if name == OWNER and op == "disable":
+        return "owner не отключается: на нём ссылки по умолчанию"
+    return None
+
+
+def bulk(op: str, names: list[str]) -> list[OpReport]:
+    """delete | disable | enable для списка имён под одной блокировкой. Отказ или ошибка у одного
+    не мешают остальным: у каждого свой отчёт."""
+    if op not in BULK_OPS:
+        raise UserError(f"неизвестная операция «{op[:20]}»")
     with _lock():
         reg = _load_registry()
-        user = reg.require(name)
-        if user.system and not enabled:
-            raise UserError(f"{name} — служебный пользователь пробника, его не отключают: "
-                            "без него самопроверка перейдёт на креды owner")
-        rep = OpReport(action, name)
-        done: list[str] = []
-        failed: list[str] = []
-        for pid in user.protocols:
+        out: list[OpReport] = []
+        for name in names:
+            why = bulk_refusal(reg, name, op)
+            if why:
+                out.append(OpReport(op, name, ok=False, message=why))
+                continue
             try:
-                protolib.user_enable(pid, name, enabled)
-                rep.steps.append(Step(pid, action, True))
-                done.append(pid)
-            except protolib.ProtoError as e:
-                rep.steps.append(Step(pid, action, False, _err(e)))
-                failed.append(pid)
-                if not partial:
-                    break
-        if failed and not partial:
-            prev = user.enabled
-            _rollback(rep, done, lambda pid: protolib.user_enable(pid, name, prev))
-            rep.ok = False
-            rep.message = "состояние не изменено: ошибка в " + ", ".join(failed)
-            return rep
-        user.enabled = enabled
-        reg.save()
-        rep.ok = not failed
-        verb = "включён" if enabled else "отключён"
-        rep.message = f"пользователь {verb}" if rep.ok else f"{verb} частично, ошибки: " + ", ".join(failed)
-        return rep
+                out.append(_delete_in(reg, name) if op == "delete" else _set_enabled_in(reg, name, op == "enable"))
+            except UserError as e:
+                out.append(OpReport(op, name, ok=False, message=str(e)))
+        return out
 
 
 def _attach(rep: OpReport, user: User, pid: str) -> bool:

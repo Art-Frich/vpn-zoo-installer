@@ -140,7 +140,7 @@ research/YYYY-MM-DD/          исследования
 
 - `zoo status` — сервисы, порты, сертификаты, версии, лишние listen на 0.0.0.0, метрики хоста. В проблемах — и интерфейс протокола, которого нет при активном юните (`awg-quick@awg0` — oneshot: при падении amneziawg-go юнит остаётся active), и коллектор трафика: таймер не активен, последнее снятие старше 20 минут, ошибки источников.
 - `zoo user add|del|disable|enable|list|show|sync` — управление пользователями во всех протоколах (`user add --group`).
-- `zoo group list | add | set | move | rm` — группы пользователей (§5, PLAN-builder).
+- `zoo group list | add | set | move | rm | merge` — группы пользователей (§5, PLAN-builder).
 - `zoo links [user] [--qr] [--svg-dir]` — ссылки и QR (по умолчанию owner), в том числе Android-вариант AWG и правила v2rayN.
 - `zoo allow list [--catalog] | add | del | reset [--user ИМЯ] | apply` — приложения через VPN (§5, D31).
 - `zoo traffic [user] [--period]` — трафик по пользователю и протоколу (3x-ui API, Hy2 trafficStats API, `awg show dump`), история в SQLite.

@@ -311,5 +311,56 @@ class UsersTest(unittest.TestCase):
         self.assertEqual(skipped, {})
 
 
+    # ---------- пакетные операции ----------
+
+    def test_bulk_disable_enable_delete_under_one_lock(self):
+        from unittest import mock
+        users.bootstrap()
+        for n in ("masha", "kolya"):
+            users.add_user(n)
+        real = users._lock
+        with mock.patch.object(users, "_lock", side_effect=real) as lock:
+            reps = users.bulk("disable", ["masha", "kolya"])
+        self.assertEqual(lock.call_count, 1)
+        self.assertEqual([(r.user, r.ok) for r in reps], [("masha", True), ("kolya", True)])
+        self.assertFalse(self.registry()["masha"]["enabled"])
+        self.assertTrue(all(r.ok for r in users.bulk("enable", ["masha", "kolya"])))
+        self.assertTrue(self.registry()["kolya"]["enabled"])
+        self.assertTrue(all(r.ok for r in users.bulk("delete", ["masha", "kolya"])))
+        self.assertEqual(list(self.registry()), ["owner"])
+        for pid in PROTOS:
+            self.assertEqual(set(self.env.proto_users(pid)), {"owner"})
+
+    def test_bulk_refuses_owner_system_and_unknown_but_goes_on(self):
+        users.bootstrap()
+        users.ensure_probe_user()
+        users.add_user("masha")
+        for op in ("delete", "disable"):
+            reps = {r.user: r for r in users.bulk(op, ["owner", "zoo-probe", "ghost", "masha"])}
+            self.assertFalse(reps["owner"].ok)
+            self.assertIn("owner", reps["owner"].message)
+            self.assertIn("служебный", reps["zoo-probe"].message)
+            self.assertIn("нет в реестре", reps["ghost"].message)
+            self.assertTrue(reps["masha"].ok)
+            users.add_user("masha") if op == "delete" else users.set_enabled("masha", True)
+        reg = self.registry()
+        self.assertTrue(reg["owner"]["enabled"] and reg["zoo-probe"]["enabled"])
+        self.assertIn("zoo-probe", reg)
+        with self.assertRaises(users.UserError):
+            users.bulk("explode", ["masha"])
+        self.assertTrue(users.bulk("enable", ["owner"])[0].ok, "включить owner можно")
+
+    def test_bulk_error_in_one_user_does_not_stop_others(self):
+        users.bootstrap()
+        users.add_user("masha")
+        users.add_user("kolya")
+        self.env.fail("amneziawg:user_enable")
+        reps = users.bulk("disable", ["masha", "kolya"])
+        self.assertEqual([r.ok for r in reps], [False, False])
+        self.assertTrue(self.registry()["masha"]["enabled"])
+        os.environ.pop("FAKE_FAIL")
+        self.assertTrue(all(r.ok for r in users.bulk("disable", ["masha", "kolya"])))
+
+
 if __name__ == "__main__":
     unittest.main()
