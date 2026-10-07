@@ -81,6 +81,7 @@ body { overflow-x: hidden; }
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
   gap: 12px; margin-bottom: 4px; }
 .page-head .sub { color: var(--muted); font-size: .9rem; }
+.page-head.top { justify-content: flex-end; align-items: center; margin-bottom: 12px; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* карточки и сетки */
@@ -294,7 +295,7 @@ form.inline { display: inline; margin: 0; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field label, .field .label { font-size: .82rem; color: var(--text-2); font-weight: 550; }
 .field.grow { flex: 1 1 220px; }
-input[type=text], input[type=password], input[type=search], textarea, select {
+input[type=text], input[type=password], input[type=search], input[type=datetime-local], textarea, select {
   font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 7px 10px; width: 100%; min-width: 0;
 }
@@ -395,6 +396,7 @@ details.custom > .stack { margin-top: 10px; }
 .seg { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
 .seg a { padding: 6px 12px; color: var(--text-2); font-size: .88rem; border-left: 1px solid var(--border); }
 .seg a:first-child { border-left: 0; }
+.seg.small a { padding: 3px 9px; font-size: .8rem; }
 .seg a:hover { background: var(--surface-2); text-decoration: none; }
 .seg a.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
 
@@ -449,7 +451,8 @@ mark.hitline { background: var(--accent-soft); }
 .search select { width: auto; }
 .search label { display: inline-flex; gap: 5px; align-items: center; font-size: .86rem; white-space: nowrap; }
 .search details { flex: 1 1 100%; }
-.search details input { width: auto; display: inline-block; margin: 4px 8px 0 0; }
+.search details input { width: auto; display: inline-block; }
+.dt-range { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-top: 6px; }
 .hitcell { font-family: var(--mono); font-size: .8rem; word-break: break-word; }
 .side { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
 @media (min-width: 900px) { .side { grid-template-columns: 260px minmax(0, 1fr); } }
@@ -459,9 +462,10 @@ mark.hitline { background: var(--accent-soft); }
 .list li a:hover { background: var(--surface-2); text-decoration: none; }
 .list li a.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .list .group { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
-  padding: 10px 10px 4px; }
+  padding: 10px 0 4px 10px; }
 .list .group, .list .src { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .list .src > a { flex: 1; min-width: 0; }
+.list details.menu { margin-left: auto; }
 details.menu { position: relative; flex: none; }
 details.menu > summary { list-style: none; cursor: pointer; user-select: none; width: 26px; height: 26px; display: grid;
   place-content: center; border-radius: 6px; color: var(--muted); font-size: 1rem; line-height: 1; text-transform: none; }

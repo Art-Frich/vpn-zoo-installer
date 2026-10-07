@@ -778,7 +778,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
                              + " Отменить нельзя."),
               class_="more") if others and g.id != groups.MAIN_ID else None
     delete = _delete_link(g, "btn danger")
-    parts: list[Any] = [page_head(g.name, "группа", t("a", "← Группы", href="/groups", class_="btn small", data_swap=True))]
+    parts: list[Any] = [page_head(g.name, "группа", t("a", "← Группы", href="/groups", class_="btn small", data_swap=True), top=False)]
     if errors:
         parts.append(alert_list([("bad", e) for e in errors]))
     ctx = clientviews.Ctx.load()

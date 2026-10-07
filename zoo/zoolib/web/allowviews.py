@@ -163,7 +163,7 @@ def _page(app: "App", req: "Request", user: str | None, err: str = "", draft: di
     except allowlist.AllowlistError as e:
         return app.error(req, 500, "Список приложений не читается", str(e))
     reg = users.list_users()
-    parts: list[Any] = [page_head("Приложения через VPN",
+    parts: list[Any] = [page_head("Приложения",
                                   "Через VPN идут только отмеченные приложения, остальное — напрямую "
                                   "(банки, Госуслуги, MAX).", _who_nav(reg, user))]
     alerts = [("bad", m) for m in ([err] if err else []) + (errors or [])]
