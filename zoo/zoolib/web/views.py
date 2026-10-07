@@ -755,7 +755,7 @@ def settings_page(app: "App", req: "Request") -> "Response":
                              t("code", "sudo zoo web --link"), "."))
 
     config = _config_card(cfg)
-    body = [page_head("Настройки"), services, t("div", actions, versions, class_="cols"), data, jobs_card,
+    body = [page_head("Настройки"), services, t("div", actions, versions, class_="cols maint"), data, jobs_card,
             t("div", access, config, class_="cols") if access else config]
     return app.render(req, "Настройки", body, active="/settings")
 
