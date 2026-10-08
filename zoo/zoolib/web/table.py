@@ -443,12 +443,11 @@ def _count(spec: Spec, st: State, page: Page) -> Markup | None:
 def _exports(spec: Spec, st: State, private: bool) -> Markup | None:
     if not spec.export:
         return None
-    links = [t("a", f.upper(), href=href(spec, st, after="", export=f), title="Выгрузить выбранное (всё по фильтрам)")
-             for f in FORMATS]
+    links = [t("a", f.upper(), href=href(spec, st, after="", export=f)) for f in FORMATS]
     if private:
         links.append(t("a", "CSV с адресами", href=href(spec, st, after="", export="csv", priv=True),
                        title="Вместе с приватными полями (IP): не отправляйте выгрузку наружу"))
-    return t("span", "выгрузка: ", links, class_="exports")
+    return t("span", "выгрузка: ", links, class_="exports", title="Выгружается всё по фильтрам, не только показанное")
 
 
 def render(spec: Spec, st: State, page: Page) -> Markup:

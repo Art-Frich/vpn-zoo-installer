@@ -170,7 +170,7 @@ def _hit_time(h: logread.Hit) -> Any:
     if not h.ts:
         return "—"
     s = datetime.fromtimestamp(h.ts).strftime("%d.%m %H:%M:%S")
-    return t("span", s, title="время файла: у строк установки своего времени нет") if h.file_time else s
+    return "≈" + s if h.file_time else s
 
 
 def _results_card(st: dict[str, Any], res: logread.Result) -> Markup:
@@ -187,6 +187,8 @@ def _results_card(st: dict[str, Any], res: logread.Result) -> Markup:
                        t("a", f"показать до {nxt}", href=_url(st, lim=nxt), data_swap=True) if nxt else
                        "Сузьте период или уточните запрос.", class_="hint"))
     notes += [t("p", e, class_="hint err") for e in res.errors]
+    if any(h.file_time for h in res.hits):
+        notes.append(t("p", "≈ — время файла: у строк установки своего времени нет.", class_="hint"))
     head = f"Найдено: {len(res.hits)}{'+' if res.more else ''}"
     body = table(["лог", "время", "строка", ""], rows, empty="Ничего не нашлось", stack=True) if rows else \
         empty("Ничего не нашлось", f"просмотрено строк: {res.scanned}")
@@ -302,7 +304,7 @@ def _file_menu(csrf: str, name: str, newest: bool, back: str, busy: bool = False
         _item(csrf, "/logs/clean", "Удалить", {**base, "mode": "selected", "names": name},
               f"Удалить {name} насовсем?",
               off="самый свежий лог не удаляется: возможно, идёт установка" if newest else None),
-        _item(csrf, "/logs/clean", f"Оставить последние {logctl.TAIL_LINES} строк", {**base, "mode": "tail", "names": name},
+        _item(csrf, "/logs/clean", f"Оставить {logctl.TAIL_LINES} строк", {**base, "mode": "tail", "names": name},
               f"Оставить в {name} последние {logctl.TAIL_LINES} строк? Остальное удалится насовсем.",
               off="идёт установка и пишет в этот лог: обрежьте после её окончания" if newest and busy else None))
 
@@ -346,7 +348,7 @@ def logs_page(app: "App", req: "Request") -> "Response":
             nav.append(t("li", t("span", g), menu, class_="group"))
             group = g
         link = t("a", label, href=_url(st, src=k, before="", after="", at=""),
-                 class_="active" if k == st["src"] else None, title=label, data_swap=True)
+                 class_="active" if k == st["src"] else None, data_swap=True)
         nav.append(t("li", link, _file_menu(csrf, label, label == newest, st["src"], busy) if k.startswith("file:") and logctl.INSTALL_RE.match(label) else None,
                      class_="src"))
     problems: list[tuple[str, Any]] = _vacuum_notice()

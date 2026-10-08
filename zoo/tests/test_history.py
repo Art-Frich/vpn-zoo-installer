@@ -596,18 +596,20 @@ class RankViewTest(unittest.TestCase):
     def test_low_data_block(self):
         best, trends = self.render(rows_for([(1, "t", None, "hysteria2", "OK", 339.0, 40.0),
                                              (1, "t", None, "ss2022", "UDP_BLOCKED", None, None)]))
-        self.assertIn("1 замер — ориентир, не рейтинг", best)
+        self.assertIn("ориентир, не рейтинг", best)
+        self.assertEqual(best.count("ориентир, не рейтинг"), 1)
         self.assertEqual(best.count("мало данных</span>"), 1)
         self.assertNotIn(">место<", best)
         self.assertNotIn(">оценка<", best)
         self.assertIn("HY2 + Salamander", best)
         self.assertIn("TUIC v5", best)
-        self.assertEqual(best.count("нет замеров с устройств"), 2)
+        self.assertEqual(best.lower().count("нет замеров с устройств"), 1, "без замеров — одной строкой, а не в каждой таблице")
+        self.assertRegex(best, r"Нет замеров с устройств: HY2 \+ Salamander, TUIC v5")
         self.assertNotIn("hysteria2-obfs", best.replace('title="', ""))
         self.assertIn('class="dim"', best)       # выключенный ss2022 — серым, со старым вердиктом
-        self.assertLess(best.index("TUIC v5"), best.index("Shadowsocks-2022"))
-        self.assertEqual(trends.count("нет замеров с устройств"), 2)
-        self.assertIn('href="#client-probe"', trends)
+        self.assertNotIn("<strong>TUIC v5</strong>", best, "TUIC без замеров — в строке под таблицами, не строкой")
+        self.assertNotIn("нет замеров с устройств", trends.lower(), "строки без замеров в трендах не нужны")
+        self.assertIn('href="#client-probe"', best)
 
     def test_ranked_block_with_spread_and_empty_places(self):
         rows = []
@@ -622,7 +624,7 @@ class RankViewTest(unittest.TestCase):
         self.assertNotIn("Shadowsocks-2022", best.split('class="dim"')[0])  # выключенный не занимает место
         self.assertIn('data-label="место">1</td>', best)
         self.assertEqual(best.count("мало данных</span>"), 0)
-        self.assertIn("нет замеров с устройств", best)                      # HY2 + Salamander без замеров
+        self.assertIn("нет замеров с устройств", best.lower())              # HY2 + Salamander без замеров
 
     def test_without_manifests_everything_in_history_is_shown(self):
         best, trends = self.render(rows_for([(1, "t", None, "a", "OK", 100.0, 40.0)]), servers=[])

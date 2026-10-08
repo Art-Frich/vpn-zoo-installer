@@ -625,19 +625,29 @@ JS = r"""
   document.documentElement.classList.add('js');   // кнопки «Пересчитать» и подобные с JS не нужны
   // копирование в буфер: data-copy="id" — поле, значение которого берём
   document.addEventListener('click', function (ev) {
-    var btn = ev.target.closest('[data-copy]');
+    var btn = ev.target.closest('[data-copy], [data-copy-all]');
     if (!btn) return;
-    var src = document.getElementById(btn.getAttribute('data-copy'));
-    if (!src) return;
-    var text = src.value !== undefined ? src.value : src.textContent;
+    var all = btn.getAttribute('data-copy-all'), src = null, text;
+    if (all) {   // data-copy-all="селектор кнопок data-copy": значения их полей без повторов, по одному в строке
+      var seen = {}, lines = [];
+      document.querySelectorAll(all).forEach(function (b) {
+        var f = document.getElementById(b.getAttribute('data-copy'));
+        if (f && f.value && !seen[f.value]) { seen[f.value] = 1; lines.push(f.value); }
+      });
+      text = lines.join('\n');
+    } else {
+      src = document.getElementById(btn.getAttribute('data-copy'));
+      if (!src) return;
+      text = src.value !== undefined ? src.value : src.textContent;
+    }
     var done = function () {
       var old = btn.textContent;
       btn.textContent = 'Скопировано';
       setTimeout(function () { btn.textContent = old; }, 1500);
     };
     if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(done, function () { src.select && src.select(); });
-    } else if (src.select) {
+      navigator.clipboard.writeText(text).then(done, function () { src && src.select && src.select(); });
+    } else if (src && src.select) {
       src.select();
       try { document.execCommand('copy'); done(); } catch (e) { /* выделено — копируйте вручную */ }
     }

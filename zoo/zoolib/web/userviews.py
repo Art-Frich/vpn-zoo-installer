@@ -113,10 +113,11 @@ def _proto_chip(u: users.User, managed: list[str], gs: groups.Groups) -> Markup:
     have = [p for p in want if p in u.protocols]
     missing = [p for p in want if p not in u.protocols]
     if not missing:
-        return t("span", f"{len(have)}/{len(want)}", class_="chip", title=", ".join(have) or None)
-    shown = ", ".join(missing[:2]) + ("…" if len(missing) > 2 else "")
+        return t("span", f"{len(have)}/{len(want)}", class_="chip")
+    lacking = [manifests.proto_title(p) for p in missing]
+    shown = ", ".join(lacking[:2]) + ("…" if len(lacking) > 2 else "")
     return t("span", f"нет: {shown}", class_="chip warn",
-             title=f"{len(have)}/{len(want)}; нет в: {', '.join(missing)}"
+             title=f"{len(have)}/{len(want)}" + (f"; нет в: {', '.join(lacking)}" if len(lacking) > 2 else "")
                    + ("; свой набор — сверка со всеми включёнными" if u.custom else ""))
 
 
@@ -191,7 +192,7 @@ def users_list(app: "App", req: "Request") -> "Response":
     variants = users.variant_modules()
     preset = set(first.resolve(managed, variants)) if first else set(managed)
     protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=p in preset),
-                t("span", manifests.proto_title(p), title=manifests.proto_full(p) or None)) for p in managed]
+                t("span", manifests.proto_title(p))) for p in managed]
     add_form = t("form", csrf_input(csrf),
                  t("div",
                    t("div", t("label", "Имя", for_="display"),
@@ -560,11 +561,12 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     grp = _group_of(user)
     show = link_filter(user, grp)
     ctx = clientviews.Ctx.load()
-    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label)
-    tiles = connect_tiles(links, manifests.load_all()[0], name, show)
+    shown: dict[str, str] = {}
+    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label, shown=shown)
+    tiles = connect_tiles(links, manifests.load_all()[0], name, show, shown, bool(connect))
     # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
     advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show, ctx, grp), tiles,
-                 t("p", "Ссылки и QR — ключи доступа: показывайте только самому пользователю.", class_="hint"),
+                 t("p", clientviews.SEND_WARN, class_="hint") if connect is None else None,
                  class_="card more", open=connect is None or None) if tiles else None
     sub = " · ".join(x for x in ((name if user.display else ""), user.note) if x)
     body = [page_head(user.label, sub or None, actions, top=False), err_list, connect, advanced,
@@ -648,11 +650,16 @@ def qr_url(name: str, idx: int, link: protolib.Link) -> str:
     return f"/users/{name}/qr/{idx}?p={link.tag}"
 
 
-def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool, rules_text: str = "") -> Markup:
+def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool, rules_text: str = "",
+             shown: dict[str, str] | None = None) -> Markup:
     fname = Path(link.uri).name if link.kind == "file" else ""
     if link.kind == "file":
         action = (t("a", "Скачать файл", href=f"/users/{name}/file/{fname}", class_="btn primary")
                   if FILE_NAME_RE.fullmatch(fname) else t("p", "Файл недоступен для скачивания", class_="muted small"))
+    elif shown and link.uri in shown:
+        # ссылка уже видна в блоке «Подключить»: здесь только QR и кнопка, копирующая то же поле
+        action = t("div", t("button", "Копировать", type="button", class_="btn primary", data_copy=shown[link.uri]),
+                   class_="link-uri")
     else:
         uri_id = f"uri-{idx}"
         action = t("div", t("input", type="text", id=uri_id, value=link.uri, readonly=True, data_select=True,
@@ -712,6 +719,9 @@ def _quick_pick(links: list[protolib.Link], ctx: clientviews.Ctx, g: groups.Grou
     return best[1:] if best else None
 
 
+COPY_ALL = ".pdlg [data-copy]"   # «Скопировать всё»: все поля ссылок из окон протоколов, без дублей
+
+
 def quick_start(links: list[protolib.Link], name: str, show: Callable[[protolib.Link], bool] | None = None,
                 ctx: clientviews.Ctx | None = None, g: groups.Group | None = None) -> Markup | None:
     """Один QR лучшего протокола из набора приложений группы и «скопировать всё». Нет набора приложений — «Приложения
@@ -727,16 +737,17 @@ def quick_start(links: list[protolib.Link], name: str, show: Callable[[protolib.
         return None
     img = (t("img", class_="qr", src=qr_url(name, pick[0], pick[1]), width=160, height=160, alt="QR",
              title=manifests.proto_title(pick[1].variant)) if pick else None)
-    copy = (t("textarea", all_uris, id="copy-all", hidden=True, readonly=True),
-            t("div", t("button", "Скопировать всё", type="button", class_="btn", data_copy="copy-all",
-                       title="Все ссылки по одной в строке"), class_="actions")) if all_uris else None
+    copy = t("div", t("button", "Скопировать всё", type="button", class_="btn", data_copy_all=COPY_ALL,
+                      title="Все ссылки по одной в строке"), class_="actions") if all_uris else None
     return t("div", img, t("div", t("h3", "Быстрый старт"), note, copy), class_="quick")
 
 
 def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
-                  show: Callable[[protolib.Link], bool] | None = None) -> Markup | None:
+                  show: Callable[[protolib.Link], bool] | None = None, shown: dict[str, str] | None = None,
+                  has_connect: bool = False) -> Markup | None:
     """Плитки по протоколам; клик — окно протокола: вкладки вариантов, QR, копировать/скачать.
-    show — какие ссылки показывать (номера для QR остаются по полному списку)."""
+    show — какие ссылки показывать (номера для QR остаются по полному списку); shown — ссылки, уже выведенные полями
+    в «Подключить»; has_connect — шаги импорта правил уже в инструкции там же."""
     if not links:
         return None
     by_id = {m.id: m for m in mans}
@@ -753,18 +764,17 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
     # протоколы — в порядке раздачи (PRIORITY), файл правил v2rayN — не протокол: отдельной строкой «Файлы»
     order = [*groups.by_priority(p for p in by_proto if p != allowlist.V2RAYN_PROTO),
              *([allowlist.V2RAYN_PROTO] if allowlist.V2RAYN_PROTO in by_proto else [])]
-    rules_text = clientviews.rules_text(cat) if cat else ""
+    rules_text = clientviews.rules_text(cat) if cat and not has_connect else ""
     sections: dict[bool, list[Markup]] = {True: [], False: []}
     dialogs = []
     for n, pid in enumerate(order):
         m = by_id.get(pid)
-        title = ("Правила маршрутизации v2rayN" if pid == allowlist.V2RAYN_PROTO else manifests.proto_title(pid))
+        title = ("Правила v2rayN" if pid == allowlist.V2RAYN_PROTO else manifests.proto_title(pid))
         dlg_id = f"dlg-{n}"
         sections[pid != allowlist.V2RAYN_PROTO].append(t(
             "button", t("span", title, class_="ptile-name"),
             t("span", PLATFORMS.get(pid, "—"), class_="ptile-sub"),
-            type="button", class_=f"ptile acc{n % 8 + 1}", data_dialog=dlg_id,
-            title=f"Приложения: {cat.names_for(pid)}" if cat and cat.names_for(pid) else None))
+            type="button", class_=f"ptile acc{n % 8 + 1}", data_dialog=dlg_id))
         items = sorted(by_proto[pid], key=lambda it: _variant_order(it[1]))  # sorted стабилен: порядок модуля цел
         tabs_data, uri_n = [], 0
         for k, (_, link) in enumerate(items):
@@ -775,7 +785,7 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
                            class_="tab active" if k == 0 else "tab")
                          for k, (label, why) in enumerate(tabs_data)], class_="tabs", role="tablist") \
             if len(items) > 1 else None
-        variants = [_variant(link, i, name, f"{dlg_id}-v{k}", k > 0, rules_text) for k, (i, link) in enumerate(items)]
+        variants = [_variant(link, i, name, f"{dlg_id}-v{k}", k > 0, rules_text, shown) for k, (i, link) in enumerate(items)]
         more = t("details", t("summary", "подробнее"), t("p", m.notes, class_="hint")) if m and m.notes else None
         dialogs.append(t("dialog",
                          t("div", t("h3", title), t("button", "✕", type="button", class_="btn small", data_close=True,

@@ -808,8 +808,8 @@ class ProtoChipTest(AppTestBase):
 
     def test_group_without_new_protocol_is_not_warned(self):
         _, body = self.c.get("/users")
-        self.assertIn('<span class="chip" title="amneziawg, vless-reality">2/2</span>', body)
-        self.assertIn('<span class="chip warn" title="2/3; нет в: tuic">нет: tuic</span>', body, "owner в «Основной»: ждёт все три")
+        self.assertIn('<span class="chip">2/2</span>', body)
+        self.assertIn('<span class="chip warn" title="2/3">нет: TUIC</span>', body, "owner в «Основной»: ждёт все три")
 
     def test_all_protocols_group_and_no_group_expect_everything(self):
         from zoolib import users
@@ -817,11 +817,11 @@ class ProtoChipTest(AppTestBase):
         reg.get("masha").group = ""
         reg.save()
         _, body = self.c.get("/users")
-        self.assertEqual(body.count("нет: tuic"), 2)
+        self.assertEqual(body.count("нет: TUIC"), 2)
         reg.get("masha").group = "main"
         reg.save()
         _, body = self.c.get("/users")
-        self.assertEqual(body.count("нет: tuic"), 2)
+        self.assertEqual(body.count("нет: TUIC"), 2)
 
     def test_custom_set_is_compared_with_all_enabled(self):
         from zoolib import users
@@ -830,9 +830,9 @@ class ProtoChipTest(AppTestBase):
         u.custom, u.protocols = True, ["amneziawg"]
         reg.save()
         _, body = self.c.get("/users")
-        m = re.search(r'<span class="chip warn" title="([^"]*)">нет: tuic, vless-reality</span>', body)
+        m = re.search(r'<span class="chip warn" title="([^"]*)">нет: TUIC, VLESS Vision</span>', body)
         self.assertIsNotNone(m)
-        self.assertIn("1/3; нет в: tuic, vless-reality", m.group(1))
+        self.assertIn("1/3", m.group(1))
         self.assertIn("свой набор", m.group(1))
 
     def test_expected_set_unit(self):
@@ -846,7 +846,7 @@ class ProtoChipTest(AppTestBase):
         self.assertEqual(userviews._expected_protocols(mk(group=""), managed, gs), managed)
         self.assertEqual(userviews._expected_protocols(mk(group="nope"), managed, gs), managed)
         self.assertEqual(userviews._expected_protocols(mk(group="x", custom=True), managed, gs), managed)
-        self.assertEqual(str(userviews._proto_chip(mk(group="x"), managed, gs)), '<span class="chip" title="b">1/1</span>')
+        self.assertEqual(str(userviews._proto_chip(mk(group="x"), managed, gs)), '<span class="chip">1/1</span>')
         self.assertEqual(str(userviews._proto_chip(mk(group="all", protocols=[]), managed, gs)),
                          '<span class="chip warn" title="0/3; нет в: a, b, c">нет: a, b…</span>')
 
@@ -1405,8 +1405,14 @@ class ConnectPageTest(AppTestBase):
 
     def test_copy_all_has_every_uri(self):
         _, body = self.c.get("/users/masha")
-        block = re.search(r'<textarea id="copy-all"[^>]*>(.*?)</textarea>', body, re.S).group(1)
-        self.assertEqual(len([x for x in block.split("\n") if x.startswith("vless://")]), len(SIX))
+        self.assertNotIn('id="copy-all"', body, "ссылки не дублируются скрытым полем")
+        self.assertIn('data-copy-all=".pdlg [data-copy]"', body)
+        card_part, windows = body.split('<details class="card more"')
+        field = r'<input type="text"[^>]* value="(vless://[^"]+)"'
+        in_card, in_windows = set(re.findall(field, card_part)), re.findall(field, windows)
+        self.assertEqual(len(in_windows), len(set(in_windows)))
+        self.assertFalse(in_card & set(in_windows), "ссылка из «Подключить» в окнах — только кнопкой, без второго поля")
+        self.assertEqual(len(in_card | set(in_windows)), len(SIX), "все ссылки есть на странице")
 
     def test_qr_route_needs_session_and_has_no_style(self):
         _, body = self.c.get("/users/masha")
@@ -1491,7 +1497,8 @@ class ConnectPageTest(AppTestBase):
         # протокол включили после создания пользователей: в реестре его у них нет
         self.env.add_protocol("trojan-x", users=())
         resp, body = self.c.get("/users")
-        self.assertIn("нет: trojan-x", body)
+        from zoolib import manifests
+        self.assertIn("нет: " + manifests.proto_title("trojan-x"), body)
         _, body = self.c.get("/users?verify=1")
         self.assertIn("Расхождений нет", body)
         self.assertNotIn("Синхронизировать", body)
@@ -1565,12 +1572,12 @@ class TilesTest(unittest.TestCase):
                  protolib.Link("vless://a@h:443?type=xhttp", "", "vless-xhttp")]
         out = str(connect_tiles(links, [], "masha"))
         names = re.findall(r'class="ptile-name">([^<]*)<', out)
-        self.assertEqual(names, ["Hysteria2", "VLESS XHTTP", "VLESS Vision", "Правила маршрутизации v2rayN"],
+        self.assertEqual(names, ["Hysteria2", "VLESS XHTTP", "VLESS Vision", "Правила v2rayN"],
                          "протоколы по PRIORITY, файл правил — последним")
         protocols, files = out.split('<h3 class="sub-h">Файлы</h3>')
         self.assertIn("VLESS Vision", protocols)
-        self.assertNotIn("Правила маршрутизации", protocols, "файл правил не в списке протоколов")
-        self.assertIn("Правила маршрутизации v2rayN", files)
+        self.assertNotIn("Правила v2rayN", protocols, "файл правил не в списке протоколов")
+        self.assertIn("Правила v2rayN", files)
         # импорт файла — тем же текстом, что в инструкции
         text = clientviews.rules_text(clients.load())
         self.assertIn("«Добавить набор правил» → «Импорт правил из файла»", text)
@@ -1653,11 +1660,10 @@ class QuietPagesTest(AppTestBase):
             self.c.login()
             _, body = self.c.get("/")
         self.assertIn("Трафик пользователей", body)
-        self.assertIn("без служебного пробника", body)
+        self.assertIn("Без служебного трафика пробника", body)
         self.assertIn("служебный 4.8 МБ", body)
-        self.assertIn("служебный трафик пробника: 4.8 МБ", body)
-        self.assertRegex(body, r'<h3 title="VLESS \+ REALITY \+ Vision">VLESS Vision</h3>')
-        self.assertRegex(body, r'<h3 title="Hysteria2 &lt;b&gt;">Hysteria2</h3>')   # одно название; полное имя — в подсказке
+        self.assertIn("<h3>VLESS Vision</h3>", body)   # одно название, без подсказки с длинным именем
+        self.assertIn("<h3>Hysteria2</h3>", body)
 
     def test_overview_no_service_line_without_probe_traffic(self):
         self._seed_run()
@@ -2233,7 +2239,7 @@ class ServerSpeedTest(unittest.TestCase):
                 c.login()
                 _, body = c.get("/logs")
         self.assertIn("fail2ban упал", body)
-        self.assertIn('class="active" title="fail2ban.service"', body)
+        self.assertRegex(body, r'class="active" data-swap>fail2ban.service</a>')
 
 
 if __name__ == "__main__":

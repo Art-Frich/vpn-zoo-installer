@@ -288,7 +288,7 @@ def _key_html(k: CardKey, name: str) -> Markup:
 
 def _block_html(b: Block, name: str) -> Markup:
     apps = [t("div", t("strong", a.name), " " + a.version if a.version else None,
-              t("span", " " + a.foreign, class_="chip warn", title=clientviews.FOREIGN_STORE) if a.foreign else None,
+              t("span", " " + a.foreign, class_="chip warn") if a.foreign else None,
               t("div", [t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
                           rel="noopener noreferrer", class_="chip info noprint") for ln in a.stores],
                 class_="chips") if a.stores else None,
