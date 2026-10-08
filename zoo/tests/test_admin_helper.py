@@ -114,6 +114,7 @@ class AdminShSetupTest(unittest.TestCase):
         self.log.touch()
         for name, body in STUBS.items():
             (self.stubs / name).write_text(body, encoding="utf-8", newline="\n")
+            (self.stubs / name).chmod(0o755)   # на Linux неисполняемая заглушка пропускается и зовётся настоящий ssh
 
     def run_setup(self, *args: str, **extra: str) -> subprocess.CompletedProcess:
         env = dict(os.environ, HOME=self.home.as_posix(), SERVER_HOME=self.server.as_posix(),
