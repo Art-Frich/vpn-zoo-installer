@@ -612,10 +612,10 @@ class GroupsPagesTest(GroupWebBase):
                                             "client:android": ["amneziawg"]})
         self.assertEqual(resp.status, 303, text_of(_)[:300])
         _, page = self.c.get("/groups/g1")
-        self.assertIn("Новые QR/файлы нужны:", page)
-        self.assertIn('href="/users/masha"', page)
-        self.assertIn('href="/users/kolya"', page)
+        self.assertRegex(page, r'Переслать: [^<]*\bmasha\b[^<]* <a href="/resend">кому и что</a>')
+        self.assertRegex(page, r'Переслать: [^<]*\bkolya\b')
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual(reg["masha"]["resend"], ["all"], "другие протоколы — сообщение целиком")
         self.assertEqual(sorted(reg["masha"]["protocols"]), ["amneziawg", "hysteria2"])
         self.assertNotIn("masha", self.env.proto_users("vless-reality"))
         self.assertEqual(self.groups_json()[1]["name"], "Родные")
@@ -626,7 +626,7 @@ class GroupsPagesTest(GroupWebBase):
                                             "android": ["com.whatsapp"], "windows": ["Discord.exe"],
                                             "client:android": ["amneziawg"]})
         _, page = self.c.get("/groups/g1")
-        self.assertNotIn("Новые QR/файлы нужны", page)
+        self.assertNotIn("Переслать:", page)
 
     def test_edit_errors_keep_form(self):
         for multi, msg in (({"name": ["Основная"], "proto": ["amneziawg"]}, "уже есть"),
@@ -651,8 +651,9 @@ class GroupsPagesTest(GroupWebBase):
         resp, _ = self.c.post("/groups/g1/move", {"user": "masha", "to": "main"})
         self.assertEqual(resp.status, 303)
         _, page = self.c.get("/groups/main")
-        self.assertIn("Новые QR/файлы нужны:", page)
+        self.assertIn('Переслать: masha <a href="/resend">', page)
         reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual(reg["masha"]["resend"], ["all"], "другая группа — сообщение целиком")
         self.assertEqual((reg["masha"]["group"], sorted(reg["masha"]["protocols"])), ("main", sorted(PROTOS)))
         self.assertIn('<option value="g1">Семья</option>', page)
         # свой набор: плашка и «Как у группы»
@@ -890,8 +891,8 @@ class GroupsPagesTest(GroupWebBase):
         self.assertEqual(resp.status, 422)
         self.assertIn("нет ни букв, ни цифр", page)
         self.assertIn("worker29", page, "одна плохая строка не выбрасывает весь вставленный список")
-        self.assertRegex(page, r'<details class="card more" open>\s*<summary>＋ Добавить людей списком')
-        self.assertNotIn("worker0", {u["name"] for u in self.env.users_json()["users"]})
+        self.assertRegex(page, r'<details class="card more" open id="add">\s*<summary>＋ Добавить людей списком')
+        self.assertNotIn("worker0",{u["name"] for u in self.env.users_json()["users"]})
 
     def test_users_page_adds_into_group(self):
         resp, _ = self.c.post("/users", {"name": "vasya", "group": "g1"})

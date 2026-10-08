@@ -135,6 +135,13 @@ def cmd_user_disable(args: argparse.Namespace, cfg: Config) -> int:
     return _report(users.set_enabled(args.name, False, partial=args.partial), args.json)
 
 
+def cmd_user_rekey(args: argparse.Namespace, cfg: Config) -> int:
+    code = _report(users.rekey(args.name), args.json)
+    if code == EXIT_OK and not args.json:
+        output.info(f"старые ключи не работают; новые: zoo links {args.name} --qr")
+    return code
+
+
 def cmd_user_sync(args: argparse.Namespace, cfg: Config) -> int:
     reports = users.sync_users(args.names or None, include_custom=args.include_custom)
     if args.json:
@@ -490,6 +497,8 @@ def build_parser() -> argparse.ArgumentParser:
         p = uadd(verb, handler, help_)
         p.add_argument("name")
         p.add_argument("--partial", action="store_true", help="не откатывать при ошибке в части протоколов")
+    p = uadd("rekey", cmd_user_rekey, "новые ключи во всех протоколах (потерял телефон): старые перестают работать")
+    p.add_argument("name")
     p = uadd("list", cmd_user_list, "список пользователей")
     p.add_argument("--verify", action="store_true", help="сверить реестр с протоколами")
     p.add_argument("--all", action="store_true", help=f"со служебными ({users.PROBE_USER})")

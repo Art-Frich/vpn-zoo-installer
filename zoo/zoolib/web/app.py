@@ -93,7 +93,7 @@ class App:
     def __init__(self, token: str, cfg_loader: Callable[[], Config] = load_config,
                  extra_hosts: set[str] | None = None) -> None:
         from . import (allowviews, clientviews, distviews, groupviews, handoffviews, journalviews, logviews, probeviews,
-                       protoviews, userviews, views)  # маршруты ссылаются на App: импорт здесь
+                       protoviews, resendviews, userviews, views)  # маршруты ссылаются на App: импорт здесь
         self.auth = Auth(token, store=paths.state_dir() / "web-sessions.json")
         self.jobs = Jobs()
         self.cfg_loader = cfg_loader
@@ -118,6 +118,9 @@ class App:
             ("GET", rf"/users/{name}/delete", userviews.user_delete_confirm, True),
             ("POST", rf"/users/{name}/delete", userviews.user_delete, True),
             ("POST", rf"/users/{name}/devices", userviews.user_devices, True),
+            ("POST", rf"/users/{name}/rekey", userviews.user_rekey, True),
+            ("GET", r"/resend", resendviews.page, True),
+            ("POST", r"/resend", resendviews.post, True),
             ("GET", rf"/users/{name}/file/(?P<fname>[A-Za-z0-9._-]{{1,64}})", userviews.user_file, True),
             ("GET", rf"/users/{name}/qr/(?P<idx>\d+)", userviews.user_qr, True),
             ("GET", r"/connect/new", groupviews.connect_page, True),
