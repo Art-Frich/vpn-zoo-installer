@@ -319,6 +319,7 @@ class Section:
     extras: list[Item] = field(default_factory=list)
     check: str = ""
     foreign: bool = False   # на этой платформе приложения нет в российском магазине (iPhone: нужен иностранный Apple ID)
+    via: str = ""           # что идёт через VPN: apps, ru-direct, all (справочник via каталога); пусто — не описано
 
     @property
     def proto(self) -> str:
@@ -333,6 +334,9 @@ class Section:
         return ", ".join(i.tile for i in self.items)
 
 
+VIA_PREFIX = "Через VPN — "
+
+
 @dataclass
 class Pack:
     platform: str
@@ -340,16 +344,23 @@ class Pack:
     sections: list[Section]
     apps: str = ""   # приложения «через VPN» в тексте шага (список группы или человека) — входят в подпись набора
     admin: bool = False   # приложения ставит ИТ: людям шагов установки нет
+    via: str = ""    # строка «Через VPN — …» (что идёт через VPN у главного приложения); пусто — не описано
+    before: list[str] = field(default_factory=list)   # общие шаги до установки (браузер Brave)
+    after: list[str] = field(default_factory=list)    # общие шаги перед проверкой (настройки Android)
+    report: str = ""  # что прислать администратору, если не работает
 
     @property
     def message(self) -> str:
-        """Инструкция платформы одним списком: установка всех приложений (если люди ставят сами), потом по порядку
-        импорт и настройки каждого (каждый шаг начинается с названия приложения), в конце проверка. Начинается с
-        {name}: имя подставляет тот, кто показывает текст человеку. Протоколов в тексте нет."""
-        steps = [] if self.admin else [s.install for s in self.sections]
+        """Инструкция платформы одним списком: Brave и установка всех приложений (если люди ставят сами), потом по
+        порядку импорт и настройки каждого (каждый шаг начинается с названия приложения), проверка и что прислать,
+        если не работает. Первая строка начинается с {name}: имя подставляет тот, кто показывает текст человеку;
+        вторая — что идёт через VPN. Протоколов в тексте нет."""
+        steps = [] if self.admin else [*self.before, *(s.install for s in self.sections)]
         for s in self.sections:
             steps += s.steps
-        steps.append(self.sections[0].check)
+        steps += [*self.after, self.sections[0].check]
+        if self.report:
+            steps.append(self.report)
         if self.admin:
             names = " и ".join(f"«{s.client['name']}»" for s in self.sections)
             abroad = " и ".join(f"«{s.client['name']}»" for s in self.sections if s.foreign)
@@ -357,7 +368,7 @@ class Pack:
                     else f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}.")
         else:
             head = f"{NAME_TOKEN}, VPN на {self.platform_title}: что сделать"
-        return "\n".join([head, *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
+        return "\n".join([head, *([self.via] if self.via else []), *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
 
 
 def _usable(proto: str, client_id: str, link: protolib.Link) -> bool:
@@ -447,17 +458,30 @@ GITHUB_FILE = {"android": "файл «.apk» (universal или arm64-v8a)",
                "macos": "файл «.dmg»", "linux": "файл «.AppImage» или «.deb» с «x64» / «amd64»"}
 
 
-def _install_target(ln: dict[str, Any], platform: str) -> str:
+def _install_target(ln: dict[str, Any], platform: str, client: dict[str, Any] | None = None) -> str:
     url = ln["url"]
     if ln.get("kind") != "github":
         return url
     if re.fullmatch(r"https://github\.com/[^/]+/[^/]+/releases/?", url):
         url = url.rstrip("/") + "/latest"
-    hint = GITHUB_FILE.get(platform)
+    hint = ((client or {}).get("asset") or {}).get(platform) or GITHUB_FILE.get(platform)
     return f"{url} — в «Assets» скачайте {hint}" if hint else url
 
 
-APPS_SHOWN = 6
+def has_brave(apps: list[str] | None) -> bool:
+    """Brave в списке «через VPN» (Android или Windows)."""
+    b = allowlist.BY_KEY["brave"]
+    ids = {x.lower() for x in apps or []}
+    return any((getattr(b, p) or "").lower() in ids for p in allowlist.PLATFORMS)
+
+
+def via_line(cat: clients.Catalog, mode: str, names: str) -> str:
+    """«Через VPN — только Brave, Telegram и Claude, остальное напрямую»: что идёт через VPN у приложения."""
+    if not mode:
+        return ""
+    if mode == "apps":
+        return f"{VIA_PREFIX}только {names or 'приложения из списка'}, остальное напрямую."
+    return f"{VIA_PREFIX}{cat.raw['via'][mode]}."
 
 
 def via_vpn_names(al: allowlist.Allowlist | None, platform: str, ids: list[str]) -> list[str]:
@@ -470,8 +494,7 @@ def via_vpn_names(al: allowlist.Allowlist | None, platform: str, ids: list[str])
 
 
 def join_names(names: list[str]) -> str:
-    if len(names) > APPS_SHOWN:
-        names = names[:APPS_SHOWN - 1] + [f"ещё {len(names) - APPS_SHOWN + 1} из списка"]
+    """Весь список, без «и ещё N»: человеку отмечать приложения не по чему, кроме этого текста."""
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " и " + names[-1]
 
 
@@ -490,7 +513,9 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         return None
     if apps is None and al is not None and platform in allowlist.PLATFORMS:
         apps = al.common(platform)
-    names = join_names(via_vpn_names(al, platform, apps)) if apps else ""
+    titles = via_vpn_names(al, platform, apps) if apps else []
+    names = join_names(titles) if titles else ""
+    brave = has_brave(apps) if apps is not None else True   # списка нет — общий пресет, Brave в нём есть
     sections = []
     for c, mine in plan:
         items = [Item(proto, method, _tile_title(cat, mans, proto)) for proto, method in mine]
@@ -498,19 +523,24 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         ver = f" (версия {sec.version})" if sec.version else ""
         sec.foreign = cat.no_ru_store(c, platform)
         foreign = f" {FOREIGN_STORE}" if sec.foreign else ""
-        sec.install = f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform)}{foreign}"
-        sec.steps += [c["import"][m] for m in dict.fromkeys(i.method for i in items)]
-        for ex in c.get("extra", []):
-            if ex["platform"] == platform and ex["proto"] in have:
-                sec.steps.append(ex["text"])
-                sec.extras.append(Item(ex["proto"], "file", _tile_title(cat, mans, ex["proto"])))
-        app_step = cat.per_app_steps(c, platform)
-        if app_step:
-            sec.steps.append(f"Приложения через VPN в «{c['name']}»: "
-                             + app_step.replace("{apps}", names or "нужные приложения"))
-        sec.check = cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]
+        sec.install = f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform, c)}{foreign}"
+        sec.steps = cat.steps(c, platform, [i.method for i in items], names, lambda p: p in have)
+        sec.extras = [Item(ex["proto"], "file", _tile_title(cat, mans, ex["proto"])) for ex in c.get("extra", [])
+                      if ex["platform"] == platform and ex["proto"] in have]
+        sec.via = cat.via(c, platform)
+        if sec.via == "apps" and c.get("per_app") == "rules" and not sec.extras:
+            sec.via = "all"   # список — файлом правил, а его у человека нет: через VPN идёт всё
+        sec.check = cat.check(sec.via, brave, titles[0] if titles else "")
         sections.append(sec)
-    return Pack(platform, cat.platforms[platform], sections, names, admin)
+    modes = [s.via for s in sections]
+    lists = "apps" in modes
+    pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0], names),
+                report=cat.raw["report"])
+    if brave and lists and platform in cat.raw.get("brave", {}):
+        pack.before.append(cat.raw["brave"][platform])
+    if lists and platform in cat.raw.get("rules", {}):
+        pack.after.append(cat.raw["rules"][platform])
+    return pack
 
 
 def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]] | None, list[str] | None]:

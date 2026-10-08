@@ -501,7 +501,7 @@ class AllowWebTest(AppTestBase):
         with mock.patch("zoolib.qr.svg", return_value="<svg></svg>"):
             resp, body = self.c.get("/users/masha")
         self.assertEqual(resp.status, 200)
-        self.assertIn("«Импорт правил из файла» (файл v2rayn-routing.json)", body, "тот же шаг, что в инструкции")
+        self.assertIn("«Импорт правил из файла», файл v2rayn-routing.json", body, "тот же шаг, что в инструкции")
         self.assertNotIn("Маршрутизация → Импорт из файла", body)
         self.assertIn('href="/apps?user=masha"', body)
         idx = [m for m in re.findall(r'href="/users/masha/file/([\w.-]+)"', body)]

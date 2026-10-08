@@ -86,6 +86,33 @@ class Catalog:
         """Шаг «приложения через VPN» для платформы; нет шага — на ней клиент так не умеет."""
         return (client.get("per_app_steps") or {}).get(platform)
 
+    def via(self, client: dict[str, Any], platform: str) -> str:
+        """Что идёт через VPN у клиента на платформе: apps, ru-direct, all; не описано — пусто."""
+        return (client.get("via") or {}).get(platform, "")
+
+    def setup(self, client: dict[str, Any], platform: str) -> list[str]:
+        """Шаги настройки после импорта (маршрутизация, TUN, служебный вход)."""
+        return list((client.get("setup") or {}).get(platform, []))
+
+    def steps(self, client: dict[str, Any], platform: str, methods: list[str], apps: str = "",
+              extras: Callable[[str], bool] = lambda proto: True) -> list[str]:
+        """Шаги одного приложения после установки: импорт ключа выбранными способами, файлы-дополнения (extras —
+        какие протоколы-файлы есть у человека), выбор приложений «через VPN» (apps — их названия), настройка."""
+        out = [client["import"][m] for m in dict.fromkeys(methods)]
+        out += [ex["text"] for ex in client.get("extra", []) if ex["platform"] == platform and extras(ex["proto"])]
+        if step := self.per_app_steps(client, platform):
+            out.append(f"Приложения через VPN в «{client['name']}»: " + step.replace("{apps}", apps or "нужные приложения"))
+        return out + self.setup(client, platform)
+
+    def check(self, via: str, brave: bool, first_app: str = "") -> str:
+        """Шаг проверки: в Brave (он в списке), в первом приложении списка или на любом сайте (через VPN идёт всё)."""
+        chk = self.raw["check"]
+        if via == "apps" and (brave or not first_app):
+            return chk["brave"]
+        if via == "apps":
+            return chk["apps"].replace("{app}", first_app)
+        return chk["device"]
+
     def real_protocols(self) -> list[str]:
         return [p for p, d in self.protocols.items() if not d.get("pseudo")]
 
@@ -136,6 +163,15 @@ def validate(raw: Any) -> None:
         v = c.get("verified") or {}
         need(bool(DATE_RE.fullmatch(str(v.get("date", "")))) and isinstance(v.get("device"), bool),
              f"{cid}: verified")
+        via = c.get("via", {})
+        need(isinstance(via, dict) and set(via) <= set(c["platforms"]) and all(m in raw.get("via", {}) for m in via.values()),
+             f"{cid}: via — платформа клиента → ключ справочника via")
+        setup = c.get("setup", {})
+        need(isinstance(setup, dict) and set(setup) <= set(c["platforms"])
+             and all(isinstance(v, list) and all(isinstance(s, str) and s for s in v) for v in setup.values()),
+             f"{cid}: setup — платформа клиента → список шагов")
+        asset = c.get("asset", {})
+        need(isinstance(asset, dict) and set(asset) <= set(c["platforms"]), f"{cid}: asset")
     for plat, by_proto in raw["recommended"].items():
         need(plat in plats, f"recommended: платформа {plat}")
         for pid, cid in by_proto.items():
@@ -144,8 +180,22 @@ def validate(raw: Any) -> None:
             need(c["protocols"].get(pid, {}).get("s") in ("ok", "warn"), f"recommended {plat}/{pid}: {cid} не поддерживает")
     for plat, order in raw["handoff"].items():
         need(plat in plats and all(p in protos for p in order), f"handoff {plat}")
-    need("*" in raw.get("check", {}), "check: нужен запасной текст «*»")
+    need(set(raw.get("check", {})) >= {"brave", "apps", "device"} and "{app}" in raw["check"]["apps"],
+         "check: нужны brave, apps (с {app}) и device")
+    need(isinstance(raw.get("report"), str) and bool(raw["report"]), "report: что прислать, если не работает")
+    for key in ("brave", "rules"):
+        need(isinstance(raw.get(key, {}), dict) and set(raw.get(key, {})) <= set(plats), f"{key}: платформа → текст")
     need(all(c.get("per_app") in raw.get("per_app", {}) for c in raw["clients"]), "per_app клиента не из справочника")
+    for plat, g in raw.get("guide", {}).items():
+        need(plat in plats and isinstance(g, dict) and bool(g.get("apps"))
+             and all(any(x["id"] == i and plat in x["platforms"] and x.get("import") for x in raw["clients"]) for i in g["apps"]),
+             f"guide {plat}: нужен список apps из клиентов этой платформы, которые берут ключи")
+    for pr in raw.get("presets", []):
+        need(pr.get("id") in ("simple", "reliable") and pr.get("protocols") and all(p in protos for p in pr["protocols"]),
+             f"presets: {pr.get('id')}")
+        for plat, ids in pr.get("plan", {}).items():
+            need(plat in plats and all(any(x["id"] == i and plat in x["platforms"] for x in raw["clients"]) for i in ids),
+                 f"presets {pr['id']}/{plat}: клиент без этой платформы")
 
 
 def load(path: Path | None = None) -> Catalog:
