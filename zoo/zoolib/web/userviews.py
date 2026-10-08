@@ -87,6 +87,45 @@ def _group_of(user: users.User) -> groups.Group | None:
         return None
 
 
+def device_choices(cat: clients.Catalog, g: groups.Group | None, own: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """Какие устройства можно отметить: устройства группы (без группы — все платформы каталога) и уже свои."""
+    base = set(g.devices) if g is not None and g.devices else set(cat.platforms)
+    return [p for p in cat.platforms if p in base or p in own]
+
+
+def device_boxes(cat: clients.Catalog, choices: list[str], checked: list[str] | None) -> Markup:
+    return t("span", [t("label", t("input", type="checkbox", name="dev", value=p,
+                                   checked=checked is None or p in checked), " " + cat.platforms[p], class_="chk")
+                      for p in choices], class_="dev-boxes")
+
+
+def _devices_form(user: users.User, g: groups.Group | None, csrf: str) -> Markup | str:
+    """Устройства человека: отметить и сохранить; совпали с группой — «как у группы»."""
+    try:
+        cat = clients.load()
+    except clients.ClientsError:
+        return "—"
+    return t("form", csrf_input(csrf),
+             device_boxes(cat, device_choices(cat, g, user.devices), groups.devices_of(user, g)),
+             t("button", "Сохранить", type="submit", class_="btn small"),
+             t("span", "свои" if user.devices else "как у группы" if g else "", class_="muted small"),
+             method="post", action=f"/users/{user.name}/devices", class_="inline", data_swap=True)
+
+
+def devices_flash(cat: clients.Catalog, stored: list[str]) -> str:
+    return ("Устройства: " + ", ".join(cat.platforms.get(d, d) for d in stored)) if stored else "Устройства — как у группы"
+
+
+def user_devices(app: "App", req: "Request", name: str) -> "Response":
+    devs = [d[:16] for d in req.multi.get("dev", [])][:8]
+    try:
+        stored = groups.set_devices([name], devs)[name]
+        req.session.flash("ok", devices_flash(clients.load(), stored))
+    except (users.UserError, LockTimeout, clients.ClientsError) as e:
+        req.session.flash("bad", str(e))
+    return _redirect(f"/users/{name}")
+
+
 def _disable_confirm(name: str) -> str:
     return f"Отключить {name}? Ссылки сохранятся, но подключиться он не сможет."
 
@@ -529,10 +568,12 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
         apps = "свой список" if al.own(name) else ("список группы" if al.from_group(name) else "общий список")
     except allowlist.AllowlistError:
         apps = "общий список"
+    grp = _group_of(user)
     info = card("Профиль", kv([
         ("статус", badge("включён", "ok") if user.enabled else
          t("span", "отключён", class_="badge muted", title="креды сохранены, доступ закрыт")),
         ("группа", _group_link(user)),
+        *([] if user.system else [("устройства", _devices_form(user, grp, csrf))]),
         ("через VPN", t("a", apps, href=f"/apps?user={name}")),
         *([("имя", user.display)] if user.display else []),
         ("заметка", user.note or "—"),
@@ -558,11 +599,11 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
 
     links, errors = _cached_links(app, name)
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
-    grp = _group_of(user)
     show = link_filter(user, grp)
     ctx = clientviews.Ctx.load()
     shown: dict[str, str] = {}
-    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label, shown=shown)
+    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label, shown=shown,
+                                       devices=groups.devices_of(user, grp))
     tiles = connect_tiles(links, manifests.load_all()[0], name, show, shown, bool(connect))
     # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
     advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show, ctx, grp), tiles,

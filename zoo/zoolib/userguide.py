@@ -25,13 +25,15 @@ class GuideError(Exception):
 
 
 def _neutral(step: str) -> str:
-    """Шаги каталога написаны от лица администратора («QR, который я пришлю»); в общем документе — «от администратора»."""
-    return SENT_RE.sub(" от администратора", step)
+    """Шаги каталога написаны для сообщения («ссылку из сообщения»); в общем документе — «из сообщения администратора»."""
+    return SENT_RE.sub(" от администратора", step.replace("из сообщения", "из сообщения администратора"))
 
 
-def _methods(c: dict[str, Any], plat: str) -> list[str]:
-    order = ("link", "file", "qr") if plat in DESKTOP else ("qr", "link", "file")
-    return [next(m for m in order if m in c["import"])]
+def _imports(c: dict[str, Any], plat: str) -> tuple[list[tuple[str, list[str]]], list[str] | None]:
+    """Как в админке (clientviews.pick_method): ссылка или файл из сообщения; QR — с другого экрана, только телефонам."""
+    main = next(m for m in ("link", "file", "qr") if m in c["import"])
+    alt = [] if plat not in DESKTOP and main != "qr" and "qr" in c["import"] else None
+    return [(main, [])], alt
 
 
 def _where(c: dict[str, Any], plat: str) -> str:
@@ -57,7 +59,8 @@ def _variant(cat: clients.Catalog, plat: str, n: int, cid: str) -> list[str]:
     out.append("")
     asset = (c.get("asset") or {}).get(plat)
     install = f"Установите «{c['name']}»" + (f": в «Assets» скачайте {asset}." if asset else ".")
-    steps = [install] + cat.steps(c, plat, _methods(c, plat), APPS_WORD)
+    imports, alt = _imports(c, plat)
+    steps = [install] + cat.steps(c, plat, imports, APPS_WORD, alt_qr=alt)
     if mode == "apps" and plat in cat.raw.get("rules", {}):
         steps.append(cat.raw["rules"][plat])
     steps.append(cat.check(mode, True))

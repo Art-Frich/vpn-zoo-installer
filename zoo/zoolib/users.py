@@ -2,8 +2,9 @@
 
 Реестр /etc/vpn-setup/users.json — источник правды zoo:
     {"schema": 1, "users": [{"name", "created", "enabled", "note", "protocols": [id, ...],
-                             "group": id, "custom": true}]}
-group — id группы (groups.json); custom — набор протоколов задан вручную, группа его не трогает.
+                             "group": id, "custom": true, "display": "Иван Петров", "devices": ["android"]}]}
+group — id группы (groups.json); custom — набор протоколов задан вручную, группа его не трогает;
+devices — устройства человека (нет — как у группы): инструкции и карточки только для них.
 
 Операции расходятся по всем включённым протоколам с пользователями через protolib.
 При ошибке в одном протоколе изменения в остальных откатываются (partial=True — оставить
@@ -53,6 +54,15 @@ def validate_name(name: str) -> str:
     return name
 
 
+DEVICE_RE = re.compile(r"^[a-z]{1,16}$")
+
+
+def clean_devices(v: Any) -> list[str]:
+    """Устройства из файла или формы: id платформ без повторов, порядок сохраняется."""
+    items = v if isinstance(v, (list, tuple)) else []
+    return list(dict.fromkeys(str(x) for x in items if DEVICE_RE.match(str(x))))[:8]
+
+
 @dataclass
 class User:
     name: str
@@ -64,6 +74,7 @@ class User:
     group: str = ""
     custom: bool = False
     display: str = ""   # имя человека, как оно написано в списке («Иван Петров»); name — латинский логин
+    devices: list[str] = field(default_factory=list)   # его устройства (id платформ каталога); пусто — как у группы
 
     @property
     def label(self) -> str:
@@ -82,6 +93,7 @@ class User:
             group=str(d.get("group") or ""),
             custom=bool(d.get("custom", False)),
             display=str(d.get("display") or ""),
+            devices=clean_devices(d.get("devices")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,6 +107,8 @@ class User:
             d["custom"] = True
         if self.display:
             d["display"] = self.display
+        if self.devices:
+            d["devices"] = list(self.devices)
         return d
 
 
@@ -279,7 +293,7 @@ BULK_BUDGET = 300   # секунд на пачку: дольше блокиро�
 
 
 def add_many(items: list[tuple[str, ...]], group: str, budget: float = BULK_BUDGET) -> list[OpReport]:
-    """Новые пользователи (логин, заметка[, имя человека]) в группу под одной блокировкой. Отказ у одного не мешает остальным
+    """Новые пользователи (логин, заметка[, имя человека[, устройства]]) в группу под одной блокировкой. Отказ у одного не мешает остальным
     (у каждого свой отчёт); не уложились в budget — остальным отчёт «не успели». Списки пользователей
     протоколов читаются один раз на протокол, а не на каждого человека."""
     known: dict[str, set[str] | None] = {}
@@ -302,14 +316,16 @@ def add_many(items: list[tuple[str, ...]], group: str, budget: float = BULK_BUDG
                 out.append(OpReport("add", name, ok=False, message="не успели: повторите для оставшихся"))
                 continue
             try:
-                out.append(_add_in(reg, name, note, group=group, present=present, display=rest[0] if rest else ""))
+                out.append(_add_in(reg, name, note, group=group, present=present, display=rest[0] if rest else "",
+                                   devices=list(rest[1]) if len(rest) > 1 else None))
             except (UserError, protolib.ProtoError) as e:
                 out.append(OpReport("add", name, ok=False, message=str(e)))
     return out
 
 
 def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = None, partial: bool = False,
-            system: bool = False, group: str | None = None, present=None, display: str = "") -> OpReport:
+            system: bool = False, group: str | None = None, present=None, display: str = "",
+            devices: list[str] | None = None) -> OpReport:
     """Добавление под уже взятой блокировкой; реестр сохраняется здесь. present — как _present
     (add_many подставляет кэш списков протоколов)."""
     present = present or _present
@@ -371,7 +387,8 @@ def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = N
         rep.message = "пользователь не создан ни в одном протоколе"
         return rep
     reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system,
-                          group=grp.id if grp else "", custom=custom, display=display if display != name else ""))
+                          group=grp.id if grp else "", custom=custom, display=display if display != name else "",
+                          devices=clean_devices(devices)))
     reg.save()
     if not system:
         _write_allowlist_files(name)
@@ -428,6 +445,18 @@ def _delete_in(reg: Registry, name: str, force: bool = False) -> OpReport:
                         "(новый: sudo zoo probe --local --summary --export "
                         f"{paths.probe_export_file()})")
     return rep
+
+
+def set_devices(names: list[str], devices: dict[str, list[str]]) -> None:
+    """Устройства людей ({логин: устройства}, пусто — как у группы); ключей и протоколов не трогает."""
+    with _lock():
+        reg = _load_registry()
+        for n in names:
+            u = reg.require(n)
+            if u.system:
+                raise UserError(f"{n} — служебный пользователь")
+            u.devices = clean_devices(devices.get(n, []))
+        reg.save()
 
 
 def set_enabled(name: str, enabled: bool, partial: bool = False) -> OpReport:

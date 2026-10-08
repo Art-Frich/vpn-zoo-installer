@@ -170,6 +170,38 @@ class Group:
         в порядке PRIORITY; у «всех включённых» — все выбираемые."""
         return offered(self.protocols, selectable)
 
+    @property
+    def devices(self) -> list[str]:
+        """Устройства группы — платформы, для которых выбраны приложения; по умолчанию они же у каждого участника."""
+        return [p for p, ids in self.clients.items() if ids]
+
+
+def devices_of(u: users.User, g: Group | None) -> list[str] | None:
+    """Устройства человека: свои, иначе группы; без группы и своих — None (все, для которых есть приложения)."""
+    if u.devices:
+        return list(u.devices)
+    return g.devices if g is not None else None
+
+
+def set_devices(names: list[str], devices: list[str]) -> dict[str, list[str]]:
+    """Задать людям устройства. Совпали с устройствами группы (или пусто) — «как у группы»: дальше их меняет группа.
+    Возвращает {логин: записанные устройства} (пусто — как у группы)."""
+    plats = clientcat.load().platforms
+    bad = [d for d in devices if d not in plats]
+    if bad:
+        raise GroupError(f"неизвестное устройство: {bad[0][:16]}")
+    want = [p for p in plats if p in devices]
+    gs, ureg = Groups.load(), users.list_users()
+    out: dict[str, list[str]] = {}
+    for n in names:
+        u = ureg.get(n)
+        if u is None or u.system:
+            raise GroupError(f"пользователя «{n[:32]}» нет в реестре")
+        g = gs.get(u.group)
+        out[n] = [] if g is not None and set(want) == set(g.devices) else want
+    users.set_devices(names, out)
+    return out
+
 
 class Groups:
     def __init__(self, path: Path, groups: list[Group] | None = None, exists: bool = False) -> None:
@@ -314,12 +346,12 @@ def clean_allow(lists: dict[str, list[str]] | None) -> dict[str, list[str]] | No
     return out
 
 
-def parse_new_users(text: str) -> list[tuple[str, str, str]]:
-    """Список людей (people.build) → [(id, заметка, имя)]; негодная строка или больше people.LINES_MAX — отказ."""
+def parse_new_users(text: str) -> list[tuple[str, str, str, tuple[str, ...]]]:
+    """Список людей (people.build) → [(id, заметка, имя, устройства)]; негодная строка или больше people.LINES_MAX — отказ."""
     plan = people.plan_for_registry(text)
     if not plan.ok:
         raise GroupError(plan.error)
-    return plan.triples()
+    return plan.entries()
 
 
 def check_members(new: list[tuple[str, ...]], existing: list[str]) -> None:
@@ -1173,6 +1205,8 @@ def add_members(ref: str, new: list[tuple[str, ...]], existing: list[str]) -> Gr
     до первого изменения."""
     check_members(new, existing)
     g = Groups.load().require(ref)
+    # устройства как у группы не записываются: человек следует за группой
+    new = [(*x[:3], () if set(x[3]) == set(g.devices) else x[3]) if len(x) > 3 else x for x in new]
     rep = GroupReport(g, "готово")
     for r, (name, *_) in zip(users.add_many(new, g.id) if new else [], new):
         if r.ok:

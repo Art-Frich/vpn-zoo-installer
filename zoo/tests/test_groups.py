@@ -526,13 +526,38 @@ class ModelTest(GroupsBase):
 
     def test_parse_new_users(self):
         self.assertEqual(groups.parse_new_users("  Masha ; сестра \n\n kolya\n"),
-                         [("masha", "сестра", "Masha"), ("kolya", "", "kolya")])
-        self.assertEqual(groups.parse_new_users("a\na\nowner"), [("a", "", "a"), ("a-2", "", "a"), ("owner-2", "", "owner")])
-        self.assertEqual(groups.parse_new_users("Иван Петров; бухгалтерия"), [("ivan-petrov", "бухгалтерия", "Иван Петров")])
+                         [("masha", "сестра", "Masha", ()), ("kolya", "", "kolya", ())])
+        self.assertEqual(groups.parse_new_users("a\na\nowner"),
+                         [("a", "", "a", ()), ("a-2", "", "a", ()), ("owner-2", "", "owner", ())])
+        self.assertEqual(groups.parse_new_users("Иван Петров; бухгалтерия; android, windows"),
+                         [("ivan-petrov", "бухгалтерия", "Иван Петров", ("android", "windows"))])
         with self.assertRaises(groups.GroupError):
             groups.parse_new_users("\n".join(f"u{i}" for i in range(groups.NEW_USERS_MAX + 1)))
         with self.assertRaises(groups.GroupError):
             groups.parse_new_users("***")
+
+    def test_person_devices_default_to_group(self):
+        rep = groups.connect("Офис", ["amneziawg"], {"android": ["amneziawg"], "ios": ["amneziawg"]}, None,
+                             groups.parse_new_users("Иван; android\nМария; android, iphone\nОльга"), [])
+        self.assertTrue(rep.ok, rep.errors)
+        reg = self.registry()
+        self.assertEqual(reg["ivan"].get("devices"), ["android"])
+        self.assertNotIn("devices", reg["mariya"], "как у группы — не записывается: человек следует за группой")
+        self.assertNotIn("devices", reg["olga"])
+        gs, ureg = groups.Groups.load(), users.list_users()
+        g = gs.get("Офис")
+        self.assertEqual(g.devices, ["android", "ios"])
+        self.assertEqual(groups.devices_of(ureg.get("ivan"), g), ["android"])
+        self.assertEqual(groups.devices_of(ureg.get("olga"), g), ["android", "ios"])
+        self.assertEqual(groups.set_devices(["olga", "ivan"], ["ios"]), {"olga": ["ios"], "ivan": ["ios"]})
+        self.assertEqual(groups.set_devices(["ivan"], ["ios", "android"]), {"ivan": []}, "совпало с группой")
+        self.assertEqual(groups.set_devices(["olga"], []), {"olga": []})
+        self.assertNotIn("devices", self.registry()["olga"])
+        with self.assertRaises(groups.GroupError):
+            groups.set_devices(["olga"], ["symbian"])
+        with self.assertRaises(groups.GroupError):
+            groups.set_devices(["ghost"], ["ios"])
+        self.assertIsNone(groups.devices_of(users.User("x"), None), "без группы и своих — все устройства")
 
     def test_client_options(self):
         cat = clients.load()
