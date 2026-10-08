@@ -85,36 +85,21 @@ docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$PWD/probe:/data" 
 
 ## 2. Администрирование
 
-Админка снаружи не видна — на сервере она слушает только `127.0.0.1`. `zoo-admin` сам поднимает SSH-туннель, берёт одноразовую ссылку входа и открывает браузер: токен не нужен.
+Нужны только адрес сервера и пароль root — как при обычном входе по SSH. Ничего ставить не надо: `ssh` есть в Windows 10/11, macOS и Linux.
 
-### Один раз на своём компьютере
-
-Нужен SSH-доступ к серверу (пароль или ключ). Команду `root@СЕРВЕР` (и `-p`, если порт не 22) печатает установщик в конце.
-
-**Windows (PowerShell):**
-
-```powershell
-iwr https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools/zoo-admin.ps1 -OutFile zoo-admin.ps1
-powershell -ExecutionPolicy Bypass -File .\zoo-admin.ps1 -Setup root@СЕРВЕР      # порт не 22: добавьте -Port 2222
-```
-
-**macOS / Linux / Git Bash:**
+**Зайти на сервер:**
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools/zoo-admin.sh
-bash zoo-admin.sh --setup root@СЕРВЕР                                            # порт не 22: добавьте -p 2222
+ssh root@IP
 ```
 
-Что произойдёт: создастся SSH-ключ (если его нет), он ляжет на сервер (пароль спросят один раз), в `~/.ssh/config` появится запись `zoo`, поставится команда `zoo-admin`. Повторный запуск безопасен. Другое имя вместо `zoo` — `--name` (Windows: `-Name`). Windows: команда появится в новом окне PowerShell; если профиль не грузится — `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`. macOS/Linux: если `~/.local/bin` нет в `PATH`, скрипт подскажет, как добавить.
-
-### Каждый день
+**Открыть админку** (одна команда; ПОРТ — из итога установки):
 
 ```bash
-zoo-admin     # админка в браузере, уже со входом
-ssh zoo       # консоль сервера
+ssh -t -L ПОРТ:127.0.0.1:ПОРТ root@IP zoo web --link
 ```
 
-Вход в админку запоминается до 30 дней (без заходов — на 14); потом снова `zoo-admin`. Туннель остаётся в фоне.
+Введите пароль — появится ссылка, откройте её в браузере: вы уже вошли. Админка работает, пока открыто это окно. Забыли порт — зайдите на сервер и наберите `zoo web --info`: там готовая команда.
 
 ### Частые действия
 
@@ -130,15 +115,20 @@ ssh zoo       # консоль сервера
 
 Людям отправляйте [docs/USER-GUIDE.md](docs/USER-GUIDE.md). Для Android проще всего QR **AmneziaWG**: через VPN идут только выбранные приложения, банки и Госуслуги — мимо. Все команды `zoo` — в [справочнике](docs/REFERENCE.md#админка-и-инструмент-zoo).
 
-<details><summary>Без помощника, вручную</summary>
+<details><summary>Дополнительно: вход без пароля и команда <code>zoo-admin</code></summary>
 
-```bash
-sudo zoo web --info                                            # на сервере: порт, команда туннеля, ссылка входа и токен
-ssh -N -L ПОРТ:127.0.0.1:ПОРТ root@СЕРВЕР                      # у себя, держать открытым; потом http://127.0.0.1:ПОРТ/
-ssh -t -L ПОРТ:127.0.0.1:ПОРТ root@СЕРВЕР sudo zoo web --link  # туннель и одноразовая ссылка (3 минуты) сразу
+Помощник один раз кладёт SSH-ключ на сервер и ставит команду `zoo-admin` (туннель + ссылка + браузер) и короткое имя `ssh zoo`:
+
+```powershell
+iwr https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools/zoo-admin.ps1 -OutFile zoo-admin.ps1
+powershell -ExecutionPolicy Bypass -File .\zoo-admin.ps1 -Setup root@IP
 ```
 
-Новый токен (закрывает все сессии) — `sudo zoo web --new-token`.
+```bash
+curl -fsSLO https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools/zoo-admin.sh && bash zoo-admin.sh --setup root@IP
+```
+
+Новый токен админки (закрывает все входы) — `zoo web --new-token`.
 </details>
 
 ---

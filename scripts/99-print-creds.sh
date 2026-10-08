@@ -179,13 +179,11 @@ echo "  изменить: zoo allow list | add | del | reset (--user ИМЯ — 
 
 echo
 if [ -n "${ZOO_WEB_PORT:-}" ]; then
-    printf '%b\n' "${C_BLUE}-- Админка zoo: один раз на своём компьютере --${C_RESET}"
-    zoo_raw="https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools"
-    echo "  Windows:      iwr $zoo_raw/zoo-admin.ps1 -OutFile zoo-admin.ps1"
-    echo "                powershell -ExecutionPolicy Bypass -File .\\zoo-admin.ps1 -Setup $ssh_user@$ssh_host${ssh_p:+ -Port $ssh_port}"
-    echo "  macOS/Linux:  curl -fsSLO $zoo_raw/zoo-admin.sh && bash zoo-admin.sh --setup $ssh_user@$ssh_host$ssh_p"
-    echo "  дальше каждый день: zoo-admin (админка в браузере) · ssh zoo (консоль сервера)"
-    echo "  в админке: «Обзор» → «Подключить людей»"
+    printf '%b\n' "${C_BLUE}-- Админка zoo (с вашего компьютера, пароль сервера) --${C_RESET}"
+    zoo_sudo=""; [ "$ssh_user" = root ] || zoo_sudo="sudo "
+    echo "  ssh -t$ssh_p -L $ZOO_WEB_PORT:127.0.0.1:$ZOO_WEB_PORT $ssh_user@$ssh_host ${zoo_sudo}zoo web --link"
+    echo "  появится ссылка — откройте её в браузере; админка работает, пока открыто окно"
+    echo "  дальше: «Обзор» → «Подключить людей»"
     echo
 fi
 printf '%b\n' "${C_BLUE}-- Панель 3x-ui (только через SSH-туннель) --${C_RESET}"
