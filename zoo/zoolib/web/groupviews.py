@@ -689,13 +689,14 @@ def _preset_why(pr: dict[str, Any], names: dict[str, str], by_id: dict[str, Fact
 
 
 def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str], by_id: dict[str, Fact],
-                chosen: bool, rec: bool, admin: bool) -> tuple[Markup, list[str]]:
-    """Готовый вариант: название, протоколы чипами, приложения одной строкой, «почему». Один primary и «рекомендуем» — у
+                chosen: bool, rec: bool, admin: bool, via: bool = True) -> tuple[Markup, list[str]]:
+    """Готовый вариант: название, протоколы чипами, приложения одной строкой, что идёт через VPN на каждом устройстве
+    (via=False — у всех вариантов одинаково, строка одна под вариантами), «почему». Один primary и «рекомендуем» — у
     варианта без оговорок (rec); есть оговорки — чип «с оговорками». Возвращает и сами оговорки (магазин iPhone
     и прочие): _start_block выводит их одним списком под вариантами, каждую один раз."""
     issues, foreign = [], []
     if not pr["complete"]:
-        issues.append("не на всех устройствах все протоколы")
+        issues.append("не на всех устройствах есть приложение")
     for plat, ids in pr["plan"].items():
         for i in ids:
             note = clientviews.foreign_note(cat, cat.client(i) or {}, plat, admin)
@@ -713,6 +714,7 @@ def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str],
                         t("span", "выбрано", class_="chip") if chosen else None, flag, class_="opt-title"),
                       t("div", [t("span", names.get(p, p), class_="chip") for p in pr["protocols"]], class_="chips"),
                       t("span", groups.apps_line(cat, pr["plan"]), class_="hint"),
+                      t("span", line, class_="hint") if via and (line := groups.via_line(cat, pr["plan"])) else None,
                       t("span", why, class_="hint") if why else None, class_="opt-body"),
              t("button", "Выбрать", type="submit", name="go", value=pr["id"], class_="btn primary" if rec else "btn"),
              class_="opt preset" + (" sel" if chosen else "")), list(dict.fromkeys([*foreign, *issues]))
@@ -729,7 +731,9 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
     by_id = {f.id: f for f in facts}
     prs = groups.presets(cat, managed, d.install_mode)
     best = groups.recommended_preset(prs)
-    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode == "admin")
+    vias = {groups.via_line(cat, pr["plan"]) for pr in prs}
+    same = len(prs) > 1 and len(vias) == 1
+    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode == "admin", not same)
             for pr in prs]
     rows = [m[0] for m in made]
     where: dict[str, list[str]] = {}
@@ -747,6 +751,7 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
              t("button", "Пересчитать", type="submit", name="go", value="refresh", class_="btn small", data_refresh=True,
                formnovalidate=True),
              t("div", rows, class_="opts"),
+             t("p", next(iter(vias)), class_="hint") if same and next(iter(vias)) else None,
              t("div", t("span", "Оговорки", class_="label"), t("ul", legend, class_="cav-list"), class_="cav")
              if legend else None,
              t("p", NO_PEOPLE_DATA, class_="hint") if any(not _preset_why(pr, names, by_id) for pr in prs) else None)

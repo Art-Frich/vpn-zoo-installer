@@ -159,6 +159,7 @@ class Block:
     platforms: list[str]
     apps: list[CardApp]
     steps: list[str]
+    via: str = ""   # «Через VPN — …» под названием платформы
 
 
 @dataclass
@@ -185,14 +186,16 @@ def words(step: str, where: str) -> str:
 
 
 def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: clientviews.Pack, name: str) -> list[str]:
-    """Шаги — строки инструкции группы (или пакета, если у человека свои протоколы), без заголовка и номеров."""
+    """Шаги — строки инструкции группы (или пакета, если у человека свои протоколы), без заголовка, строки «Через VPN»
+    (она на карточке отдельно) и номеров."""
     body = None
     if g is not None:
         gt = ctx.text(g, plat)
         if gt and clientviews.pack_sig(pack) == ctx.group_sig(g, plat):
             body = gt
     lines = clientviews.fill_name(body or pack.message, name).splitlines()[1:]
-    return [re.sub(r"^\d+\)\s*", "", ln).strip() for ln in lines if ln.strip()]
+    return [re.sub(r"^\d+\)\s*", "", ln).strip() for ln in lines
+            if ln.strip() and not ln.startswith(clientviews.VIA_PREFIX)]
 
 
 def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
@@ -213,11 +216,11 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
         steps = _steps(ctx, g, plat, pack, user.label)
         # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
         sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
-                      tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps))
+                      tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps), pack.via)
         if sig in merged:
             merged[sig].platforms.append(title)
             continue
-        merged[sig] = Block([title], apps, steps)
+        merged[sig] = Block([title], apps, steps, pack.via)
     return list(merged.values())
 
 
@@ -293,7 +296,8 @@ def _block_html(b: Block, name: str) -> Markup:
                           rel="noopener noreferrer", class_="chip info noprint") for ln in a.stores],
                 class_="chips") if a.stores else None,
               t("div", [_key_html(k, name) for k in a.keys], class_="hkeys"), class_="happ") for a in b.apps]
-    return t("section", t("h4", ", ".join(b.platforms), class_="plat-title"), apps,
+    return t("section", t("h4", ", ".join(b.platforms), class_="plat-title"),
+             t("p", b.via, class_="hint") if b.via else None, apps,
              t("ol", [t("li", words(s, "с этой карточки")) for s in b.steps], class_="hsteps") if b.steps else None, class_="hblock")
 
 
@@ -411,6 +415,8 @@ def instruction_text(c: Card, qr_files: dict[Any, str], files: dict[str, str]) -
     out = [who + (f" — {u.note}" if u.note else ""), ("Группа: " + c.group.name) if c.group else "", ""]
     for b in c.blocks:
         out.append(f"{', '.join(b.platforms)}: " + ", ".join(f"«{a.name}»" for a in b.apps))
+        if b.via:
+            out.append(f"  {b.via}")
         out += [f"  {i}) {words(s, 'из этой папки')}" for i, s in enumerate(b.steps, 1)]
         out.append("")
     out.append("Ключи доступа (никому не пересылайте):")

@@ -490,8 +490,13 @@ class ExportTest(Base):
         text = z.read("masha/instruction.txt").decode("utf-8")
         self.assertIn("отметьте WhatsApp.", text)
         self.assertNotIn("Brave", text, "Brave нет в списке группы")
+        self.assertIn("Проверьте: «WhatsApp» загружает новое", text, "проверка — в приложении из списка")
+        self.assertEqual(text.count("Через VPN — только WhatsApp, остальное напрямую."), 1)
         _, body = self.c.get("/handoff?group=g1")
         self.assertIn("отметьте WhatsApp.", body)
+        self.assertIn('<p class="hint">Через VPN — только WhatsApp, остальное напрямую.</p>', body,
+                      "что идёт через VPN — под платформой, а не шагом")
+        self.assertNotIn("<li>Через VPN", body)
 
     def test_failed_qr_reported_once_per_key(self):
         resp, _ = self.create_group(name="Везде", proto=["hysteria2"], client__android="hiddify",

@@ -619,29 +619,43 @@ def easy_protocols(cat: clientcat.Catalog) -> set[str]:
             and not cat.protocols[p].get("pseudo")}
 
 
-# Готовые варианты по режиму «кто ставит»: протоколы «Просто» и «Надёжно». Не подошли (протокола нет на сервере, не на
-# всех устройствах есть приложение) — подбор по общим правилам. Людям, которые ставят сами: VLESS XHTTP (приложения
-# из магазина) и пара с AmneziaWG; ИТ: Hysteria2 одним Hiddify на всех устройствах и пара с VLESS XHTTP.
-PRESET_PICKS = {"self": {"simple": ("vless-xhttp",), "reliable": ("vless-xhttp", "amneziawg")},
-                "admin": {"simple": ("hysteria2",), "reliable": ("hysteria2", "vless-xhttp")}}
-ADMIN_SIMPLE_APP = "hiddify"
+# Готовые варианты — presets каталога (zoo/data/clients.json), одни для обоих режимов «кто ставит»: через VPN только
+# приложения из списка там, где клиент это умеет (D55). «Просто»: Android — AmneziaWG (список внутри QR), iPhone — INCY
+# с «РФ напрямую», Windows — v2rayN с правилами; «Надёжно» — то же и Happ на Android на случай, если режут UDP.
+# Протокола варианта нет на сервере или на устройстве не осталось приложения — подбор по общим правилам.
 
 
 def recommended_preset(prs: list[dict[str, Any]]) -> str | None:
-    """Какой вариант советовать: без оговорок (clean); у обоих чисто — «Надёжно»; у обоих оговорки — никакой."""
+    """Какой вариант советовать: первый без оговорок (clean) — «Просто»; у обоих оговорки — никакой."""
     clean = [p["id"] for p in prs if p.get("clean")]
-    return "reliable" if "reliable" in clean else (clean[0] if clean else None)
+    return clean[0] if clean else None
+
+
+def _pinned(cat: clientcat.Catalog, pid: str, cands: list[str], devices: list[str]) -> tuple[list[str], dict[str, list[str]]] | None:
+    """Вариант каталога под включённые протоколы: протоколы — те из варианта, что есть среди cands; приложения устройства —
+    те из варианта, что умеют хоть один из них. Не осталось протоколов или устройство без приложения — None."""
+    spec = next((x for x in cat.raw.get("presets", []) if x["id"] == pid), None)
+    if spec is None:
+        return None
+    protos = by_priority(p for p in spec["protocols"] if p in cands)
+    plan: dict[str, list[str]] = {}
+    for plat in devices:
+        ids = [i for i in spec["plan"].get(plat, []) if coverage(cat, plat, protos, [i])[0]]
+        if not ids:
+            return None
+        plan[plat] = ids
+    return (protos, plan) if protos else None
 
 
 def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
             devices: Any = MAIN_DEVICES) -> list[dict[str, Any]]:
-    """Готовые варианты первого экрана мастера. «simple» — один протокол и одно приложение на устройство; «reliable» —
-    два протокола (TCP + UDP), не больше MAX_APPS приложений на устройство; протоколы — PRESET_PICKS по режиму, нет
-    их — подбор: сначала меньше иностранных магазинов и оговорок, затем меньше разных приложений. Поля: id, protocols,
-    plan {платформа: [клиенты]}, apps (число разных), per_device (наибольшее число на устройстве), complete (все
-    протоколы на всех устройствах покрыты), foreign (приложений не из РФ-магазина), warns (протоколов «с оговоркой»),
-    clean (ничего из этого нет). Протоколы людям, которые ставят сами, — только из easy_protocols. Нет подходящего —
-    варианта нет."""
+    """Готовые варианты первого экрана мастера: «simple» — одно приложение на устройство, «reliable» — не больше MAX_APPS.
+    Сначала — presets каталога (_pinned); не подошёл — подбор: «simple» — один протокол, «reliable» — два (TCP + UDP),
+    меньше иностранных магазинов и оговорок, затем меньше разных приложений. Поля: id, protocols, plan {платформа:
+    [клиенты]}, apps (число разных), per_device (наибольшее число на устройстве), gaps (протоколов, которых нет на
+    устройствах), complete (на каждом устройстве есть приложение хоть для одного протокола), foreign (приложений не из
+    РФ-магазина), warns (протоколов «с оговоркой»), clean (complete и ничего из остального). Протоколы людям, которые
+    ставят сами, — только из easy_protocols. Нет подходящего — варианта нет."""
     devices = list(devices)
     easy = easy_protocols(cat)
     cands = [p for p in by_priority(available) if p in cat.protocols and not cat.protocols[p].get("pseudo")
@@ -649,51 +663,56 @@ def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
 
     def make(pid: str, protos: list[str], plan: dict[str, list[str]] | None = None) -> dict[str, Any]:
         plan = suggest_set(cat, devices, protos, mode) if plan is None else plan
-        miss = sum(len(coverage(cat, plat, protos, ids)[1]) for plat, ids in plan.items())
+        cover = {plat: coverage(cat, plat, protos, ids) for plat, ids in plan.items()}
         out = {"id": pid, "protocols": protos, "plan": plan, "apps": len({a for v in plan.values() for a in v}),
                "per_device": max((len(v) for v in plan.values()), default=0),
-               "complete": set(plan) == set(devices) and miss == 0,
+               "gaps": sum(len(miss) for _, miss in cover.values()),
+               "complete": set(plan) == set(devices) and all(done for done, _ in cover.values()),
                "foreign": sum(1 for plat, ids in plan.items() for i in ids if cat.no_ru_store(cat.client(i) or {}, plat)),
                "warns": sum(len(caveats(cat, plat, protos, ids)) for plat, ids in plan.items())}
         out["clean"] = out["complete"] and not out["foreign"] and not out["warns"]
         return out
 
-    def one_app(proto: str, app: str) -> dict[str, list[str]] | None:
-        """Одно приложение на всех устройствах: умеет протокол (ok/warn), есть на каждом устройстве и берёт ссылки."""
-        c = cat.client(app)
-        ok = (c is not None and c.get("import") and c["protocols"].get(proto, {}).get("s") in ("ok", "warn")
-              and all(plat in c["platforms"] for plat in devices))
-        return {plat: [app] for plat in devices} if ok else None
-
-    pick = PRESET_PICKS.get(mode, PRESET_PICKS["self"])
     out: list[dict[str, Any]] = []
     simple = None
-    if all(p in cands for p in pick["simple"]):
-        plan = one_app(pick["simple"][0], ADMIN_SIMPLE_APP) if mode == "admin" else None
-        pinned = make("simple", list(pick["simple"]), plan)
+    if got := _pinned(cat, "simple", cands, devices):
+        pinned = make("simple", *got)
         if pinned["complete"] and pinned["per_device"] == 1:
             simple = pinned
     if simple is None:
-        auto = [x for x in (make("simple", [p]) for p in cands) if x["complete"] and x["per_device"] == 1]
+        auto = [x for x in (make("simple", [p]) for p in cands) if x["complete"] and not x["gaps"] and x["per_device"] == 1]
         simple = min(auto, key=lambda x: (x["foreign"], x["warns"], x["apps"], cands.index(x["protocols"][0])),
                      default=None)
     if simple:
         out.append(simple)
     reliable = None
-    if all(p in cands for p in pick["reliable"]):
-        pinned = make("reliable", list(by_priority(pick["reliable"])))
-        if pinned["complete"] and pinned["per_device"] <= MAX_APPS:
+    if got := _pinned(cat, "reliable", cands, devices):
+        pinned = make("reliable", *got)
+        if pinned["complete"] and pinned["per_device"] <= MAX_APPS and (simple is None or pinned["plan"] != simple["plan"]):
             reliable = pinned
     if reliable is None:
         pairs = [x for x in (make("reliable", list(by_priority(pair))) for pair in itertools.combinations(cands, 2))
                  if x["plan"]]
-        reliable = min(pairs, key=lambda x: (not x["complete"], x["per_device"] > MAX_APPS,
+        reliable = min(pairs, key=lambda x: (x["gaps"] > 0 or not x["complete"], x["per_device"] > MAX_APPS,
                                              TRANSPORT.get(x["protocols"][0]) == TRANSPORT.get(x["protocols"][1]),
                                              x["foreign"], x["warns"], x["apps"],
                                              sum(cands.index(p) for p in x["protocols"])), default=None)
     if reliable:
         out.append(reliable)
     return out
+
+
+def via_line(cat: clientcat.Catalog, chosen: dict[str, list[str]]) -> str:
+    """Что идёт через VPN у главного (первого) приложения каждого устройства: «Через VPN: Android, Windows — только
+    приложения из списка · iPhone — всё, кроме российских сайтов». Не описано ни у кого — пусто."""
+    where: dict[str, list[str]] = {}
+    for plat in cat.platforms:
+        ids = chosen.get(plat) or []
+        c = cat.client(ids[0]) if ids else None
+        mode = cat.via(c, plat) if c else ""
+        if mode:
+            where.setdefault(cat.raw["via"][mode], []).append(cat.platforms[plat])
+    return "Через VPN: " + " · ".join(f"{', '.join(v)} — {text}" for text, v in where.items()) if where else ""
 
 
 def apps_line(cat: clientcat.Catalog, chosen: dict[str, list[str]]) -> str:

@@ -382,8 +382,9 @@ class CatalogFactsTest(unittest.TestCase):
                           "hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "amneziawg": "AmneziaWG",
                           "tuic": "TUIC"})
         self.assertEqual(cat.protocols["allowlist"]["title"], "Правила маршрутизации v2rayN")
-        self.assertEqual(cat.raw["check"], {"*": "Проверьте: откройте заблокированный сайт — он должен открыться. "
-                                                  "Банк и Госуслуги работают как обычно."})
+        self.assertEqual(set(cat.raw["check"]), {"brave", "apps", "device"})
+        for text in cat.raw["check"].values():
+            self.assertNotIn("как обычно", text, "про банки — только там, где это правда (via)")
         for c in cat.clients:   # каждый шаг импорта начинается с названия приложения или говорит, что скопировать
             for how, text in c.get("import", {}).items():
                 self.assertTrue(f"«{c['name']}»" in text or c["id"] == "hysteria", (c["id"], how, text))
@@ -554,6 +555,7 @@ AWG_ANDROID = link("amneziawg", "/etc/vpn-setup/clients/masha/masha-amneziawg-an
 AWG_COMMON = link("amneziawg", "/etc/vpn-setup/clients/masha/masha-amneziawg.conf", "file")
 AWG_KEY = link("amneziawg", "vpn://AAAA")
 RULES = link("allowlist", "/etc/vpn-setup/clients/masha/v2rayn-routing.json", "file")
+CHECK = clients.load().raw["check"]
 
 
 class PackTest(unittest.TestCase):
@@ -568,7 +570,7 @@ class PackTest(unittest.TestCase):
         self.assertEqual((s.proto, s.method), ("amneziawg", "qr"))
         self.assertTrue(s.install.startswith("Установите «AmneziaWG»"))
         self.assertIn("play.google.com/store/apps/details?id=org.amnezia.awg", s.install, "проверенные ссылки — раньше")
-        self.assertEqual(s.check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
+        self.assertEqual(s.check, CHECK["brave"])
         self.assertNotIn("2ip", s.check)
 
     def test_per_app_step_names_the_group_list_not_brave(self):
@@ -586,7 +588,13 @@ class PackTest(unittest.TestCase):
         self.assertNotIn("{apps}", steps)
         many = [f"com.x.app{i}" for i in range(9)]
         steps = " ".join(clientviews.build_pack(*args, al=al, apps=many).sections[0].steps)
-        self.assertIn("ещё 4 из списка", steps)
+        self.assertIn("com.x.app7 и com.x.app8.", steps, "весь список, без «и ещё N»: отмечать больше не по чему")
+        self.assertNotIn("ещё", steps)
+        p = clientviews.build_pack(*args, al=al, apps=["com.whatsapp", "com.example.crm"])
+        self.assertEqual(p.sections[0].check, CHECK["apps"].replace("{app}", "WhatsApp"),
+                         "Brave нет в списке — проверка в первом приложении списка, а не «заблокированный сайт»")
+        self.assertNotIn("Brave", p.message)
+        self.assertIn("Через VPN — только WhatsApp и CRM, остальное напрямую.", p.message)
         self.assertNotEqual(clientviews.pack_sig(clientviews.build_pack(*args, al=al)),
                             clientviews.pack_sig(clientviews.build_pack(*args, al=al, apps=["com.whatsapp"])),
                             "другой список — другой текст: текст группы не подставляется человеку со своим списком")
@@ -699,14 +707,21 @@ class PackTest(unittest.TestCase):
         self.assertEqual(p.sections[0].tiles, "Hysteria2, VLESS Vision")
         msg = p.message
         # одним списком: сначала установка всех приложений, потом импорт каждого; каждый шаг начинается с приложения
-        self.assertTrue(msg.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
-        self.assertIn("\n2) Установите «AmneziaWG»", msg)
-        self.assertIn("\n3) В «Happ» нажмите «+» → «Сканировать QR»", msg)
-        self.assertIn("\n5) В «AmneziaWG» нажмите «+» → «Сканировать QR»", msg)
+        self.assertTrue(msg.startswith("{name}, VPN на Android: что сделать\nЧерез VPN — только приложения из списка, "
+                                       "остальное напрямую.\n1) Установите браузер «Brave»"), msg)
+        self.assertIn("\n2) Установите «Happ»", msg)
+        self.assertIn("\n3) Установите «AmneziaWG»", msg)
+        self.assertIn("\n4) В «Happ» нажмите «+» → «Сканировать QR»", msg)
+        self.assertIn("В «Happ»: экран «Inbounds» → режим авторизации «auto»", msg, "служебный вход Happ — под паролем")
+        self.assertIn("В «Happ» включите «РФ напрямую»", msg)
+        self.assertRegex(msg, r"\n\d\) В «AmneziaWG» нажмите «\+» → «Сканировать QR»")
         self.assertLess(msg.index("Установите «AmneziaWG»"), msg.index("В «Happ» нажмите"))
+        self.assertLess(msg.index("В «Happ» включите"), msg.index("В «AmneziaWG» нажмите"), "шаги приложения — подряд")
         self.assertEqual(msg.count("Проверьте:"), 1, "проверка одна, одной фразой")
-        self.assertTrue(msg.endswith("Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно."))
-        for gone in ("Hysteria2", "VLESS", "REALITY", "2ip", "Brave"):
+        n = len(msg.splitlines()) - 2
+        self.assertEqual(msg.splitlines()[-3:], [f"{n - 2}) {catalog().raw['rules']['android']}",
+                                                 f"{n - 1}) {CHECK['brave']}", f"{n}) {catalog().raw['report']}"])
+        for gone in ("Hysteria2", "VLESS", "REALITY", "2ip"):
             self.assertNotIn(gone, msg, "названий протоколов в тексте для человека нет")
         self.assertNotIn("vless://", msg)
         # с одним приложением названий перед шагами нет
@@ -759,7 +774,7 @@ class PackTest(unittest.TestCase):
         # iPhone: приложений через VPN нет, браузер любой
         s = self.gpack("ios", [VLESS], {"ios": ["incy"]}, ["vless-reality"]).sections[0]
         self.assertNotIn("Приложения через VPN", " ".join(s.steps))
-        self.assertEqual(s.check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
+        self.assertEqual(s.check, CHECK["device"])
         # Windows у AmneziaVPN — только исключение приложений: шага «только из списка» нет
         w = self.gpack("windows", [AWG_COMMON, AWG_KEY], {"windows": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertEqual(w.client["id"], "amneziavpn")
@@ -771,11 +786,13 @@ class PackTest(unittest.TestCase):
         p = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "android", [VLESS, AWG_ANDROID], [],
                                    {"android": ["happ", "amneziawg"]}, ["vless-reality", "amneziawg"], False, None, None, True)
         msg = p.message
-        self.assertTrue(msg.startswith("{name}, VPN уже установлен. Включите его в «Happ» и «AmneziaWG».\n1) В «Happ» нажмите"), msg)
-        for gone in ("Установите", "github", "GitHub", "Assets", "play.google.com"):
+        self.assertTrue(msg.startswith("{name}, VPN уже установлен. Включите его в «Happ» и «AmneziaWG».\nЧерез VPN — "
+                                       "только приложения из списка, остальное напрямую.\n1) В «Happ» нажмите"), msg)
+        for gone in ("Установите", "releases", "Assets", "play.google.com"):
             self.assertNotIn(gone, msg)
-        self.assertEqual(msg.count("\n"), 4, "два импорта, шаг «через VPN» у Happ и проверка")
-        self.assertTrue(msg.endswith("Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно."))
+        self.assertEqual(msg.count("\n"), 9, "строка «через VPN», импорт и три настройки Happ, импорт AWG, правило "
+                                             "Android, проверка и что прислать")
+        self.assertTrue(msg.endswith(f"7) {CHECK['brave']}\n8) {catalog().raw['report']}"))
         one = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "ios", [VLESS], [],
                                      {"ios": ["incy"]}, ["vless-reality"], False, None, None, True)
         self.assertTrue(one.message.startswith("{name}, VPN уже установлен. Включите его в «INCY»."))
@@ -793,7 +810,7 @@ class PackTest(unittest.TestCase):
         s = p.sections[0]
         self.assertEqual((len(p.sections), s.client["id"], s.method), (1, "happ", "qr"))
         self.assertIn("Приложения через VPN в «Happ»:", " ".join(s.steps))
-        self.assertEqual(s.check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
+        self.assertEqual(s.check, CHECK["brave"])
         self.assertNotIn("не откроется", s.check)
 
     def test_windows_link_and_rules_file(self):
@@ -801,13 +818,20 @@ class PackTest(unittest.TestCase):
         self.assertEqual((s.client["id"], s.method), ("v2rayn", "link"))
         self.assertEqual([i.proto for i in s.extras], ["allowlist"])
         self.assertIn("v2rayn-routing.json", " ".join(s.steps))
-        self.assertIn("Правила маршрутизации v2rayN: ", " ".join(s.steps))
-        self.assertEqual(self.pack("windows", [VLESS]).sections[0].extras, [], "без файла правил — шага нет")
+        steps = " ".join(s.steps)
+        for need in ("«Импорт правил из файла»", "«Устаревшая защита TUN»", "«Перезапустить от имени администратора»",
+                     "«Включить TUN»", "«Очистить системный прокси»"):
+            self.assertIn(need, steps, "без TUN и очистки прокси правила по программам не работают")
+        self.assertEqual(s.via, "apps")
+        bare = self.pack("windows", [VLESS]).sections[0]
+        self.assertEqual(bare.extras, [], "без файла правил — шага нет")
+        self.assertEqual(bare.via, "all", "без файла правил через VPN идёт всё")
+        self.assertIn("«.zip» с «windows-64»", s.install, "v2rayN — архив, как в USER-GUIDE")
 
     def test_ios_and_no_match(self):
         p = self.pack("ios", [VLESS])
         self.assertEqual(p.sections[0].client["id"], "incy")
-        self.assertEqual(p.sections[0].check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
+        self.assertEqual(p.sections[0].check, CHECK["device"])
         self.assertIsNone(self.pack("ios", [link("tuic", "tuic://x")]), "для TUIC на iPhone клиента не выбрано")
         self.assertIsNone(self.pack("macos", [VLESS]), "на macOS для VLESS проверенного клиента нет")
         self.assertIsNone(self.pack("android", []))
@@ -832,12 +856,16 @@ class PackTest(unittest.TestCase):
         self.assertNotIn("vless://", p.message)
         self.assertNotIn(".conf", p.message)
         self.assertNotIn("плитк", p.message, "ссылок на плитки в тексте нет")
-        self.assertTrue(p.message.startswith("{name}, VPN на Android: что сделать\n1) Установите «AmneziaWG»"))
-        self.assertIn("\n3) В «AmneziaWG» нажмите «+»", p.message, "два приложения — установка, затем шаги с названием")
+        self.assertTrue(p.message.startswith("{name}, VPN на Android: что сделать\n"
+                                             "Через VPN — только приложения из списка, остальное напрямую.\n"
+                                             "1) Установите браузер «Brave»"), p.message)
+        self.assertIn("\n2) Установите «AmneziaWG»", p.message)
+        self.assertIn("\n4) В «AmneziaWG» нажмите «+»", p.message, "два приложения — установка, затем шаги с названием")
         one = self.pack("android", [VLESS]).message
-        self.assertTrue(one.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
+        self.assertIn("\n2) Установите «Happ»", one)
         self.assertNotIn("Happ (", one, "названий протоколов перед шагами нет")
-        self.assertIn("\n2) В «Happ» нажмите «+» → «Сканировать QR»", one)
+        self.assertIn("\n3) В «Happ» нажмите «+» → «Сканировать QR»", one)
+        self.assertTrue(one.endswith(catalog().raw["report"]), "в конце — что прислать администратору")
 
 
 class PickLinkTest(unittest.TestCase):
@@ -905,7 +933,8 @@ class HandoffPageTest(AppTestBase):
         self.assertIn('data-copy="k-android-happ-0">Копировать</button>', android)
         # текст — один на группу, с именем человека; ключей в нём нет
         msg = self.msg(body)
-        self.assertTrue(msg.startswith("masha, VPN на Android: что сделать\n1) Установите «"), msg)
+        self.assertTrue(msg.startswith("masha, VPN на Android: что сделать\nЧерез VPN — только "), msg)
+        self.assertIn("\n1) Установите браузер «Brave»", msg)
         self.assertNotIn("{name}", body)
         self.assertNotIn("vless://", msg)
         self.assertIn(">Скопировать</button>", body)

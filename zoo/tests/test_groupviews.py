@@ -313,8 +313,9 @@ class WizardTest(GroupWebBase):
         self.assertNotIn("install_mode", g, "по умолчанию — люди ставят сами, поле не пишется")
         _, page = self.c.get("/users/masha")
         msg = self.msg(page)
-        self.assertIn("1) Установите «Happ»", msg)
-        self.assertIn("2) Установите «AmneziaWG»", msg)
+        self.assertIn("1) Установите браузер «Brave»", msg)
+        self.assertIn("2) Установите «Happ»", msg)
+        self.assertIn("3) Установите «AmneziaWG»", msg)
         self.assertIn("В «Happ» нажмите «+» → «Сканировать QR»", msg)
         self.assertNotIn("Happ (", msg, "названий протоколов в инструкции нет")
         android = page[page.index('data-pp="android"'):page.index('id="msg-android"')]
@@ -323,7 +324,7 @@ class WizardTest(GroupWebBase):
         self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+\?p=[0-9a-f]{8}"')
         self.assertNotIn('data-pp="windows"', page, "для Windows приложения не выбраны")
         _, done = self.c.get("/connect/done?group=g1&u=masha")
-        self.assertIn("2) Установите «AmneziaWG»", done)
+        self.assertIn("3) Установите «AmneziaWG»", done)
         # страница группы: набор виден радиокнопкой, выключить устройство — платформа не нужна
         _, gp = self.c.get("/groups/g1")
         self.assertEqual(self.checked(gp, "android"), ["happ", "amneziawg"])
@@ -930,7 +931,8 @@ class GroupsPagesTest(GroupWebBase):
         self.assertRegex(card, r'<summary>Android </summary>', "платформа без набора приложений группы инструкции не получает")
         self.assertNotIn("Windows", card)
         default = html.unescape(re.search(r"<textarea[^>]*>(.*?)</textarea>", card, re.S).group(1))
-        self.assertTrue(default.startswith("{имя}, VPN на Android: что сделать\n1) Установите «Happ»"))
+        self.assertTrue(default.startswith("{имя}, VPN на Android: что сделать\nЧерез VPN — только "), default)
+        self.assertIn("\n2) Установите «Happ»", default)
         self.assertNotIn("Вернуть по умолчанию", card)
         # сохранить свою инструкцию: она у всех участников с их именем; «{имя}» и «{name}» — одно и то же
         resp, _ = self.post("/groups/g1/message", {"platform": ["android"], "text": ["{имя}, ставь Happ.\r\nПотом QR."]})
@@ -1139,10 +1141,10 @@ class StartStepTest(GroupWebBase):
         simple, reliable = (re.search(rf'<strong>{n}</strong>(.*?)name="go" value="', body, re.S).group(1)
                             for n in ("Просто", "Надёжно"))
         self.assertNotIn("с оговорками", simple, "«рекомендуем» и «с оговорками» на одном варианте не живут")
-        self.assertIn("с оговорками", reliable, "AmneziaWG на iPhone: импорт 3.1 не проверен")
         self.assertNotIn("рекомендуем", reliable)
+        self.assertIn("Happ — Android", reliable, "«Надёжно» — Happ на Android, если режут UDP")
         text = text_of(body)
-        self.assertIn("Happ — Android · INCY — iPhone · v2rayN — Windows", text, "приложения — одной строкой одного вида")
+        self.assertIn("AmneziaWG — Android · INCY — iPhone · v2rayN — Windows", text, "приложения — одной строкой одного вида")
         self.assertNotIn("приложение на устройство", text)
         self.assertNotIn("Мбит/с", text, "скорость в пресетах — только по замерам с устройств")
         self.assertEqual(text.count(groupviews.NO_PEOPLE_DATA), 1, "про отсутствие замеров — одна строка на шаг")
@@ -1185,8 +1187,8 @@ class StartStepTest(GroupWebBase):
         resp, body = self.wiz(0, go="simple", mode="self")
         self.assertEqual(resp.status, 200)
         self.assertIn("<h3>Приложения</h3>", body)
-        self.assertEqual(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body), ["vless-reality"])
-        self.assertEqual(self.checked(body, "android"), ["happ"])
+        self.assertEqual(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body), ["amneziawg", "vless-reality"])
+        self.assertEqual(self.checked(body, "android"), ["amneziawg"], "список приложений — внутри QR")
         self.assertEqual(self.checked(body, "ios"), ["incy"], "«Просто» людям, которые ставят сами: на iPhone INCY из App Store РФ")
         self.assertEqual(self.checked(body, "windows"), ["v2rayn"])
         self.assertNotIn("Hiddify", text_of(body))
@@ -1240,7 +1242,7 @@ class StartStepTest(GroupWebBase):
         # человеку — ни GitHub, ни «Assets», ни «Установите»: приложения уже стоят
         text = self.msg(done, user="masha")
         self.assertTrue(text.startswith("masha, VPN уже установлен. Включите его в «Happ»."), text)
-        for gone in ("Установите", "github", "GitHub", "Assets"):
+        for gone in ("Установите", "releases", "Assets"):
             self.assertNotIn(gone, text)
         _, user = self.c.get("/users/masha")
         panel = user[user.index('data-pp="android"'):user.index('id="msg-android"')]
@@ -1587,31 +1589,26 @@ class LeftoversTest(GroupWebBase):
         self.assertIn("VLESS XHTTP", reliable)
         self.assertIn("AmneziaWG", reliable)
 
-    def test_admin_start_is_hysteria2_with_hiddify_and_recommends_nothing(self):
+    def test_admin_start_is_the_same_allowlist_presets_without_hiddify(self):
         _, body = self.c.get("/connect/new?mode=admin")
         text = text_of(body)
         simple = text[text.index("Просто"):text.index("Надёжно")]
-        self.assertIn("Hysteria2", simple)
-        self.assertIn("Hiddify — Android, iPhone, Windows", simple, "одно приложение на всех устройствах")
-        self.assertIn("с оговорками", simple)
-        self.assertEqual(text.count("iPhone: нужен иностранный Apple ID"), 1, "оговорка про iPhone — одна на шаг, не в каждом варианте")
-        reliable = text[text.index("Надёжно"):text.index("Свой набор")]
-        self.assertIn("Hysteria2", reliable)
-        self.assertIn("VLESS XHTTP", reliable)
-        self.assertIn("с оговорками", reliable, "iPhone: иностранный Apple ID и у этого варианта")
-        self.assertNotIn("рекомендуем", text, "у обоих оговорки — не советуем ни один")
-        self.assertEqual(len(re.findall(r'class="btn primary">Выбрать</button>', body)), 0)
-        self.assertEqual(len(re.findall(r'name="go" value="(?:simple|reliable|custom)" class="btn"', body)), 3)
+        self.assertIn("AmneziaWG — Android · INCY — iPhone · v2rayN — Windows", simple)
+        self.assertIn("рекомендуем", simple)
+        self.assertNotIn("Hiddify", text, "Hiddify ведёт через VPN всё устройство — в готовых вариантах его нет")
+        self.assertEqual(text.count("Через VPN: Android, Windows — только приложения из списка · iPhone — всё, кроме "
+                                    "российских сайтов"), 1, "у обоих вариантов одинаково — одна строка")
+        self.assertEqual(len(re.findall(r'class="btn primary">Выбрать</button>', body)), 1)
 
-    def test_admin_simple_carries_hiddify_to_the_apps_step(self):
+    def test_admin_simple_carries_the_preset_apps_to_the_apps_step(self):
         resp, body = self.wiz(0, go="simple", mode="admin")
         self.assertEqual(resp.status, 200)
-        self.assertEqual(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body), ["hysteria2"])
-        for plat in ("android", "ios", "windows"):
-            self.assertEqual(self.checked(body, plat), ["hiddify"], plat)
+        self.assertEqual(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body),
+                         ["vless-xhttp", "amneziawg", "vless-reality"])
+        for plat, ids in (("android", ["amneziawg"]), ("ios", ["incy"]), ("windows", ["v2rayn"])):
+            self.assertEqual(self.checked(body, plat), ids, plat)
         heads = self.heads(body)
-        self.assertIn("нужен иностранный Apple ID", heads["iPhone"], "у ИТ на iPhone — Apple ID, а не «нет в App Store РФ»")
-        self.assertNotIn("нет в App Store РФ", heads["iPhone"])
+        self.assertNotIn("Apple ID", heads["iPhone"], "INCY есть в App Store РФ")
         self.assertEqual(body.count("iPhone: приложение ставится только из App Store."), 1, "на шаге «Приложения» — один раз")
 
     def test_ios_note_once_per_screen_on_group_page(self):

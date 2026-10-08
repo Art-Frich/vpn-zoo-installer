@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import MIN_PYTHON, __version__, allowlist, manifests, output, paths, protolib, qr, status, system, users
-from . import clients, groups, journal, logctl, protoctl, storage, traffic, upgrade
+from . import clients, groups, journal, logctl, protoctl, storage, traffic, upgrade, userguide
 from . import probe as probe_mod
 from . import web as web_mod
 from .config import Config, ConfigError
@@ -604,6 +604,8 @@ def build_parser() -> argparse.ArgumentParser:
     probe_mod.history.add_arguments(p)
     p = add("clients", clients.cmd_clients, "клиентские приложения: каталог и последние версии (--check-upstream)")
     clients.add_arguments(p)
+    p = add("docs", userguide.cmd_docs, "документы из каталога клиентов: --user-guide пересобирает docs/USER-GUIDE.md")
+    userguide.add_arguments(p)
     p = add("web", web_mod.cmd_web, "веб-админка на 127.0.0.1 (доступ через ssh -L)")
     web_mod.add_arguments(p)
     p = add("upgrade", upgrade.cmd_upgrade, "обновление закреплённых версий")
@@ -619,7 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-NO_ROOT_COMMANDS = {"version"}
+NO_ROOT_COMMANDS = {"version", "docs"}
 # не читают config.env: их запускают юниты по заявкам админки (clients/logs/live), и битый config.env
 # не должен оставить заявку, по которой .path-юнит гонял бы сервис по кругу
 NO_CONFIG_COMMANDS = NO_ROOT_COMMANDS | {"clients", "logs", "live"}
