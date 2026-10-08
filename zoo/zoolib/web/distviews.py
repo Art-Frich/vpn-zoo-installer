@@ -48,7 +48,7 @@ def _row(r: dict[str, Any], cat: clients.Catalog) -> list[Any]:
         sha = (f"sha256 {f['sha256']} — " + ("указан GitHub и совпал" if f.get("verified") else "посчитан при скачивании"))
         return [head, t("span", f["version"], class_="mono"),
                 t("a", f["name"], href=f["path"], class_="dl-name", title=sha),
-                output.human_bytes(f["size"]), t("a", "Скачать", href=f["path"], class_="btn small primary")]
+                output.human_bytes(f["size"]), t("a", "Скачать", href=f["path"], class_="btn small")]
     return [head, "—", [_why(r), _links(r["links"])], "—", ""]
 
 
@@ -70,9 +70,7 @@ def _list(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup:
 def _how(r: dict[str, Any], cat: clients.Catalog) -> str:
     c, plat = r["client"], r["platform"]
     where = cat.platforms.get(plat, plat)
-    if plat == "ios":
-        how = "из App Store" + (" — в российском его нет, нужен аккаунт другой страны" if cat.no_ru_store(c, plat) else "")
-    elif r["store"] or not any(ln["kind"] == "github" for ln in r["links"]):
+    if r["store"] or not any(ln["kind"] == "github" for ln in r["links"]):
         how = "из магазина (ссылка в таблице)"
     else:
         how = ("скачайте " + clientviews.GITHUB_FILE.get(plat, "установщик") + " (кнопка «Скачать» или страница GitHub), "
@@ -81,8 +79,12 @@ def _how(r: dict[str, Any], cat: clients.Catalog) -> str:
     return f"{where} — «{c['name']}»: {how}."
 
 
-def memo(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup:
-    """«Как установить (для ИТ)»: шаги установки по приложениям — людям в инструкцию они не попадают."""
+def memo(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup | None:
+    """«Как установить (для ИТ)»: шаги установки по приложениям — людям в инструкцию они не попадают. iPhone в памятке нет:
+    про App Store и Apple ID — строка ios_note, один раз на экран."""
+    rows = [r for r in rows if r["platform"] != "ios"]
+    if not rows:
+        return None
     return t("details", t("summary", "Как установить (для ИТ)"), t("ol", [t("li", _how(r, cat)) for r in rows], class_="hint"),
              class_="more")
 
@@ -102,7 +104,7 @@ def card_for(gs: groups.Groups, group_id: str | None, back: str, csrf: str) -> M
     ok, why = dist.request_state()
     if ok:
         form: Markup = t("form", csrf_input(csrf), t("input", type="hidden", name="back", value=back),
-                         t("button", label, type="submit", class_="btn small" + ("" if have else " primary"),
+                         t("button", label, type="submit", class_="btn small",
                            title="Скачать свежие версии с GitHub (сервер сам, через несколько минут)"),
                          method="post", action="/dist/refresh", class_="inline", data_swap=True)
     else:

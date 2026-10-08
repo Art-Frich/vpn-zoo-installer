@@ -264,14 +264,15 @@ def _load_registry() -> Registry:
 
 
 def add_user(name: str, note: str = "", only: list[str] | None = None,
-             partial: bool = False, system: bool = False, group: str | None = None) -> OpReport:
+             partial: bool = False, system: bool = False, group: str | None = None, display: str = "") -> OpReport:
     """group: id или имя группы; None — «Основная», если она есть. Протоколы — группы, если
-    only не задан; свой only делает набор «своим» (группа его не трогает)."""
+    only не задан; свой only делает набор «своим» (группа его не трогает). display — имя человека как оно
+    написано («Иван Петров»); name — латинский логин."""
     validate_name(name)
     if name in SYSTEM_USERS and not system:
         raise UserError(f"имя «{name}» зарезервировано за служебным пользователем пробника")
     with _lock():
-        return _add_in(_load_registry(), name, note, only, partial, system, group)
+        return _add_in(_load_registry(), name, note, only, partial, system, group, display=display)
 
 
 BULK_BUDGET = 300   # секунд на пачку: дольше блокировка мешала бы остальным операциям

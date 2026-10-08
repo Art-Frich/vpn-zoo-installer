@@ -32,6 +32,7 @@ STEPS = ("Вариант", "Приложения", "Люди", "Раздача")
 PROTO_STEP = "Протоколы"   # подшаг: только у «Своего набора» и по ссылке «сменить протоколы»
 MODE_LABELS = {"self": "Ставят сами", "admin": "Ставит ИТ"}
 MODE_WORDS = {"self": "ставят сами", "admin": "ставит ИТ"}
+MODE_WHO = {"self": "сами", "admin": "ИТ"}   # «Ставит: …» в сводке
 MODE_HINTS = {"self": "Приложения из магазина и один QR. Где магазина нет — предупредим.",
               "admin": "Сервер скачает APK и установщики — раздача из «Дистрибутивов»."}
 PRESET_TITLES = {"simple": "Просто", "reliable": "Надёжно"}
@@ -354,9 +355,10 @@ def _device_options(cat: clients.Catalog, plat: str, protocols: list[str], curre
 
 
 def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str], chosen: list[str] | None,
-                options: list[list[str]], names: dict[str, str], mode: str) -> Markup:
-    """Строка устройства: название, приложения, один чип покрытия, чип «нет в App Store РФ» и «сменить» справа.
-    Подсказки (нет в магазине, не из магазина) — только у невыбранных вариантов в «сменить»."""
+                options: list[list[str]], names: dict[str, str], mode: str, ios_hint: bool = True) -> Markup:
+    """Строка устройства: название, приложения, один чип покрытия, чип про магазин («нет в App Store РФ», у ИТ — «нужен
+    иностранный Apple ID») и «сменить» справа. Подсказки (нет в магазине, не из магазина) — только у невыбранных
+    вариантов в «сменить». ios_hint — строка «iPhone: ставится только из App Store» (ставит ИТ): один раз на экран."""
     if not options:
         return t("div", t("strong", title, class_="dev-name"), t("span", "нет приложения под эти протоколы", class_="muted"),
                  class_="dev-row")
@@ -373,17 +375,16 @@ def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str
                         t("span", note, class_="hint") if note else None, class_="opt-row dev-opt"))
     radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="none", data_auto=True),
                     t("span", f"Не нужен: {title}", class_="opt-title"), class_="opt-row dev-opt"))
-    foreign = any(cat.no_ru_store(cat.client(i) or {}, plat) for i in ids)
-    extra = distviews.ios_note() if plat == "ios" and mode == "admin" else None
+    foreign = next((n for i in ids if (n := clientviews.foreign_note(cat, cat.client(i) or {}, plat, mode == "admin"))), "")
+    extra = distviews.ios_note() if plat == "ios" and mode == "admin" and ios_hint else None
     head = t("summary", t("strong", title, class_="dev-name"), t("span", clientviews.app_names(cat, ids), class_="dev-set"),
              t("span", label, class_=f"chip {kind}"),
-             t("span", f"нет в {'App Store' if plat == 'ios' else 'магазине'} РФ", class_="chip warn",
-               title=clientviews.FOREIGN_STORE) if foreign else None,
+             t("span", foreign, class_="chip warn", title=clientviews.FOREIGN_STORE) if foreign else None,
              t("span", "сменить", class_="dev-change"), class_="dev-head")
     return t("div", t("details", head, t("div", radios, class_="opts"), class_="dev-d"), extra, class_="dev-row")
 
 
-def _clients_block(d: Draft, managed: list[str]) -> Markup:
+def _clients_block(d: Draft, managed: list[str], ios_hint: bool = True) -> Markup:
     """«Приложения»: чипы устройств; по строке на устройство (что поставить, чип покрытия, «сменить»); «Всего N
     приложений: …» и список «Оговорки» — каждая один раз. Любая смена радиокнопки или чипа пересобирает блок:
     кнопка «Пересчитать», с JS она нажимается сама."""
@@ -406,7 +407,8 @@ def _clients_block(d: Draft, managed: list[str]) -> Markup:
         chosen = [i for i in d.clients.get(plat, []) if cat.client(i)]
         used = {a for p, ids in d.clients.items() if p != plat for a in ids}
         opts = _device_options(cat, plat, protocols, chosen, plan.get(plat, []), d.install_mode, used)
-        rows.append(_device_row(cat, plat, cat.platforms[plat], protocols, chosen or None, opts, names, d.install_mode))
+        rows.append(_device_row(cat, plat, cat.platforms[plat], protocols, chosen or None, opts, names, d.install_mode,
+                                ios_hint))
         if opts:
             picked[plat] = chosen or opts[0]
     line = groups.apps_line(cat, picked)
@@ -426,6 +428,11 @@ def _clients_block(d: Draft, managed: list[str]) -> Markup:
                formnovalidate=True))
 
 
+def _clients_sig(d: Draft, managed: list[str]) -> str:
+    """Под какие протоколы и режим «кто ставит» выбраны приложения (изменились — подбор заново)."""
+    return ",".join(d.resolved(managed)) + "|" + d.install_mode
+
+
 def normalize_clients(d: Draft, managed: list[str], fill: bool = True) -> None:
     """Выбор приложений под текущие протоколы и устройства: остаются подходящие. fill (мастер): пока приложения не
     выбраны под эти же протоколы и режим «кто ставит» (первый показ шага, протоколы или режим сменили) — предлагается
@@ -436,7 +443,7 @@ def normalize_clients(d: Draft, managed: list[str], fill: bool = True) -> None:
     except clients.ClientsError:
         return
     protocols = d.resolved(managed)
-    sig = ",".join(protocols) + "|" + d.install_mode
+    sig = _clients_sig(d, managed)
     stale = fill and d.clients_for != sig
     devices = [p for p in d.devices if p in cat.platforms]
     plan = groups.suggest_set(cat, devices, protocols, d.install_mode)
@@ -482,28 +489,34 @@ def _apps_block(d: Draft) -> Markup:
                open=own or None, class_="more"))
 
 
+def _via_counts(al: allowlist.Allowlist, own: dict[str, list[str]] | None = None) -> str:
+    """«Android 12 · Windows 6»: сколько приложений в списке «через VPN» на платформе."""
+    return " · ".join(f"{PLAT_NAMES.get(p, p)} {len((own or {}).get(p) or al.common(p))}" for p in allowlist.PLATFORMS)
+
+
 def _via_line(d: Draft) -> Markup | None:
-    """Шаг «Люди»: одна строка «Через VPN: общий список (Telegram, YouTube… ещё 10) · изменить в группе». Правится
-    список в настройках группы; приложения, которые список не умеют, — «В Hiddify через VPN идёт всё»."""
+    """Шаг «Люди»: одна строка «Через VPN: общий список (Telegram, YouTube… ещё 10) · Android 12 · Windows 6». Группы ещё
+    нет, поэтому правка — в её настройках после создания (на «Раздаче» там же ссылка); приложения, которые список не
+    умеют, — «В Hiddify через VPN идёт всё»."""
     try:
         al = allowlist.Allowlist.load()
         cat = clients.load()
     except (allowlist.AllowlistError, clients.ClientsError):
         return None
-    flat = [c for plat, ids in d.clients.items() if plat in allowlist.PLATFORMS for cid in ids if (c := cat.client(cid))]
     pairs = [(c, plat) for plat, ids in d.clients.items() if plat in allowlist.PLATFORMS for cid in ids if (c := cat.client(cid))]
     plain = list(dict.fromkeys(c["name"] for c, plat in pairs if not clientviews.supports_list(cat, c, plat)))
     works = [1 for c, plat in pairs if clientviews.supports_list(cat, c, plat)]
-    if flat and not works:
+    if pairs and not works:
         return t("p", f"В {', '.join(f'«{n}»' for n in plain)} через VPN идёт всё.", class_="hint")
     own = d.allow_mode == "own"
     titles = clientviews.via_vpn_names(al, "android", d.allow["android"] if own and d.allow["android"] else al.common("android"))
     shown = ", ".join(titles[:2]) + (f"… ещё {len(titles) - 2}" if len(titles) > 2 else "")
-    counts = " · ".join(f"{PLAT_NAMES.get(p, p)} {len(al.common(p))}" for p in allowlist.PLATFORMS)
-    return t("p", "Через VPN: " + ("свой список" if own else f"общий список ({shown})") + " · изменить в группе",
+    counts = _via_counts(al, d.allow if own else None)
+    return t("p", "Через VPN: " + ("свой список" if own else f"общий список ({shown})")
+             + f" · {counts} · изменить — в настройках группы после создания",
              t("br") if plain else None,
              f"В {', '.join(f'«{n}»' for n in plain)} через VPN идёт всё." if plain else None,
-             class_="hint", title=counts)
+             class_="hint")
 
 
 def _mode_seg(mode: str) -> Markup:
@@ -579,18 +592,26 @@ def _preview_summary(plan: people.Plan, existing: int = 0) -> str:
     return text + ". Логин — имя латиницей, нужен только системе: в инструкциях будет имя."
 
 
+def _count_label(verb: str, new: int, moved: int, joiner: str = "") -> str:
+    """Подпись кнопки: «Создать группу и 3 чел.»; есть переводимые — «Создать группу: 3 новых + 2 перевести»."""
+    if moved:
+        return f"{verb}: {plural(new, 'новый', 'новых', 'новых')} + {moved} перевести"
+    return f"{verb} {joiner + ' ' if joiner else ''}{new} чел."
+
+
 def _preview(app: "App", req: "Request", d: Draft, plan: people.Plan) -> "Response":
-    """Шаг «Люди» → создание: что получится из списка; создаёт только кнопка под таблицей (confirm=1)."""
+    """Шаг «Люди» → создание: что получится из списка; создаёт только кнопка под таблицей (confirm=1). Таблица внутри
+    формы: панель кнопок прилипает к низу экрана, пока список не кончился."""
     csrf = req.session.csrf if req.session else ""
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value="3"),
              t("input", type="hidden", name="confirm", value="1"), _hidden(d, 4),
-             t("div", t("button", f"Создать группу и {len(plan.rows)} чел.", type="submit", name="go", value="create",
-                        class_="btn primary"),
+             _preview_rows(plan),
+             t("div", t("button", _count_label("Создать группу", len(plan.rows), len(d.existing), "и"), type="submit", name="go",
+                        value="create", class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
                class_="wiz-nav"),
              method="post", action="/connect/new", class_="stack", data_swap=True)
-    body = card("Люди: проверьте список", t("p", _preview_summary(plan, len(d.existing)), class_="hint"),
-                _preview_rows(plan), form)
+    body = card("Люди: проверьте список", t("p", _preview_summary(plan, len(d.existing)), class_="hint"), form)
     return app.render(req, TITLE, t("div", [page_head(TITLE), _stepper(3, d.custom), body], class_="wizard",
                                     data_expanded=True), active="/groups")
 
@@ -622,37 +643,48 @@ def _preset_why(pr: dict[str, Any], names: dict[str, str], by_id: dict[str, Fact
 
 
 def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str], by_id: dict[str, Fact],
-                chosen: bool) -> Markup:
-    """Готовый вариант: название, протоколы чипами, приложения одной строкой, «почему». Один primary — у «Надёжно»."""
-    rec = pr["id"] == "reliable"
-    issues = []
+                chosen: bool, rec: bool, admin: bool) -> Markup:
+    """Готовый вариант: название, протоколы чипами, приложения одной строкой, «почему». Один primary и «рекомендуем» — у
+    варианта без оговорок (rec); есть оговорки — «с оговорками», а про магазин (iPhone) — строка под приложениями."""
+    issues, foreign = [], []
     if not pr["complete"]:
         issues.append("не на всех устройствах все протоколы")
-    if pr["foreign"]:
-        issues.append("есть приложения не из магазина РФ")
     for plat, ids in pr["plan"].items():
+        for i in ids:
+            note = clientviews.foreign_note(cat, cat.client(i) or {}, plat, admin)
+            if note:
+                foreign.append(f"{cat.platforms.get(plat, plat)}: {note}")
         issues += [f"{app}: {names.get(p, p)} {short}" for p, app, short, _ in groups.caveats(cat, plat, pr["protocols"], ids)]
-    flag = t("span", "с оговорками", class_="chip warn", title="; ".join(dict.fromkeys(issues))) if issues else None
+    foreign = list(dict.fromkeys(foreign))
+    if pr["foreign"] and not foreign:
+        issues.append("есть приложения не из магазина РФ")
+    flag = (t("span", "с оговорками", class_="chip warn", title="; ".join(dict.fromkeys([*foreign, *issues])))
+            if issues or pr["foreign"] else None)
     return t("div", t("span",
                       t("span", t("strong", PRESET_TITLES[pr["id"]]),
                         t("span", "рекомендуем", class_="chip info") if rec else None,
                         t("span", "выбрано", class_="chip") if chosen else None, flag, class_="opt-title"),
                       t("div", [t("span", names.get(p, p), class_="chip") for p in pr["protocols"]], class_="chips"),
                       t("span", groups.apps_line(cat, pr["plan"]), class_="hint"),
+                      t("span", " · ".join(foreign), class_="hint") if foreign else None,
                       t("span", _preset_why(pr, names, by_id), class_="hint"), class_="opt-body"),
              t("button", "Выбрать", type="submit", name="go", value=pr["id"], class_="btn primary" if rec else "btn"),
              class_="opt preset" + (" sel" if chosen else ""))
 
 
 def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
-    """Шаг «Вариант»: кто ставит приложения и готовые варианты («Просто», «Надёжно», «Свой набор»)."""
+    """Шаг «Вариант»: кто ставит приложения и готовые варианты («Просто», «Надёжно», «Свой набор»). Советуется вариант без
+    оговорок; у обоих оговорки — никакой."""
     try:
         cat = clients.load()
     except clients.ClientsError as e:
         return alert_list([("bad", str(e))])
     names = clientviews.proto_names(cat)
     by_id = {f.id: f for f in facts}
-    rows = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"]) for pr in groups.presets(cat, managed, d.install_mode)]
+    prs = groups.presets(cat, managed, d.install_mode)
+    best = groups.recommended_preset(prs)
+    rows = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode == "admin")
+            for pr in prs]
     rows.append(t("div", t("span", t("span", t("strong", "Свой набор"),
                                     t("span", "выбрано", class_="chip") if d.preset == "custom" else None, class_="opt-title"),
                            t("span", "Протоколы и приложения выбираю сам.", class_="hint"), class_="opt-body"),
@@ -784,6 +816,8 @@ def _start(app: "App", req: "Request", d: Draft, go: str) -> "Response":
         d.preset = ""
         return _wizard(app, req, 0, d, ["Такого варианта нет: выберите ещё раз"], 422)
     d.protocols = list(pr["protocols"])
+    d.clients = {plat: list(ids) for plat, ids in pr["plan"].items()}   # приложения варианта, как показаны на «Варианте»
+    d.clients_for = _clients_sig(d, managed)
     return _wizard(app, req, 2, d)
 
 
@@ -857,7 +891,7 @@ def connect_done(app: "App", req: "Request") -> "Response":
     if len(members) <= DONE_ROWS_MAX and ctx and g.clients:
         for u in members:
             links, _ = userviews._cached_links(app, u.name)
-            panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-", label=u.label)
+            panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-", label=u.label, primary=False)
             rows.append(t("details", t("summary", t("strong", u.label),
                                        t("span", f" {u.name}", class_="muted small") if u.display else None,
                                        t("span", f" {u.note}", class_="muted small") if u.note else None),
@@ -869,7 +903,7 @@ def connect_done(app: "App", req: "Request") -> "Response":
                     "p", "Карточка на каждого: приложение, его QR и ссылка, шаги. Печать, ZIP с папкой на человека и CSV "
                          "для рассылки.", class_="hint"),
                 t("div", t("a", "Карточки (печать, ZIP, CSV)", href=link, class_="btn primary", data_swap=True),
-                  t("span", st.counter, class_="chip"), class_="actions"),
+                  t("span", st.counter, class_="chip ok") if st.known and st.on else None, class_="actions"),
                 t("p", clientviews.SEND_WARN, class_="hint"),
                 t("div", rows, class_="urows") if rows else None, clientviews.hints(ctx)[1:] if rows and ctx else None)
     body = [*head, hand, _texts_card(g, ctx) if ctx and g.clients else None, dist]
@@ -883,7 +917,8 @@ def _texts_card(g: groups.Group, ctx: clientviews.Ctx) -> Markup | None:
         text = ctx.text(g, plat)
         if text:
             items.append(t("div", t("h4", title, class_="plat-title"),
-                           clientviews.text_block(clientviews.editor_text(text), f"msg-g-{plat}", None), class_="conn-plat"))
+                           clientviews.text_block(clientviews.editor_text(text), f"msg-g-{plat}", None, primary=False),
+                           class_="conn-plat"))
     if not items:
         return None
     return t("details", t("summary", "Инструкция"), t("div", items),
@@ -892,18 +927,24 @@ def _texts_card(g: groups.Group, ctx: clientviews.Ctx) -> Markup | None:
 
 
 def _summary(g: groups.Group) -> Markup:
-    """Что настроено у группы, только для чтения: протоколы, приложения, «через VPN», кто ставит."""
+    """Что настроено у группы, только для чтения, подписи как в мастере: «Протоколы», «Приложения», «Через VPN», «Ставит»."""
     selectable = users.selectable_protocols()
     try:
         cat = clients.load()
         apps = groups.apps_line(cat, g.clients)
     except clients.ClientsError:
         apps = " · ".join(f"{p}: {'+'.join(ids)}" for p, ids in g.clients.items())
+    try:
+        counts = f" ({_via_counts(allowlist.Allowlist.load(), g.allowlist)})"
+    except allowlist.AllowlistError:
+        counts = ""
     chips = [t("span", manifests.proto_title(p), class_="chip") for p in g.offered(selectable)]
-    return t("div", t("div", chips, class_="chips"),
-             t("p", t("strong", "Приложения: "), apps) if apps else t("p", clientviews.no_apps(g)),
-             t("p", "через VPN: " + ("свой список группы" if g.allowlist else "общий список")
-               + " · " + MODE_WORDS[g.install_mode], class_="hint"))
+    return t("div",
+             t("p", t("strong", "Протоколы: "), t("span", chips, class_="chips inline")),
+             t("p", t("strong", "Приложения: "), apps) if apps else t("p", t("strong", "Приложения: "), clientviews.no_apps(g)),
+             t("p", t("strong", "Через VPN: "), ("свой список группы" if g.allowlist else "общий список") + counts + " · ",
+               t("a", "изменить →", href=f"/groups/{g.id}#settings", data_swap=True)),
+             t("p", t("strong", "Ставит: "), MODE_WHO[g.install_mode]))
 
 
 def _list(names: list[str], limit: int = 8) -> str:
@@ -922,20 +963,22 @@ def flash_report(req: "Request", rep: groups.GroupReport, renamed: list[str] | N
     s = req.session
     if s is None:
         return
+    reg = users.list_users()
+    who = lambda ns: [u.label if (u := reg.get(n)) else n for n in ns]   # имя из списка, нет его — логин
     parts = [f"«{rep.group.name}»: {rep.message}"]
     if rep.created:
-        parts.append("создано: " + _list(rep.created))
+        parts.append("создано: " + _list(who(rep.created)))
     if rep.moved:
-        parts.append("переведено: " + _list(rep.moved))
+        parts.append("переведено: " + _list(who(rep.moved)))
     if rep.needs_qr and not rep.created and len(rep.needs_qr) <= 8:
         s.flash("ok" if rep.ok else "warn", ". ".join(parts) + ". Новые QR/файлы нужны:",
-                [(n, f"/users/{n}") for n in rep.needs_qr])
+                [(label, f"/users/{n}") for n, label in zip(rep.needs_qr, who(rep.needs_qr))])
     else:
         s.flash("ok" if rep.ok else "warn", ". ".join(parts))
     if renamed:
         s.flash("warn", "Совпали имена, добавлен номер: " + _list(renamed, 5))
     if rep.skipped:
-        s.flash("warn", "Свой набор протоколов, группа его не тронула: " + _list(rep.skipped)
+        s.flash("warn", "Свой набор протоколов, группа его не тронула: " + _list(who(rep.skipped))
                 + ". «Как у группы» в списке участников вернёт.")
     for e in rep.errors[:ERRORS_SHOWN]:
         s.flash("bad", e)
@@ -1093,6 +1136,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
     except allowlist.AllowlistError as e:
         return app.error(req, 500, "Список «через VPN» не читается", str(e))
     normalize_clients(d, managed, fill=False)
+    dist_card = distviews.card_for(gs, g.id, f"/groups/{g.id}", csrf) if g.install_mode == "admin" else None
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value="save"),
              t("input", type="hidden", name="devs", value="1"),
              t("button", "Сохранить настройки", type="submit", hidden=True, tabindex="-1"),   # Enter в названии сохраняет, а не «Пересчитать»
@@ -1103,7 +1147,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
              t("h3", "Протоколы", class_="sub-h"), _protocols_block(facts, selected, g.protocols),
              t("h3", "Приложения", class_="sub-h"),
              _clients_block(Draft(protocols=selected, clients=d.clients, devices=d.devices, install_mode=d.install_mode),
-                            managed),
+                            managed, ios_hint=dist_card is None),
              t("h3", "Через VPN", class_="sub-h"), _apps_block(d),
              t("div", t("button", "Сохранить настройки", type="submit", class_="btn primary"), class_="actions"),
              method="post", action=f"/groups/{g.id}", class_="stack", data_swap=True)
@@ -1136,7 +1180,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
         parts.append(alert_list([("bad", e) for e in errors]))
     ctx = clientviews.Ctx.load()
     parts += [_members_card(g, gs, ureg, al, csrf),
-              add, distviews.card_for(gs, g.id, f"/groups/{g.id}", csrf) if g.install_mode == "admin" else None,
+              add, dist_card,
               _messages_card(g, ctx, csrf, req.query.get("m", "")) if ctx else None,
               card("Настройки группы", form, id_="settings",
                    help="Сохранение применяется ко всем участникам один раз; в сообщении — кому нужен новый QR."),
@@ -1226,12 +1270,13 @@ def _members_preview(app: "App", req: "Request", g: groups.Group, plan: people.P
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="users_new", value=text),
              t("input", type="hidden", name="confirm", value="1"),
              [t("input", type="hidden", name="existing", value=n) for n in existing],
-             t("div", t("button", f"Добавить {len(plan.rows)} чел.", type="submit", class_="btn primary"),
+             _preview_rows(plan),
+             t("div", t("button", _count_label("Добавить", len(plan.rows), len(existing)), type="submit",
+                        class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
-               class_="actions"),
+               class_="wiz-nav"),
              method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True)
-    body = card(f"Проверьте список: группа «{g.name}»", t("p", _preview_summary(plan, len(existing)), class_="hint"),
-                _preview_rows(plan), form)
+    body = card(f"Проверьте список: группа «{g.name}»", t("p", _preview_summary(plan, len(existing)), class_="hint"), form)
     return app.render(req, g.name, t("div", [page_head(g.name, "добавление людей"), body], data_expanded=True),
                       active="/groups")
 

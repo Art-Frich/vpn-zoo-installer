@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 DESKTOP = {"windows", "macos", "linux"}
 MAIN_PLATFORMS = groups.MAIN_DEVICES   # устройства по умолчанию в мастере и на /clients; остальные — чипы выключены
-LEGEND = "✓ заявлено поддерживаемым · ! с оговоркой · ✕ не работает · ? не проверено · — не заявлено"
+LEGEND = "зелёный — заявлено · «с оговоркой» — подробности при наведении · серый — не проверено · — не заявлено"
 UNVERIFIED = "Шаги и статусы — по коду и документации приложений, на устройстве не проверялись."
 RECOMMEND_BASIS = "по документации и исследованию 04.10.2026, на устройстве не проверено"
 SEND_WARN = ("Ссылки и QR — ключи доступа: не отправляйте через MAX и VK, лучше лично или мессенджером "
@@ -95,6 +95,21 @@ def proto_names(cat: clients.Catalog) -> dict[str, str]:
 def supports_list(cat: clients.Catalog, client: dict[str, Any], platform: str) -> bool:
     """Умеет ли приложение пускать в туннель только приложения «через VPN» на платформе (иначе через VPN идёт всё)."""
     return client.get("per_app") in ("config", "rules") or bool(cat.per_app_steps(client, platform))
+
+
+def foreign_note(cat: clients.Catalog, client: dict[str, Any], plat: str, admin: bool = False) -> str:
+    """Подпись про магазин: людям, которые ставят сами, — «нет в App Store РФ»; ставит ИТ — на iPhone «нужен иностранный
+    Apple ID» (Android и компьютеры у ИТ без магазина); приложение есть в российском магазине — пусто."""
+    if not cat.no_ru_store(client, plat):
+        return ""
+    if admin:
+        return "нужен иностранный Apple ID" if plat == "ios" else ""
+    return f"нет в {'App Store' if plat == 'ios' else 'магазине'} РФ"
+
+
+def rules_text(cat: clients.Catalog) -> str:
+    """Шаг импорта файла правил v2rayN: тот же текст, что в инструкции (extra каталога)."""
+    return next((ex["text"] for c in cat.clients for ex in c.get("extra", []) if ex["proto"] == allowlist.V2RAYN_PROTO), "")
 
 
 def app_names(cat: clients.Catalog, ids: list[str]) -> str:
@@ -189,7 +204,8 @@ def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], 
             if plat not in c["platforms"]:
                 cells.append(t("span", "—", class_="muted"))
             elif cat.no_ru_store(c, plat):
-                cells.append(t("span", "✓!", class_="chip warn", title=FOREIGN_STORE))
+                cells.append(t("span", f"нет в {'App Store' if plat == 'ios' else 'магазине'} РФ", class_="chip warn",
+                               title=FOREIGN_STORE))
             else:
                 cells.append(t("span", "✓", class_="chip ok"))
         more = ", ".join(cat.platforms[p] for p in c["platforms"] if p not in groups.MAIN_DEVICES) or "—"
@@ -225,14 +241,14 @@ def clients_page(app: "App", req: "Request") -> "Response":
            for c in cat.clients for p, st in c["protocols"].items()
            if p in protos and st["s"] in ("no", "warn") and st.get("note")]
     notes = [alert_list(caveats) if caveats else None,
-             t("details", t("summary", f"Почему ✕ и ! ({len(why)})"), alert_list(why), class_="more") if why else None]
+             t("details", t("summary", f"Почему «с оговоркой» и «не работает» ({len(why)})"), alert_list(why), class_="more") if why else None]
 
     ids = {c["id"]: c["name"] for c in cat.clients}
     failed = [ids.get(k, k) for k, v in cache["versions"].items() if v.get("error")]
     foot = t("p", "Версии из GitHub: раз в сутки и по кнопке, страница в сеть не ходит"
              + (f" · не удалось: {', '.join(failed)}" if failed else "") + f" · каталог от {cat.raw['updated']}",
              class_="hint")
-    intro = t("p", t("a", "Что ставить группе — в «Подключить людей» и на странице группы →", href="/groups", data_swap=True),
+    intro = t("p", t("a", "Что ставить группе — в «Подключить людей» и на странице группы →", href="/connect/new", data_swap=True),
               class_="hint")
     body = [page_head("Приложения", "справочник: что умеет каждое", _check_controls(cache, csrf)), _dev_nav(cat, dev), intro,
             table_card, *[n for n in notes if n], foot]
@@ -267,6 +283,7 @@ class Section:
     steps: list[str] = field(default_factory=list)
     extras: list[Item] = field(default_factory=list)
     check: str = ""
+    foreign: bool = False   # на этой платформе приложения нет в российском магазине (iPhone: нужен иностранный Apple ID)
 
     @property
     def proto(self) -> str:
@@ -300,7 +317,9 @@ class Pack:
         steps.append(self.sections[0].check)
         if self.admin:
             names = " и ".join(f"«{s.client['name']}»" for s in self.sections)
-            head = f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}."
+            abroad = " и ".join(f"«{s.client['name']}»" for s in self.sections if s.foreign)
+            head = (f"{NAME_TOKEN}. Установите {abroad} с иностранного Apple ID. Включите VPN в {names}." if abroad
+                    else f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}.")
         else:
             head = f"{NAME_TOKEN}, VPN на {self.platform_title}: что сделать"
         return "\n".join([head, *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
@@ -329,7 +348,7 @@ def pick_method(proto: str, client: dict[str, Any], platform: str, links: list[p
 
 
 def pick_link(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link], method: str) -> int | None:
-    """Номер ссылки пользователя под способ передачи: ссылка — первая («Обычная»); из файлов Android берёт
+    """Номер ссылки пользователя под способ передачи: ссылка — первая; из файлов Android берёт
     конфиг со списком приложений, остальные — общий."""
     mine = [(i, ln) for i, ln in enumerate(links) if ln.variant == proto and _usable(proto, client["id"], ln)]
     pool = {"link": [x for x in mine if x[1].kind == "uri"], "file": [x for x in mine if x[1].kind == "file"],
@@ -442,7 +461,8 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         items = [Item(proto, method, _tile_title(cat, mans, proto)) for proto, method in mine]
         sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform], stores), items)
         ver = f" (версия {sec.version})" if sec.version else ""
-        foreign = f" {FOREIGN_STORE}" if cat.no_ru_store(c, platform) else ""
+        sec.foreign = cat.no_ru_store(c, platform)
+        foreign = f" {FOREIGN_STORE}" if sec.foreign else ""
         sec.install = f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform)}{foreign}"
         sec.steps += [c["import"][m] for m in dict.fromkeys(i.method for i in items)]
         for ex in c.get("extra", []):
@@ -591,25 +611,27 @@ def _key_html(k: Key, name: str, kid: str) -> Markup:
 
 def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.Catalog, uid: str,
               admin: bool = False) -> Markup:
-    """Приложение набора: название, версия, магазины и ключи человека. Приложения ставит ИТ — магазинов и
-    предупреждения про App Store нет: человеку их не показывают."""
+    """Приложение набора: название, версия, магазины и ключи человека. Приложения ставит ИТ — магазинов нет, а на
+    iPhone — «нужен иностранный Apple ID»."""
+    note = foreign_note(cat, sec.client, plat, admin)
     head = t("div", t("strong", sec.client["name"]),
              t("span", sec.version, class_="mono muted") if sec.version else None,
-             None if admin or not cat.no_ru_store(sec.client, plat)
-             else t("span", "нет в App Store РФ", class_="chip warn", title=FOREIGN_STORE),
+             t("span", note, class_="chip warn", title=FOREIGN_STORE) if note else None,
              None if admin else t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
     return t("div", head, t("div", [_key_html(k, name, f"k-{uid}{plat}-{sec.client['id']}-{n}")
                                     for n, k in enumerate(keys)], class_="keys"), class_="app")
 
 
-def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, links: bool = False) -> Markup:
+def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, links: bool = False,
+               primary: bool = True) -> Markup:
     """Инструкция только для чтения: <pre>, «Скопировать» и «Изменить для группы →» (править её можно только на
-    странице группы). links — предложить дописать ссылки человека в копируемый текст (нужен JS)."""
+    странице группы). links — предложить дописать ссылки человека в копируемый текст (нужен JS). primary — главная
+    ли это кнопка экрана (на «Раздаче» главная одна — «Карточки»)."""
     return t("div",
              t("span", "Инструкция", class_="label"),
              t("pre", text, id=mid, class_="msg-pre"),
              t("div",
-               t("button", "Скопировать", type="button", class_="btn primary", data_copy=mid,
+               t("button", "Скопировать", type="button", class_="btn primary" if primary else "btn", data_copy=mid,
                  title="Копируется текст выше, без ключей"),
                t("label", t("input", type="checkbox", data_addlinks=mid), " добавить ссылки в текст",
                  class_="chk", data_links=True, hidden=True) if links else None,
@@ -619,7 +641,7 @@ def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, l
 
 
 def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
-                  uid: str = "", label: str | None = None) -> Markup | None:
+                  uid: str = "", label: str | None = None, primary: bool = True) -> Markup | None:
     """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, инструкция
     группы с его именем (label; нет — логин) только для чтения. Без JS видны все платформы подряд; с JS список
     оставляет одну. uid — приставка id полей, если на странице несколько блоков."""
@@ -641,7 +663,7 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
         text = fill_name((None if own else group_text) or pack.message, label)
         keys = [_keys(s, plat, links) for s in pack.sections]
         apps = [_app_html(s, k, plat, name, ctx.cat, uid, admin) for s, k in zip(pack.sections, keys)]
-        msg = text_block(text, f"msg-{uid}{plat}", g, links=any(k.uri for ks in keys for k in ks),
+        msg = text_block(text, f"msg-{uid}{plat}", g, links=any(k.uri for ks in keys for k in ks), primary=primary,
                          extra=[alert_list([("warn", MISMATCH)]) if own else None,
                                 t("p", "Ключей в инструкции нет: QR и ссылки выше отправьте отдельно.", class_="hint")])
         panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))

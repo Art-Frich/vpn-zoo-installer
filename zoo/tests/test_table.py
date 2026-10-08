@@ -616,8 +616,9 @@ class PagesTest(AppTestBase):
         resp, csv_body = self.c.get("/users?export=csv&q=a")
         self.assertEqual(resp.status, 200)
         rows = list(csv.reader(io.StringIO(csv_body.lstrip("﻿"))))
-        self.assertEqual(rows[0], ["пользователь", "доступ", "группа", "протоколы", "24 ч", "30 дней", "активность"])
-        self.assertEqual([r[0] for r in rows[1:]], ["anna", "masha", "petya"])
+        self.assertEqual(rows[0], ["пользователь", "логин", "доступ", "группа", "протоколы", "24 ч", "30 дней", "активность"])
+        self.assertEqual([r[0] for r in rows[1:]], ["anna", "masha", "petya"], "имя, а нет его — логин")
+        self.assertEqual([r[1] for r in rows[1:]], ["anna", "masha", "petya"], "логин выгружается отдельным столбцом")
         self.assertEqual(self.c.get("/users?export=json&q=zzz")[1].strip(), "[]")
         # трафик по пользователям: порядок и ссылки
         rep = {"rows": [{"key": "masha", "up": 5, "down": 10, "total": 15}, {"key": "anna", "up": 1, "down": 2, "total": 3},

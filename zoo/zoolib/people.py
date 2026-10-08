@@ -96,6 +96,21 @@ def _suffixed(base: str, n: int) -> str:
     return base[: NAME_LEN - len(suf)].rstrip("-_") + suf
 
 
+def login_for(display: str, taken: set[str] | frozenset[str] = frozenset()) -> tuple[str, str]:
+    """Логин из имени (как в списке людей): (логин, почему добавлен номер — «занято», «служебное» или пусто).
+    В имени нет ни букв, ни цифр — логин пустой."""
+    base = slug(display)
+    if not base:
+        return "", ""
+    used = set(taken) | set(users.SYSTEM_USERS)
+    if base not in used:
+        return base, ""
+    k = 2
+    while _suffixed(base, k) in used:
+        k += 1
+    return _suffixed(base, k), "служебное" if base in users.SYSTEM_USERS else "занято"
+
+
 def build(text: str, taken: set[str] | frozenset[str] = frozenset()) -> Plan:
     """Текст → план. taken — имена, которые уже есть в реестре."""
     plan = Plan()

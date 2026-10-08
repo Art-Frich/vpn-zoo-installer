@@ -123,7 +123,8 @@ class BulkCreateTest(Base):
         self.assertEqual(reg["masha-2"]["note"], "тёзка")
         self.assertEqual((reg["ivan-petrov"]["note"], reg["ivan-petrov"]["display"]), ("бух", "Иван Петров"))
         _, page = self.c.get("/groups/g1")
-        self.assertIn("создано: ivan-petrov, masha-2, mariya", text_of(page))
+        self.assertIn("создано: Иван Петров, masha, Мария", text_of(page), "во flash — имена из списка, не логины")
+        self.assertNotIn("ivan-petrov,", text_of(page).split("создано:")[1].split(".")[0])
         self.assertIn("Совпали имена, добавлен номер: masha → masha-2", text_of(page))
 
     def test_group_page_only_existing_skips_preview(self):

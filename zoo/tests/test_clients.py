@@ -451,7 +451,7 @@ class ClientsPageTest(AppTestBase):
         self.assertNotIn('class="chip bad"', table, "не работающие протоколы — одной строкой, без красных чипов")
         self.assertIn("Не работает: VLESS Vision, VLESS XHTTP, AmneziaWG", table)
         self.assertIn('class="chip" title="не проверено: в исследовании не проверяли', body)
-        self.assertRegex(body, r"X25519MLKEM768", "причины — в «Почему ✕ и !»")
+        self.assertRegex(body, r"X25519MLKEM768", "причины — в «Почему «с оговоркой» и «не работает»»")
 
     def table_rows(self, body):
         """Строки таблицы «Все приложения»: {имя приложения: html строки}."""
@@ -471,7 +471,8 @@ class ClientsPageTest(AppTestBase):
         happ = rows["Happ"]
         self.assertEqual(happ.count('class="chip ok">✓</span>'), 1, "Android")
         self.assertIn('class="chip warn" title="В российском App Store его нет', happ)
-        self.assertIn(">✓!</span>", happ, "iPhone: Happ нет в App Store РФ")
+        self.assertIn(">нет в App Store РФ</span>", happ, "iPhone: Happ нет в App Store РФ")
+        self.assertNotIn("✓!", body, "«!» заменён словами, как в мастере")
         self.assertIn(">—</span>", happ, "Windows: Happ нет")
         # протоколы — по каталогу: зелёный заявлен, жёлтый с оговоркой; не работающие — строкой
         hid = rows["Hiddify"]
@@ -493,7 +494,7 @@ class ClientsPageTest(AppTestBase):
         self.assertNotIn("Ставить</h3>", body)
         self.assertNotIn('class="dev-row"', body)
         self.assertNotIn("В мастере «Новая группа» то же считается", body)
-        self.assertRegex(body, r'<a href="/groups" data-swap>Что ставить группе')
+        self.assertRegex(body, r'<a href="/connect/new" data-swap>Что ставить группе')
     def test_dev_filter_is_a_link_not_js_and_filters_the_table(self):
         _, body = self.c.get("/clients?dev=windows")
         self.assertIn('href="/clients?dev=windows" class="active"', body)
