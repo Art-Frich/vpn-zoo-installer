@@ -1,6 +1,7 @@
 """Список людей одним текстом (мастер «Подключить людей», «Добавить людей списком»).
 
-Строка — «имя» или «имя; заметка» (разделитель — первая «;», табуляция или запятая). Имя может быть
+Строка — «имя», «имя; заметка» или «имя; заметка; android, windows» (разделитель — первая «;», табуляция или
+запятая; последнее поле из одних названий устройств — устройства человека, без него — как у группы). Имя может быть
 русским: из него получается логин пользователя (транслит, нижний регистр, только a-z 0-9 - _), при
 совпадении с занятым или с предыдущей строкой добавляется номер («ivan-2»). Исходное имя не теряется:
 оно хранится у человека отдельно (users.User.display), и к нему обращаются в инструкциях и карточках.
@@ -21,6 +22,15 @@ TEXT_MAX = 60000
 NOTE_MAX = 200
 NAME_LEN = 32
 SEPARATORS = (";", "\t", ",")
+# устройства человека в списке: id платформы каталога (clients.json) → название; слова, которыми их пишут
+DEVICES = {"android": "Android", "ios": "iPhone", "windows": "Windows", "macos": "macOS", "linux": "Linux"}
+DEVICE_WORDS = {
+    "android": "android", "андроид": "android", "андройд": "android",
+    "iphone": "ios", "ios": "ios", "айфон": "ios", "ipad": "ios",
+    "windows": "windows", "win": "windows", "виндовс": "windows", "винда": "windows",
+    "macos": "macos", "mac": "macos", "macbook": "macos", "мак": "macos", "макбук": "macos",
+    "linux": "linux", "линукс": "linux",
+}
 
 _RU = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
@@ -51,6 +61,7 @@ class Row:
     converted: bool = False   # id не совпал с написанным (транслит, замена знаков)
     clash: str = ""      # почему к id добавлен номер: «занято», «служебное», «повтор в списке»
     problem: str = ""    # строку создать нельзя
+    devices: list[str] = field(default_factory=list)   # устройства из списка (id платформ); пусто — как у группы
 
 
 @dataclass
@@ -76,6 +87,10 @@ class Plan:
         """(логин, заметка, имя как написано): имя сохраняется у человека отдельно от заметки."""
         return [(r.name, r.note, r.display) for r in self.rows]
 
+    def entries(self) -> list[tuple[str, str, str, tuple[str, ...]]]:
+        """(логин, заметка, имя, устройства) — для создания людей."""
+        return [(r.name, r.note, r.display, tuple(r.devices)) for r in self.rows]
+
     @property
     def renamed(self) -> list[Row]:
         return [r for r in self.rows if r.clash]
@@ -89,6 +104,31 @@ def split_line(line: str) -> tuple[str, str]:
     note = re.sub(r"\s*\t\s*", "; ", note)
     clean = lambda s: re.sub(r"\s+", " ", _CTRL.sub(" ", s)).strip().strip('"').strip()
     return clean(name), clean(note)
+
+
+def _device_ids(piece: str) -> list[str] | None:
+    """«android, iPhone» → ['android', 'ios']; есть слово не про устройство — None."""
+    words = [w for w in re.split(r"[\s+/]+", piece.strip().casefold()) if w]
+    if not words or any(w not in DEVICE_WORDS for w in words):
+        return None
+    return [DEVICE_WORDS[w] for w in words]
+
+
+def split_devices(note: str) -> tuple[str, list[str]]:
+    """Заметка → (заметка, устройства): хвостовые поля (через «;» или запятую) из одних названий устройств."""
+    parts = re.split(r"([;,])", note)
+    k = len(parts)
+    found: list[str] = []
+    while k > 0 and (ids := _device_ids(parts[k - 1])) is not None:
+        found = ids + found
+        k -= 2
+    if not found:
+        return note, []
+    return "".join(parts[:max(k, 0)]).strip(" ;,"), list(dict.fromkeys(found))
+
+
+def device_titles(ids: list[str] | tuple[str, ...]) -> str:
+    return ", ".join(DEVICES.get(i, i) for i in ids)
 
 
 def _suffixed(base: str, n: int) -> str:
@@ -121,7 +161,8 @@ def build(text: str, taken: set[str] | frozenset[str] = frozenset()) -> Plan:
     used = set(taken) | set(users.SYSTEM_USERS)
     for n, raw in enumerate(lines, 1):
         display, note = split_line(raw)
-        row = Row(n, raw.strip(), display, note[:NOTE_MAX])
+        note, devices = split_devices(note)
+        row = Row(n, raw.strip(), display, note[:NOTE_MAX], devices=devices)
         base = slug(display)
         if not display:
             row.problem = "нет имени"

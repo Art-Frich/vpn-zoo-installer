@@ -158,8 +158,10 @@ class CardApp:
 class Block:
     platforms: list[str]
     apps: list[CardApp]
-    steps: list[str]
+    steps: list[str]          # для сообщения и папки ZIP: ссылки и файлы
     via: str = ""   # «Через VPN — …» под названием платформы
+    paper: list[str] = field(default_factory=list)   # для бумажной карточки: ключи — QR-кодом
+    rest: list[str] = field(default_factory=list)    # приложения, чей ключ с бумаги не перенести — им сообщение
 
 
 @dataclass
@@ -178,10 +180,18 @@ class Card:
 
 
 SENT_RE = re.compile(r",? (?:который|которую) я пришлю")
+FOLDER_WORDS = (("Открываете сообщение", "Открываете папку"), ("из сообщения", "из этой папки"))
+LINK_IN_FOLDER = re.compile(r"(ссылк[уи](?: «[^»]*»(?:, | и )?)*) из сообщения")   # ссылка — в этом же файле, ниже
+PAPER_REST = "{apps} — настройка в сообщении: ссылку и файлы с бумаги не перенести."
+IN_MESSAGE = "в сообщении"
 
 
 def words(step: str, where: str) -> str:
-    """Тексты групп написаны для сообщения («QR, который я пришлю»); на карточке и в папке ключ уже у человека."""
+    """Тексты написаны для сообщения («ссылку из сообщения», в старых текстах групп — «QR, который я пришлю»); в папке
+    ZIP ключ лежит рядом с инструкцией, а ссылка — в ней же, в «Ключах доступа»."""
+    step = LINK_IN_FOLDER.sub(r"\1 ниже, из «Ключей доступа»", step)
+    for a, b in FOLDER_WORDS:
+        step = step.replace(a, b)
     return SENT_RE.sub(" " + where, step)
 
 
@@ -200,11 +210,15 @@ def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: client
 
 def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
                  links: list[protolib.Link]) -> list[Block]:
-    """Платформы с одинаковыми приложениями и ключами сворачиваются в один блок («Android, iPhone — Happ»)."""
+    """Платформы с одинаковыми приложениями и ключами сворачиваются в один блок («Android, iPhone — Happ»). Только
+    устройства человека (groups.devices_of)."""
     prefer, order = clientviews.group_prefs(g)
     admin = bool(g and g.install_mode == "admin")   # ставит ИТ: человеку магазины не показываются, а iPhone — «нужен иностранный Apple ID»
+    devices = groups.devices_of(user, g)
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
+        if devices is not None and plat not in devices:
+            continue
         pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
                                       clientviews.store_first(g), ctx.al, ctx.apps_for(plat, g, user.name), admin)
         if pack is None:
@@ -214,13 +228,15 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
                         [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
                 for s, ks in zip(pack.sections, keys)]
         steps = _steps(ctx, g, plat, pack, user.label)
+        paper = pack.steps(paper=True)
         # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
         sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
-                      tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps), pack.via)
+                      tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps), pack.via,
+               tuple(paper))
         if sig in merged:
             merged[sig].platforms.append(title)
             continue
-        merged[sig] = Block([title], apps, steps, pack.via)
+        merged[sig] = Block([title], apps, steps, pack.via, paper, pack.paper_rest)
     return list(merged.values())
 
 
@@ -281,9 +297,10 @@ def _key_html(k: CardKey, name: str) -> Markup:
     if k.qr is not None:
         parts.append(t("img", class_="qr", src=f"/users/{name}/qr/{k.qr}?p={k.tag}", width=120, height=120,
                        alt=f"QR: {k.title}"))
-    parts.append(t("div", k.title, class_="key-name"))
-    if k.uri:
-        parts.append(t("code", k.uri, class_="hlink"))   # целиком: обрезанная ссылка на печати не работает
+    parts.append(t("div", k.title, t("span", " — " + IN_MESSAGE, class_="muted") if k.qr is None else None,
+                   class_="key-name"))
+    if k.uri:   # на бумаге ссылку не скопировать: только на экране, целиком
+        parts.append(t("code", k.uri, class_="hlink noprint"))
     if k.file and clientviews.FILE_NAME_RE.fullmatch(k.file):
         parts.append(t("a", "Скачать файл", href=f"/users/{name}/file/{k.file}", class_="btn small noprint"))
     return t("div", parts, class_="hkey")
@@ -298,7 +315,9 @@ def _block_html(b: Block, name: str) -> Markup:
               t("div", [_key_html(k, name) for k in a.keys], class_="hkeys"), class_="happ") for a in b.apps]
     return t("section", t("h4", ", ".join(b.platforms), class_="plat-title"),
              t("p", b.via, class_="hint") if b.via else None, apps,
-             t("ol", [t("li", words(s, "с этой карточки")) for s in b.steps], class_="hsteps") if b.steps else None, class_="hblock")
+             t("ol", [t("li", s) for s in b.paper], class_="hsteps") if b.paper else None,
+             t("p", PAPER_REST.replace("{apps}", ", ".join(f"«{a}»" for a in b.rest)), class_="hint") if b.rest else None,
+             class_="hblock")
 
 
 def _card_html(c: Card, st: Status) -> Markup:
@@ -362,8 +381,8 @@ def cards_page(app: "App", req: "Request") -> "Response":
               data_swap=True) if st.known and not sel.only_pending and len(st.on) < st.total else None,
             class_="actions noprint")
     parts += [card(f"Карточек: {len(cards)}", bar, sheet,
-                   t("p", NOTE_WARN, " ZIP — папка на человека: QR, файлы и instruction.txt; index.csv — для рассылки.",
-                     class_="hint"),
+                   t("p", "На бумаге — только QR для телефона. Ссылки и файлы — в сообщении: ZIP (папка на человека с "
+                          "instruction.txt) или CSV для рассылки. ", NOTE_WARN, class_="hint"),
                    t("p", f"{pending} карточек ещё собираются — обновите страницу.", class_="hint") if pending else None,
                    cls="noprint"),
               t("div", [_card_html(c, st) for c in cards], class_=f"hcards per-{per}")]
@@ -422,15 +441,19 @@ def instruction_text(c: Card, qr_files: dict[Any, str], files: dict[str, str]) -
     out.append("Ключи доступа (никому не пересылайте):")
     # один ключ на нескольких платформах — одна запись, QR-картинки собираются к ней
     keys: dict[Any, list[str]] = {}
+    apps: dict[Any, list[str]] = {}   # в какое приложение ключ: на устройстве их бывает два
     for b in c.blocks:
         for a in b.apps:
             for k in a.keys:
                 qrs = keys.setdefault((k.title, k.uri, k.file), [])
+                who = apps.setdefault((k.title, k.uri, k.file), [])
+                if f"«{a.name}»" not in who:
+                    who.append(f"«{a.name}»")
                 pic = qr_files.get((k.title, k.qr)) if k.qr is not None else None
                 if pic and pic not in qrs:
                     qrs.append(pic)
     for (title, uri, file), qrs in keys.items():
-        out.append(f"  {title}")
+        out.append(f"  {title} — в {', '.join(apps[(title, uri, file)])}")
         out += [f"    QR: {q}" for q in qrs]
         if uri:
             out.append(f"    ссылка: {uri}")

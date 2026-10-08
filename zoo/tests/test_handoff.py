@@ -63,7 +63,7 @@ class BulkCreateTest(Base):
         self.assertIn("<code>ivanov-ivan-2</code>", body)
         self.assertIn("<strong>Иванов Иван</strong>", body, "имя — как написано, логин — отдельной колонкой")
         head = re.search(r"<thead>(.*?)</thead>", body, re.S).group(1)
-        self.assertEqual(re.findall(r"<th[^>]*>([^<]*)</th>", head), ["№", "Имя", "Логин", "Заметка", ""])
+        self.assertEqual(re.findall(r"<th[^>]*>([^<]*)</th>", head), ["№", "Имя", "Логин", "Заметка", "Устройства", ""])
         self.assertNotIn("латиницей</span>", body, "серых чипов «латиницей» нет: про латиницу сказано один раз в сводке")
         self.assertEqual(body.count("Логин — имя латиницей"), 1)
         self.assertIn("row-warn", body, "совпавшие имена подсвечены")
@@ -250,7 +250,11 @@ class CardsPageTest(Base):
         self.assertIn("Установите «Happ»", body)
         self.assertNotIn("{name}", body)
         self.assertNotIn("я пришлю", body)
-        self.assertIn("камеру на QR с этой карточки", body)
+        # бумага: ключ — только QR-кодом; ссылку с бумаги не скопировать, она только на экране
+        self.assertIn("<li>В «Happ» нажмите «+» → «Сканировать QR» и наведите камеру на QR.</li>", body)
+        self.assertNotIn("Вставить из буфера", body)
+        self.assertNotIn("из сообщения", body)
+        self.assertIn('class="hlink noprint"', body)
         self.assertIn('class="hcards per-3"', body)
         self.assertIn("data-print", body)
         self.assertIn("не отправляйте их через MAX и VK", body)
@@ -425,7 +429,10 @@ class ExportTest(Base):
         self.assertNotIn("{name}", text)
         self.assertIn("masha/qr-vless-vision.png", names)
         self.assertNotIn("я пришлю", text, "ключ уже у человека: «пришлю» на карточке и в папке не нужно")
-        self.assertIn("камеру на QR из этой папки", text)
+        # папку открывают на том же телефоне: ссылка из инструкции, QR — только с другого экрана
+        self.assertIn("Скопируйте ссылку ниже, из «Ключей доступа». В «Happ» нажмите «+» → «Вставить из буфера».", text)
+        self.assertIn("Открываете папку на другом экране — в «Happ» нажмите «+» → «Сканировать QR»", text)
+        self.assertIn("  VLESS Vision — в «Happ»\n", text, "какой ключ в какое приложение")
         self.assertNotIn("\r", text)
         self.assertNotIn("kolya", text, "в инструкции — ключи только этого человека")
         png = [x for x in names if x.startswith("masha/qr-")][0]
@@ -508,7 +515,7 @@ class ExportTest(Base):
         readme = z.read("README.txt").decode("utf-8")
         self.assertEqual(readme.count("ivan: QR «Hysteria2» не построен"), 1, readme)
         text = z.read("ivan/instruction.txt").decode("utf-8")
-        self.assertEqual(text.count("  Hysteria2\n"), 1, text)
+        self.assertEqual(text.count("  Hysteria2 — в «Hiddify»\n"), 1, text)
 
     def test_png_falls_back_to_svg_then_skips(self):
         with mock.patch.object(qr, "png", side_effect=qr.QrError("нет PNG")):
@@ -588,6 +595,88 @@ class ExportTest(Base):
         z = zipfile.ZipFile(io.BytesIO(handoffviews.build_zip(self.app, cards, [])))
         self.assertNotIn("kolya/instruction.txt", z.namelist())
         self.assertIn("kolya: ссылок нет (не успели собрать)", z.read("README.txt").decode("utf-8"))
+
+
+class DevicesTest(Base):
+    """Устройства человека: столбец в списке, правка на его странице и у участников группы; раздача — только для них."""
+
+    def setUp(self):
+        super().setUp()
+        resp, body = self.create_group(name="Офис", proto=["vless-reality", "amneziawg"], client__android="happ",
+                                       client__ios="incy", client__windows="v2rayn",
+                                       users_new="Иван; бухгалтерия; android\nСергей; iphone, windows\nОльга")
+        self.assertEqual(resp.status, 303, text_of(body)[:300])
+
+    def plats(self, body, name):
+        card = body[body.index(f'data-name="{name}"'):]
+        return re.findall(r'<h4 class="plat-title">([^<]+)</h4>', card[:card.index("</article>")])
+
+    def test_list_column_sets_devices_and_handoff_follows_them(self):
+        reg = self.reg()
+        self.assertEqual((reg["ivan"].get("devices"), reg["sergey"].get("devices")), (["android"], ["ios", "windows"]))
+        self.assertNotIn("devices", reg["olga"], "без устройств — как у группы")
+        self.assertEqual(reg["ivan"]["note"], "бухгалтерия")
+        _, body = self.c.get("/handoff?group=g1")
+        self.assertEqual(self.plats(body, "ivan"), ["Android"])
+        self.assertEqual(self.plats(body, "sergey"), ["iPhone", "Windows"])
+        self.assertEqual(self.plats(body, "olga"), ["Android", "iPhone", "Windows"])
+        # Windows на бумаге: ссылку и файл правил не перенести — «в сообщении», шагов нет
+        card = body[body.index('data-name="sergey"'):]
+        win = card[card.index(">Windows</h4>"):card.index("</section>", card.index(">Windows</h4>"))]
+        self.assertIn("«v2rayN» — настройка в сообщении", win)
+        self.assertNotIn('<ol class="hsteps">', win)
+        self.assertIn("VLESS Vision<span class=\"muted\"> — в сообщении</span>", win)
+        _, z = self.zip_of("", group="g1")
+        ivan = z.read("ivan/instruction.txt").decode("utf-8")
+        self.assertIn("Android: «Happ»", ivan)
+        self.assertNotIn("Windows", ivan)
+        self.assertNotIn("iPhone", ivan)
+        sergey = z.read("sergey/instruction.txt").decode("utf-8")
+        self.assertIn("Windows: «v2rayN»", sergey)
+        self.assertNotIn("Android", sergey)
+        self.assertIn("sergey/v2rayn-routing.json", z.namelist())
+        self.assertNotIn("ivan/v2rayn-routing.json", z.namelist(), "у Ивана нет Windows — файла правил нет")
+        _, page = self.c.get("/users/ivan")
+        self.assertIn('data-pp="android"', page)
+        self.assertNotIn('data-pp="windows"', page)
+        self.assertNotIn('data-pp="ios"', page)
+
+    def test_preview_shows_devices_and_warns_without_apps(self):
+        resp, body = self.post("/groups/g1/members", {"users_new": ["Пётр; склад; android, mac\nАнна"]})
+        self.assertEqual(resp.status, 200)
+        text = text_of(body)
+        self.assertIn("Android, macOS", text)
+        self.assertIn("нет приложений для macOS", text)
+        self.assertIn("как у группы", text)
+
+    def test_person_page_edits_devices(self):
+        _, page = self.c.get("/users/olga")
+        self.assertIn('action="/users/olga/devices"', page)
+        self.assertEqual(len(re.findall(r'name="dev" value="(\w+)" checked', page)), 3, "как у группы — все отмечены")
+        self.assertNotIn('value="macos"', page, "только устройства группы")
+        resp, _ = self.post("/users/olga/devices", {"dev": ["windows"]})
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(self.reg()["olga"]["devices"], ["windows"])
+        _, page = self.c.get("/users/olga")
+        self.assertIn('data-pp="windows"', page)
+        self.assertNotIn('data-pp="android"', page)
+        self.post("/users/olga/devices", {"dev": ["android", "ios", "windows"]})
+        self.assertNotIn("devices", self.reg()["olga"], "совпало с группой — снова как у группы")
+        resp, _ = self.post("/users/olga/devices", {"dev": ["symbian"]})
+        self.assertEqual(resp.status, 303)
+        self.assertNotIn("devices", self.reg()["olga"])
+
+    def test_group_members_set_devices_for_checked(self):
+        _, page = self.c.get("/groups/g1")
+        self.assertIn('value="devices"', page)
+        self.assertIn("Сергей (sergey) <span", page.replace("<span class=\"small\"> · iPhone, Windows</span>",
+                                                             " <span"), "свои устройства — у чипа")
+        resp, _ = self.post("/groups/g1/move", {"act": ["devices"], "user": ["olga", "ivan"], "dev": ["ios"]})
+        self.assertEqual(resp.status, 303)
+        reg = self.reg()
+        self.assertEqual((reg["olga"]["devices"], reg["ivan"]["devices"]), (["ios"], ["ios"]))
+        self.post("/groups/g1/move", {"act": ["devices"], "user": ["ivan"], "dev": []})
+        self.assertNotIn("devices", self.reg()["ivan"], "ничего не отмечено — как у группы")
 
 
 if __name__ == "__main__":

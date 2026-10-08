@@ -117,6 +117,7 @@ class App:
             ("POST", rf"/users/{name}/(?P<action>enable|disable)", userviews.user_toggle, True),
             ("GET", rf"/users/{name}/delete", userviews.user_delete_confirm, True),
             ("POST", rf"/users/{name}/delete", userviews.user_delete, True),
+            ("POST", rf"/users/{name}/devices", userviews.user_devices, True),
             ("GET", rf"/users/{name}/file/(?P<fname>[A-Za-z0-9._-]{{1,64}})", userviews.user_file, True),
             ("GET", rf"/users/{name}/qr/(?P<idx>\d+)", userviews.user_qr, True),
             ("GET", r"/connect/new", groupviews.connect_page, True),

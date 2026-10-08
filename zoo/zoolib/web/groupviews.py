@@ -52,7 +52,8 @@ PURPOSE = {
 }
 ERRORS_SHOWN = 6
 DONE_ROWS_MAX = 3   # больше людей — на шаге раздачи не панели с QR каждого, а переход к карточкам
-CATCH = (groups.GroupError, users.UserError, allowlist.AllowlistError, LockTimeout, protolib.ProtoError)
+CATCH = (groups.GroupError, users.UserError, allowlist.AllowlistError, LockTimeout, protolib.ProtoError,
+         clients.ClientsError)
 
 
 def _redirect(location: str) -> "Response":
@@ -606,23 +607,28 @@ def _users_block(d: Draft, group_id: str | None = None) -> Markup:
     return t("div",
              t("div", t("label", "Новые люди", for_="users_new"),
                t("textarea", d.new_users, name="users_new", id="users_new", rows="8", maxlength=str(people.TEXT_MAX),
-                 placeholder="Иван Петров; бухгалтерия\nМария Сидорова\nОльга; склад", autocomplete="off",
-                 spellcheck="false"),
-               t("div", f"По строке на человека: «Имя» или «Имя; заметка», до {people.LINES_MAX}.", class_="hint"),
+                 placeholder="Иван Петров; бухгалтерия; android, windows\nМария Сидорова\nОльга; склад; iphone",
+                 autocomplete="off", spellcheck="false"),
+               t("div", f"По строке на человека: «Имя; заметка; устройства» (android, iphone, windows). Без устройств — "
+                        f"как у группы. До {people.LINES_MAX}.", class_="hint"),
                class_="field"),
              _existing_block(d, group_id), class_="stack")
 
 
-def _preview_rows(plan: people.Plan) -> Markup:
-    """Предпросмотр: № · Имя · Логин · Заметка; чипы только у проблемных строк (совпавшее имя, ошибка)."""
+def _preview_rows(plan: people.Plan, group_devs: list[str] | None = None) -> Markup:
+    """Предпросмотр: № · Имя · Логин · Заметка · Устройства; чипы только у проблемных строк (совпавшее имя, ошибка,
+    устройство без приложений группы)."""
     rows, cls = [], []
     for r in plan.rows:
+        lack = [d for d in r.devices if group_devs is not None and d not in group_devs]
         chips = [t("span", f"{r.clash}: добавлен номер", class_="chip warn", title="такое имя уже есть: добавлен номер")
                  if r.clash else None,
+                 t("span", f"нет приложений для {people.device_titles(lack)}", class_="chip warn") if lack else None,
                  t("span", r.problem, class_="chip bad") if r.problem else None]
-        rows.append([str(r.line), t("strong", r.display), t("code", r.name) if r.name else "—", r.note or "—", chips])
-        cls.append("row-bad" if r.problem else ("row-warn" if r.clash else None))
-    return table(["№", "Имя", "Логин", "Заметка", ""], rows, num=[0], cls="preview", row_cls=cls, stack=True)
+        devs = people.device_titles(r.devices) if r.devices else t("span", "как у группы", class_="muted")
+        rows.append([str(r.line), t("strong", r.display), t("code", r.name) if r.name else "—", r.note or "—", devs, chips])
+        cls.append("row-bad" if r.problem else ("row-warn" if r.clash or lack else None))
+    return table(["№", "Имя", "Логин", "Заметка", "Устройства", ""], rows, num=[0], cls="preview", row_cls=cls, stack=True)
 
 
 def _preview_summary(plan: people.Plan, existing: int = 0) -> str:
@@ -647,7 +653,7 @@ def _preview(app: "App", req: "Request", d: Draft, plan: people.Plan) -> "Respon
     csrf = req.session.csrf if req.session else ""
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value="3"),
              t("input", type="hidden", name="confirm", value="1"), _hidden(d, 4),
-             _preview_rows(plan),
+             _preview_rows(plan, [p for p, ids in d.clients.items() if ids]),
              t("div", t("button", _count_label("Создать группу", len(plan.rows), len(d.existing), "и"), type="submit", name="go",
                         value="create", class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
@@ -912,7 +918,7 @@ def connect_post(app: "App", req: "Request") -> "Response":
     if plan.rows and not req.form.get("confirm"):
         return _preview(app, req, d, plan)
     try:
-        rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), plan.triples(), d.existing, d.install_mode)
+        rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), plan.entries(), d.existing, d.install_mode)
     except CATCH as e:
         return _wizard(app, req, 3, d, [_err(e)], 422)
     app.invalidate("status")
@@ -952,7 +958,8 @@ def connect_done(app: "App", req: "Request") -> "Response":
     if len(members) <= DONE_ROWS_MAX and ctx and g.clients:
         for u in members:
             links, _ = userviews._cached_links(app, u.name)
-            panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-", label=u.label, primary=False)
+            panel = clientviews.connect_panel(links, u.name, ctx, g, uid=f"{u.name}-", label=u.label, primary=False,
+                                              devices=groups.devices_of(u, g))
             rows.append(t("details", t("summary", t("strong", u.label),
                                        t("span", f" {u.name}", class_="muted small") if u.display else None,
                                        t("span", f" {u.note}", class_="muted small") if u.note else None),
@@ -961,8 +968,8 @@ def connect_done(app: "App", req: "Request") -> "Response":
                           name="conn-user", open=len(members) == 1 or None, class_="urow"))
     hand = card("Раздать доступы",
                 t("p", clientviews.no_apps(g)) if not g.clients else t(
-                    "p", "Карточка на каждого: приложение, его QR и ссылка, шаги. Печать, ZIP с папкой на человека и CSV "
-                         "для рассылки.", class_="hint"),
+                    "p", "Каждому — сообщение: ZIP (папка на человека — ссылки, файлы, инструкция) или CSV для рассылки. "
+                         "На бумаге — только QR для телефона.", class_="hint"),
                 t("div", t("a", "Карточки (печать, ZIP, CSV)", href=link, class_="btn primary", data_swap=True),
                   t("span", st.counter, class_="chip ok") if st.known and st.on else None, class_="actions"),
                 t("p", clientviews.SEND_WARN, class_="hint"),
@@ -1117,7 +1124,8 @@ def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: 
         notes = (["свой набор протоколов: группа его не меняет"] if u.custom else []) + (
             ["свой список приложений"] if al.own(u.name) else []) + (
             ["уже подключился"] if st.connected(u.name) else [])
-        chips.append(t("a", _person(u), href=f"/users/{u.name}",
+        chips.append(t("a", _person(u), t("span", " · " + people.device_titles(u.devices), class_="small")
+                       if u.devices else None, href=f"/users/{u.name}",
                        class_="chip warn" if u.custom else ("chip ok" if st.connected(u.name) else "chip"),
                        title="; ".join(notes) or None))
     acts = [t("select", [t("option", x.name, value=x.id) for x in others], name="to", aria_label="В группу")
@@ -1127,9 +1135,18 @@ def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: 
               title=f"Перевести в группу «{groups.MAIN_NAME}»") if g.id != groups.MAIN_ID else None,
             t("button", "Как у группы", type="submit", name="act", value="reset", class_="btn small",
               title="Вернуть протоколы и приложения группы") if any(u.custom for u in mem) else None]
+    devs = None
+    if len(g.devices) > 1:
+        try:
+            cat = clients.load()
+            devs = t("div", t("span", "Устройства:", class_="label"), userviews.device_boxes(cat, g.devices, None),
+                     t("button", "Задать отмеченным", type="submit", name="act", value="devices", class_="btn small"),
+                     class_="actions")
+        except clients.ClientsError:
+            pass
     form = t("form", csrf_input(csrf), _picker("Отметьте участников:", "user", [(u.name, _person(u), "", False, u.note)
                                                                               for u in mem]),
-             t("div", acts, class_="actions"), method="post", action=f"/groups/{g.id}/move", class_="stack",
+             t("div", acts, class_="actions"), devs, method="post", action=f"/groups/{g.id}/move", class_="stack",
              data_swap=True)
     cards_url = "/handoff?" + urllib.parse.urlencode({"group": g.id})
     hand = [u.name for u in mem if u.name != users.OWNER]   # owner в раздачу не идёт (handoffviews.select)
@@ -1315,7 +1332,7 @@ def group_members(app: "App", req: "Request", gid: str) -> "Response":
             return group_page(app, req, gid, add_draft=Draft(new_users=text, existing=existing))
         if plan.rows and not req.form.get("confirm"):
             return _members_preview(app, req, g, plan, text, existing)
-        rep = groups.add_members(g.id, plan.triples(), existing)
+        rep = groups.add_members(g.id, plan.entries(), existing)
     except CATCH as e:
         req.session.flash("bad", _err(e))
         return _redirect(f"/groups/{g.id}")
@@ -1332,7 +1349,7 @@ def _members_preview(app: "App", req: "Request", g: groups.Group, plan: people.P
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="users_new", value=text),
              t("input", type="hidden", name="confirm", value="1"),
              [t("input", type="hidden", name="existing", value=n) for n in existing],
-             _preview_rows(plan),
+             _preview_rows(plan, g.devices),
              t("div", t("button", _count_label("Добавить", len(plan.rows), len(existing)), type="submit",
                         class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
@@ -1362,6 +1379,10 @@ def group_move(app: "App", req: "Request", gid: str) -> "Response":
         here = {u.name for u in groups.members_of(gs, users.list_users(), gid)}
         if any(n not in here for n in names):
             raise groups.GroupError("отмеченные не из этой группы: обновите страницу")
+        if act == "devices":
+            stored = groups.set_devices(names, [d[:16] for d in req.multi.get("dev", [])][:8])
+            req.session.flash("ok", f"{userviews.devices_flash(clients.load(), stored[names[0]])} — {len(names)} чел.")
+            return _redirect(f"/groups/{gid}")
         rep = groups.move_many(names, to)
     except CATCH as e:
         req.session.flash("bad", _err(e))

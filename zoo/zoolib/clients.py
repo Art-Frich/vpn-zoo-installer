@@ -48,6 +48,18 @@ class ClientsError(Exception):
     pass
 
 
+KEY_NOUNS = {"link": ("ссылку", "ссылки"), "file": ("файл", "файлы"), "qr": ("QR", "QR")}
+
+
+def key_phrase(method: str, titles: list[str] | tuple[str, ...] = (), named: bool = True) -> str:
+    """«ссылку «VLESS XHTTP»», «ссылки «VLESS XHTTP» и «VLESS Vision»»; без названий (named=False) — «ссылку», «ссылки»."""
+    noun = KEY_NOUNS[method][len(titles) > 1]
+    if not titles or not named:
+        return noun
+    quoted = [f"«{x}»" for x in titles]
+    return noun + " " + (quoted[0] if len(quoted) == 1 else ", ".join(quoted[:-1]) + " и " + quoted[-1])
+
+
 @dataclass
 class Catalog:
     raw: dict[str, Any]
@@ -94,11 +106,24 @@ class Catalog:
         """Шаги настройки после импорта (маршрутизация, TUN, служебный вход)."""
         return list((client.get("setup") or {}).get(platform, []))
 
-    def steps(self, client: dict[str, Any], platform: str, methods: list[str], apps: str = "",
-              extras: Callable[[str], bool] = lambda proto: True) -> list[str]:
-        """Шаги одного приложения после установки: импорт ключа выбранными способами, файлы-дополнения (extras —
-        какие протоколы-файлы есть у человека), выбор приложений «через VPN» (apps — их названия), настройка."""
-        out = [client["import"][m] for m in dict.fromkeys(methods)]
+    def import_step(self, client: dict[str, Any], method: str, titles: list[str] | tuple[str, ...] = (),
+                    other: bool = False, named: bool = True) -> str:
+        """Шаг импорта: «Скопируйте ссылку «VLESS XHTTP» из сообщения…»; titles — названия ключей, как они подписаны
+        у человека (named=False — без названий: «ссылку»); other — QR с другого экрана («Открываете сообщение на другом
+        экране — …»)."""
+        text = client["import"][method].replace("{key}", key_phrase(method, titles, named))
+        return self.raw["other_screen"] + text[:1].lower() + text[1:] if other else text
+
+    def steps(self, client: dict[str, Any], platform: str, imports: list[tuple[str, list[str]]], apps: str = "",
+              extras: Callable[[str], bool] = lambda proto: True, alt_qr: list[str] | None = None,
+              named: bool = True) -> list[str]:
+        """Шаги одного приложения после установки: импорт ключа ([(способ, названия ключей)]), QR с другого экрана
+        (alt_qr — названия; None — не предлагать), файлы-дополнения (extras — какие протоколы-файлы есть у человека),
+        выбор приложений «через VPN» (apps — их названия), настройка. named — называть ключи (на устройстве два
+        приложения: какой ключ в какое)."""
+        out = [self.import_step(client, m, ts, named=named) for m, ts in imports]
+        if alt_qr is not None:
+            out.append(self.import_step(client, "qr", alt_qr, other=True, named=named))
         out += [ex["text"] for ex in client.get("extra", []) if ex["platform"] == platform and extras(ex["proto"])]
         if step := self.per_app_steps(client, platform):
             out.append(f"Приложения через VPN в «{client['name']}»: " + step.replace("{apps}", apps or "нужные приложения"))
@@ -151,7 +176,8 @@ def validate(raw: Any) -> None:
         for pid, st in c["protocols"].items():
             need(pid in protos and st.get("s") in STATUSES, f"{cid}: протокол {pid} {st}")
             need(set(st.get("warn_on", [])) <= set(c["platforms"]), f"{cid}: протокол {pid}: warn_on")
-        need(set(c.get("import", {})) <= set(IMPORT_METHODS), f"{cid}: import")
+        need(set(c.get("import", {})) <= set(IMPORT_METHODS) and all("{key}" in v for v in c.get("import", {}).values()),
+             f"{cid}: import — способы {IMPORT_METHODS}, в тексте {{key}}")
         steps = c.get("per_app_steps", {})
         need(isinstance(steps, dict) and set(steps) <= set(c["platforms"]) - {"ios"}
              and all(isinstance(v, str) and v for v in steps.values()),
@@ -183,6 +209,9 @@ def validate(raw: Any) -> None:
     need(set(raw.get("check", {})) >= {"brave", "apps", "device"} and "{app}" in raw["check"]["apps"],
          "check: нужны brave, apps (с {app}) и device")
     need(isinstance(raw.get("report"), str) and bool(raw["report"]), "report: что прислать, если не работает")
+    need(isinstance(raw.get("other_screen"), str) and bool(raw["other_screen"]), "other_screen: QR с другого экрана")
+    need(isinstance(raw.get("one_on"), str) and "{first}" in raw["one_on"] and "{rest}" in raw["one_on"],
+         "one_on: нужны {first} и {rest}")
     for key in ("brave", "rules"):
         need(isinstance(raw.get(key, {}), dict) and set(raw.get(key, {})) <= set(plats), f"{key}: платформа → текст")
     need(all(c.get("per_app") in raw.get("per_app", {}) for c in raw["clients"]), "per_app клиента не из справочника")

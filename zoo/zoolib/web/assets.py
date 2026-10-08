@@ -380,6 +380,8 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .msg textarea, .msg-edit { font-family: inherit; font-size: .9rem; line-height: 1.45; min-height: 0;
   field-sizing: content; max-height: 26rem; }
 .msg .chk { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; font-size: .88rem; }
+.dev-boxes { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; margin-right: 8px; }
+.dev-boxes .chk { display: inline-flex; gap: 6px; align-items: center; font-weight: 400; }
 .urows { display: grid; gap: 8px; }
 details.urow { padding: 0 14px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 details.urow[open] { padding-bottom: 14px; }

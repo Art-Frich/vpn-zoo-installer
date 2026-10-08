@@ -316,7 +316,8 @@ class WizardTest(GroupWebBase):
         self.assertIn("1) Установите браузер «Brave»", msg)
         self.assertIn("2) Установите «Happ»", msg)
         self.assertIn("3) Установите «AmneziaWG»", msg)
-        self.assertIn("В «Happ» нажмите «+» → «Сканировать QR»", msg)
+        self.assertIn("В «Happ» нажмите «+» → «Вставить из буфера»", msg)
+        self.assertIn("Включённым держите одно приложение — «Happ».", msg, "два приложения: какое включать")
         self.assertNotIn("Happ (", msg, "названий протоколов в инструкции нет")
         android = page[page.index('data-pp="android"'):page.index('id="msg-android"')]
         self.assertLess(android.index("<strong>Happ</strong>"), android.index("<strong>AmneziaWG</strong>"))

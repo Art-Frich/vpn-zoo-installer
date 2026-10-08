@@ -48,6 +48,17 @@ class BuildTest(unittest.TestCase):
         self.assertEqual([r.display for r in plan.rows], ["Иван Петров", "Мария", "Ольга", "Пётр"])
         self.assertEqual([r.converted for r in plan.rows], [True] * 4)
 
+    def test_devices_column(self):
+        plan = people.build("Иван Петров; бухгалтерия; android,windows\nСергей; iPhone + Windows\n"
+                            "Анна, склад, android, айфон\nОльга, склад, 2 этаж\nМаша; Android; склад\nПётр")
+        self.assertEqual([(r.note, r.devices) for r in plan.rows], [
+            ("бухгалтерия", ["android", "windows"]), ("", ["ios", "windows"]), ("склад", ["android", "ios"]),
+            ("склад, 2 этаж", []), ("Android; склад", []), ("", [])])
+        self.assertEqual(plan.entries()[0], ("ivan-petrov", "бухгалтерия", "Иван Петров", ("android", "windows")))
+        self.assertEqual(people.device_titles(["ios", "windows"]), "iPhone, Windows")
+        from zoolib import clients
+        self.assertEqual(people.DEVICES, clients.load().platforms, "устройства — платформы каталога")
+
     def test_first_separator_wins(self):
         plan = people.build("masha, a; b")
         self.assertEqual(plan.pairs(), [("masha", "a; b")])

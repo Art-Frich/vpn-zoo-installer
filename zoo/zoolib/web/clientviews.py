@@ -320,6 +320,7 @@ class Section:
     check: str = ""
     foreign: bool = False   # на этой платформе приложения нет в российском магазине (iPhone: нужен иностранный Apple ID)
     via: str = ""           # что идёт через VPN: apps, ru-direct, all (справочник via каталога); пусто — не описано
+    paper: list[str] | None = None   # шаги для бумажной карточки (импорт QR-кодом); None — с бумаги ключ не перенести
 
     @property
     def proto(self) -> str:
@@ -348,21 +349,39 @@ class Pack:
     before: list[str] = field(default_factory=list)   # общие шаги до установки (браузер Brave)
     after: list[str] = field(default_factory=list)    # общие шаги перед проверкой (настройки Android)
     report: str = ""  # что прислать администратору, если не работает
+    one_on: str = ""  # шаблон «держите включённым одно приложение» ({first}, {rest}) — когда приложений два и больше
+
+    def steps(self, paper: bool = False) -> list[str]:
+        """Шаги без заголовка: Brave и установка (если люди ставят сами), импорт и настройка каждого приложения, какое
+        держать включённым (их два), проверка, что прислать. paper — для бумажной карточки: только приложения, ключ
+        которых переносится QR-кодом (остальные — в сообщении, paper_rest); таких нет — пусто."""
+        secs = [s for s in self.sections if s.paper is not None] if paper else self.sections
+        if not secs:
+            return []
+        out = [] if self.admin else [*self.before, *(s.install for s in secs)]
+        for s in secs:
+            out += (s.paper or []) if paper else s.steps
+        if len(secs) > 1 and self.one_on:
+            names = [f"«{s.client['name']}»" for s in secs]
+            out.append(self.one_on.replace("{first}", names[0]).replace("{rest}", " или ".join(names[1:])))
+        out += [*self.after, secs[0].check]
+        if self.report:
+            out.append(self.report)
+        return out
+
+    @property
+    def paper_rest(self) -> list[str]:
+        """Приложения, ключ которых с бумаги не перенести (длинная ссылка, файл): им — сообщение."""
+        return [s.client["name"] for s in self.sections if s.paper is None]
 
     @property
     def message(self) -> str:
-        """Инструкция платформы одним списком: Brave и установка всех приложений (если люди ставят сами), потом по
-        порядку импорт и настройки каждого (каждый шаг начинается с названия приложения), проверка и что прислать,
-        если не работает. Первая строка начинается с {name}: имя подставляет тот, кто показывает текст человеку;
-        вторая — что идёт через VPN. Протоколов в тексте нет."""
-        steps = [] if self.admin else [*self.before, *(s.install for s in self.sections)]
-        for s in self.sections:
-            steps += s.steps
-        steps += [*self.after, self.sections[0].check]
-        if self.report:
-            steps.append(self.report)
+        """Инструкция платформы одним списком (steps). Первая строка начинается с {name}: имя подставляет тот, кто
+        показывает текст человеку; вторая — что идёт через VPN. Протоколов в тексте нет; только если приложений на
+        устройстве два, ключи названы, как подписаны у человека («ссылку «VLESS XHTTP»»): какой ключ в какое."""
+        steps = self.steps()
         if self.admin:
-            names = " и ".join(f"«{s.client['name']}»" for s in self.sections)
+            names = f"«{self.sections[0].client['name']}»"   # второе приложение — запасное (шаг one_on)
             abroad = " и ".join(f"«{s.client['name']}»" for s in self.sections if s.foreign)
             head = (f"{NAME_TOKEN}. Установите {abroad} с иностранного Apple ID. Включите VPN в {names}." if abroad
                     else f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}.")
@@ -385,12 +404,17 @@ def _qrable(link: protolib.Link) -> bool:
 
 
 def pick_method(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link]) -> str | None:
-    """Как человеку передать ключ: на телефоне QR, на компьютере ссылка; клиент должен это уметь."""
+    """Как человеку передать ключ: ссылкой или файлом из сообщения (оно открыто на том же устройстве — QR своим
+    же телефоном не отсканировать); QR — только если иначе приложение ключ не берёт. Клиент должен это уметь."""
     mine = [ln for ln in links if ln.variant == proto and _usable(proto, client["id"], ln)]
     have = {"qr": any(_qrable(ln) for ln in mine), "link": any(ln.kind == "uri" for ln in mine),
             "file": any(ln.kind == "file" for ln in mine)}
-    order = ("link", "file", "qr") if platform in DESKTOP else ("qr", "link", "file")
-    return next((m for m in order if m in client.get("import", {}) and have[m]), None)
+    return next((m for m in ("link", "file", "qr") if m in client.get("import", {}) and have[m]), None)
+
+
+def can_qr(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link]) -> bool:
+    """Ключ можно отдать QR-кодом (другой экран, бумага): приложение его сканирует и ключ в QR помещается."""
+    return "qr" in client.get("import", {}) and pick_link(proto, client, platform, links, "qr") is not None
 
 
 def pick_link(proto: str, client: dict[str, Any], platform: str, links: list[protolib.Link], method: str) -> int | None:
@@ -524,9 +548,19 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         sec.foreign = cat.no_ru_store(c, platform)
         foreign = f" {FOREIGN_STORE}" if sec.foreign else ""
         sec.install = f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform, c)}{foreign}"
-        sec.steps = cat.steps(c, platform, [i.method for i in items], names, lambda p: p in have)
+        imports: dict[str, list[str]] = {}
+        for i in items:
+            imports.setdefault(i.method, []).append(i.tile)
         sec.extras = [Item(ex["proto"], "file", _tile_title(cat, mans, ex["proto"])) for ex in c.get("extra", [])
                       if ex["platform"] == platform and ex["proto"] in have]
+        tiles = [i.tile for i in items]
+        qr_ok = all(can_qr(i.proto, c, platform, links) for i in items)
+        # QR с другого экрана — телефонам, у которых главный способ не QR
+        alt = tiles if qr_ok and platform not in DESKTOP and "qr" not in imports else None
+        named = len(plan) > 1   # два приложения на устройстве: ключи называются, как подписаны у человека
+        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named)
+        if qr_ok and not sec.extras:
+            sec.paper = cat.steps(c, platform, [("qr", tiles)], names, lambda p: p in have, named=named)
         sec.via = cat.via(c, platform)
         if sec.via == "apps" and c.get("per_app") == "rules" and not sec.extras:
             sec.via = "all"   # список — файлом правил, а его у человека нет: через VPN идёт всё
@@ -535,7 +569,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     modes = [s.via for s in sections]
     lists = "apps" in modes
     pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0], names),
-                report=cat.raw["report"])
+                report=cat.raw["report"], one_on=cat.raw["one_on"])
     if brave and lists and platform in cat.raw.get("brave", {}):
         pack.before.append(cat.raw["brave"][platform])
     if lists and platform in cat.raw.get("rules", {}):
@@ -711,11 +745,12 @@ def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, l
 
 def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
                   uid: str = "", label: str | None = None, primary: bool = True,
-                  shown: dict[str, str] | None = None) -> Markup | None:
+                  shown: dict[str, str] | None = None, devices: list[str] | None = None) -> Markup | None:
     """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, инструкция
     группы с его именем (label; нет — логин) только для чтения. Без JS видны все платформы подряд; с JS список
     оставляет одну. uid — приставка id полей, если на странице несколько блоков. shown — сюда кладутся {ссылка: id поля
-    на странице}: «Все ссылки и QR» копируют из этих полей, а не показывают те же ссылки второй раз."""
+    на странице}: «Все ссылки и QR» копируют из этих полей, а не показывают те же ссылки второй раз. devices —
+    устройства человека (groups.devices_of); None — все, для которых есть приложения."""
     if not links:
         return None
     label = label or name
@@ -725,6 +760,8 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
     plats: list[tuple[str, str]] = []
     mismatch: list[str] = []
     for plat, title in ctx.cat.platforms.items():
+        if devices is not None and plat not in devices:
+            continue
         pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g), ctx.al,
                           ctx.apps_for(plat, g, name), admin)
         if pack is None:
@@ -766,15 +803,22 @@ def hints(ctx: Ctx) -> list[Markup]:
     return out
 
 
+def no_devices(cat: clients.Catalog, devices: list[str], g: "groups.Group | None") -> Markup:
+    """У человека устройства, для которых у группы нет приложений."""
+    return t("span", "Для " + ", ".join(cat.platforms.get(d, d) for d in devices) + " у группы нет приложений. ",
+             t("a", "Настроить →", href=f"/groups/{g.id}#settings", data_swap=True) if g else None, class_="muted")
+
+
 def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: groups.Group | None,
-                 uid: str = "", label: str | None = None, shown: dict[str, str] | None = None) -> Markup | None:
+                 uid: str = "", label: str | None = None, shown: dict[str, str] | None = None,
+                 devices: list[str] | None = None) -> Markup | None:
     if ctx is None:
         return None
     if g is not None and not g.clients:
         return card("Подключить", t("p", no_apps(g)))
-    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown)
+    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown, devices=devices)
     if panel is None:
-        return None
+        return card("Подключить", t("p", no_devices(ctx.cat, devices, g))) if devices and links else None
     return card("Подключить", t("p", "Приложения и инструкция — общие для группы." if g else "Приложения — по протоколам.",
                                 " " + NO_KEYS, class_="hint"),
                 panel, hints(ctx))
