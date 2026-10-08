@@ -233,6 +233,7 @@ class Change:
     message: str = ""
     applied: dict[str, Any] = field(default_factory=dict)
     affected: list[str] = field(default_factory=list)  # пользователи, у которых изменился итоговый список
+    resend: list[str] = field(default_factory=list)    # кому отмечено «переслать» (resend.mark)
 
     def to_dict(self) -> dict[str, Any]:
         f = lambda xs: [{"platform": p, "id": i} for p, i in xs]  # noqa: E731
@@ -295,6 +296,15 @@ def _edit(al: Allowlist, op: str, items: list[str], user: str | None, platform: 
 def _snapshot(al: Allowlist) -> dict[str, dict[str, list[str]]]:
     from . import users
     return {u.name: {p: al.effective(p, u.name) for p in PLATFORMS} for u in users.list_users().visible()}
+
+
+def _mark(ch: Change, before: dict[str, dict[str, list[str]]], after: dict[str, dict[str, list[str]]]) -> None:
+    """Отметить «переслать» тем, у кого список изменился там, где он действует (под блокировкой users)."""
+    from . import resend, users
+    reg = users.Registry.load()
+    if reg.exists and (marked := resend.mark(reg, lists=resend.list_changes(before, after))):
+        reg.save()
+        ch.resend = marked
 
 
 def normalize(platform: str, values: list[str]) -> list[str]:
@@ -367,10 +377,27 @@ def set_lists(lists: dict[str, list[str]], user: str | None = None, titles: dict
         al.save()
         after = _snapshot(al)
         ch.affected = [n for n in after if after[n] != before.get(n)]
+        _mark(ch, before, after)
         ch.message = "список изменён"
         if apply_now:
             ch.applied = _apply(ch.affected)
         return ch
+
+
+def remember_titles(titles: dict[str, str]) -> None:
+    """Названия своих приложений (не из каталога), которые уже есть в каком-то списке: для списка группы, который
+    сохраняет groups.update, а не set_lists."""
+    from . import users
+    with users._lock():
+        al = Allowlist.load()
+        catalog = {getattr(a, p).lower() for a in CATALOG for p in PLATFORMS if getattr(a, p)}
+        used = {x.lower() for p in PLATFORMS for x in [*al.common(p), *(i for o in [*al.users.values(), *al.groups.values()]
+                                                                        for i in o.get(p, []))]}
+        new = {k.lower(): v for k, t in titles.items() if (v := clean_title(t)) and k.lower() in used
+               and k.lower() not in catalog}
+        if any(al.titles.get(k) != v for k, v in new.items()):
+            al.titles.update(new)
+            al.save()
 
 
 def change(op: str, items: list[str], user: str | None = None, platform: str | None = None,
@@ -384,9 +411,11 @@ def change(op: str, items: list[str], user: str | None = None, platform: str | N
     check_user(user)
     with users._lock():
         al = Allowlist.load()
+        before = _snapshot(al)
         ch = _edit(al, op, items, user, platform)
         if ch.added or ch.removed:
             al.save()
+            _mark(ch, before, _snapshot(al))
             ch.message = "список изменён"
             if apply_now:
                 ch.applied = _apply(None if user is None else [user])
@@ -415,6 +444,7 @@ def reset(user: str | None = None, apply_now: bool = True) -> Change:
         al.save()
         after = _snapshot(al)
         ch.affected = [n for n in after if after[n] != before.get(n)]
+        _mark(ch, before, after)
         if apply_now:
             ch.applied = _apply(None if user is None else [user])
         return ch

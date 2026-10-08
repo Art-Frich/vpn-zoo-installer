@@ -396,8 +396,10 @@ class AllowWebTest(AppTestBase):
         self.assertEqual(al.windows[-1], "Discord.exe")
         _, body = self.c.get("/apps")
         self.assertEqual(body.count('class="alerts flash"'), 1, "одна плашка")
-        self.assertRegex(body, r'Сохранено\. Новые QR/файлы нужны: <a href="/users/owner">owner</a>, '
-                               r'<a href="/users/masha">masha</a> →')
+        # кому что переслать — отметка в реестре; owner (ключи админа) не отмечается
+        self.assertIn('Сохранено. Переслать: masha <a href="/resend">кому и что</a> →', body)
+        self.assertEqual(users.list_users().get("masha").resend, ["apps:android", "apps:windows"])
+        self.assertEqual(users.list_users().get("owner").resend, [])
         self.assertNotIn("Разошлите", body)
         self.assertRegex(body, r'name="android" value="com.whatsapp" checked data-was="1"')
         # флеш показывается один раз; без изменений — короткая строка без ссылок
@@ -415,8 +417,8 @@ class AllowWebTest(AppTestBase):
         self.assertEqual(allowlist.Allowlist.load().users, {"masha": {"windows": base.windows + ["Discord.exe"]}})
         _, body = self.c.get("/apps?user=masha")
         self.assertIn("свой (отличается: +1 −0)", body)
-        self.assertIn('<a href="/users/masha">masha</a> →', body)
-        self.assertNotIn('<a href="/users/owner">', body.split("<main>")[1].split("<form")[0], "затронут только masha")
+        self.assertIn('Переслать: masha <a href="/resend">', body)
+        self.assertEqual(users.list_users().get("masha").resend, ["apps:windows"], "сменился только список Windows")
         self.assertRegex(body, r'data-confirm="[^"]+" data-swap>(<input[^>]*>)*<input type="hidden" '
                                r'name="action" value="reset"')
         _, body = self.c.get("/apps")

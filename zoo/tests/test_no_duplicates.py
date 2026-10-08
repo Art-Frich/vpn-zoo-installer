@@ -190,7 +190,10 @@ class NoDuplicatesTest(GroupWebBase):
             con.execute("UPDATE ips SET cc = 'CN' WHERE ip = ?", ("45.155.205.10",))
         con.close()
         self.logs_fixture()
-        iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
+        reg = users.Registry.load()   # «Кому переслать»: все виды отметок
+        users.mark_resend(reg, {"kolya": ["keys"], "petya": ["all"], "masha": ["apps:android", "apps:windows"]})
+        reg.save()
+        iso =time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime())
         for tag, dev in (("mobile-mts", "pixel7"), ("cafe-wifi", "iphone")):
             rep = report([result("hysteria2", lat=40, down=30), result("vless-reality", "FREEZE_16K", down=None),
                           result("amneziawg", lat=55, down=20)], ts=iso, tag=tag, device=dev)
@@ -225,7 +228,8 @@ class NoDuplicatesTest(GroupWebBase):
                      "/groups", "/groups/main", "/groups/" + g, "/groups/" + ga, "/groups/" + g + "/delete",
                      "/connect/new", "/connect/done?group=" + g, "/connect/done?group=" + g + "&u=" + n,
                      "/connect/done?group=" + ga,
-                     "/clients", "/apps", "/apps?user=" + n, "/traffic", "/traffic?period=7d",
+                     "/clients", "/apps", "/apps?user=" + n, "/apps?group=" + g, "/apps?group=" + ga, "/resend",
+                     "/traffic", "/traffic?period=7d",
                      "/probe", "/probe?run=1", "/journal", "/journal?period=24h", "/journal?ip=45.155.205.10",
                      "/journal?own=1", "/logs", "/logs?src=file:install-20261002-100000.log",
                      "/logs?q=%D1%81%D1%82%D1%80%D0%BE%D0%BA%D0%B0&in=all", "/settings",

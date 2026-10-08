@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .. import allowlist, clients, groups, manifests, paths, people, protolib, qr, traffic, users
+from .. import allowlist, clients, groups, manifests, paths, people, protolib, qr, resend, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
 from ..probe import rank
@@ -127,7 +127,52 @@ def user_devices(app: "App", req: "Request", name: str) -> "Response":
 
 
 def _disable_confirm(name: str) -> str:
-    return f"Отключить {name}? Ссылки сохранятся, но подключиться он не сможет."
+    return (f"Отключить {name}? Подключиться он не сможет. «Включить» вернёт доступ с теми же ключами — "
+            "если телефон потерян, выдайте новые ключи.")
+
+
+def _rekey_confirm(name: str) -> str:
+    return (f"Выдать {name} новые ключи? Старые ссылки, QR и файлы перестанут работать сразу, на всех его устройствах. "
+            "Новые нужно будет отправить ему заново.")
+
+
+def user_rekey(app: "App", req: "Request", name: str) -> "Response":
+    """«Новые ключи»: старые креды удаляются во всех протоколах, заводятся новые; человек отмечается «переслать»."""
+    s = req.session
+    try:
+        rep = users.rekey(name)
+    except (users.UserError, LockTimeout) as e:
+        s.flash("bad", str(e))
+        return _redirect(f"/users/{name}")
+    except protolib.ProtoError as e:
+        s.flash("bad", f"{e} {e.short()}")
+        return _redirect(f"/users/{name}")
+    app.invalidate("status")
+    app.invalidate_links(name)
+    u = users.list_users().get(name)
+    label = u.label if u else name
+    if rep.ok:
+        s.flash("ok", f"{label}: новые ключи выданы, старые не работают. Отправьте новое сообщение",
+                [("карточка", "/handoff?" + urllib.parse.urlencode({"u": name}))])
+    else:
+        s.flash("bad", f"{label}: {rep.message}")
+        for st in rep.failed:
+            s.flash("bad", f"{st.proto_id}: {st.error}")
+    return _redirect(f"/users/{name}")
+
+
+def resend_alert(user: users.User, g: groups.Group | None, csrf: str) -> Markup | None:
+    """«Переслать: …» на странице человека, с карточкой и «Отправлено»."""
+    if not user.resend:
+        return None
+    try:
+        cat: clients.Catalog | None = clients.load()
+    except clients.ClientsError:
+        cat = None
+    return alert_list([("warn", "Переслать: " + "; ".join(resend.describe(cat, user, g)),
+                        [t("a", "Карточка", href="/handoff?" + urllib.parse.urlencode({"u": user.name}), class_="btn small"),
+                         post_button("/resend", "Отправлено", csrf, "btn small",
+                                     {"names": user.name, "back": f"/users/{user.name}"})])])
 
 
 def _created_local(created: str) -> str:
@@ -165,7 +210,8 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
         u = r["user"]
         sub = " · ".join(x for x in (u.name if u.display else "", u.note) if x)
         return t("span", t("a", t("strong", u.label), href=f"/users/{u.name}"), " " if not u.enabled else None,
-                 badge("откл.", "muted") if not u.enabled else None,
+                 badge("откл.", "muted") if not u.enabled else None, " " if u.resend else None,
+                 t("a", "переслать", href="/resend", class_="chip warn") if u.resend else None,
                  t("span", sub, class_="sub") if sub else None)
 
     def toggle(r: dict[str, Any]) -> Markup:
@@ -261,7 +307,10 @@ def users_list(app: "App", req: "Request") -> "Response":
                  if protos else alert_list([("warn", "Нет протоколов, куда можно добавить пользователя.")]),
                  method="post", action="/users", class_="stack", data_swap=True)
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
+    waiting = sum(1 for u in shown if u.resend)
     head_actions = t("div",
+                     t("a", f"Кому переслать: {waiting}", href="/resend", class_="btn small primary", data_swap=True)
+                     if waiting else None,
                      t("a", "Проверить учётки", href="/users?verify=1", class_="btn small", data_swap=True,
                               title="Есть ли у каждого пользователя учётка во всех включённых протоколах. Если чего-то не хватает, появится кнопка, которая заведёт недостающее"),
                      post_button("/users/sync", "Синхронизировать", csrf, "btn small",
@@ -294,6 +343,8 @@ def bulk_bar(csrf: str, gs: groups.Groups) -> Markup:
              t("button", "Отключить", type="submit", name="action", value="disable", class_="btn small",
                title="Ссылки сохранятся, подключиться они не смогут; owner не отключается"),
              t("button", "Включить", type="submit", name="action", value="enable", class_="btn small"),
+             t("button", "Новые ключи", type="submit", name="action", value="rekey", class_="btn small",
+               title="Старые перестанут работать; спросим подтверждение"),
              t("button", "Раздать", type="submit", name="action", value="handoff", class_="btn small primary",
                title="Карточки с QR и ссылками для отмеченных: печать, ZIP"),
              move, method="post", action="/users/bulk", class_="bulkbar", id="bulk", data_swap=True, data_bulk_bar=True,
@@ -408,24 +459,29 @@ def user_delete(app: "App", req: "Request", name: str) -> "Response":
 
 
 BULK_MAX = 300
-BULK_DONE = {"delete": "Удалено", "disable": "Отключено", "enable": "Включено"}
+BULK_DONE = {"delete": "Удалено", "disable": "Отключено", "enable": "Включено", "rekey": "Новые ключи"}
+BULK_ASK = {   # действия, которые нельзя отменить: (заголовок, текст, кнопка, заголовок страницы)
+    "delete": ("Удалить пользователей", "Их креды будут удалены из всех протоколов, ссылки и QR перестанут работать. "
+               "Отменить нельзя — только создать заново с новыми ключами.", "Удалить навсегда", "Удаление"),
+    "rekey": ("Выдать новые ключи", "Старые ссылки, QR и файлы перестанут работать сразу, на всех их устройствах. "
+              "Новые нужно будет отправить каждому заново.", "Выдать новые ключи", "Новые ключи"),
+}
 
 
-def _bulk_confirm(req: "Request", app: "App", names: list[str], skipped: list[str]) -> "Response":
+def _bulk_confirm(req: "Request", app: "App", op: str, names: list[str], skipped: list[str]) -> "Response":
     csrf = req.session.csrf if req.session else ""
-    form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value="delete"),
+    head, text, button, page = BULK_ASK[op]
+    form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value=op),
              t("input", type="hidden", name="confirm", value="1"),
              [t("input", type="hidden", name="names", value=n) for n in names],
-             t("button", "Удалить навсегда", type="submit", class_="btn danger-solid"),
+             t("button", button, type="submit", class_="btn danger-solid"),
              method="post", action="/users/bulk", class_="inline", data_swap=True)
-    body = card(f"Удалить пользователей: {len(names)}?",
-                t("p", "Их креды будут удалены из всех протоколов, ссылки и QR перестанут работать. Отменить нельзя — "
-                       "только создать заново с новыми ключами."),
+    body = card(f"{head}: {len(names)}?", t("p", text),
                 t("div", [t("span", n, class_="chip") for n in names], class_="chips"),
                 t("p", "Пропущены: " + "; ".join(skipped), class_="hint") if skipped else None,
                 t("div", form, t("a", "Отмена", href="/users", class_="btn", data_swap=True), class_="actions"),
                 cls="danger-zone")
-    return app.render(req, "Удаление", [page_head("Удаление пользователей"), body], active="/users")
+    return app.render(req, page, [page_head(page if op == "rekey" else "Удаление пользователей"), body], active="/users")
 
 
 def users_bulk(app: "App", req: "Request") -> "Response":
@@ -458,8 +514,8 @@ def users_bulk(app: "App", req: "Request") -> "Response":
                 s.flash("bad", e)
             return _redirect("/users")
         return _redirect("/handoff?" + urllib.parse.urlencode({"u": ",".join(todo)}))
-    if op == "delete" and todo and not req.form.get("confirm"):
-        return _bulk_confirm(req, app, todo, errors)
+    if op in BULK_ASK and todo and not req.form.get("confirm"):
+        return _bulk_confirm(req, app, op, todo, errors)
     done: list[str] = []
     verb = BULK_DONE.get(op, "")
     try:
@@ -479,7 +535,8 @@ def users_bulk(app: "App", req: "Request") -> "Response":
     app.invalidate("status")
     app.invalidate_links()
     if done:
-        s.flash("ok" if len(done) == len(names) else "warn", f"{verb}: {len(done)} из {len(names)} — {', '.join(done)}")
+        s.flash("ok" if len(done) == len(names) else "warn", f"{verb}: {len(done)} из {len(names)} — {', '.join(done)}",
+                [("кому переслать", "/resend")] if op == "rekey" else ())
     for e in errors:
         s.flash("bad", e)
     if not done and not errors:
@@ -559,7 +616,9 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     toggle = post_button(f"/users/{name}/{'disable' if user.enabled else 'enable'}",
                          "Отключить" if user.enabled else "Включить", csrf, "btn",
                          confirm=_disable_confirm(name) if user.enabled else None)
-    actions = t("div", toggle, t("a", "Удалить…", href=f"/users/{name}/delete", class_="btn danger"),
+    rekey = None if name == users.OWNER else post_button(f"/users/{name}/rekey", "Новые ключи", csrf, "btn",
+                                                         confirm=_rekey_confirm(name))
+    actions = t("div", rekey, toggle, t("a", "Удалить…", href=f"/users/{name}/delete", class_="btn danger"),
                 class_="actions")
     if user.system:
         actions = badge("служебный: пробник", "muted")
@@ -610,7 +669,7 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
                  t("p", clientviews.SEND_WARN, class_="hint") if connect is None else None,
                  class_="card more", open=connect is None or None) if tiles else None
     sub = " · ".join(x for x in ((name if user.display else ""), user.note) if x)
-    body = [page_head(user.label, sub or None, actions, top=False), err_list, connect, advanced,
+    body = [page_head(user.label, sub or None, actions, top=False), resend_alert(user, grp, csrf), err_list, connect, advanced,
             None if connect or advanced else card("Подключить", t("p", "Ссылок нет.", class_="muted")),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")

@@ -4,7 +4,9 @@
     {"schema": 1, "users": [{"name", "created", "enabled", "note", "protocols": [id, ...],
                              "group": id, "custom": true, "display": "Иван Петров", "devices": ["android"]}]}
 group — id группы (groups.json); custom — набор протоколов задан вручную, группа его не трогает;
-devices — устройства человека (нет — как у группы): инструкции и карточки только для них.
+devices — устройства человека (нет — как у группы): инструкции и карточки только для них;
+resend — что ему нужно переслать после изменений (D57): keys — новые ключи, all — другой набор протоколов или
+приложений (сообщение целиком), apps:<платформа> — сменился список «через VPN». Снимает «Отправлено» в админке.
 
 Операции расходятся по всем включённым протоколам с пользователями через protolib.
 При ошибке в одном протоколе изменения в остальных откатываются (partial=True — оставить
@@ -63,6 +65,18 @@ def clean_devices(v: Any) -> list[str]:
     return list(dict.fromkeys(str(x) for x in items if DEVICE_RE.match(str(x))))[:8]
 
 
+RESEND_RE = re.compile(r"^(keys|all|apps:[a-z]{1,16})$")
+RESEND_FULL = ("keys", "all")   # сообщение целиком: отдельные списки в нём уже есть
+
+
+def clean_resend(v: Any) -> list[str]:
+    """Отметки «переслать»: без повторов; есть полное сообщение (keys, all) — отметки списков не нужны."""
+    items = list(dict.fromkeys(str(x) for x in (v if isinstance(v, (list, tuple)) else []) if RESEND_RE.match(str(x))))
+    if any(k in items for k in RESEND_FULL):
+        items = [k for k in items if k in RESEND_FULL]
+    return items[:8]
+
+
 @dataclass
 class User:
     name: str
@@ -75,6 +89,7 @@ class User:
     custom: bool = False
     display: str = ""   # имя человека, как оно написано в списке («Иван Петров»); name — латинский логин
     devices: list[str] = field(default_factory=list)   # его устройства (id платформ каталога); пусто — как у группы
+    resend: list[str] = field(default_factory=list)    # что переслать (keys, all, apps:<платформа>); пусто — ничего
 
     @property
     def label(self) -> str:
@@ -94,6 +109,7 @@ class User:
             custom=bool(d.get("custom", False)),
             display=str(d.get("display") or ""),
             devices=clean_devices(d.get("devices")),
+            resend=clean_resend(d.get("resend")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,6 +125,8 @@ class User:
             d["display"] = self.display
         if self.devices:
             d["devices"] = list(self.devices)
+        if self.resend:
+            d["resend"] = list(self.resend)
         return d
 
 
@@ -459,6 +477,93 @@ def set_devices(names: list[str], devices: dict[str, list[str]]) -> None:
         reg.save()
 
 
+def mark_resend(reg: Registry, kinds: dict[str, list[str]]) -> list[str]:
+    """Отметить «переслать» в уже загруженном реестре (сохраняет вызывающий): {логин: [keys | all | apps:<платформа>]}.
+    owner и служебных не отмечает: ключи администратора у него на странице. Возвращает отмеченных."""
+    out: list[str] = []
+    for n, ks in kinds.items():
+        u = reg.get(n)
+        if u is None or u.system or u.name == OWNER or not ks:
+            continue
+        u.resend = clean_resend([*u.resend, *ks])
+        out.append(n)
+    return out
+
+
+def clear_resend(names: list[str]) -> list[str]:
+    """«Отправлено»: снять отметки. Возвращает тех, у кого что-то было."""
+    with _lock():
+        reg = _load_registry()
+        done = [u.name for n in names if (u := reg.get(n)) is not None and u.resend]
+        for n in done:
+            reg.require(n).resend = []
+        if done:
+            reg.save()
+        return done
+
+
+def rekey(name: str) -> OpReport:
+    """Новые ключи во всех протоколах человека («потерял телефон»): старые перестают работать сразу."""
+    with _lock():
+        return _rekey_in(_load_registry(), name)
+
+
+def _rekey_in(reg: Registry, name: str) -> OpReport:
+    """Сначала удаление во всех протоколах, потом заведение заново: у Xray один клиент на все протоколы, и новый uuid
+    он получает, только когда старый удалён везде. Отключённый остаётся отключённым. Протокол, где завести заново не
+    вышло, остаётся в реестре: повтор «Новые ключи» его доведёт. Реестр сохраняется здесь."""
+    why = bulk_refusal(reg, name, "rekey")
+    if why:
+        raise UserError(f"{name}: {why}")
+    user = reg.require(name)
+    if not user.protocols:
+        raise UserError(f"{name}: ни одного протокола — выдавать нечего")
+    rep = OpReport("rekey", name)
+    gone: list[str] = []
+    for pid in user.protocols:
+        try:
+            protolib.user_del(pid, name)
+            rep.steps.append(Step(pid, "del", True))
+            gone.append(pid)
+        except protolib.ProtoError as e:
+            if _present(pid, name) is False:
+                rep.steps.append(Step(pid, "del", True, "уже отсутствовал"))
+                gone.append(pid)
+            else:
+                rep.steps.append(Step(pid, "del", False, _err(e)))
+    failed: list[str] = []
+    for pid in gone:
+        try:
+            protolib.user_add(pid, name)
+            rep.steps.append(Step(pid, "add", True))
+        except protolib.ProtoError as e:
+            rep.steps.append(Step(pid, "add", False, _err(e)))
+            failed.append(pid)
+            continue
+        if not user.enabled:
+            try:
+                protolib.user_enable(pid, name, False)
+                rep.steps.append(Step(pid, "disable", True))
+            except protolib.ProtoError as e:
+                rep.steps.append(Step(pid, "disable", False, _err(e)))
+                # отключённый не должен получить доступ новыми ключами
+                _rollback(rep, [pid], lambda p: protolib.user_del(p, name))
+                failed.append(pid)
+    _write_allowlist_files(name)
+    kept = [s.proto_id for s in rep.steps if s.action == "del" and not s.ok]
+    if len(failed) < len(gone):
+        mark_resend(reg, {name: ["keys"]})
+    reg.save()
+    rep.ok = not (failed or kept)
+    if rep.ok:
+        rep.message = "новые ключи выданы"
+    else:
+        rep.message = "; ".join(x for x in (
+            "старые ключи остались в: " + ", ".join(kept) if kept else "",
+            "новые не выданы в: " + ", ".join(failed) + " — повторите" if failed else "") if x)
+    return rep
+
+
 def set_enabled(name: str, enabled: bool, partial: bool = False) -> OpReport:
     with _lock():
         return _set_enabled_in(_load_registry(), name, enabled, partial)
@@ -498,7 +603,7 @@ def _set_enabled_in(reg: Registry, name: str, enabled: bool, partial: bool = Fal
     return rep
 
 
-BULK_OPS = ("delete", "disable", "enable")
+BULK_OPS = ("delete", "disable", "enable", "rekey")
 
 
 def bulk_refusal(reg: Registry, name: str, op: str) -> str | None:
@@ -512,24 +617,34 @@ def bulk_refusal(reg: Registry, name: str, op: str) -> str | None:
         return "owner не удаляется: на нём ссылки по умолчанию"
     if name == OWNER and op == "disable":
         return "owner не отключается: на нём ссылки по умолчанию"
+    if name == OWNER and op == "rekey":
+        return "у owner ключи не меняются из админки: на нём ссылки по умолчанию"
     return None
 
 
-def bulk(op: str, names: list[str]) -> list[OpReport]:
-    """delete | disable | enable для списка имён под одной блокировкой. Отказ или ошибка у одного
-    не мешают остальным: у каждого свой отчёт."""
+def bulk(op: str, names: list[str], budget: float = BULK_BUDGET) -> list[OpReport]:
+    """delete | disable | enable | rekey для списка имён под одной блокировкой. Отказ или ошибка у одного
+    не мешают остальным: у каждого свой отчёт; не уложились в budget — остальным «не успели»."""
     if op not in BULK_OPS:
         raise UserError(f"неизвестная операция «{op[:20]}»")
+    start = time.monotonic()
     with _lock():
         reg = _load_registry()
         out: list[OpReport] = []
         for name in names:
             why = bulk_refusal(reg, name, op)
+            if not why and time.monotonic() - start > budget:
+                why = "не успели: повторите для оставшихся"
             if why:
                 out.append(OpReport(op, name, ok=False, message=why))
                 continue
             try:
-                out.append(_delete_in(reg, name) if op == "delete" else _set_enabled_in(reg, name, op == "enable"))
+                if op == "delete":
+                    out.append(_delete_in(reg, name))
+                elif op == "rekey":
+                    out.append(_rekey_in(reg, name))
+                else:
+                    out.append(_set_enabled_in(reg, name, op == "enable"))
             except UserError as e:
                 out.append(OpReport(op, name, ok=False, message=str(e)))
         return out

@@ -293,8 +293,11 @@ def overview(app: "App", req: "Request") -> "Response":
     sys_card = card("Сервер", kv(rows), table(["файл", "до", ""], certs) if certs else None)
     start = t("a", "Подключить людей", href="/connect/new", class_="btn primary", data_swap=True,
               title="Группа: протоколы, приложения, люди и что им отправить")
+    from . import resendviews
+    waiting = resendviews.waiting()
     body = [page_head("Обзор", None, [start, None if alerts else badge("✓ всё в порядке", "ok")]),
             alert_list(alerts) if alerts else None,
+            alert_list([("warn", resendviews.link(waiting))]) if waiting else None,
             tiles, t("h2", "Протоколы"), protoviews.caption(pctx), protos,
             protoviews.off_block(off, pctx, csrf),
             t("div", users_card, sys_card, class_="cols")]

@@ -517,7 +517,8 @@ def _apps_block(d: Draft) -> Markup:
     own = d.allow_mode == "own"
     base = {p: (d.allow[p] if own and d.allow[p] else al.common(p)) for p in allowlist.PLATFORMS}
     on = {p: {i.lower() for i in base[p]} for p in allowlist.PLATFORMS}
-    rows = [allowviews._row_cells(r, on, on) for r in allowviews._rows(al, None, base, al.titles)]
+    rows = [allowviews._row_cells(r, on, on)
+            for r in allowviews._rows(al, {p: al.common(p) for p in allowlist.PLATFORMS}, base, al.titles)]
     common = " · ".join(f"{PLAT_NAMES.get(p, p)} {len(al.common(p))}" for p in allowlist.PLATFORMS)
     return t("div",
              t("label", t("input", type="radio", name="allow_mode", value="common", checked=not own),
@@ -813,13 +814,33 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
             if step > 0 else None, class_="wiz-nav") if step > 0 else None
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value=str(step)),
              _hidden(d, step), body, nav, method="post", action="/connect/new", class_="stack", data_swap=True)
-    parts: list[Any] = [page_head(TITLE), _stepper(step, d.custom)]
+    parts: list[Any] = [page_head(TITLE)]
+    pick = _group_pick(gs) if step == 0 else None
+    if pick is not None:   # сначала — куда: в группу, где уже есть люди, или новая (варианты ниже)
+        parts.append(pick)
+        hint = "Или новая группа — выберите вариант."
+    parts.append(_stepper(step, d.custom))
     if errors:
         parts.append(alert_list([("bad", e) for e in errors]))
     parts.append(card(title, t("p", hint, class_="hint") if hint else None, form))
     # data-expanded: живое обновление не заменяет страницу, пока идёт мастер (иначе шаг сбросился бы на первый)
     return app.render(req, TITLE, t("div", parts, class_="wizard", data_expanded=True),
                       active="/groups", status=status)
+
+
+def _group_pick(gs: groups.Groups) -> Markup | None:
+    """«В существующую группу»: только когда в какой-то группе уже есть люди (первый запуск — сразу новая группа).
+    Выбрана — форма «Добавить людей списком» на странице группы. Заранее выбрана самая большая."""
+    ureg = users.list_users()
+    count = {g.id: sum(1 for u in groups.members_of(gs, ureg, g.id) if u.name != users.OWNER) for g in gs.groups}
+    if not any(count.values()):
+        return None
+    best = max(gs.groups, key=lambda g: count[g.id])
+    return card("В существующую группу",
+                t("form", t("select", [t("option", f"{g.name} · {count[g.id]} чел.", value=g.id, selected=g is best)
+                                       for g in gs.groups], name="to", aria_label="Группа"),
+                  t("button", "Добавить людей →", type="submit", class_="btn primary"),
+                  method="get", action="/connect/new", class_="actions"))
 
 
 def _easy_only(d: Draft, managed: list[str]) -> set[str] | None:
@@ -839,9 +860,12 @@ def connect_page(app: "App", req: "Request") -> "Response":
             "Нет протоколов", alert_list([("warn", "Нет включённых протоколов, куда можно добавить пользователя.")]))],
             active="/groups")
     try:
-        groups.ensure()
+        gs = groups.ensure()
     except CATCH:
-        pass
+        gs = None
+    to = req.query.get("to", "")[:40]
+    if to and gs is not None and (g := gs.get(to)) is not None:
+        return _redirect(f"/groups/{g.id}?add=1#add")
     return _wizard(app, req, 0, Draft(install_mode=groups.clean_mode(req.query.get("mode"))))
 
 
@@ -1039,11 +1063,9 @@ def flash_report(req: "Request", rep: groups.GroupReport, renamed: list[str] | N
         parts.append("создано: " + _list(who(rep.created)))
     if rep.moved:
         parts.append("переведено: " + _list(who(rep.moved)))
-    if rep.needs_qr and not rep.created and len(rep.needs_qr) <= 8:
-        s.flash("ok" if rep.ok else "warn", ". ".join(parts) + ". Новые QR/файлы нужны:",
-                [(label, f"/users/{n}") for n, label in zip(rep.needs_qr, who(rep.needs_qr))])
-    else:
-        s.flash("ok" if rep.ok else "warn", ". ".join(parts))
+    s.flash("ok" if rep.ok else "warn", ". ".join(parts))
+    if rep.resend and not rep.created:
+        s.flash("warn", "Переслать: " + _list(who(rep.resend)), [("кому и что", "/resend")])
     if renamed:
         s.flash("warn", "Совпали имена, добавлен номер: " + _list(renamed, 5))
     if rep.skipped:
@@ -1234,7 +1256,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
             t("form", csrf_input(csrf), _users_block(add_draft or Draft(new_users="", existing=[]), g.id),
               t("button", "Проверить список →", type="submit", class_="btn primary"),
               method="post", action=f"/groups/{g.id}/members", class_="stack", data_swap=True),
-            class_="card more", open=bool(add_draft) or None)
+            class_="card more", open=bool(add_draft or req.query.get("add")) or None, id="add")
     others = [x for x in gs.groups if x.id != g.id]
     mem_users = groups.members_of(gs, ureg, g.id)
     names = [u.label for u in mem_users]
@@ -1262,7 +1284,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
               add, dist_card,
               _messages_card(g, ctx, csrf, req.query.get("m", "")) if ctx else None,
               card("Настройки группы", form, id_="settings",
-                   help="Сохранение применяется ко всем участникам один раз; в сообщении — кому нужен новый QR."),
+                   help="Сохранение применяется ко всем участникам один раз; кому что переслать — в «Кому переслать»."),
               t("div", delete, merge, class_="actions")]
     return app.render(req, g.name, parts, active="/groups", status=status)
 

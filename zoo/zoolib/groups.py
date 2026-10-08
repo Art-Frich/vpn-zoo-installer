@@ -814,6 +814,7 @@ class GroupReport:
     crashed: bool = False   # добавление людей упало исключением: часть могла примениться
     removed: bool = False   # группа удалена (мастер убрал созданную пустую; delete_group)
     deleted: list[str] = field(default_factory=list)   # пользователи, удалённые вместе с группой
+    resend: list[str] = field(default_factory=list)    # кому отмечено «переслать» (resend.mark)
 
     @property
     def ok(self) -> bool:
@@ -823,7 +824,7 @@ class GroupReport:
         return {"group": self.group.to_dict(), "ok": self.ok, "message": self.message, "created": self.created,
                 "moved": self.moved, "needs_qr": self.needs_qr, "skipped": self.skipped,
                 "errors": self.errors, "allow": self.allow, "removed": self.removed,
-                "deleted": self.deleted}
+                "deleted": self.deleted, "resend": self.resend}
 
 
 def _errors(reports: list[users.OpReport]) -> list[str]:
@@ -972,8 +973,10 @@ def create(name: str, protocols: list[str], clients: dict[str, Any] | None = Non
 
 
 def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str],
-            before_protos: dict[str, list[str]], before_allow: dict[str, Any], protocols: bool) -> None:
-    """Применить настройки групп к участникам names один раз (под блокировкой, реестры сохранены)."""
+            before_protos: dict[str, list[str]], before_allow: dict[str, Any], protocols: bool,
+            full: list[str] | tuple[str, ...] = ()) -> None:
+    """Применить настройки групп к участникам names один раз (под блокировкой, реестры сохранены). Кому что переслать —
+    отметкой в реестре: сменились протоколы (или full — другая группа) — сообщение целиком, список — по приложениям."""
     managed, _ = users.managed_protocols()
     variants = users.variant_modules()
     if protocols:
@@ -1004,8 +1007,19 @@ def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str]
                 rep.errors.append(f"{n}: {e}")
             if str(rep.allow.get("amneziawg", "")).startswith("ошибка"):
                 rep.errors.append(f"AmneziaWG: {rep.allow['amneziawg']} (повторить: sudo zoo allow apply)")
+    from . import resend
     protos_now = {n: set(ureg.require(n).protocols) for n in names}
     rep.needs_qr = [n for n in names if protos_now[n] != set(before_protos[n]) or n in changed]
+    _mark(rep, ureg, [n for n in names if n in full or protos_now[n] != set(before_protos[n])],
+          resend.list_changes({n: before_allow.get(n, {}) for n in changed}, {n: after.get(n, {}) for n in changed}), gs)
+
+
+def _mark(rep: GroupReport, ureg: users.Registry, full: list[str], lists: dict[str, set[str]] | None = None,
+          gs: Groups | None = None) -> None:
+    from . import resend
+    if marked := resend.mark(ureg, full, lists, gs):
+        ureg.save()
+        rep.resend += [n for n in marked if n not in rep.resend]
 
 
 def _snapshot(ureg: users.Registry, names: list[str]) -> tuple[dict[str, list[str]], dict[str, Any]]:
@@ -1043,6 +1057,7 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         protos_changed = new_protocols != g.protocols
         offer_changed = offered(new_protocols, sel) != offered(g.protocols, sel)
         allow_changed = new_allow != g.allowlist
+        clients_changed = new_clients != g.clients
         g.name, g.protocols, g.clients, g.allowlist = new_name, new_protocols, new_clients, new_allow
         if install_mode is not None:
             g.install_mode = clean_mode(install_mode)
@@ -1053,6 +1068,8 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
             _settle(rep, gs, ureg, names, before[0], before[1], protos_changed)
             if offer_changed:   # учётки те же, но набор ссылок (Salamander) другой
                 rep.needs_qr += [n for n in names if n not in rep.needs_qr and n not in rep.skipped]
+        if names and (offer_changed or clients_changed):   # другие ссылки или приложения — сообщение целиком
+            _mark(rep, ureg, [n for n in names if clients_changed or n not in rep.skipped], gs=gs)
         return rep
 
 
@@ -1089,6 +1106,7 @@ def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group, keep_
     """Перевод в группу под блокировкой: реестры сохраняются, настройки группы применяются один раз.
     keep_custom — «свой набор протоколов» остаётся (меняется только группа); иначе набор возвращается к группе."""
     before = _snapshot(ureg, names)
+    other = [n for n in names if ureg.require(n).group != g.id]   # другая группа — другие приложения и инструкция
     for n in names:
         u = ureg.require(n)
         u.group = g.id
@@ -1098,7 +1116,7 @@ def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group, keep_
     refresh_mirror(gs, ureg)
     rep = GroupReport(g, "готово")
     rep.moved = list(names)
-    _settle(rep, gs, ureg, names, before[0], before[1], True)
+    _settle(rep, gs, ureg, names, before[0], before[1], True, full=other)
     return rep
 
 
@@ -1155,7 +1173,7 @@ def delete_group(ref: str, members: str = "move", expected: list[str] | None = N
         keep = [n for n in mem if n not in doomed]
         if keep:
             mv = _move_in(gs, ureg, keep, main, keep_custom=True)
-            rep.moved, rep.skipped, rep.allow, rep.needs_qr = mv.moved, mv.skipped, mv.allow, mv.needs_qr
+            rep.moved, rep.skipped, rep.allow, rep.needs_qr, rep.resend = mv.moved, mv.skipped, mv.allow, mv.needs_qr, mv.resend
             rep.errors += mv.errors
         gs.groups.remove(g)
         gs.save()
@@ -1216,7 +1234,7 @@ def add_members(ref: str, new: list[tuple[str, ...]], existing: list[str]) -> Gr
             rep.errors += [f"{name}: {r.message}"] + [f"{name}: {s.proto_id}: {s.error}" for s in r.failed]
     if existing:
         mv = move_many(existing, g.id)
-        rep.moved, rep.skipped, rep.allow = mv.moved, mv.skipped, mv.allow
+        rep.moved, rep.skipped, rep.allow, rep.resend = mv.moved, mv.skipped, mv.allow, mv.resend
         rep.errors += mv.errors
         rep.needs_qr += [n for n in mv.needs_qr if n not in rep.needs_qr]
     return rep
