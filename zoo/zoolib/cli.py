@@ -234,7 +234,7 @@ def _render_links(links: list[protolib.Link], errors: dict[str, str], qr_mode: s
         if link.proto_id != current:
             current = link.proto_id
             m = by_id.get(current)
-            name = m.name if m else ("Приложения через VPN" if current == allowlist.V2RAYN_PROTO else "")
+            name = m.name if m else ("Правила маршрутизации v2rayN" if current == allowlist.V2RAYN_PROTO else "")
             print(f"\n{output.color(current, 'bold')}  {name}")
             if m and m.notes:
                 width = min(shutil.get_terminal_size((100, 20)).columns, 100)

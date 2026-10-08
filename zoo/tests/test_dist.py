@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import time
 import types
 import unittest
@@ -579,11 +580,13 @@ class DistWebTest(AppTestBase):
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("страница ходит в сеть")):
             resp, body = self.c.get(f"/groups/{self.gid}")
         self.assertEqual(resp.status, 200, body[-300:])
-        card = body[body.index("Скачать дистрибутивы"):]
+        card = body[body.index("<h3>Дистрибутивы</h3>"):]
         card = card[:card.index("</section>")]
         sha = hashlib.sha256((dist.root() / "hiddify" / "4.1.1" / self.NAME).read_bytes()).hexdigest()
         self.assertIn(f'href="/dist/hiddify/4.1.1/{self.NAME}"', card)
-        self.assertIn(sha, card)
+        self.assertIn(f'title="sha256 {sha} — ', card, "sha256 — в подсказке имени файла")
+        self.assertNotIn('class="sha"', card, "столбца sha256 нет")
+        self.assertNotIn("sha256</th>", card)
         self.assertIn("120 Б", card)
         self.assertIn("4.1.1", card)
         self.assertIn('class="btn small primary">Скачать', card)
@@ -608,20 +611,35 @@ class DistWebTest(AppTestBase):
     def test_self_group_has_no_distribution_block_or_ios_note(self):
         groups.update(self.gid, install_mode="self")
         _, body = self.c.get(f"/groups/{self.gid}")
-        self.assertNotIn("Скачать дистрибутивы", body)
+        self.assertNotIn("<h3>Дистрибутивы</h3>", body)
         self.assertNotIn("ставится только из App Store", body)
         _, main = self.c.get("/groups/main")
-        self.assertNotIn("Скачать дистрибутивы", main)
+        self.assertNotIn("<h3>Дистрибутивы</h3>", main)
 
     def test_wizard_final_page_has_the_block_for_admin_group(self):
         with mock.patch.object(dist, "status", return_value={"checked": time.time() - 900, "errors": {}}):
             _, body = self.c.get(f"/connect/done?group={self.gid}&u=owner")
-        self.assertIn("Скачать дистрибутивы", body)
+        self.assertIn("<h3>Дистрибутивы</h3>", body)
         self.assertIn(f'href="/dist/hiddify/4.1.1/{self.NAME}"', body)
         self.assertIn(f'name="back" value="/connect/done?group={self.gid}&amp;u=owner"', body)
         groups.update(self.gid, install_mode="self")
         _, body = self.c.get(f"/connect/done?group={self.gid}&u=owner")
-        self.assertNotIn("Скачать дистрибутивы", body)
+        self.assertNotIn("<h3>Дистрибутивы</h3>", body)
+
+    def test_nothing_downloaded_yet_is_a_short_list_with_one_button(self):
+        shutil.rmtree(dist.root())
+        with mock.patch.object(dist, "status", return_value={"checked": None, "errors": {}}):
+            _, body = self.c.get(f"/groups/{self.gid}")
+        card = body[body.index("<h3>Дистрибутивы</h3>"):]
+        card = card[:card.index("</section>")]
+        self.assertIn(">Скачать на сервер</button>", card)
+        self.assertNotIn(">Обновить<", card)
+        self.assertIn("Файла пока нет", card)
+        for gone in ("sha256", "<table", "<th", "версия", "размер"):
+            self.assertNotIn(gone, card, "пока ничего не скачано — пустых столбцов нет")
+        self.assertIn("Как установить (для ИТ)", card)
+        self.assertIn("Android — «Hiddify»: скачайте файл «.apk»", card)
+        self.assertIn("iPhone — «Happ»: из App Store", card)
 
     def test_page_is_light_without_network_and_csp_clean(self):
         resp, body = self.c.get(f"/groups/{self.gid}")

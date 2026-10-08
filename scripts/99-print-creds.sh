@@ -184,7 +184,7 @@ if [ -n "${ZOO_WEB_PORT:-}" ]; then
     echo "  Windows:      iwr $zoo_raw/zoo-admin.ps1 -OutFile zoo-admin.ps1"
     echo "                powershell -ExecutionPolicy Bypass -File .\\zoo-admin.ps1 $ssh_user@$ssh_host${ssh_p:+ -Port $ssh_port}"
     echo "  macOS/Linux:  curl -fsSLO $zoo_raw/zoo-admin.sh && bash zoo-admin.sh $ssh_user@$ssh_host$ssh_p"
-    echo "  откроется браузер уже со входом; дальше «Обзор» → «Get started»"
+    echo "  откроется браузер уже со входом; дальше «Обзор» → «Подключить людей»"
     echo
 fi
 printf '%b\n' "${C_BLUE}-- Панель 3x-ui (только через SSH-туннель) --${C_RESET}"

@@ -1,4 +1,4 @@
-"""Страница «Приложения через VPN»: одна таблица по приложениям, черновик и одно сохранение
+"""Страница «Через VPN»: одна таблица по приложениям, черновик и одно сохранение
 (общий список и свои списки пользователей, zoo allow)."""
 
 from __future__ import annotations
@@ -161,9 +161,9 @@ def _page(app: "App", req: "Request", user: str | None, err: str = "", draft: di
     try:
         al = allowlist.Allowlist.load()
     except allowlist.AllowlistError as e:
-        return app.error(req, 500, "Список приложений не читается", str(e))
+        return app.error(req, 500, "Список «через VPN» не читается", str(e))
     reg = users.list_users()
-    parts: list[Any] = [page_head("Приложения",
+    parts: list[Any] = [page_head("Через VPN",
                                   "Через VPN идут только отмеченные приложения, остальное — напрямую "
                                   "(банки, Госуслуги, MAX).", _who_nav(reg, user))]
     alerts = [("bad", m) for m in ([err] if err else []) + (errors or [])]
@@ -197,7 +197,7 @@ def _page(app: "App", req: "Request", user: str | None, err: str = "", draft: di
         parts.append(t("div", post_button("/apps", "Сбросить к пресету", csrf, "btn small", {"action": "reset"},
                                           title="Общий список снова как в пресете", swap=True,
                                           confirm="Сбросить общий список к пресету?"), class_="actions"))
-    return app.render(req, "Приложения через VPN", parts, active="/apps", status=status)
+    return app.render(req, "Через VPN", parts, active="/apps", status=status)
 
 
 def apps_page(app: "App", req: "Request") -> "Response":

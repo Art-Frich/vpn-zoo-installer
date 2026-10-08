@@ -29,8 +29,8 @@ class BuildTest(unittest.TestCase):
         plan = people.build("Иван Петров; бухгалтерия\nМария\tотдел продаж\nОльга, склад, 2 этаж\nПётр")
         self.assertTrue(plan.ok)
         self.assertEqual([(r.name, r.note) for r in plan.rows], [
-            ("ivan-petrov", "Иван Петров · бухгалтерия"), ("mariya", "Мария · отдел продаж"),
-            ("olga", "Ольга · склад, 2 этаж"), ("petr", "Пётр")])
+            ("ivan-petrov", "бухгалтерия"), ("mariya", "отдел продаж"), ("olga", "склад, 2 этаж"), ("petr", "")])
+        self.assertEqual([r.display for r in plan.rows], ["Иван Петров", "Мария", "Ольга", "Пётр"])
         self.assertEqual([r.converted for r in plan.rows], [True] * 4)
 
     def test_first_separator_wins(self):
@@ -65,10 +65,11 @@ class BuildTest(unittest.TestCase):
         self.assertTrue(all(users.NAME_RE.match(n) for n in names), names)
         self.assertEqual(names[1], "a" * 30 + "-2")
 
-    def test_original_name_survives_in_note_and_note_is_capped(self):
+    def test_original_name_is_kept_apart_from_the_note_and_note_is_capped(self):
         plan = people.build("Иван Петров; " + "я" * 400)
         self.assertEqual(len(plan.rows[0].note), people.NOTE_MAX)
-        self.assertTrue(plan.rows[0].note.startswith("Иван Петров · "))
+        self.assertEqual(plan.rows[0].note, "я" * people.NOTE_MAX, "имя в заметке не повторяется")
+        self.assertEqual(plan.triples()[0][0::2], ("ivan-petrov", "Иван Петров"))
 
     def test_problems_block_the_plan(self):
         plan = people.build("masha\n***\n; заметка")
@@ -90,7 +91,8 @@ class BuildTest(unittest.TestCase):
         self.assertTrue(plan.ok)
         self.assertLessEqual(len(plan.rows[0].note), people.NOTE_MAX)
         plan = people.build("ma\x00sha; no\x07te")
-        self.assertEqual(plan.pairs(), [("ma-sha", "ma sha · no te")])
+        self.assertEqual(plan.pairs(), [("ma-sha", "no te")])
+        self.assertEqual(plan.triples(), [("ma-sha", "no te", "ma sha")])
 
     def test_hostile_text_is_just_text(self):
         plan = people.build('"><img src=x onerror=alert(1)>; <b>x</b>')

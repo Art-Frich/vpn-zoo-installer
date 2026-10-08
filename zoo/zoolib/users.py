@@ -63,6 +63,12 @@ class User:
     system: bool = False
     group: str = ""
     custom: bool = False
+    display: str = ""   # имя человека, как оно написано в списке («Иван Петров»); name — латинский логин
+
+    @property
+    def label(self) -> str:
+        """Как обращаться к человеку: имя из списка, а нет его — логин."""
+        return self.display or self.name
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "User":
@@ -75,6 +81,7 @@ class User:
             system=bool(d.get("system", False)),
             group=str(d.get("group") or ""),
             custom=bool(d.get("custom", False)),
+            display=str(d.get("display") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -86,6 +93,8 @@ class User:
             d["group"] = self.group
         if self.custom:
             d["custom"] = True
+        if self.display:
+            d["display"] = self.display
         return d
 
 
@@ -268,8 +277,8 @@ def add_user(name: str, note: str = "", only: list[str] | None = None,
 BULK_BUDGET = 300   # секунд на пачку: дольше блокировка мешала бы остальным операциям
 
 
-def add_many(items: list[tuple[str, str]], group: str, budget: float = BULK_BUDGET) -> list[OpReport]:
-    """Новые пользователи (имя, заметка) в группу под одной блокировкой. Отказ у одного не мешает остальным
+def add_many(items: list[tuple[str, ...]], group: str, budget: float = BULK_BUDGET) -> list[OpReport]:
+    """Новые пользователи (логин, заметка[, имя человека]) в группу под одной блокировкой. Отказ у одного не мешает остальным
     (у каждого свой отчёт); не уложились в budget — остальным отчёт «не успели». Списки пользователей
     протоколов читаются один раз на протокол, а не на каждого человека."""
     known: dict[str, set[str] | None] = {}
@@ -287,19 +296,19 @@ def add_many(items: list[tuple[str, str]], group: str, budget: float = BULK_BUDG
     out: list[OpReport] = []
     with _lock():
         reg = _load_registry()
-        for name, note in items:
+        for name, note, *rest in items:
             if time.monotonic() - start > budget:
                 out.append(OpReport("add", name, ok=False, message="не успели: повторите для оставшихся"))
                 continue
             try:
-                out.append(_add_in(reg, name, note, group=group, present=present))
+                out.append(_add_in(reg, name, note, group=group, present=present, display=rest[0] if rest else ""))
             except (UserError, protolib.ProtoError) as e:
                 out.append(OpReport("add", name, ok=False, message=str(e)))
     return out
 
 
 def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = None, partial: bool = False,
-            system: bool = False, group: str | None = None, present=None) -> OpReport:
+            system: bool = False, group: str | None = None, present=None, display: str = "") -> OpReport:
     """Добавление под уже взятой блокировкой; реестр сохраняется здесь. present — как _present
     (add_many подставляет кэш списков протоколов)."""
     present = present or _present
@@ -361,7 +370,7 @@ def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = N
         rep.message = "пользователь не создан ни в одном протоколе"
         return rep
     reg.users.append(User(name, now_iso(), True, note, ok_ids, system=system,
-                          group=grp.id if grp else "", custom=custom))
+                          group=grp.id if grp else "", custom=custom, display=display if display != name else ""))
     reg.save()
     if not system:
         _write_allowlist_files(name)

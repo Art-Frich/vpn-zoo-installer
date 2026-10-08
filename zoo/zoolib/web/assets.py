@@ -304,7 +304,7 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .checks label { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
 .hint { color: var(--muted); font-size: .82rem; }
 
-/* мастер «Новая группа» и группы */
+/* мастер «Подключить людей» и группы */
 .stepper { display: flex; flex-wrap: wrap; gap: 6px 18px; list-style: none; padding: 0; margin: 0 0 14px; color: var(--muted); font-size: .9rem; }
 .stepper li { display: inline-flex; align-items: center; gap: 6px; }
 .stepper .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
@@ -320,21 +320,28 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .opt-body { display: grid; gap: 4px; min-width: 0; }
 .opt-title { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .opt-row { align-items: center; margin-bottom: 8px; }
-.plat-sum { margin: 0; font-size: .9rem; }
-.plat-sum.ok { color: var(--ok); }
-.plat-sum.warn { color: var(--warn); }
-.plat-sum.muted { color: var(--muted); }
+.seg-row, .proto-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 0 0 10px; }
+.seg-row .label, .proto-sum .label, .cav .label, .msg .label { font-size: .82rem; color: var(--text-2); font-weight: 550; }
+.seg-row .label { margin-right: 2px; }
+.linkbtn { background: none; border: 0; padding: 0; font: inherit; font-size: .85rem; color: var(--accent); cursor: pointer; }
+.linkbtn:hover { text-decoration: underline; }
+.js button[data-refresh] { display: none; }
+.cav { margin: 0 0 10px; }
+.cav-list { margin: 4px 0; padding-left: 1.2em; font-size: .88rem; color: var(--text-2); }
+.cav details.more { margin: 2px 0 0; }
 .dev-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }
 .chip-check { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border: 1px solid var(--border);
   border-radius: 999px; background: var(--surface); cursor: pointer; font-size: .9rem; }
 .chip-check:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .dev-rows { display: grid; gap: 10px; margin-bottom: 12px; }
 .dev-row { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); min-width: 0; }
-.dev-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.dev-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.dev-d > summary { list-style: none; cursor: pointer; color: var(--text); }
+.dev-d > summary::-webkit-details-marker { display: none; }
+.dev-d[open] > summary { margin-bottom: 8px; }
 .dev-name { min-width: 76px; }
-.dev-set { flex: 1 1 160px; min-width: 0; }
-.dev-change { margin: 0; flex: 1 1 100%; }
-.dev-change > summary { margin-top: 4px; font-size: .85rem; }
+.dev-set { flex: 0 1 auto; min-width: 0; }
+.dev-change { flex: 0 0 auto; margin-left: auto; color: var(--accent); font-size: .85rem; }
 .dev-row p.hint { margin: 4px 0 0; }
 .dev-opt { margin-bottom: 0; align-items: flex-start; flex-wrap: wrap; }
 .dev-total { margin: 0 0 8px; font-size: .9rem; }
@@ -343,6 +350,9 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .ios-note details.more.inline > summary { display: inline; margin: 0; }
 .preset { align-items: center; justify-content: space-between; flex-wrap: wrap; }
 .preset .opt-body { flex: 1 1 260px; }
+.preset.sel { border-color: var(--accent); }
+.dist-list { margin: 0 0 10px; padding-left: 1.1em; }
+.dist-list li { margin-bottom: 6px; }
 .sha { font-size: .72rem; word-break: break-all; }
 .dl-name { word-break: break-all; }
 /* «Подключить»: платформа → приложения → ключи человека → текст */
@@ -381,7 +391,8 @@ details.urow[open] > summary { margin-bottom: 4px; }
 .msg-pre { margin: 8px 0 0; padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit;
   font-size: .88rem; line-height: 1.45; color: var(--text-2); background: var(--surface-2); border-radius: 8px; }
 details.card.more > summary { margin-top: 0; }
-.wiz-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.wiz-nav { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0;
+  background: var(--surface); }
 .wiz-nav .btn.primary { order: 2; }
 .wiz-nav .btn:not(.primary) { order: 1; }
 
@@ -416,6 +427,14 @@ details.custom > .stack { margin-top: 10px; }
 .seg.small a { padding: 3px 9px; font-size: .8rem; }
 .seg a:hover { background: var(--surface-2); text-decoration: none; }
 .seg a.active { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.seg label { position: relative; display: inline-flex; align-items: center; padding: 6px 12px; color: var(--text-2);
+  font-size: .88rem; border-left: 1px solid var(--border); cursor: pointer; }
+.seg label:first-child { border-left: 0; }
+.seg label input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.seg label:hover { background: var(--surface-2); }
+.seg label:has(input:checked) { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: -2px; }
+@media (max-width: 480px) { .seg { display: grid; grid-template-columns: 1fr 1fr; } .seg label, .seg a { justify-content: center; } }
 
 /* графики */
 .chart { width: 100%; height: auto; display: block; }
@@ -539,7 +558,9 @@ footer { max-width: 1200px; margin: 0 auto; padding: 0 16px 24px; color: var(--m
 /* раздача пачкой: карточки на экране и на бумаге */
 tr.row-warn td { background: var(--warn-soft); }
 tr.row-bad td { background: var(--bad-soft); }
+.row-warn .chip.warn, .row-bad .chip.bad { border: 1px solid currentColor; }
 table.preview td, table.preview th { white-space: normal; }
+table.preview code { overflow-wrap: anywhere; }
 .hper { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--text-2); font-size: .85rem; }
 .hcards { display: grid; gap: 12px; margin-top: 14px; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 .hcard { display: grid; gap: 8px; align-content: start; padding: 12px 14px; background: var(--surface);
@@ -567,7 +588,7 @@ table.preview td, table.preview th { white-space: normal; }
   .hsteps { font-size: 8.5pt; }
   .chip { border: 1px solid #aaa; background: #fff; color: #000; }
 }
-@media (max-width: 600px) { .hkey img.qr { width: 100px; height: 100px; } }
+@media (max-width: 600px) { .hkey img.qr { width: 100px; height: 100px; } .preset .btn { width: 100%; } }
 @media (max-width: 600px) {
   body { font-size: 14px; }
   .top-inner { gap: 6px 10px; flex-wrap: wrap; padding-top: 6px; padding-bottom: 6px; }
@@ -600,6 +621,7 @@ table.preview td, table.preview th { white-space: normal; }
 JS = r"""
 (function () {
   'use strict';
+  document.documentElement.classList.add('js');   // кнопки «Пересчитать» и подобные с JS не нужны
   // копирование в буфер: data-copy="id" — поле, значение которого берём
   document.addEventListener('click', function (ev) {
     var btn = ev.target.closest('[data-copy]');
@@ -649,9 +671,11 @@ JS = r"""
       var inp = k.querySelector('.link-uri input'), name = k.querySelector('.key-name');
       if (inp && name) lines.push(name.textContent + ': ' + inp.value);
     });
-    var block = '\n\n' + lines.join('\n');
-    if (el.checked) { if (ta.value.indexOf(block) < 0) ta.value = ta.value.replace(/\s+$/, '') + block; }
-    else ta.value = ta.value.split(block).join('');
+    var block = '\n\n' + lines.join('\n'), field = ta.value !== undefined && ta.tagName !== 'PRE';   // инструкция — <pre>
+    var cur = field ? ta.value : ta.textContent, next;
+    if (el.checked) next = cur.indexOf(block) < 0 ? cur.replace(/\s+$/, '') + block : cur;
+    else next = cur.split(block).join('');
+    if (field) ta.value = next; else ta.textContent = next;
   });
   // форма «Добавить пользователя»: выбор группы отмечает её протоколы (data-protos у option)
   document.addEventListener('change', function (ev) {

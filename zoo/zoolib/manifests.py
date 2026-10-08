@@ -18,6 +18,31 @@ PROBE_KINDS = ("xray", "hysteria", "awg", "sing-box")
 LAYER_ALIASES = {"tcp,udp": "tcp+udp", "udp+tcp": "tcp+udp", "tcp/udp": "tcp+udp", "both": "tcp+udp"}
 
 
+# одно название протокола на всех экранах; длинное имя из манифеста — только в подсказке (title=)
+TITLES = {"hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "vless-xhttp": "VLESS XHTTP",
+          "vless-reality": "VLESS Vision", "amneziawg": "AmneziaWG", "tuic": "TUIC", "ss2022": "Shadowsocks"}
+
+
+def proto_title(pid: str, fallback: str = "") -> str:
+    """Название протокола для людей: из словаря TITLES; незнакомый протокол — short манифеста, затем fallback, затем id."""
+    if pid in TITLES:
+        return TITLES[pid]
+    try:
+        m = next((x for x in load_all()[0] if x.id == pid), None)
+    except OSError:
+        m = None
+    return m.short if m else (fallback or pid)
+
+
+def proto_full(pid: str) -> str:
+    """Полное имя протокола из манифеста — для title=; нет манифеста — пусто."""
+    try:
+        m = next((x for x in load_all()[0] if x.id == pid), None)
+    except OSError:
+        m = None
+    return m.name if m else ""
+
+
 def norm_layer(value: Any) -> Any:
     return LAYER_ALIASES.get(value, value) if isinstance(value, str) else value
 

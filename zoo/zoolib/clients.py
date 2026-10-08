@@ -36,7 +36,8 @@ DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 STATUSES = ("ok", "warn", "no", "unk")
 STATUS_MARK = {"ok": "✓", "warn": "!", "no": "✕", "unk": "?"}
 STATUS_TEXT = {"ok": "заявлено поддерживаемым", "warn": "с оговоркой", "no": "не работает", "unk": "не проверено"}
-LINK_KINDS = {"github": "GitHub", "play": "Google Play", "appstore": "App Store", "fdroid": "F-Droid", "site": "сайт"}
+LINK_KINDS = {"github": "GitHub", "play": "Google Play", "appstore": "App Store", "msstore": "Microsoft Store",
+              "fdroid": "F-Droid", "site": "сайт"}
 IMPORT_METHODS = ("qr", "link", "file")
 REQ_NAME = "clients-req"
 RATE_LIMIT = 600   # «Проверить сейчас» — не чаще раза в 10 минут
@@ -74,6 +75,13 @@ class Catalog:
         """Клиента нет в российском магазине платформы: нужен аккаунт другой страны."""
         return platform in client.get("no_ru_store", [])
 
+    def status(self, client: dict[str, Any], proto: str, platform: str) -> str:
+        """Статус протокола у клиента на платформе: ok, warn, no, unk; нет записи — пусто. warn_on — платформы, где
+        заявленное «ok» пока с оговоркой (не проверено на стенде)."""
+        st = client["protocols"].get(proto) or {}
+        s = st.get("s", "")
+        return "warn" if s == "ok" and platform in st.get("warn_on", []) else s
+
     def per_app_steps(self, client: dict[str, Any], platform: str) -> str | None:
         """Шаг «приложения через VPN» для платформы; нет шага — на ней клиент так не умеет."""
         return (client.get("per_app_steps") or {}).get(platform)
@@ -82,9 +90,9 @@ class Catalog:
         return [p for p, d in self.protocols.items() if not d.get("pseudo")]
 
     def names_for(self, proto: str) -> str:
-        """Клиенты протокола через запятую (подсказка на плитке): рекомендованные первыми."""
+        """Приложения протокола через запятую (подсказка на плитке): рекомендованные первыми; без import (ссылок не берут) — нет."""
         rec = [plat[proto] for plat in self.raw["recommended"].values() if proto in plat]
-        ok = [c["id"] for c in self.clients if c["protocols"].get(proto, {}).get("s") in ("ok", "warn")]
+        ok = [c["id"] for c in self.clients if c.get("import") and c["protocols"].get(proto, {}).get("s") in ("ok", "warn")]
         order = list(dict.fromkeys(rec + ok))
         return ", ".join(self.client(i)["name"] for i in order)  # type: ignore[index]
 
@@ -115,6 +123,7 @@ def validate(raw: Any) -> None:
                      and isinstance(ln.get("checked"), bool), f"{cid}/{plat}: ссылка {ln}")
         for pid, st in c["protocols"].items():
             need(pid in protos and st.get("s") in STATUSES, f"{cid}: протокол {pid} {st}")
+            need(set(st.get("warn_on", [])) <= set(c["platforms"]), f"{cid}: протокол {pid}: warn_on")
         need(set(c.get("import", {})) <= set(IMPORT_METHODS), f"{cid}: import")
         steps = c.get("per_app_steps", {})
         need(isinstance(steps, dict) and set(steps) <= set(c["platforms"]) - {"ios"}

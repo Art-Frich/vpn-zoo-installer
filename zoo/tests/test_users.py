@@ -362,5 +362,15 @@ class UsersTest(unittest.TestCase):
         self.assertTrue(all(r.ok for r in users.bulk("disable", ["masha", "kolya"])))
 
 
+class DisplayNameTest(unittest.TestCase):
+    def test_display_is_stored_apart_from_the_note_and_falls_back_to_the_login(self):
+        u = users.User.from_dict({"name": "ivan-petrov", "note": "бухгалтерия", "display": "Иван Петров"})
+        self.assertEqual((u.label, u.note), ("Иван Петров", "бухгалтерия"))
+        self.assertEqual(u.to_dict()["display"], "Иван Петров")
+        plain = users.User.from_dict({"name": "masha"})
+        self.assertEqual(plain.label, "masha")
+        self.assertNotIn("display", plain.to_dict(), "прежние записи файл не меняют")
+
+
 if __name__ == "__main__":
     unittest.main()
