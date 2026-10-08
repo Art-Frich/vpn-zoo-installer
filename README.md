@@ -4,7 +4,6 @@
 Одна команда ставит несколько протоколов, сама проверяет, какие работают, и даёт простую админку: кто подключён, сколько трафика, кто стучался в сервер.
 
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04-E95420?logo=ubuntu&logoColor=white)
-![Протоколы](https://img.shields.io/badge/протоколы-6%20вкл.%20%2B%201%20по%20флагу-2ea44f)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-blue)
 
 Два этапа: **[1. Зоопарк](#1-зоопарк)** — ставите один раз; **[2. Администрирование](#2-администрирование)** — каждый день, одной командой.
@@ -24,7 +23,7 @@
 sudo apt-get update && sudo apt-get install -y git && sudo git clone https://github.com/Art-Frich/vpn-zoo-installer.git /opt/vpn-zoo-src && cd /opt/vpn-zoo-src && sudo bash scripts/install.sh
 ```
 
-Время — в основном скачивание с GitHub: на Docker-стенде полная установка с проверкой всех протоколов заняла ≈12 минут, на реальном VPS 05.10.2026 — ≈30 минут из-за медленного в тот день GitHub (оборванная загрузка докачается при повторном запуске). В конце:
+Время — в основном скачивание с GitHub: на Docker-стенде полная установка с проверкой всех протоколов заняла ≈12 минут, на реальном VPS 05.10.2026 — ≈30 минут из-за медленного в тот день GitHub. В конце:
 - ✅ таблица «работает в принципе» — сервер сам подключился каждым протоколом к себе;
 - 🔑 ссылки и QR каждого протокола (копия — `/root/CREDENTIALS.md`);
 - 🧭 готовые команды для следующих шагов, в том числе для этапа 2.
@@ -48,7 +47,7 @@ sudo apt-get update && sudo apt-get install -y git && sudo git clone https://git
 Режут один протокол — остаются другие.
 
 > [!WARNING]
-> Для VLESS нужен клиент на ядре **Xray** (v2rayN, v2rayNG, Happ, INCY). Клиентам на sing-box (Hiddify, NekoBox, Karing) подойдут Hysteria2, TUIC и AmneziaWG.
+> Не каждое приложение тянет каждый протокол: например, Hiddify не подключается к VLESS и AmneziaWG. Админка сама подбирает приложения под выбранные протоколы.
 
 ### 🔍 Блокирует ли мой провайдер?
 
@@ -91,7 +90,7 @@ ssh -t -L 7070:127.0.0.1:7070 root@IP zoo web --link
 
 Пароль сервера → ссылка → открыть в браузере → кнопка **«Подключить людей»**, дальше админка ведёт сама. Админка работает, пока открыто окно. Если порт 7070 был занят, команду с другим портом покажут итог установки и `zoo web --info`.
 
-Обновить vpn-zoo с GitHub (админку и протоколы): на сервере `sudo zoo upgrade --pull --apply`; без `--apply` — только показать, что изменится. Остальные консольные команды — в [справочнике](docs/REFERENCE.md#админка-и-инструмент-zoo).
+Обновить vpn-zoo с GitHub (админку и протоколы): на сервере `sudo zoo upgrade --pull --apply`; без `--apply` — только показать, что изменится. Закрыть все входы в админку — `zoo web --new-token`. Остальные консольные команды — в [справочнике](docs/REFERENCE.md#админка-и-инструмент-zoo).
 
 <details><summary>Дополнительно: вход без пароля и команда <code>zoo-admin</code></summary>
 
@@ -106,7 +105,6 @@ powershell -ExecutionPolicy Bypass -File .\zoo-admin.ps1 -Setup root@IP
 curl -fsSLO https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/tools/zoo-admin.sh && bash zoo-admin.sh --setup root@IP
 ```
 
-Новый токен админки (закрывает все входы) — `zoo web --new-token`.
 </details>
 
 ---
@@ -125,4 +123,4 @@ curl -fsSLO https://raw.githubusercontent.com/Art-Frich/vpn-zoo-installer/main/t
 
 ---
 
-MIT, без гарантий. Не публикуйте ссылки и подписки.
+Ссылки и QR из админки — это ключи к вашему серверу: не выкладывайте их в открытый доступ.
