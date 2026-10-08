@@ -103,7 +103,8 @@ def _norm_protocols(ids: list[str]) -> list[str]:
 
 
 def offered(protocols: list[str], selectable: list[str]) -> list[str]:
-    return list(selectable) if ALL in protocols else [p for p in protocols if p in selectable]
+    """Протоколы группы среди выбираемых, везде в порядке PRIORITY (у «всех включённых» — все выбираемые)."""
+    return by_priority(selectable if ALL in protocols else [p for p in protocols if p in selectable])
 
 
 @dataclass
@@ -618,40 +619,80 @@ def easy_protocols(cat: clientcat.Catalog) -> set[str]:
             and not cat.protocols[p].get("pseudo")}
 
 
+# Готовые варианты по режиму «кто ставит»: протоколы «Просто» и «Надёжно». Не подошли (протокола нет на сервере, не на
+# всех устройствах есть приложение) — подбор по общим правилам. Людям, которые ставят сами: VLESS XHTTP (приложения
+# из магазина) и пара с AmneziaWG; ИТ: Hysteria2 одним Hiddify на всех устройствах и пара с VLESS XHTTP.
+PRESET_PICKS = {"self": {"simple": ("vless-xhttp",), "reliable": ("vless-xhttp", "amneziawg")},
+                "admin": {"simple": ("hysteria2",), "reliable": ("hysteria2", "vless-xhttp")}}
+ADMIN_SIMPLE_APP = "hiddify"
+
+
+def recommended_preset(prs: list[dict[str, Any]]) -> str | None:
+    """Какой вариант советовать: без оговорок (clean); у обоих чисто — «Надёжно»; у обоих оговорки — никакой."""
+    clean = [p["id"] for p in prs if p.get("clean")]
+    return "reliable" if "reliable" in clean else (clean[0] if clean else None)
+
+
 def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
             devices: Any = MAIN_DEVICES) -> list[dict[str, Any]]:
-    """Готовые варианты первого экрана мастера. «simple» — один протокол и одно приложение на устройство
-    (сначала меньше иностранных магазинов и оговорок, затем меньше разных приложений); «reliable» — два
-    протокола, лучше TCP + UDP, не больше MAX_APPS на устройство. Поля: id, protocols, plan {платформа: [клиенты]},
-    apps (число разных), per_device (наибольшее число на устройстве), complete (все протоколы на всех
-    устройствах покрыты), foreign (приложений не из РФ-магазина), warns (протоколов «с оговоркой»). Протоколы людям, которые
-    ставят сами, — только из easy_protocols. Нет подходящего — варианта нет."""
+    """Готовые варианты первого экрана мастера. «simple» — один протокол и одно приложение на устройство; «reliable» —
+    два протокола (TCP + UDP), не больше MAX_APPS приложений на устройство; протоколы — PRESET_PICKS по режиму, нет
+    их — подбор: сначала меньше иностранных магазинов и оговорок, затем меньше разных приложений. Поля: id, protocols,
+    plan {платформа: [клиенты]}, apps (число разных), per_device (наибольшее число на устройстве), complete (все
+    протоколы на всех устройствах покрыты), foreign (приложений не из РФ-магазина), warns (протоколов «с оговоркой»),
+    clean (ничего из этого нет). Протоколы людям, которые ставят сами, — только из easy_protocols. Нет подходящего —
+    варианта нет."""
     devices = list(devices)
     easy = easy_protocols(cat)
     cands = [p for p in by_priority(available) if p in cat.protocols and not cat.protocols[p].get("pseudo")
              and p not in SHAKY and (mode == "admin" or p in easy)]
 
-    def make(pid: str, protos: list[str]) -> dict[str, Any]:
-        plan = suggest_set(cat, devices, protos, mode)
+    def make(pid: str, protos: list[str], plan: dict[str, list[str]] | None = None) -> dict[str, Any]:
+        plan = suggest_set(cat, devices, protos, mode) if plan is None else plan
         miss = sum(len(coverage(cat, plat, protos, ids)[1]) for plat, ids in plan.items())
-        return {"id": pid, "protocols": protos, "plan": plan, "apps": len({a for v in plan.values() for a in v}),
-                "per_device": max((len(v) for v in plan.values()), default=0),
-                "complete": set(plan) == set(devices) and miss == 0,
-                "foreign": sum(1 for plat, ids in plan.items() for i in ids if cat.no_ru_store(cat.client(i) or {}, plat)),
-                "warns": sum(len(caveats(cat, plat, protos, ids)) for plat, ids in plan.items())}
+        out = {"id": pid, "protocols": protos, "plan": plan, "apps": len({a for v in plan.values() for a in v}),
+               "per_device": max((len(v) for v in plan.values()), default=0),
+               "complete": set(plan) == set(devices) and miss == 0,
+               "foreign": sum(1 for plat, ids in plan.items() for i in ids if cat.no_ru_store(cat.client(i) or {}, plat)),
+               "warns": sum(len(caveats(cat, plat, protos, ids)) for plat, ids in plan.items())}
+        out["clean"] = out["complete"] and not out["foreign"] and not out["warns"]
+        return out
 
+    def one_app(proto: str, app: str) -> dict[str, list[str]] | None:
+        """Одно приложение на всех устройствах: умеет протокол (ok/warn), есть на каждом устройстве и берёт ссылки."""
+        c = cat.client(app)
+        ok = (c is not None and c.get("import") and c["protocols"].get(proto, {}).get("s") in ("ok", "warn")
+              and all(plat in c["platforms"] for plat in devices))
+        return {plat: [app] for plat in devices} if ok else None
+
+    pick = PRESET_PICKS.get(mode, PRESET_PICKS["self"])
     out: list[dict[str, Any]] = []
-    simple = [make("simple", [p]) for p in cands]
-    simple = [x for x in simple if x["complete"] and x["per_device"] == 1]
+    simple = None
+    if all(p in cands for p in pick["simple"]):
+        plan = one_app(pick["simple"][0], ADMIN_SIMPLE_APP) if mode == "admin" else None
+        pinned = make("simple", list(pick["simple"]), plan)
+        if pinned["complete"] and pinned["per_device"] == 1:
+            simple = pinned
+    if simple is None:
+        auto = [x for x in (make("simple", [p]) for p in cands) if x["complete"] and x["per_device"] == 1]
+        simple = min(auto, key=lambda x: (x["foreign"], x["warns"], x["apps"], cands.index(x["protocols"][0])),
+                     default=None)
     if simple:
-        out.append(min(simple, key=lambda x: (x["foreign"], x["warns"], x["apps"], cands.index(x["protocols"][0]))))
-    pairs = [make("reliable", list(by_priority(pair))) for pair in itertools.combinations(cands, 2)]
-    pairs = [x for x in pairs if x["plan"]]
-    if pairs:
-        out.append(min(pairs, key=lambda x: (not x["complete"], x["per_device"] > MAX_APPS,
+        out.append(simple)
+    reliable = None
+    if all(p in cands for p in pick["reliable"]):
+        pinned = make("reliable", list(by_priority(pick["reliable"])))
+        if pinned["complete"] and pinned["per_device"] <= MAX_APPS:
+            reliable = pinned
+    if reliable is None:
+        pairs = [x for x in (make("reliable", list(by_priority(pair))) for pair in itertools.combinations(cands, 2))
+                 if x["plan"]]
+        reliable = min(pairs, key=lambda x: (not x["complete"], x["per_device"] > MAX_APPS,
                                              TRANSPORT.get(x["protocols"][0]) == TRANSPORT.get(x["protocols"][1]),
                                              x["foreign"], x["warns"], x["apps"],
-                                             sum(cands.index(p) for p in x["protocols"]))))
+                                             sum(cands.index(p) for p in x["protocols"])), default=None)
+    if reliable:
+        out.append(reliable)
     return out
 
 

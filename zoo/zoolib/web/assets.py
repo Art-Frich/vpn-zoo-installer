@@ -187,6 +187,7 @@ footer .live.on::before { background: var(--ok); }
 footer .live.bad::before { background: var(--bad); }
 .proto .num-big { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.chips.inline { display: inline-flex; vertical-align: middle; }
 .chip { font-size: .78rem; padding: 1px 7px; border-radius: 999px; background: var(--surface-2);
   color: var(--text-2); border: 1px solid var(--border); white-space: nowrap; }
 

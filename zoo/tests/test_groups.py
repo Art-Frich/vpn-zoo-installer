@@ -1150,12 +1150,12 @@ class ObfsGroupTest(GroupsBase):
         self.assertEqual(only.offered(sel), ["hysteria2-obfs"])
         both = groups.Group("g", "G", ["hysteria2-obfs", "hysteria2", "amneziawg"])
         self.assertEqual(both.resolve(managed), ["hysteria2", "amneziawg"], "учётка модуля одна")
-        self.assertEqual(both.offered(sel), ["hysteria2", "amneziawg", "hysteria2-obfs"])
+        self.assertEqual(both.offered(sel), ["hysteria2", "amneziawg", "hysteria2-obfs"], "порядок раздачи — PRIORITY")
         plain = groups.Group("g", "G", ["hysteria2"])
         self.assertEqual((plain.resolve(managed), plain.offered(sel)), (["hysteria2"], ["hysteria2"]))
         everything = groups.Group("main", "Основная", ["*"])
         self.assertEqual(everything.resolve(managed), managed)
-        self.assertEqual(everything.offered(sel), sel)
+        self.assertEqual(everything.offered(sel), groups.by_priority(sel), "«все включённые» — тоже по PRIORITY")
         self.assertEqual(only.resolve(["amneziawg"]), [], "модуля нет среди включённых — учёток нет")
 
     def test_obfs_only_group_gives_hysteria2_credentials(self):
@@ -1428,23 +1428,54 @@ class ClientSetsTest(unittest.TestCase):
         self.assertEqual(groups.suggest_set(cat, ["android"], ["vless-xhttp", "hysteria2-obfs"], "self"),
                          {"android": ["happ", "hiddify"]}, "людям — только приложения из магазина")
 
-    def test_simple_preset_is_one_app_per_device(self):
+    def test_self_presets_are_xhttp_and_xhttp_plus_awg_from_stores(self):
         cat = clients.load()
         every = ["hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022"]
-        for mode in groups.INSTALL_MODES:
-            pr = {p["id"]: p for p in groups.presets(cat, every, mode)}
-            simple = pr["simple"]
-            self.assertEqual(simple["protocols"], ["vless-xhttp"], mode)
-            self.assertEqual(simple["plan"], {"android": ["happ"], "ios": ["incy"], "windows": ["v2rayn"]}, mode)
-            self.assertEqual((simple["apps"], simple["per_device"], simple["complete"], simple["foreign"], simple["warns"]),
-                             (3, 1, True, 0, 0), "на iPhone INCY из App Store РФ: Happ — иностранный, Hiddify с оговоркой")
-            rel = pr["reliable"]
-            self.assertEqual(rel["protocols"], ["vless-xhttp", "amneziawg"], "TCP + UDP, приложения из магазина РФ")
-            self.assertEqual(rel["plan"]["ios"], ["incy", "amneziawg"])
-            self.assertEqual(rel["foreign"], 0)
-            self.assertLessEqual(rel["per_device"], groups.MAX_APPS)
-            self.assertTrue(rel["complete"])
-            self.assertNotIn("ss2022", rel["protocols"], "SS-2022 терял данные в полевом тесте")
+        pr = {p["id"]: p for p in groups.presets(cat, every, "self")}
+        simple = pr["simple"]
+        self.assertEqual(simple["protocols"], ["vless-xhttp"])
+        self.assertEqual(simple["plan"], {"android": ["happ"], "ios": ["incy"], "windows": ["v2rayn"]})
+        self.assertEqual((simple["apps"], simple["per_device"], simple["complete"], simple["foreign"], simple["warns"]),
+                         (3, 1, True, 0, 0), "на iPhone INCY из App Store РФ: Happ — иностранный, Hiddify с оговоркой")
+        self.assertTrue(simple["clean"])
+        rel = pr["reliable"]
+        self.assertEqual(rel["protocols"], ["vless-xhttp", "amneziawg"], "TCP + UDP, приложения из магазина РФ")
+        self.assertEqual(rel["plan"]["ios"], ["incy", "amneziawg"])
+        self.assertEqual(rel["foreign"], 0)
+        self.assertLessEqual(rel["per_device"], groups.MAX_APPS, "не больше двух приложений на устройство")
+        self.assertTrue(rel["complete"])
+        self.assertFalse(rel["clean"], "AmneziaWG на iPhone — с оговоркой (импорт 3.1 не проверен)")
+        self.assertNotIn("ss2022", rel["protocols"], "SS-2022 терял данные в полевом тесте")
+        self.assertEqual(groups.recommended_preset(list(pr.values())), "simple", "советуется вариант без оговорок")
+
+    def test_admin_presets_are_hysteria2_with_hiddify_and_hysteria2_plus_xhttp(self):
+        cat = clients.load()
+        every = ["hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022"]
+        pr = {p["id"]: p for p in groups.presets(cat, every, "admin")}
+        simple = pr["simple"]
+        self.assertEqual(simple["protocols"], ["hysteria2"])
+        self.assertEqual(simple["plan"], {"android": ["hiddify"], "ios": ["hiddify"], "windows": ["hiddify"]},
+                         "Hiddify на всех устройствах")
+        self.assertEqual((simple["apps"], simple["per_device"], simple["complete"], simple["foreign"], simple["warns"]),
+                         (1, 1, True, 1, 3), "iPhone — иностранный Apple ID; Hysteria2 в Hiddify с оговоркой на каждом устройстве")
+        rel = pr["reliable"]
+        self.assertEqual(rel["protocols"], ["hysteria2", "vless-xhttp"], "UDP + TCP")
+        self.assertEqual(rel["plan"], {"android": ["happ"], "ios": ["happ"], "windows": ["v2rayn"]})
+        self.assertTrue(rel["complete"])
+        self.assertEqual((rel["per_device"], rel["foreign"], rel["warns"]), (1, 1, 0))
+        self.assertFalse(simple["clean"] or rel["clean"])
+        self.assertIsNone(groups.recommended_preset(list(pr.values())), "у обоих оговорки — не советуем ни один")
+
+    def test_preset_falls_back_to_automatic_pick_when_the_pinned_protocol_is_missing(self):
+        cat = clients.load()
+        for mode, protos in (("self", ["vless-reality", "hysteria2"]), ("admin", ["vless-xhttp", "amneziawg"])):
+            pr = groups.presets(cat, protos, mode)
+            self.assertTrue(pr, mode)
+            for p in pr:
+                self.assertTrue(set(p["protocols"]) <= set(protos), (mode, p["protocols"]))
+        self.assertEqual(groups.recommended_preset([]), None)
+        self.assertEqual(groups.recommended_preset([{"id": "simple", "clean": True}, {"id": "reliable", "clean": True}]),
+                         "reliable", "у обоих чисто — «Надёжно»")
 
     def test_self_presets_only_protocols_that_import_by_one_qr_from_a_store_app(self):
         easy = groups.easy_protocols(clients.load())
@@ -1459,13 +1490,13 @@ class ClientSetsTest(unittest.TestCase):
         admin = groups.presets(cat, ["tuic"], "admin")
         self.assertEqual([p["id"] for p in admin], ["simple"], "ИТ: TUIC через Hiddify; пары нет")
 
-    def test_simple_preset_takes_an_ok_client_not_a_shared_warn_one(self):
+    def test_admin_simple_preset_without_hiddify_on_every_device_takes_the_automatic_pick(self):
         cat = clients.load()
-        pr = groups.presets(cat, ["hysteria2"], "admin")
-        simple = next(p for p in pr if p["id"] == "simple")
-        self.assertEqual(simple["plan"], {"android": ["happ"], "ios": ["happ"], "windows": ["v2rayn"]})
-        self.assertEqual((simple["apps"], simple["warns"], simple["foreign"]), (2, 0, 1), "Hiddify для Hysteria2 — с оговоркой")
-        self.assertNotIn("hiddify", {a for ids in simple["plan"].values() for a in ids})
+        cat.client("hiddify")["platforms"].pop("windows")
+        simple = next(p for p in groups.presets(cat, ["hysteria2"], "admin") if p["id"] == "simple")
+        self.assertEqual(simple["plan"], {"android": ["happ"], "ios": ["happ"], "windows": ["v2rayn"]},
+                         "Hiddify нет на Windows — как раньше: приложения без оговорки")
+        self.assertEqual((simple["apps"], simple["warns"], simple["foreign"]), (2, 0, 1))
         no = {"protocols": {"hysteria2": {"s": "no"}}}
         cat = mini_catalog(happ=no, v2rayn=no, v2rayng=no, hysteria=no)
         simple = next(p for p in groups.presets(cat, ["hysteria2"], "admin") if p["id"] == "simple")

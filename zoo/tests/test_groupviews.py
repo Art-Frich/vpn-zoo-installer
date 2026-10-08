@@ -1129,9 +1129,15 @@ class StartStepTest(GroupWebBase):
         for name in ("Просто", "Надёжно", "Свой набор"):
             self.assertIn(f"<strong>{name}</strong>", body)
         self.assertEqual(len(re.findall(r'name="go" value="(?:simple|reliable|custom)"', body)), 3)
-        self.assertEqual(len(re.findall(r'class="btn primary">Выбрать</button>', body)), 1, "один primary — у «Надёжно»")
-        self.assertRegex(body, r'<strong>Надёжно</strong><span class="chip info">рекомендуем</span>')
-        self.assertRegex(body, r'name="go" value="reliable" class="btn primary"')
+        self.assertEqual(len(re.findall(r'class="btn primary">Выбрать</button>', body)), 1, "один primary — у варианта без оговорок")
+        self.assertRegex(body, r'<strong>Просто</strong><span class="chip info">рекомендуем</span>')
+        self.assertRegex(body, r'name="go" value="simple" class="btn primary"')
+        self.assertRegex(body, r'name="go" value="reliable" class="btn"')
+        simple, reliable = (re.search(rf'<strong>{n}</strong>(.*?)name="go" value="', body, re.S).group(1)
+                            for n in ("Просто", "Надёжно"))
+        self.assertNotIn("с оговорками", simple, "«рекомендуем» и «с оговорками» на одном варианте не живут")
+        self.assertIn("с оговорками", reliable, "AmneziaWG на iPhone: импорт 3.1 не проверен")
+        self.assertNotIn("рекомендуем", reliable)
         text = text_of(body)
         self.assertIn("Happ — Android · INCY — iPhone · v2rayN — Windows", text, "приложения — одной строкой одного вида")
         self.assertNotIn("приложение на устройство", text)
@@ -1359,10 +1365,11 @@ class DesignRulesTest(GroupWebBase):
     def test_via_vpn_line_in_the_wizard(self):
         _, body = self.wiz(2, name="X", proto=["vless-reality"], devs="1", dev=["android", "windows"], set__android="happ",
                            set__windows="v2rayn")
-        line = re.search(r'<p class="hint" title="([^"]*)">(Через VPN[^<]*)', body)
+        line = re.search(r'<p class="hint">(Через VPN[^<]*)', body)
         self.assertTrue(line, "одна строка вместо таблицы")
-        self.assertEqual(line.group(1), "Android 2 · Windows 2", "платформы с заглавной")
-        self.assertEqual(line.group(2), "Через VPN: общий список (Brave, Telegram) · изменить в группе")
+        self.assertEqual(line.group(1), "Через VPN: общий список (Brave, Telegram) · Android 2 · Windows 2 · "
+                                        "изменить — в настройках группы после создания",
+                         "платформы с заглавной, числа видны сразу (не в подсказке); группы ещё нет — ссылаться некуда")
         self.assertNotIn("<table", body)
         # Hiddify на Windows списка не умеет: через VPN идёт всё
         _, body = self.wiz(2, name="X", proto=["hysteria2"], devs="1", dev=["windows"], set__windows="hiddify")
@@ -1377,6 +1384,291 @@ class DesignRulesTest(GroupWebBase):
         _, body = self.wiz(2, name="X", proto=["vless-reality"], set__android="happ")
         self.assertNotIn("Перевести уже существующих", body, "только owner: переводить некого")
         self.assertNotIn('name="existing"', body)
+
+
+class LeftoversTest(GroupWebBase):
+    """Остатки дизайн-ревью: быстрый QR по набору группы, имена вместо логинов, пресеты, кнопки и сводка раздачи."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.add_protocol("vless-xhttp")
+
+    def made(self, **kw):
+        base = dict(name="Офис", proto=["hysteria2", "vless-xhttp"], devs="1", dev=["android", "ios", "windows"],
+                    set__android="happ", set__ios="happ", set__windows="v2rayn", users_new="Иван Петров; бух\nМария",
+                    allow_mode="common", confirm="1")
+        base.update(kw)
+        resp, body = self.wiz(3, go="create", **base)
+        self.assertEqual(resp.status, 303, text_of(body)[:300])
+        return header(resp, "Location")[0]
+
+    def quick(self, body):
+        start = body.index('<div class="quick">')
+        end = body.find('<div class="ptiles"', start)
+        return body[start:end if end > 0 else body.index("</details>", start)]
+
+    # --- быстрый старт на странице человека ---
+
+    def test_quick_start_caption_and_link_come_from_the_group_app_set(self):
+        groups.update("main", protocols=["amneziawg", "hysteria2"], clients={"android": ["happ"]})
+        users.add_user("masha", group="main")
+        _, body = self.c.get("/users/masha")
+        quick = self.quick(body)
+        self.assertIn("Android: Happ → «+» → «Сканировать QR»", quick, "подпись — приложение набора, а не вшитый Happ")
+        self.assertIn('title="Hysteria2"', quick, "под Happ — ссылка, которую он открывает (не AmneziaWG), по-человечески")
+        self.assertNotIn('title="amneziawg"', quick)
+        self.assertNotIn("AmneziaWG", quick)
+        groups.update("main", clients={"android": ["amneziawg"]})
+        _, body = self.c.get("/users/masha")
+        quick = self.quick(body)
+        self.assertIn("Android: AmneziaWG → «+» → «Сканировать QR»", quick)
+        self.assertIn('title="AmneziaWG"', quick)
+
+    def test_quick_start_prefers_phone_over_computer_and_skips_apps_without_qr(self):
+        groups.update("main", protocols=["hysteria2"], clients={"windows": ["v2rayn"], "ios": ["happ"]})
+        users.add_user("masha", group="main")
+        _, body = self.c.get("/users/masha")
+        quick = self.quick(body)
+        self.assertIn("iPhone: Happ", quick, "v2rayN QR не берёт, Windows — не телефон")
+        self.assertNotIn("v2rayN", quick)
+        groups.update("main", clients={"windows": ["v2rayn"]})
+        _, body = self.c.get("/users/masha")
+        quick = self.quick(body)
+        self.assertNotIn('<img class="qr"', quick, "нет приложения с QR — картинки нет")
+        self.assertIn("Скопировать всё", quick)
+
+    def test_quick_start_without_apps_says_so_and_links_to_settings(self):
+        groups.update("main", clients={})
+        users.add_user("masha", group="main")
+        _, body = self.c.get("/users/masha")
+        quick = self.quick(body)
+        self.assertIn("Приложения не выбраны", quick)
+        self.assertIn('href="/groups/main#settings"', quick)
+        self.assertNotIn('<img class="qr"', quick)
+        self.assertNotIn("Happ", quick, "вшитого Happ нет")
+
+    # --- имена вместо логинов ---
+
+    def test_users_list_shows_display_name_first_sorted_by_it(self):
+        self.made(users_new="Яков Бом\nАнна Белая; бух\nvasya")
+        _, body = self.c.get("/users")
+        rows = re.findall(r'<a href="/users/([^"]+)"><strong>([^<]+)</strong></a>(?:[^<]*<span class="badge[^>]*>[^<]*</span>)?'
+                          r'(?:<span class="sub">([^<]*)</span>)?', body)
+        by = {n: (label, sub) for n, label, sub in rows}
+        self.assertEqual(by["anna-belaya"], ("Анна Белая", "anna-belaya · бух"), "имя жирным, логин мелко, заметка после него")
+        self.assertEqual(by["vasya"], ("vasya", ""), "нет имени — логин")
+        order = [label for n, label, _ in rows if n in ("anna-belaya", "yakov-bom", "vasya")]
+        self.assertEqual(order, ["vasya", "Анна Белая", "Яков Бом"],
+                         "сортировка по имени (без регистра), а не по логину: vasya < Анна < Яков")
+        _, found = self.c.get("/users?q=anna-bel")
+        self.assertIn("Анна Белая", found, "по логину тоже ищется")
+
+    def test_users_add_form_has_name_and_login_and_titles_not_ids(self):
+        _, body = self.c.get("/users")
+        form = body[body.index('<form method="post" action="/users"'):]
+        form = form[:form.index("</form>")]
+        self.assertRegex(form, r'<label for="display">Имя</label><input type="text" name="display" id="display"[^>]* required')
+        self.assertRegex(form, r'<label for="name">Логин</label><input type="text" name="name" id="name"(?![^>]*required)')
+        self.assertIn('placeholder="из имени"', form)
+        for pid, title in (("vless-reality", "VLESS Vision"), ("hysteria2", "Hysteria2"), ("amneziawg", "AmneziaWG")):
+            self.assertIn(f'value="{pid}"', form)
+            self.assertIn(f">{title}</span>", form, "подпись — название протокола, не id")
+        self.assertNotIn(">vless-reality<", form)
+
+    def test_users_add_login_from_name_by_translit_like_the_wizard(self):
+        resp, _ = self.c.post("/users", {"display": "Иван Петров", "name": "", "note": "бух"})
+        self.assertEqual(header(resp, "Location"), ["/users/ivan-petrov"])
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual((reg["ivan-petrov"]["display"], reg["ivan-petrov"]["note"]), ("Иван Петров", "бух"))
+        resp, _ = self.c.post("/users", {"display": "Иван Петров", "name": ""})
+        self.assertEqual(header(resp, "Location"), ["/users/ivan-petrov-2"], "занято — номер, как в списке людей")
+        resp, _ = self.c.post("/users", {"display": "Мария", "name": "  Masha "})
+        self.assertEqual(header(resp, "Location"), ["/users/masha"], "логин задан — берётся он, регистр не важен")
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual(reg["masha"]["display"], "Мария")
+        resp, _ = self.c.post("/users", {"display": "Kolya", "name": ""})
+        self.assertEqual(header(resp, "Location"), ["/users/kolya"])
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertEqual(reg["kolya"]["display"], "Kolya", "имя с заглавной — имя, логин — строчными")
+        resp, _ = self.c.post("/users", {"display": "petya", "name": ""})
+        reg = {u["name"]: u for u in self.env.users_json()["users"]}
+        self.assertNotIn("display", reg["petya"], "имя совпало с логином — отдельно не хранится")
+        resp, _ = self.c.post("/users", {"name": "lena"})
+        self.assertEqual(header(resp, "Location"), ["/users/lena"], "прежний вызов только с логином работает")
+        for bad in ({"display": "", "name": ""}, {"display": "!!!", "name": ""}):
+            resp, _ = self.c.post("/users", bad)
+            self.assertEqual(header(resp, "Location"), ["/users"], bad)
+            _, page = self.c.get("/users")
+            self.assertRegex(page, "Введите имя или логин|нет ни букв, ни цифр")
+
+    def test_done_flash_lists_display_names_and_no_logins(self):
+        loc = self.made()
+        _, body = self.c.get(loc)
+        self.assertIn("создано: Иван Петров, Мария", text_of(body))
+        self.assertNotIn("создано: ivan-petrov", text_of(body))
+        resp, _ = self.post("/groups/g1/move", {"user": ["ivan-petrov"], "act": ["remove"]})
+        _, page = self.c.get("/groups/main")
+        self.assertIn("переведено: Иван Петров", text_of(page))
+
+    # --- «Раздача» ---
+
+    def test_done_has_one_primary_button_and_no_empty_traffic_chip(self):
+        loc = self.made(mode="admin")
+        _, body = self.c.get(loc)
+        main = body[body.index("<main"):]
+        self.assertEqual(len(re.findall(r'class="[^"]*\bprimary\b', main)), 1, "главная кнопка одна — «Карточки…»")
+        self.assertIn('class="btn primary" data-swap>Карточки (печать, ZIP, CSV)</a>', main)
+        self.assertIn(">Скачать на сервер</button>", main)
+        self.assertNotIn("подключения по трафику не видны", main, "только что созданной группе рано про трафик")
+        self.assertNotIn("подключились 0 из", main)
+
+    def test_done_summary_labels_match_the_wizard_and_link_to_settings(self):
+        loc = self.made(mode="admin")
+        _, body = self.c.get(loc)
+        card = body[body.index("Группа «Офис» готова"):body.index("Раздать доступы")]
+        text = text_of(card)
+        for label in ("Протоколы:", "Приложения:", "Через VPN:", "Ставит:"):
+            self.assertIn(label, text, label)
+        self.assertIn("Ставит: ИТ", text)
+        self.assertIn("Через VPN: общий список (Android 2 · Windows 2)", text, "числа видны сразу")
+        self.assertRegex(card, r'<a href="/groups/g1#settings" data-swap>изменить →</a>')
+        self.assertIn("Hysteria2", text)
+        self.assertNotIn("ставит ИТ", text)
+        loc = self.made(name="Дом", mode="self", users_new="Петя")
+        _, body = self.c.get(loc)
+        self.assertIn("Ставит: сами", text_of(body))
+
+    # --- кнопки и предпросмотр ---
+
+    def test_preview_actions_are_a_sticky_bar_inside_the_form_with_the_table(self):
+        users_new = "\n".join(f"Человек {i}" for i in range(33))
+        resp, body = self.wiz(3, go="create", name="Все", proto=["vless-reality"], devs="1", dev=["android"],
+                              set__android="happ", users_new=users_new, allow_mode="common")
+        self.assertEqual(resp.status, 200)
+        form = body[body.index('<form method="post" action="/connect/new"'):]
+        form = form[:form.index("</form>")]
+        self.assertIn('<table class="preview', form, "таблица внутри формы: прилипание ограничено формой, а не только её панелью")
+        self.assertEqual(form.count('class="wiz-nav"'), 1)
+        self.assertGreater(form.index('class="wiz-nav"'), form.rindex("</table>"), "панель — после последней строки")
+        self.assertIn(">Создать группу и 33 чел.</button>", form)
+        self.assertIn(">← Изменить список</button>", form)
+        self.assertRegex(form[form.index('class="wiz-nav"'):], r'class="btn primary">Создать группу')
+
+    def test_buttons_count_moved_existing_users_too(self):
+        users.add_user("masha")
+        resp, body = self.wiz(3, go="create", name="Все", proto=["vless-reality"], devs="1", dev=["android"],
+                              set__android="happ", users_new="Иван\nМария\nОльга", existing=["owner", "masha"],
+                              allow_mode="common")
+        self.assertEqual(resp.status, 200, text_of(body)[:300])
+        self.assertIn(">Создать группу: 3 новых + 2 перевести</button>", body)
+        self.assertNotIn("Создать группу и 3 чел.", body)
+        resp, body = self.post("/groups/main/members", {"users_new": ["Петя"], "existing": ["owner"]})
+        self.assertIn(">Добавить: 1 новый + 1 перевести</button>", body)
+        form = body[body.index('<form method="post" action="/groups/main/members"'):]
+        form = form[:form.index("</form>")]
+        self.assertIn('<table class="preview', form)
+        self.assertIn('class="wiz-nav"', form)
+        self.assertNotIn('class="actions"', form, "на группе тоже липкая панель, а не .actions")
+
+    # --- пресеты ---
+
+    def test_self_start_recommends_the_clean_variant_only(self):
+        _, body = self.c.get("/connect/new")
+        simple, reliable = (re.search(rf'<strong>{n}</strong>(.*?)name="go" value="', body, re.S).group(1)
+                            for n in ("Просто", "Надёжно"))
+        self.assertIn("рекомендуем", simple)
+        self.assertNotIn("с оговорками", simple)
+        self.assertNotIn("рекомендуем", reliable)
+        self.assertIn("VLESS XHTTP", simple)
+        self.assertNotIn("Hysteria2", simple)
+        self.assertIn("VLESS XHTTP", reliable)
+        self.assertIn("AmneziaWG", reliable)
+
+    def test_admin_start_is_hysteria2_with_hiddify_and_recommends_nothing(self):
+        _, body = self.c.get("/connect/new?mode=admin")
+        text = text_of(body)
+        simple = text[text.index("Просто"):text.index("Надёжно")]
+        self.assertIn("Hysteria2", simple)
+        self.assertIn("Hiddify — Android, iPhone, Windows", simple, "одно приложение на всех устройствах")
+        self.assertIn("iPhone: нужен иностранный Apple ID", simple)
+        self.assertIn("с оговорками", simple)
+        reliable = text[text.index("Надёжно"):text.index("Свой набор")]
+        self.assertIn("Hysteria2", reliable)
+        self.assertIn("VLESS XHTTP", reliable)
+        self.assertIn("с оговорками", reliable, "iPhone: иностранный Apple ID и у этого варианта")
+        self.assertNotIn("рекомендуем", text, "у обоих оговорки — не советуем ни один")
+        self.assertEqual(len(re.findall(r'class="btn primary">Выбрать</button>', body)), 0)
+        self.assertEqual(len(re.findall(r'name="go" value="(?:simple|reliable|custom)" class="btn"', body)), 3)
+
+    def test_admin_simple_carries_hiddify_to_the_apps_step(self):
+        resp, body = self.wiz(0, go="simple", mode="admin")
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(re.findall(r'type="hidden" name="proto" value="([^"]+)"', body), ["hysteria2"])
+        for plat in ("android", "ios", "windows"):
+            self.assertEqual(self.checked(body, plat), ["hiddify"], plat)
+        heads = self.heads(body)
+        self.assertIn("нужен иностранный Apple ID", heads["iPhone"], "у ИТ на iPhone — Apple ID, а не «нет в App Store РФ»")
+        self.assertNotIn("нет в App Store РФ", heads["iPhone"])
+        self.assertEqual(body.count("iPhone: приложение ставится только из App Store."), 1, "на шаге «Приложения» — один раз")
+
+    def test_ios_note_once_per_screen_on_group_page(self):
+        self.made(mode="admin")
+        _, page = self.c.get("/groups/g1")
+        self.assertEqual(page.count("iPhone: приложение ставится только из App Store."), 1,
+                         "блок «Дистрибутивы», не строка устройства")
+        self.assertEqual(page.count("Как установить (для ИТ)"), 1)
+        card = page[page.index("<h3>Дистрибутивы</h3>"):]
+        self.assertNotIn("iPhone —", card[:card.index("</section>")], "в памятке для ИТ про iPhone ничего нет")
+
+    # --- инструкция ИТ на iPhone ---
+
+    def test_admin_iphone_text_says_foreign_apple_id_instead_of_installed(self):
+        self.made(mode="admin")
+        _, page = self.c.get("/users/ivan-petrov")
+        ios = self.msg(page, "ios")
+        self.assertTrue(ios.startswith("Иван Петров. Установите «Happ» с иностранного Apple ID."), ios)
+        self.assertNotIn("VPN уже установлен", ios)
+        android = self.msg(page, "android")
+        self.assertTrue(android.startswith("Иван Петров, VPN уже установлен. Включите его в «Happ»."), android)
+        windows = self.msg(page, "windows")
+        self.assertIn("VPN уже установлен", windows)
+        self.assertIn("нужен иностранный Apple ID", page[page.index('data-pp="ios"'):page.index('id="msg-ios"')])
+        _, cards = self.c.get("/handoff?group=g1")
+        self.assertIn("нужен иностранный Apple ID", cards)
+        self.assertNotIn("нет в App Store РФ", cards)
+
+    def test_self_iphone_text_keeps_the_install_step(self):
+        self.made(mode="self", proto=["vless-xhttp"], set__ios="incy", set__android="happ")
+        _, page = self.c.get("/users/ivan-petrov")
+        ios = self.msg(page, "ios")
+        self.assertIn("Установите «INCY»", ios)
+        self.assertNotIn("Apple ID", ios)
+
+
+class ClientsAndListsTest(GroupWebBase):
+    def test_clients_page_uses_the_wizard_words(self):
+        _, body = self.c.get("/clients")
+        self.assertNotIn("✓!", body)
+        self.assertNotIn("! с оговоркой", body)
+        self.assertNotIn("Почему ✕ и !", body)
+        self.assertIn("с оговоркой", body)
+        self.assertIn(">нет в App Store РФ</span>", body)
+        for gone in ("SFA", "SFI"):
+            self.assertNotIn(gone, body, "в заметках — sing-box")
+        self.assertRegex(body, r'<a href="/connect/new" data-swap>Что ставить группе')
+
+    def test_groups_list_orders_protocols_by_priority(self):
+        self.env.add_protocol("vless-xhttp")
+        groups.update("main", protocols=["vless-reality", "amneziawg", "hysteria2", "vless-xhttp"])
+        resp, body = self.c.get("/groups")
+        row = body[body.index('href="/groups/main"'):]
+        names = re.findall(r'<span class="chip">([^<]+)</span>', row[:row.index("</tr>")])
+        self.assertEqual(names[:4], ["Hysteria2", "VLESS XHTTP", "AmneziaWG", "VLESS Vision"])
+        groups.update("main", protocols=["*"])
+        _, body = self.c.get("/groups")
+        row = body[body.index('href="/groups/main"'):]
+        names = re.findall(r'<span class="chip">([^<]+)</span>', row[:row.index("</tr>")])
+        self.assertEqual(names[:4], ["Hysteria2", "VLESS XHTTP", "AmneziaWG", "VLESS Vision"], "«все включённые» — тоже по PRIORITY")
 
 
 class ProtocolRowsTest(GroupWebBase):

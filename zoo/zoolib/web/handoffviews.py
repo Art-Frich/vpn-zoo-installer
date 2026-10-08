@@ -149,7 +149,7 @@ class CardKey:
 class CardApp:
     name: str
     version: str | None
-    foreign: bool
+    foreign: str   # подпись про магазин («нет в App Store РФ», у ИТ — «нужен иностранный Apple ID») или пусто
     stores: list[dict[str, Any]]
     keys: list[CardKey]
 
@@ -199,7 +199,7 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
                  links: list[protolib.Link]) -> list[Block]:
     """Платформы с одинаковыми приложениями и ключами сворачиваются в один блок («Android, iPhone — Happ»)."""
     prefer, order = clientviews.group_prefs(g)
-    admin = bool(g and g.install_mode == "admin")   # ставит ИТ: человеку магазины и «нет в App Store» не показываются
+    admin = bool(g and g.install_mode == "admin")   # ставит ИТ: человеку магазины не показываются, а iPhone — «нужен иностранный Apple ID»
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
         pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
@@ -207,7 +207,7 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
         if pack is None:
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
-        apps = [CardApp(s.client["name"], s.version, not admin and ctx.cat.no_ru_store(s.client, plat),
+        apps = [CardApp(s.client["name"], s.version, clientviews.foreign_note(ctx.cat, s.client, plat, admin),
                         [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
                 for s, ks in zip(pack.sections, keys)]
         steps = _steps(ctx, g, plat, pack, user.label)
@@ -288,7 +288,7 @@ def _key_html(k: CardKey, name: str) -> Markup:
 
 def _block_html(b: Block, name: str) -> Markup:
     apps = [t("div", t("strong", a.name), " " + a.version if a.version else None,
-              t("span", " нет в App Store РФ", class_="chip warn", title=clientviews.FOREIGN_STORE) if a.foreign else None,
+              t("span", " " + a.foreign, class_="chip warn", title=clientviews.FOREIGN_STORE) if a.foreign else None,
               t("div", [t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
                           rel="noopener noreferrer", class_="chip info noprint") for ln in a.stores],
                 class_="chips") if a.stores else None,

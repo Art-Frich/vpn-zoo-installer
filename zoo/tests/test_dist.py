@@ -589,7 +589,8 @@ class DistWebTest(AppTestBase):
         self.assertNotIn("sha256</th>", card)
         self.assertIn("120 Б", card)
         self.assertIn("4.1.1", card)
-        self.assertIn('class="btn small primary">Скачать', card)
+        self.assertIn('class="btn small">Скачать', card)
+        self.assertNotIn("primary", card, "главная кнопка экрана — не «Скачать»")
         self.assertIn("Обновить", card)
         # Windows: подходящего файла в релизе не оказалось → ссылка на GitHub, не выдуманный файл
         self.assertIn("не скачан: в релизе нет подходящего файла", card)
@@ -600,8 +601,8 @@ class DistWebTest(AppTestBase):
 
     def test_ios_note_is_one_line_with_collapsed_details_and_no_untested_claims(self):
         _, body = self.c.get(f"/groups/{self.gid}")
-        self.assertEqual(body.count("iPhone: приложение ставится только из App Store."), 2,
-                         "строка в блоке дистрибутивов и в строке устройства")
+        self.assertEqual(body.count("iPhone: приложение ставится только из App Store."), 1,
+                         "один раз на экран: в блоке дистрибутивов, а в строке устройства её уже нет")
         self.assertRegex(body, r"<details class=\"more inline\"><summary>варианты</summary>")
         self.assertIn("Apple Business Manager и MDM", body)
         self.assertIn("мы это не проверяли", body)
@@ -639,7 +640,9 @@ class DistWebTest(AppTestBase):
             self.assertNotIn(gone, card, "пока ничего не скачано — пустых столбцов нет")
         self.assertIn("Как установить (для ИТ)", card)
         self.assertIn("Android — «Hiddify»: скачайте файл «.apk»", card)
-        self.assertIn("iPhone — «Happ»: из App Store", card)
+        self.assertNotIn("iPhone —", card, "про iPhone — одна строка под памяткой, в памятке его нет")
+        self.assertEqual(card.count("App Store."), 1)
+        self.assertNotIn("primary", card, "«Скачать на сервер» — не главная кнопка")
 
     def test_page_is_light_without_network_and_csp_clean(self):
         resp, body = self.c.get(f"/groups/{self.gid}")

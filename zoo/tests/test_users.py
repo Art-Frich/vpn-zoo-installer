@@ -372,5 +372,18 @@ class DisplayNameTest(unittest.TestCase):
         self.assertNotIn("display", plain.to_dict(), "прежние записи файл не меняют")
 
 
+@needs_bash
+class AddUserDisplayTest(unittest.TestCase):
+    def test_add_user_stores_display_unless_it_equals_the_login(self):
+        with ZooEnv() as env:
+            env.add_protocol("hysteria2")
+            users.bootstrap()
+            users.add_user("ivan-petrov", display="Иван Петров")
+            users.add_user("masha")
+            reg = {u["name"]: u for u in env.users_json()["users"]}
+            self.assertEqual(reg["ivan-petrov"]["display"], "Иван Петров")
+            self.assertNotIn("display", reg["masha"])
+
+
 if __name__ == "__main__":
     unittest.main()

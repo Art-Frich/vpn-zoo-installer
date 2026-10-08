@@ -1430,10 +1430,10 @@ class TilesTest(unittest.TestCase):
                  protolib.Link("/etc/clients/masha/amneziawg-android.conf", "", "amneziawg", "file")]
         out = str(connect_tiles(links, [], "masha"))
         tabs = re.findall(r'<button type="button" data-tab="dlg-0-v(\d)"[^>]*>([^<]*)</button>', out)
-        self.assertEqual([t_[1] for t_ in tabs], ["Android", "Компьютер, iPhone", "Ключ AmneziaVPN"])
+        self.assertEqual([t_[1] for t_ in tabs], ["Файл Android", "Файл Windows, iPhone", "Ключ AmneziaVPN"])
         first = re.search(r'<div class="variant" id="dlg-0-v0">(.*?)</div>', out, re.S).group(1)
         self.assertIn("/qr/2", first, "первым — android.conf (третья ссылка)")
-        self.assertIn('class="tab active">Android', out)
+        self.assertIn('class="tab active">Файл Android', out)
         self.assertNotIn(' s0"', out)
 
     def test_variant_names_and_titles(self):
@@ -1444,14 +1444,38 @@ class TilesTest(unittest.TestCase):
                  protolib.Link("hysteria2://a@h:20000,20100?sni=x", "", "hysteria2")]
         out = str(connect_tiles(links, [], "masha"))
         # Salamander — свой протокол группы: своя плитка, обычная Hysteria2 и hop остаются вкладками первой
-        self.assertIn(">Обычная</button>", out)
-        self.assertIn(">Запасная 2</button>", out)
-        self.assertNotIn(">Запасная 3</button>", out)
+        self.assertIn(">Ссылка</button>", out)
+        self.assertIn(">Ссылка 2</button>", out)
+        self.assertNotIn(">Ссылка 3</button>", out)
+        for gone in ("Обычная", "Запасная", "Основные", "Запасные"):
+            self.assertNotIn(gone, out, "слова из других экранов: «Ссылка», без «Основные/Запасные»")
         self.assertIn('title="Port hopping: порт меняется"', out)
         self.assertEqual(out.count('class="ptile '), 2)
         self.assertIn('ptile-name">Hysteria2 + Salamander<', out)
         self.assertNotIn("Для:", out)
         self.assertNotIn("нужен Xray-клиент", out)
+
+    def test_tiles_are_one_list_by_priority_and_v2rayn_rules_file_is_not_a_protocol(self):
+        from zoolib import clients, protolib
+        from zoolib.web import clientviews
+        from zoolib.web.userviews import connect_tiles
+        links = [protolib.Link("vless://a@h:443?type=tcp", "", "vless-reality"),
+                 protolib.Link("/etc/clients/masha/v2rayn-routing.json", "", "allowlist", "file"),
+                 protolib.Link("hysteria2://a@h:443?sni=x", "", "hysteria2"),
+                 protolib.Link("vless://a@h:443?type=xhttp", "", "vless-xhttp")]
+        out = str(connect_tiles(links, [], "masha"))
+        names = re.findall(r'class="ptile-name">([^<]*)<', out)
+        self.assertEqual(names, ["Hysteria2", "VLESS XHTTP", "VLESS Vision", "Правила маршрутизации v2rayN"],
+                         "протоколы по PRIORITY, файл правил — последним")
+        protocols, files = out.split('<h3 class="sub-h">Файлы</h3>')
+        self.assertIn("VLESS Vision", protocols)
+        self.assertNotIn("Правила маршрутизации", protocols, "файл правил не в списке протоколов")
+        self.assertIn("Правила маршрутизации v2rayN", files)
+        # импорт файла — тем же текстом, что в инструкции
+        text = clientviews.rules_text(clients.load())
+        self.assertIn("«Добавить набор правил» → «Импорт правил из файла»", text)
+        self.assertIn(text, out)
+        self.assertNotIn("Маршрутизация → Импорт из файла", out)
 
     def test_show_filter_keeps_only_selected_variants(self):
         from zoolib import protolib

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .. import allowlist, clients, groups, manifests, paths, protolib, qr, traffic, users
+from .. import allowlist, clients, groups, manifests, paths, people, protolib, qr, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
 from ..probe import rank
@@ -123,8 +123,8 @@ def _proto_chip(u: users.User, managed: list[str], gs: groups.Groups) -> Markup:
 def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tbl.Spec:
     def name_cell(r: dict[str, Any]) -> Markup:
         u = r["user"]
-        sub = " · ".join(x for x in (u.display, u.note) if x)
-        return t("span", t("a", t("strong", u.name), href=f"/users/{u.name}"), " " if not u.enabled else None,
+        sub = " · ".join(x for x in (u.name if u.display else "", u.note) if x)
+        return t("span", t("a", t("strong", u.label), href=f"/users/{u.name}"), " " if not u.enabled else None,
                  badge("откл.", "muted") if not u.enabled else None,
                  t("span", sub, class_="sub") if sub else None)
 
@@ -135,8 +135,9 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
                            confirm=_disable_confirm(u.name) if u.enabled else None)
 
     cols = [
-        tbl.Col("name", "пользователь", cell=name_cell, value=lambda r: r["name"], find=lambda r: f"{r['user'].display} {r['user'].note}",
-                sort=True, search=True),
+        tbl.Col("name", "пользователь", cell=name_cell, value=lambda r: r["user"].label,
+                find=lambda r: f"{r['name']} {r['user'].note}", sort=True, search=True),
+        tbl.Col("login", "логин", value=lambda r: r["name"], hidden=True),
         tbl.Col("access", "доступ", sort=True, chip=True, hidden=True),
         tbl.Col("group", "группа", cell=lambda r: _group_cell(gs, r["user"]), sort=True, chip=True),
         tbl.Col("protos", "протоколы", cell=lambda r: _proto_chip(r["user"], managed, gs),
@@ -189,15 +190,21 @@ def users_list(app: "App", req: "Request") -> "Response":
     first = gs.get(groups.MAIN_ID) or (gs.groups[0] if gs.groups else None)
     variants = users.variant_modules()
     preset = set(first.resolve(managed, variants)) if first else set(managed)
-    protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=p in preset), p) for p in managed]
+    protos = [t("label", t("input", type="checkbox", name="proto", value=p, checked=p in preset),
+                t("span", manifests.proto_title(p), title=manifests.proto_full(p) or None)) for p in managed]
     add_form = t("form", csrf_input(csrf),
                  t("div",
-                   t("div", t("label", "Имя", for_="name"),
-                     t("input", type="text", name="name", id="name", required=True, maxlength="32",
-                       pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,31}", placeholder="masha", autocomplete="off",
+                   t("div", t("label", "Имя", for_="display"),
+                     t("input", type="text", name="display", id="display", required=True, maxlength="100",
+                       placeholder="Иван Петров", autocomplete="off",
+                       title="Как к человеку обращаться: любые буквы. Креды создаются во всех отмеченных "
+                             "протоколах; при ошибке в одном изменения откатываются."), class_="field"),
+                   t("div", t("label", "Логин", for_="name"),
+                     t("input", type="text", name="name", id="name", maxlength="32",
+                       pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{0,31}", placeholder="из имени", autocomplete="off",
                        autocapitalize="none", spellcheck="false",
-                       title="Латиница, цифры, «-» и «_»; регистр не важен. Пользователь получает креды во всех "
-                             "отмеченных протоколах; при ошибке в одном изменения откатываются."), class_="field"),
+                       title="Латиница, цифры, «-» и «_»; регистр не важен. Пусто — получится из имени."),
+                     class_="field"),
                    t("div", t("label", "Заметка", for_="note"),
                      t("input", type="text", name="note", id="note", maxlength="200", placeholder="кто это"),
                      class_="field grow"),
@@ -269,8 +276,15 @@ def verify_card() -> tuple[Markup, bool]:
 
 
 def user_add(app: "App", req: "Request") -> "Response":
+    display = re.sub(r"\s+", " ", req.form.get("display", "")).strip()[:100]
     name = req.form.get("name", "").strip().lower()
     note = req.form.get("note", "").strip()[:200]
+    if not name:   # логин из имени, как в списке людей: транслит, при совпадении — номер
+        name, _ = people.login_for(display, set(users.list_users().names()))
+        if not name:
+            req.session.flash("bad", "Введите имя или логин" if not display
+                              else "В имени нет ни букв, ни цифр: введите логин")
+            return _redirect("/users")
     chosen = req.multi.get("proto", [])
     managed, _ = users.managed_protocols()
     group = req.form.get("group") or None
@@ -290,7 +304,8 @@ def user_add(app: "App", req: "Request") -> "Response":
     if chosen and not picked:
         req.session.flash("bad", "Не выбран ни один протокол")
         return _redirect("/users")
-    rep = _user_op(req, users.add_user, name, note=note, only=only, group=group)
+    rep = _user_op(req, users.add_user, name, note=note, only=only, group=group,
+                   display=display if display != name else "")
     app.invalidate("status")
     app.invalidate_links(name)
     return _redirect(f"/users/{name}" if rep and rep.ok else "/users")
@@ -544,10 +559,11 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
     grp = _group_of(user)
     show = link_filter(user, grp)
-    connect = clientviews.connect_card(links, name, clientviews.Ctx.load(), grp, label=user.label)
+    ctx = clientviews.Ctx.load()
+    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label)
     tiles = connect_tiles(links, manifests.load_all()[0], name, show)
     # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
-    advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show), tiles,
+    advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show, ctx, grp), tiles,
                  t("p", "Ссылки и QR — ключи доступа: показывайте только самому пользователю.", class_="hint"),
                  class_="card more", open=connect is None or None) if tiles else None
     sub = " · ".join(x for x in ((name if user.display else ""), user.note) if x)
@@ -578,7 +594,6 @@ def _cached_links(app: "App", name: str) -> tuple[list[protolib.Link], dict[str,
 
 
 # Плитки «Подключение»: протокол → платформы (на плитке) и клиенты (в title)
-MAIN_PROTOS = ("vless-reality", "vless-xhttp", "hysteria2", "amneziawg")
 PLATFORMS = {
     "vless-reality": "iPhone, Android, Windows",
     "vless-xhttp": "iPhone, Android, Windows",
@@ -591,7 +606,15 @@ PLATFORMS = {
 }
 
 
-QUICK_CAPTION = "Happ → «+» → сканировать"
+QR_STEP_RE = re.compile(r"нажмите (.+?) и (?:наведите|отсканируйте)")
+
+
+def qr_caption(client: dict[str, Any], platform: str) -> str:
+    """Подпись к быстрому QR из шага импорта каталога: «Android: Happ → «+» → «Сканировать QR»»."""
+    chain = (m.group(1) if (m := QR_STEP_RE.search(client.get("import", {}).get("qr", ""))) else "")
+    if chain and "канир" not in chain.lower():
+        chain += " → сканировать"
+    return f"{platform}: {client['name']} → {chain}" if chain else f"{platform}: {client['name']} — сканировать QR"
 
 
 def _variant_order(link: protolib.Link) -> int:
@@ -602,13 +625,13 @@ def _variant_order(link: protolib.Link) -> int:
 
 
 def _variant_label(link: protolib.Link, uri_n: int) -> tuple[str, str | None]:
-    """(текст вкладки, подсказка): термины — в подсказку, на вкладке «Обычная» / «Запасная N»."""
+    """(текст вкладки, подсказка): как в остальных экранах — «Ссылка», «Ссылка 2», «Файл Android»; термины — в подсказку."""
     if link.kind == "file":
         fname = Path(link.uri).name
         if fname.endswith("-android.conf"):
-            return "Android", "список приложений Android внутри файла"
+            return "Файл Android", "список приложений Android внутри файла"
         if fname.endswith(".conf"):
-            return "Компьютер, iPhone", "общий .conf без списка приложений"
+            return "Файл Windows, iPhone", "общий .conf без списка приложений"
         return "Файл правил", None
     if link.uri.startswith("vpn://"):
         return "Ключ AmneziaVPN", None
@@ -617,7 +640,7 @@ def _variant_label(link: protolib.Link, uri_n: int) -> tuple[str, str | None]:
         why = "Salamander: обфускация Hysteria2"
     elif re.search(r"@[^/?#]*:\d+,\d", link.uri):
         why = "Port hopping: порт меняется"
-    return ("Обычная" if uri_n == 1 else f"Запасная {uri_n}"), why
+    return ("Ссылка" if uri_n == 1 else f"Ссылка {uri_n}"), why
 
 
 def qr_url(name: str, idx: int, link: protolib.Link) -> str:
@@ -625,7 +648,7 @@ def qr_url(name: str, idx: int, link: protolib.Link) -> str:
     return f"/users/{name}/qr/{idx}?p={link.tag}"
 
 
-def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool) -> Markup:
+def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool, rules_text: str = "") -> Markup:
     fname = Path(link.uri).name if link.kind == "file" else ""
     if link.kind == "file":
         action = (t("a", "Скачать файл", href=f"/users/{name}/file/{fname}", class_="btn primary")
@@ -637,7 +660,7 @@ def _variant(link: protolib.Link, idx: int, name: str, vid: str, hidden: bool) -
                    t("button", "Копировать", type="button", class_="btn primary", data_copy=uri_id),
                    class_="link-uri")
     if link.proto_id == allowlist.V2RAYN_PROTO:
-        qr_block: Any = t("p", "v2rayN → Маршрутизация → Импорт из файла.", class_="hint")
+        qr_block: Any = t("p", rules_text, class_="hint") if rules_text else None
     elif link.kind == "uri" and len(link.uri.encode("utf-8")) > qr.MAX_BYTES:
         qr_block = t("p", "Ссылка слишком длинная для QR", class_="muted small")
     elif link.kind == "file" and not fname.endswith(".conf"):
@@ -659,29 +682,55 @@ def link_filter(user: users.User, g: groups.Group | None) -> Callable[[protolib.
     return lambda ln: ln.variant not in family or ln.variant in offered
 
 
-def quick_start(links: list[protolib.Link], name: str, show: Callable[[protolib.Link], bool] | None = None) -> Markup | None:
-    """Один QR лучшего протокола (по истории проб, иначе VLESS REALITY) и «скопировать всё»."""
-    show = show or (lambda ln: True)
-    cand = [(i, l) for i, l in enumerate(links)
-            if show(l) and l.kind == "uri" and not l.uri.startswith("vpn://") and len(l.uri.encode("utf-8")) <= qr.MAX_BYTES]
-    if not cand:
-        return None
-    prefer: list[str] = []
+def _quick_pick(links: list[protolib.Link], ctx: clientviews.Ctx, g: groups.Group | None,
+                show: Callable[[protolib.Link], bool]) -> tuple[int, protolib.Link, str] | None:
+    """Лучший QR среди приложений набора группы: (номер ссылки, ссылка, подпись). Телефон раньше компьютера, протокол —
+    лучший по замерам с устройств, иначе по порядку раздачи (PRIORITY). Ссылку берёт то приложение, которое её
+    открывает (клиент и платформа выбраны набором группы), чужая под подписью приложения не окажется."""
+    top: list[str] = []
     try:
         for c in rank.load("30d"):
-            prefer += [p["proto"] for p in c["top"]]
+            top += [p["proto"] for p in c["top"]]
     except (sqlite3.Error, OSError, ValueError):
         pass
-    idx, link = next(((i, l) for pid in (*prefer, "vless-reality") for i, l in cand if l.variant == pid), cand[0])
+    order_p = [*top, *groups.PRIORITY]
+    prefer, order = clientviews.group_prefs(g)
+    best: tuple[tuple[int, int], int, protolib.Link, str] | None = None
+    for plat, title in ctx.cat.platforms.items():
+        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, clientviews.store_first(g),
+                                      ctx.al, None, bool(g and g.install_mode == "admin"))
+        for sec in (pack.sections if pack else ()):
+            if "qr" not in sec.client.get("import", {}):
+                continue
+            for it in sec.items:
+                i = clientviews.pick_link(it.proto, sec.client, plat, links, "qr")
+                if i is None or not show(links[i]):
+                    continue
+                key = ({"android": 0, "ios": 1}.get(plat, 2), order_p.index(it.proto) if it.proto in order_p else 99)
+                if best is None or key < best[0]:
+                    best = (key, i, links[i], qr_caption(sec.client, title))
+    return best[1:] if best else None
+
+
+def quick_start(links: list[protolib.Link], name: str, show: Callable[[protolib.Link], bool] | None = None,
+                ctx: clientviews.Ctx | None = None, g: groups.Group | None = None) -> Markup | None:
+    """Один QR лучшего протокола из набора приложений группы и «скопировать всё». Нет набора приложений — «Приложения
+    не выбраны → Настроить»; без каталога (ctx) — только «скопировать всё»."""
+    show = show or (lambda ln: True)
     all_uris = "\n".join(l.uri for l in links if show(l) and l.kind == "uri")
-    return t("div",
-             t("img", class_="qr", src=qr_url(name, idx, link), width=160, height=160, alt="QR",
-               title=link.proto_id),
-             t("div", t("h3", "Быстрый старт"), t("p", QUICK_CAPTION, class_="muted"),
-               t("textarea", all_uris, id="copy-all", hidden=True, readonly=True),
-               t("div", t("button", "Скопировать всё", type="button", class_="btn", data_copy="copy-all",
-                          title="Все ссылки по одной в строке"), class_="actions")),
-             class_="quick")
+    if g is not None and not g.clients:
+        pick, note = None, clientviews.no_apps(g)
+    else:
+        pick = _quick_pick(links, ctx, g, show) if ctx is not None else None
+        note = t("p", pick[2], class_="muted") if pick else None
+    if pick is None and not all_uris and note is None:
+        return None
+    img = (t("img", class_="qr", src=qr_url(name, pick[0], pick[1]), width=160, height=160, alt="QR",
+             title=manifests.proto_title(pick[1].variant)) if pick else None)
+    copy = (t("textarea", all_uris, id="copy-all", hidden=True, readonly=True),
+            t("div", t("button", "Скопировать всё", type="button", class_="btn", data_copy="copy-all",
+                       title="Все ссылки по одной в строке"), class_="actions")) if all_uris else None
+    return t("div", img, t("div", t("h3", "Быстрый старт"), note, copy), class_="quick")
 
 
 def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
@@ -695,27 +744,28 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
         cat: clients.Catalog | None = clients.load()
     except clients.ClientsError:
         cat = None  # без каталога плитки без подсказки о клиентах
-    groups: dict[str, list[tuple[int, protolib.Link]]] = {}
+    by_proto: dict[str, list[tuple[int, protolib.Link]]] = {}
     for i, link in enumerate(links):
         if show is None or show(link):
-            groups.setdefault(link.variant, []).append((i, link))
-    if not groups:
+            by_proto.setdefault(link.variant, []).append((i, link))
+    if not by_proto:
         return None
-    order = sorted(groups, key=lambda p: (p not in MAIN_PROTOS,
-                                          MAIN_PROTOS.index(p) if p in MAIN_PROTOS else 99, p))
+    # протоколы — в порядке раздачи (PRIORITY), файл правил v2rayN — не протокол: отдельной строкой «Файлы»
+    order = [*groups.by_priority(p for p in by_proto if p != allowlist.V2RAYN_PROTO),
+             *([allowlist.V2RAYN_PROTO] if allowlist.V2RAYN_PROTO in by_proto else [])]
+    rules_text = clientviews.rules_text(cat) if cat else ""
     sections: dict[bool, list[Markup]] = {True: [], False: []}
     dialogs = []
     for n, pid in enumerate(order):
         m = by_id.get(pid)
-        title = ("Правила маршрутизации v2rayN" if pid == allowlist.V2RAYN_PROTO
-                 else manifests.TITLES.get(pid) or (m.short if m else pid))
+        title = ("Правила маршрутизации v2rayN" if pid == allowlist.V2RAYN_PROTO else manifests.proto_title(pid))
         dlg_id = f"dlg-{n}"
-        sections[pid in MAIN_PROTOS].append(t(
+        sections[pid != allowlist.V2RAYN_PROTO].append(t(
             "button", t("span", title, class_="ptile-name"),
             t("span", PLATFORMS.get(pid, "—"), class_="ptile-sub"),
             type="button", class_=f"ptile acc{n % 8 + 1}", data_dialog=dlg_id,
             title=f"Приложения: {cat.names_for(pid)}" if cat and cat.names_for(pid) else None))
-        items = sorted(groups[pid], key=lambda it: _variant_order(it[1]))  # sorted стабилен: порядок модуля цел
+        items = sorted(by_proto[pid], key=lambda it: _variant_order(it[1]))  # sorted стабилен: порядок модуля цел
         tabs_data, uri_n = [], 0
         for k, (_, link) in enumerate(items):
             if link.kind == "uri" and not link.uri.startswith("vpn://"):
@@ -725,16 +775,15 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
                            class_="tab active" if k == 0 else "tab")
                          for k, (label, why) in enumerate(tabs_data)], class_="tabs", role="tablist") \
             if len(items) > 1 else None
-        variants = [_variant(link, i, name, f"{dlg_id}-v{k}", k > 0) for k, (i, link) in enumerate(items)]
+        variants = [_variant(link, i, name, f"{dlg_id}-v{k}", k > 0, rules_text) for k, (i, link) in enumerate(items)]
         more = t("details", t("summary", "подробнее"), t("p", m.notes, class_="hint")) if m and m.notes else None
         dialogs.append(t("dialog",
                          t("div", t("h3", title), t("button", "✕", type="button", class_="btn small", data_close=True,
                                                     aria_label="Закрыть"), class_="dlg-head"),
                          tabs, variants, more, id=dlg_id, class_="pdlg"))
-    out = []
-    for main, label in ((True, "Основные"), (False, "Запасные")):
-        if sections[main]:
-            out += [t("h3", label, class_="sub-h"), t("div", sections[main], class_="ptiles")]
+    out = [t("div", sections[True], class_="ptiles")] if sections[True] else []
+    if sections[False]:
+        out += [t("h3", "Файлы", class_="sub-h"), t("div", sections[False], class_="ptiles")]
     return t("div", out, dialogs)
 
 

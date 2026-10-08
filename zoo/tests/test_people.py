@@ -24,6 +24,21 @@ class SlugTest(unittest.TestCase):
         self.assertEqual(people.slug("名前"), "")
 
 
+class LoginForTest(unittest.TestCase):
+    def test_login_from_a_free_name_busy_one_and_system_one(self):
+        self.assertEqual(people.login_for("Иван Петров"), ("ivan-petrov", ""))
+        self.assertEqual(people.login_for("Иван Петров", {"ivan-petrov"}), ("ivan-petrov-2", "занято"))
+        self.assertEqual(people.login_for("Иван Петров", {"ivan-petrov", "ivan-petrov-2"}), ("ivan-petrov-3", "занято"))
+        self.assertEqual(people.login_for("owner")[1], "занято" if "owner" in users.SYSTEM_USERS else "")
+        self.assertEqual(people.login_for("zoo-probe")[1], "служебное")
+        self.assertEqual(people.login_for("***"), ("", ""), "в имени нет ни букв, ни цифр")
+        self.assertEqual(people.login_for("Иван, Петров"), ("ivan-petrov", ""), "запятая — часть имени, не разделитель")
+
+    def test_same_login_as_the_wizard_gives(self):
+        for raw in ("Иван Петров", "Юлия Ёлкина", "Masha_K"):
+            self.assertEqual(people.login_for(raw)[0], people.build(raw).rows[0].name)
+
+
 class BuildTest(unittest.TestCase):
     def test_separators_semicolon_tab_comma(self):
         plan = people.build("Иван Петров; бухгалтерия\nМария\tотдел продаж\nОльга, склад, 2 этаж\nПётр")

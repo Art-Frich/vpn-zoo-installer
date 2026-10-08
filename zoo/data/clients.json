@@ -11,7 +11,7 @@
   "protocols": {
     "vless-reality": {
       "title": "VLESS Vision",
-      "caveat": "Нужен клиент на ядре Xray 26+: клиенты на sing-box (Hiddify, Karing, SFA/SFI, NekoBox) и Shadowrocket показывают «подключено», но трафика нет (сервер требует X25519MLKEM768)."
+      "caveat": "Нужен клиент на ядре Xray 26+: клиенты на sing-box (Hiddify, Karing, NekoBox, само приложение sing-box) и Shadowrocket показывают «подключено», но трафика нет (сервер требует X25519MLKEM768)."
     },
     "vless-xhttp": {
       "title": "VLESS XHTTP",
@@ -256,7 +256,7 @@
       "import": {},
       "per_app": "profile",
       "verified": {"date": "2026-10-07", "version": "1.14.2", "device": false, "how": "стенд (ядро), приложение не запускалось"},
-      "notes": "Для VLESS и XHTTP не подходит. SFA и SFI берут JSON-профиль, а не ссылки hysteria2://, tuic://, ss:// (по коду SFA, ProfileImportHandler); профилей мы пока не выдаём, поэтому import пуст и в подбор приложение не входит, пользователям проще Hiddify. На iPhone есть в App Store, в том числе российском (sing-box MT)."
+      "notes": "Для VLESS и XHTTP не подходит. sing-box берёт JSON-профиль, а не ссылки hysteria2://, tuic://, ss:// (по коду приложения, ProfileImportHandler); профилей мы пока не выдаём, поэтому import пуст и в подбор приложение не входит, пользователям проще Hiddify. На iPhone есть в App Store, в том числе российском (sing-box MT)."
     },
     {
       "id": "hiddify",
