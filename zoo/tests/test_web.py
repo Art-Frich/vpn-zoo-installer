@@ -241,13 +241,113 @@ class PiecesTest(unittest.TestCase):
 
 
 class WebSetupTest(unittest.TestCase):
+    @staticmethod
+    def _sock(port, proto="tcp", addr="127.0.0.1"):
+        return web_mod.system.Socket(proto=proto, addr=addr, port=port)
+
+    def _setup(self, env, listening=(), active=False, **cfg):
+        """web_mod.setup с подменой слушающих сокетов и systemctl; вернуть (config, вызовы systemctl)."""
+        if cfg:
+            c = config.load()
+            env.write_config({**c.values, **cfg})
+        calls = []
+
+        def fake_run(argv, timeout=10.0):
+            calls.append(argv)
+            return 0, "", ""
+
+        states = {web_mod.UNIT: {"active": "active" if active else "inactive"}}
+        with mock.patch("zoolib.system.listening_sockets", return_value=list(listening)), \
+                mock.patch("zoolib.system.unit_states", return_value=states), \
+                mock.patch("zoolib.system.run", side_effect=fake_run):
+            web_mod.setup(config.load())
+        return config.load(), calls
+
+    def test_default_port_is_7070(self):
+        with ZooEnv() as env:
+            cfg, _ = self._setup(env)
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "7070")
+            self.assertEqual(cfg.get("ZOO_WEB_PORT_AUTO"), "1")
+            self.assertGreaterEqual(len(cfg.get("ZOO_WEB_TOKEN")), 16)
+            again, _ = self._setup(env)   # повтор ничего не меняет
+            self.assertEqual(again.values, cfg.values)
+
+    def test_busy_port_falls_back_with_warning(self):
+        with ZooEnv() as env:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
+                cfg, _ = self._setup(env, listening=[self._sock(7070), self._sock(7071, addr="0.0.0.0")])
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "7072")
+            self.assertEqual(cfg.get("ZOO_WEB_PORT_AUTO"), "1")
+            self.assertIn("порт 7070 занят", err.getvalue())
+            self.assertIn("ssh -t -L 7072:127.0.0.1:7072 root@10.0.0.1 zoo web --link", err.getvalue())
+
+    def test_udp_listener_and_configured_port_count(self):
+        with ZooEnv() as env:
+            cfg, _ = self._setup(env, listening=[self._sock(7070, proto="udp")])
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "7070")   # udp админке не мешает
+        with ZooEnv() as env:
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                cfg, _ = self._setup(env, SS_PORT="7070")
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "7071")
+
+    def test_auto_port_migrates_to_7070(self):
+        with ZooEnv() as env:
+            out = io.StringIO()
+            with contextlib.redirect_stderr(out), contextlib.redirect_stdout(out):
+                cfg, calls = self._setup(env, active=True, ZOO_WEB_PORT="23456", ZOO_WEB_PORT_AUTO="1",
+                                         ZOO_WEB_TOKEN="t" * 20)
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "7070")
+            self.assertIn("админка теперь на порту 7070 (был 23456)", out.getvalue())
+            self.assertEqual(calls, [["systemctl", "restart", web_mod.UNIT]])
+
+    def test_legacy_port_without_marker_migrates(self):
+        with ZooEnv() as env:
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                cfg, calls = self._setup(env, ZOO_WEB_PORT="31999", ZOO_WEB_TOKEN="t" * 20)
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "7070")
+            self.assertEqual(cfg.get("ZOO_WEB_PORT_AUTO"), "1")
+            self.assertEqual(calls, [])   # сервис не работает — перезапускать нечего
+
+    def test_migration_waits_while_7070_is_busy(self):
+        with ZooEnv() as env:
+            cfg, calls = self._setup(env, listening=[self._sock(7070)], active=True,
+                                     ZOO_WEB_PORT="23456", ZOO_WEB_PORT_AUTO="1", ZOO_WEB_TOKEN="t" * 20)
+            self.assertEqual(cfg.get("ZOO_WEB_PORT"), "23456")
+            self.assertEqual(calls, [])
+
+    def test_explicit_port_is_untouched(self):
+        cases = (
+            {"ZOO_WEB_PORT": "9000"},                                  # вне прежнего диапазона, без метки
+            {"ZOO_WEB_PORT": "23456", "ZOO_WEB_PORT_AUTO": "0"},       # закреплён меткой
+        )
+        for extra in cases:
+            with self.subTest(extra=extra), ZooEnv() as env:
+                cfg, calls = self._setup(env, active=True, ZOO_WEB_TOKEN="t" * 20, **extra)
+                self.assertEqual(cfg.get("ZOO_WEB_PORT"), extra["ZOO_WEB_PORT"])
+                self.assertEqual(cfg.get("ZOO_WEB_PORT_AUTO"), extra.get("ZOO_WEB_PORT_AUTO", ""))
+                self.assertEqual(calls, [])
+
+    def test_info_command(self):
+        with ZooEnv():
+            with mock.patch("zoolib.system.listening_sockets", return_value=[]):
+                web_mod.setup(config.load())
+            cfg = config.load()
+            port = cfg.int("ZOO_WEB_PORT")
+            self.assertEqual(port, 7070)
+            with mock.patch.dict(os.environ, {"SUDO_USER": ""}):
+                info = web_mod.access_info(config.Config(values={**cfg.values, "SSH_LOGIN_PORT": "2222"}))
+            self.assertEqual(info["command"], "ssh -t -L 7070:127.0.0.1:7070 -p 2222 root@10.0.0.1 zoo web --link")
+            with mock.patch.dict(os.environ, {"SUDO_USER": "admin"}):
+                info = web_mod.access_info(cfg)
+            self.assertEqual(info["command"], "ssh -t -L 7070:127.0.0.1:7070 admin@10.0.0.1 sudo zoo web --link")
+
     def test_setup_and_info(self):
         with ZooEnv():
             with mock.patch("zoolib.system.listening_sockets", return_value=[]):
                 web_mod.setup(config.load())
             cfg = config.load()
             port = cfg.int("ZOO_WEB_PORT")
-            self.assertTrue(20000 <= port <= 65535)
             self.assertNotIn(port, web_mod.BANNED_PORTS)
             self.assertGreaterEqual(len(cfg.get("ZOO_WEB_TOKEN")), 16)
             web_mod.setup(cfg)  # повтор ничего не меняет
