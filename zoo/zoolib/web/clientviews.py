@@ -26,9 +26,13 @@ RECOMMEND_BASIS = "по документации и исследованию 04.
 SEND_WARN = ("Ссылки и QR — ключи доступа: не отправляйте через MAX и VK, лучше лично или мессенджером "
              "со сквозным шифрованием.")
 FOREIGN_STORE = "В российском App Store его нет: нужен Apple ID другой страны, подделки с похожим названием не ставьте."
+# то же по меткам foreign_note, для строки «Оговорки»: метка уже сказана, здесь — что с этим делать
+FOREIGN_WHY = {"нет в App Store РФ": "нужен Apple ID другой страны, подделки с похожим названием не ставьте",
+               "нужен иностранный Apple ID": "в российском App Store приложения нет, подделки с похожим названием не ставьте"}
 NAME_TOKEN = "{name}"      # так подстановка имени хранится в группе
 NAME_TOKEN_RU = "{имя}"    # так — показывается и вводится в редакторе; принимаются оба
 MISMATCH = "инструкция группы не подходит этому человеку — показана его собственная"
+NO_KEYS = "Ключей в инструкции нет: QR и ссылки у каждого свои."
 STALE = "набор приложений изменился — проверьте инструкцию"
 NO_APPS = "Приложения не выбраны"
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -79,7 +83,7 @@ def _link_anchors(links: list[dict[str, Any]], presorted: bool = False) -> list[
         out.append(t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
                      rel="noopener noreferrer", class_="chip info"))
         if not ln["checked"]:
-            out.append(t("span", "не проверена", class_="muted small", title="адрес собран по id пакета, не открывался"))
+            out.append(t("span", "не проверена", class_="muted small"))
     return out
 
 
@@ -142,10 +146,10 @@ def caveat_items(cat: clients.Catalog, picked: dict[str, list[str]], protocols: 
 def _version_cell(client: dict[str, Any], cache: dict[str, Any], platform: str | None = None) -> Any:
     plats = [platform] if platform else list(client["platforms"])
     if not any(_has_github(client, p) for p in plats):
-        return t("span", "в магазине", class_="muted small", title="версия — на странице магазина, без опроса")
+        return t("span", "в магазине", class_="muted small")
     v = cache["versions"].get(client["id"]) or {}
     if not v.get("version"):
-        return t("span", "—", class_="muted", title=v.get("error") or "ещё не проверялась")
+        return t("span", "—", class_="muted", title=v.get("error") or None)
     return t("span", v["version"], title=f"релиз от {v['published']}" if v.get("published") else None,
              class_="mono")
 
@@ -171,30 +175,56 @@ def _dev_nav(cat: clients.Catalog, dev: str | None) -> Markup:
     return t("nav", links, class_="seg", aria_label="Устройство")
 
 
-def _proto_cell(cat: clients.Catalog, c: dict[str, Any], protos: list[str]) -> Markup:
+def _note_where(cat: clients.Catalog, protos: list[str]) -> dict[str, dict[str, list[str]]]:
+    """Заметки каталога у протоколов, которые не «не работает»: {заметка: {приложение: [протоколы]}}."""
+    names = proto_names(cat)
+    out: dict[str, dict[str, list[str]]] = {}
+    for c in cat.clients:
+        for p in protos:
+            st = c["protocols"].get(p)
+            if st and st["s"] != "no" and st.get("note"):
+                out.setdefault(st["note"], {}).setdefault(c["name"], []).append(names.get(p, p))
+    return out
+
+
+def _shared_notes(where: dict[str, dict[str, list[str]]]) -> dict[str, str]:
+    """Заметки, одинаковые у нескольких приложений или протоколов: {заметка: строка «заметка — Приложение: протоколы»}.
+    На чипах их нет (подсказка не повторяется) — строка под таблицей, каждая один раз."""
+    return {note: f"{note} — " + "; ".join(f"{app}: {', '.join(ps)}" for app, ps in apps.items())
+            for note, apps in where.items() if sum(len(ps) for ps in apps.values()) > 1}
+
+
+def _broken_line(cat: clients.Catalog, protos: list[str]) -> str:
+    """«Не работает: VLESS Vision, AmneziaWG — Hiddify, sing-box · VLESS Vision — Karing»: одна строка на таблицу,
+    приложения с одинаковым списком — вместе."""
+    names = proto_names(cat)
+    by: dict[tuple[str, ...], list[str]] = {}
+    for c in cat.clients:
+        bad = tuple(names.get(p, p) for p in protos if c["protocols"].get(p, {}).get("s") == "no")
+        if bad:
+            by.setdefault(bad, []).append(c["name"])
+    return "Не работает: " + " · ".join(f"{', '.join(bad)} — {', '.join(apps)}" for bad, apps in by.items()) if by else ""
+
+
+def _proto_cell(cat: clients.Catalog, c: dict[str, Any], protos: list[str], shared: dict[str, str]) -> Markup:
     """Протоколы приложения по каталогу: зелёный — заявлен, жёлтый — с оговоркой (наведите), «стенд» — проверено
-    прогоном; не работающие — одной строкой «Не работает: …», без красных чипов."""
-    chips, broken = [], []
+    прогоном. Не работающих здесь нет: они одной строкой под таблицей. Подсказка — только своя заметка: статус
+    говорит цвет (легенда), а заметка, общая для нескольких приложений, — строка под таблицей."""
+    chips = []
     names = proto_names(cat)
     for p in protos:
         st = c["protocols"].get(p)
-        if not st:
-            continue
-        if st["s"] == "no":
-            broken.append(names.get(p, p))
+        if not st or st["s"] == "no":
             continue
         note = st.get("note") or ""
         stand = "проверено на стенде" in note
         kind = {"ok": "chip ok", "warn": "chip warn"}.get(st["s"], "chip")
         chips.append(t("span", names.get(p, p), " · стенд" if stand else None, class_=kind,
-                       title=f"{clients.STATUS_TEXT[st['s']]}" + (f": {note}" if note else "")))
-    if not chips and not broken:
-        return t("span", "—", class_="muted")
-    return t("div", t("div", chips, class_="chips") if chips else None,
-             t("span", "Не работает: " + ", ".join(broken), class_="hint") if broken else None)
+                       title=note if note and note not in shared else None))
+    return t("div", chips, class_="chips") if chips else t("span", "—", class_="muted")
 
-
-def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], dev: str | None) -> Markup:
+def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], dev: str | None,
+                shared: dict[str, str]) -> Markup:
     """«Все приложения»: строка = приложение; устройства, протоколы, версия; ссылки и заметка — в строке под спойлером."""
     rec = {cat.recommended(p, q)["id"] for p in cat.platforms for q in protos if cat.recommended(p, q)}  # type: ignore[index]
     rows = []
@@ -204,8 +234,7 @@ def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], 
             if plat not in c["platforms"]:
                 cells.append(t("span", "—", class_="muted"))
             elif cat.no_ru_store(c, plat):
-                cells.append(t("span", f"нет в {'App Store' if plat == 'ios' else 'магазине'} РФ", class_="chip warn",
-                               title=FOREIGN_STORE))
+                cells.append(t("span", f"нет в {'App Store' if plat == 'ios' else 'магазине'} РФ", class_="chip warn"))
             else:
                 cells.append(t("span", "✓", class_="chip ok"))
         more = ", ".join(cat.platforms[p] for p in c["platforms"] if p not in groups.MAIN_DEVICES) or "—"
@@ -214,7 +243,7 @@ def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], 
         rows.append([t("span", t("strong", c["name"]),
                        t("details", t("summary", "ссылки"), links, t("p", c["notes"], class_="hint") if c.get("notes") else None,
                          class_="more"), class_="app-cell"),
-                     *cells, more, _proto_cell(cat, c, protos), _version_cell(c, cache)])
+                     *cells, more, _proto_cell(cat, c, protos, shared), _version_cell(c, cache)])
     head = ["приложение", *[cat.platforms[p] for p in groups.MAIN_DEVICES], "ещё", "протоколы", "версия"]
     return table(head, rows, stack=True, empty="нет приложений")
 
@@ -232,7 +261,13 @@ def clients_page(app: "App", req: "Request") -> "Response":
     dev = req.query.get("dev") if req.query.get("dev") in cat.platforms else None
     names = proto_names(cat)
 
-    table_card = card("Все приложения", t("p", LEGEND, class_="hint"), _apps_table(cat, cache, protos, dev),
+    shared = _shared_notes(_note_where(cat, protos))
+    broken = _broken_line(cat, protos)
+    foreign = any(cat.no_ru_store(c, plat) for c in cat.clients for plat in c["platforms"] if plat == "ios")
+    table_card = card("Все приложения", t("p", LEGEND, class_="hint"), _apps_table(cat, cache, protos, dev, shared),
+                      t("p", broken, class_="hint") if broken else None,
+                      t("p", f"Нет в App Store РФ: {FOREIGN_WHY['нет в App Store РФ']}.", class_="hint") if foreign else None,
+                      [t("p", line, class_="hint") for line in shared.values()],
                       help=UNVERIFIED)
 
     caveats = [("warn", f"{names.get(p, p)}: {cat.protocols[p]['caveat']}")
@@ -609,6 +644,10 @@ def _key_html(k: Key, name: str, kid: str) -> Markup:
     return t("div", parts, class_="key")
 
 
+def _key_id(uid: str, plat: str, sec: Section, n: int) -> str:
+    return f"k-{uid}{plat}-{sec.client['id']}-{n}"
+
+
 def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.Catalog, uid: str,
               admin: bool = False) -> Markup:
     """Приложение набора: название, версия, магазины и ключи человека. Приложения ставит ИТ — магазинов нет, а на
@@ -616,9 +655,9 @@ def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.
     note = foreign_note(cat, sec.client, plat, admin)
     head = t("div", t("strong", sec.client["name"]),
              t("span", sec.version, class_="mono muted") if sec.version else None,
-             t("span", note, class_="chip warn", title=FOREIGN_STORE) if note else None,
+             t("span", note, class_="chip warn") if note else None,
              None if admin else t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
-    return t("div", head, t("div", [_key_html(k, name, f"k-{uid}{plat}-{sec.client['id']}-{n}")
+    return t("div", head, t("div", [_key_html(k, name, _key_id(uid, plat, sec, n))
                                     for n, k in enumerate(keys)], class_="keys"), class_="app")
 
 
@@ -641,10 +680,12 @@ def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, l
 
 
 def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
-                  uid: str = "", label: str | None = None, primary: bool = True) -> Markup | None:
+                  uid: str = "", label: str | None = None, primary: bool = True,
+                  shown: dict[str, str] | None = None) -> Markup | None:
     """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, инструкция
     группы с его именем (label; нет — логин) только для чтения. Без JS видны все платформы подряд; с JS список
-    оставляет одну. uid — приставка id полей, если на странице несколько блоков."""
+    оставляет одну. uid — приставка id полей, если на странице несколько блоков. shown — сюда кладутся {ссылка: id поля
+    на странице}: «Все ссылки и QR» копируют из этих полей, а не показывают те же ссылки второй раз."""
     if not links:
         return None
     label = label or name
@@ -652,6 +693,7 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
     admin = bool(g and g.install_mode == "admin")
     panels: list[Markup] = []
     plats: list[tuple[str, str]] = []
+    mismatch: list[str] = []
     for plat, title in ctx.cat.platforms.items():
         pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g), ctx.al,
                           ctx.apps_for(plat, g, name), admin)
@@ -663,9 +705,17 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
         text = fill_name((None if own else group_text) or pack.message, label)
         keys = [_keys(s, plat, links) for s in pack.sections]
         apps = [_app_html(s, k, plat, name, ctx.cat, uid, admin) for s, k in zip(pack.sections, keys)]
-        msg = text_block(text, f"msg-{uid}{plat}", g, links=any(k.uri for ks in keys for k in ks), primary=primary,
-                         extra=[alert_list([("warn", MISMATCH)]) if own else None,
-                                t("p", "Ключей в инструкции нет: QR и ссылки выше отправьте отдельно.", class_="hint")])
+        if own:
+            gpack = ctx.group_pack(g, plat)
+            lack = [it.tile for s in (gpack.sections if gpack else ()) for it in s.items
+                    if it.proto not in {i.proto for sec in pack.sections for i in sec.items}]
+            mismatch.append(title + (f": нет {', '.join(dict.fromkeys(lack))}" if lack else ""))
+        if shown is not None:
+            for s, ks in zip(pack.sections, keys):
+                for n, k in enumerate(ks):
+                    if k.uri:
+                        shown.setdefault(k.uri, _key_id(uid, plat, s, n))
+        msg = text_block(text, f"msg-{uid}{plat}", g, links=any(k.uri for ks in keys for k in ks), primary=primary)
         panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))
         plats.append((plat, title))
     if not panels:
@@ -673,7 +723,9 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
     pick = (t("div", t("label", "Платформа", for_=f"pl-{uid}"),
               t("select", [t("option", title, value=p, selected=n == 0) for n, (p, title) in enumerate(plats)],
                 id=f"pl-{uid}", data_plat=True), class_="conn-pick", hidden=True) if len(panels) > 1 else None)
-    return t("div", pick, panels, class_="conn")
+    # одно предупреждение на человека, а не по строке на платформу
+    warn = alert_list([("warn", MISMATCH + f" ({'; '.join(mismatch)})")]) if mismatch else None
+    return t("div", warn, pick, panels, class_="conn")
 
 
 def hints(ctx: Ctx) -> list[Markup]:
@@ -685,14 +737,14 @@ def hints(ctx: Ctx) -> list[Markup]:
 
 
 def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: groups.Group | None,
-                 uid: str = "", label: str | None = None) -> Markup | None:
+                 uid: str = "", label: str | None = None, shown: dict[str, str] | None = None) -> Markup | None:
     if ctx is None:
         return None
     if g is not None and not g.clients:
         return card("Подключить", t("p", no_apps(g)))
-    panel = connect_panel(links, name, ctx, g, uid, label)
+    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown)
     if panel is None:
         return None
     return card("Подключить", t("p", "Приложения и инструкция — общие для группы." if g else "Приложения — по протоколам.",
-                                " QR и ссылки — этого человека: показывайте только ему.", class_="hint"),
+                                " " + NO_KEYS, class_="hint"),
                 panel, hints(ctx))

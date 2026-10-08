@@ -58,7 +58,7 @@ def _verdict_badge(v: str) -> Markup:
 def server_protos() -> list[Server]:
     """Протоколы сервера: {id, name (короткое), full, enabled}; включённые первыми. Манифестов нет — пусто."""
     good, _ = manifests.load_all()
-    out = [{"id": m.id, "name": manifests.TITLES.get(m.id, m.short), "full": m.name, "enabled": m.enabled} for m in good]
+    out = [{"id": m.id, "name": manifests.TITLES.get(m.id, m.short), "enabled": m.enabled} for m in good]
     return sorted(out, key=lambda s: not s["enabled"])
 
 
@@ -72,12 +72,8 @@ def split_rows(servers: list[Server], rows: list[dict[str, Any]]) -> tuple[list[
 
 def _name(pid: str, names: dict[str, Server], note: Any = None) -> Markup:
     s = names.get(pid)
-    return t("span", t("strong", s["name"] if s else pid, title=s["full"] if s else None),
+    return t("span", t("strong", s["name"] if s else pid),
              t("span", note, class_="sub") if note else None)
-
-
-def _no_runs_note() -> Markup:
-    return t("span", NO_RUNS + " — ", t("a", "запустите пробу", href="#" + HOW_ANCHOR))
 
 
 def _cells(p: dict[str, Any]) -> list[str]:
@@ -86,9 +82,10 @@ def _cells(p: dict[str, Any]) -> list[str]:
 
 
 def _block_rows(c: dict[str, Any], servers: list[Server], names: dict[str, Server],
-                off: dict[str, dict[str, Any]]) -> tuple[list[list[Any]], list[str | None]]:
-    """Строки блока: протоколы с данными (с местами — только в ранжируемом блоке), затем включённые
-    без замеров, затем выключенные серым."""
+                off: dict[str, dict[str, Any]], anywhere: set[str]) -> tuple[list[list[Any]], list[str | None]]:
+    """Строки блока: протоколы с данными (с местами — только в ранжируемом блоке), затем включённые без замеров
+    в этом блоке (но с замерами в другом: пустая строка), затем выключенные серым. Протоколы, которых нет ни в одном
+    блоке, строками не идут: они одной строкой под блоками (best_card)."""
     ranked = c["ranked"]
     have = {p["proto"] for p in c["protocols"]}
     rows: list[list[Any]] = []
@@ -104,8 +101,8 @@ def _block_rows(c: dict[str, Any], servers: list[Server], names: dict[str, Serve
         place = c["top"].index(p) + 1 if p in c["top"] else ""
         add(_name(p["proto"], names, note), p, place, "" if p["low_confidence"] else f"{p['score']:.0f}")
     for s in servers:
-        if s["enabled"] and s["id"] not in have:
-            add(_name(s["id"], names, _no_runs_note()), None)
+        if s["enabled"] and s["id"] not in have and s["id"] in anywhere:
+            add(_name(s["id"], names, "нет замеров"), None)
     for pid in [s["id"] for s in servers if not s["enabled"]] + sorted(set(off) - set(names)):
         if pid in off:
             add(_name(pid, names, "выключен на сервере" if pid in names else "нет на сервере"), off[pid], dim=True)
@@ -131,8 +128,9 @@ def best_card(ranking: list[dict[str, Any]], period: str, servers: list[Server] 
         body: list[Any] = [empty("Нет клиентских проб", t("code", "zoo-probe --tag mobile-mts --device pixel7"))]
     else:
         body = []
+        anywhere = {p["proto"] for c in ranking for p in c["protocols"]}
         for c in ranking:
-            rows, cls = _block_rows(c, servers, names, off_by.get(c["context"], {}))
+            rows, cls = _block_rows(c, servers, names, off_by.get(c["context"], {}), anywhere)
             sub = ", ".join(x for x in (", ".join(c["isps"]), ", ".join(c["devices"])) if x)
             body.append(t("h3", c["context"], t("span", f" · прогонов: {c['reports']}" + (f" · {sub}" if sub else ""),
                                                  class_="sub")))
@@ -140,10 +138,17 @@ def best_card(ranking: list[dict[str, Any]], period: str, servers: list[Server] 
                 body.append(table(["место", "протокол", "оценка", "успех", "задержка", "скорость"], rows,
                                   num=[2, 4, 5], stack=True, row_cls=cls))
             else:
-                body += [t("p", badge("мало данных", "warn"), f" {rank.plural_runs(c['reports'])} — ориентир, не рейтинг",
-                           class_="quiet"),
+                body += [t("p", badge("мало данных", "warn"), f" {rank.plural_runs(c['reports'])}", class_="quiet"),
                          table(["протокол", "успех", "задержка", "скорость"], rows, num=[2, 3], cls="small", stack=True,
                                row_cls=cls)]
+    if ranking:
+        if any(not c["ranked"] for c in ranking):
+            body.append(t("p", "«Мало данных» — ориентир, не рейтинг: мест нет, пока не набралось 3 прогона.",
+                          class_="quiet"))
+        missing = [s["id"] for s in servers if s["enabled"] and s["id"] not in anywhere]
+        if missing:
+            body.append(t("p", NO_RUNS.capitalize() + ": " + ", ".join(names[m]["name"] for m in missing) + " — ",
+                          t("a", "запустите пробу", href="#" + HOW_ANCHOR), class_="quiet"))
     return card("Лучшие протоколы", *body, extra=_period_nav(period), help=help_)
 
 
@@ -164,9 +169,7 @@ def trends_card(rows: list[dict[str, Any]], servers: list[Server] | None = None)
         rs = per.get(proto)
         dim = bool(on) and proto not in on
         if not rs:
-            out.append([_name(proto, names, _no_runs_note()), "", "", "", "", "", ""])
-            cls.append(None)
-            continue
+            continue   # без замеров — одной строкой в «Лучших протоколах», здесь пустые строки ни к чему
         good = [r for r in rs if r["verdict"] in probe_mod.verdicts.WORKING]
         stat = rank.rank_context(rs)[0]
         spark = charts.sparkline([round(r["down_mbps"] or 0, 1) if r["verdict"] in probe_mod.verdicts.WORKING else 0
@@ -357,7 +360,7 @@ def run_page(app: "App", req: "Request", rid: int) -> "Response":
     body = []
     for r in d["results"]:
         s = names.get(r["proto"])
-        body.append([t("strong", s["name"] if s else r["proto"], title=s["full"] if s else None),
+        body.append([t("strong", s["name"] if s else r["proto"]),
                      _verdict_badge(r["verdict"]), _n(r["latency_ms"], ".0f", " мс"), _n(r["p90_ms"], ".0f", " мс"),
                      _n(r["jitter_ms"], ".1f", " мс"), _n(r["loss_pct"], ".0f", " %"), _n(r["down_mbps"], ".1f"),
                      _n(r["up_mbps"], ".1f"), t("code", r["egress_ip"]) if r["egress_ip"] else "—"])

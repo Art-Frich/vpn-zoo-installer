@@ -214,7 +214,6 @@ def _rank_facts() -> dict[str, dict[str, Any]]:
 class Fact:
     id: str
     title: str
-    full: str
     live: dict[str, Any] | None
     rank: dict[str, Any] | None
     now: float
@@ -245,7 +244,7 @@ class Fact:
                      title=f"медианы замеров с устройств за 30 дней, замеров: {int(r['n'])}, удачных: {int(r['ok'])}")
         d = self.live
         if d is None:
-            return t("span", "нет замера", class_="chip", title="первый замер — через пару минут после включения")
+            return t("span", "нет замера", class_="chip")
         if d["verdict"] in verdicts.NOT_TESTED:
             return t("span", "не проверяется", class_="chip")
         if not d["ok"]:
@@ -253,7 +252,7 @@ class Fact:
                      title=verdicts.DESCRIPTIONS.get(d["verdict"], d["verdict"]))
         stale = self.now - d["ts"] > live.FRESH
         text = "работает" + (f" · {d['rtt_ms']:.0f} мс" if d.get("rtt_ms") is not None else "") + (" (устарело)" if stale else "")
-        return t("span", text, class_="chip" if stale else "chip ok", title="замер с сервера " + live.ago(d["ts"], self.now))
+        return t("span", text, class_="chip" if stale else "chip ok")
 
 
 def proto_facts() -> list[Fact]:
@@ -263,8 +262,7 @@ def proto_facts() -> list[Fact]:
 
     def fact(pid: str) -> Fact:
         m = mans.get(pid)
-        return Fact(pid, manifests.TITLES.get(pid) or (m.short if m else pid), m.name if m else "", latest.get(pid),
-                    ranks.get(pid), now)
+        return Fact(pid, manifests.TITLES.get(pid) or (m.short if m else pid), latest.get(pid), ranks.get(pid), now)
 
     return [fact(p) for p in groups.by_priority(users.selectable_protocols())]
 
@@ -285,7 +283,7 @@ def suggest(facts: list[Fact], only: set[str] | None = None) -> list[str]:
 def _proto_row(f: Fact, checked: bool) -> Markup:
     purpose = PURPOSE.get(f.id)
     return t("label", t("input", type="checkbox", name="proto", value=f.id, checked=checked),
-             t("span", t("span", t("strong", f.title, title=f.full or None), class_="opt-title"),
+             t("span", t("span", t("strong", f.title), class_="opt-title"),
                t("div", f.chip(), class_="chips"),
                t("span", purpose, class_="hint") if purpose else None, class_="opt-body"),
              class_="opt")
@@ -320,22 +318,47 @@ def _not_selectable(shown: set[str]) -> list[tuple[str, str, str]]:
 
 # ---------- приложения: устройство → одна строка ----------
 
-def _set_note(cat: clients.Catalog, plat: str, ids: list[str], mode: str) -> str:
-    """Подвох набора одной строкой (показывается у невыбранных вариантов): нет в российском магазине; людям, которые
-    ставят сами, — приложение не из магазина. На iPhone «ставится файлом» не бывает: приложения только из App Store."""
+def _set_flag(cat: clients.Catalog, plat: str, ids: list[str], mode: str) -> tuple[str, list[str]] | None:
+    """Подвох набора: (короткая метка, приложения) — нет в российском магазине (у ИТ на iPhone — «нужен иностранный
+    Apple ID»); людям, которые ставят сами, — приложение не из магазина. Метка короткая, объяснение — один раз
+    на экран (_flag_legend). На iPhone «ставится файлом» не бывает: приложения только из App Store."""
     cs = [c for c in (cat.client(i) for i in ids) if c]
-    foreign = [c["name"] for c in cs if cat.no_ru_store(c, plat)]
+    admin = mode == "admin"
+    foreign = [(c["name"], clientviews.foreign_note(cat, c, plat, admin)) for c in cs]
+    foreign = [(n, label) for n, label in foreign if label]
     if foreign:
-        return f"{', '.join(foreign)}: нет в {'App Store' if plat == 'ios' else 'магазине'} РФ"
+        return foreign[0][1], [n for n, _ in foreign]
     if mode == "self":
         raw = [c["name"] for c in cs if not groups.has_store_link(c, plat)]
         if raw and plat == "ios":
-            return "iPhone: в App Store РФ нет"
+            return "нет в App Store РФ", raw
         if raw and any(groups.has_store_link(c, plat) for c in cat.clients if plat in c["platforms"]):
-            return f"{', '.join(raw)}: не из магазина, ставится файлом"
+            return FLAG_RAW, raw
         if raw:
-            return f"{', '.join(raw)}: в магазине нет — установщик с GitHub (в инструкции сказано, какой файл)"
-    return ""
+            return FLAG_GITHUB, raw
+    return None
+
+
+FLAG_RAW = "не из магазина"
+FLAG_GITHUB = "в магазине нет"
+FLAG_EXPLAIN = {
+    FLAG_RAW: "ставится файлом: в инструкции сказано, какой",
+    FLAG_GITHUB: "установщик с GitHub: в инструкции сказано, какой файл",
+}
+
+
+def _flag_legend(flags: list[tuple[str, list[str]]]) -> list[str]:
+    """Объяснения меток наборов, каждое один раз: «Happ, Hiddify — нет в App Store РФ: …». Метка без объяснения
+    (Android, компьютер: «нет в магазине РФ») строкой не дублируется."""
+    by: dict[str, list[str]] = {}
+    for label, names in flags:
+        by.setdefault(label, []).extend(n for n in names if n not in by.get(label, []))
+    out = []
+    for label, names in by.items():
+        why = FLAG_EXPLAIN.get(label) or clientviews.FOREIGN_WHY.get(label, "")
+        if why:
+            out.append(f"{', '.join(names)} — {label}: {why}")
+    return out
 
 
 def _device_options(cat: clients.Catalog, plat: str, protocols: list[str], current: list[str], plan: list[str],
@@ -355,33 +378,46 @@ def _device_options(cat: clients.Catalog, plat: str, protocols: list[str], curre
 
 
 def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str], chosen: list[str] | None,
-                options: list[list[str]], names: dict[str, str], mode: str, ios_hint: bool = True) -> Markup:
+                options: list[list[str]], names: dict[str, str], mode: str,
+                ios_hint: bool = True) -> tuple[Markup, list[tuple[str, list[str]]], bool]:
     """Строка устройства: название, приложения, один чип покрытия, чип про магазин («нет в App Store РФ», у ИТ — «нужен
-    иностранный Apple ID») и «сменить» справа. Подсказки (нет в магазине, не из магазина) — только у невыбранных
-    вариантов в «сменить». ios_hint — строка «iPhone: ставится только из App Store» (ставит ИТ): один раз на экран."""
+    иностранный Apple ID») и «сменить» справа. В списке «сменить» у выбранного набора меток нет (они в строке), у
+    остальных — только короткие; объяснения — один раз под строками. Возвращает строку, метки наборов и признак,
+    что у выбранного набора есть метка из чипа строки (иностранный App Store).
+    ios_hint — строка «iPhone: ставится только из App Store» (ставит ИТ): один раз на экран."""
+    flags: list[tuple[str, list[str]]] = []
+    chosen_flag = False
+    cur_flag = _set_flag(cat, plat, chosen or options[0], mode) if options else None
     if not options:
         return t("div", t("strong", title, class_="dev-name"), t("span", "нет приложения под эти протоколы", class_="muted"),
-                 class_="dev-row")
+                 class_="dev-row"), flags, False
     ids = chosen or options[0]
     label, kind = clientviews.coverage_label(cat, plat, protocols, ids, names)
     radios = []
     for opt in options:
+        cur = opt == ids
+        flag = _set_flag(cat, plat, opt, mode)
+        if flag and (not cur or flag[0] in clientviews.FOREIGN_WHY):   # у выбранного — только то, что видно чипом строки
+            flags.append(flag)
+        if flag and cur and flag[0] in clientviews.FOREIGN_WHY:
+            chosen_flag = True
         lab, k = clientviews.coverage_label(cat, plat, protocols, opt, names)
-        note = _set_note(cat, plat, opt, mode) if opt != ids else ""
-        radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="+".join(opt), checked=opt == ids,
+        radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="+".join(opt), checked=cur,
                                    data_auto=True),
-                        t("span", t("strong", clientviews.app_names(cat, opt)), " ", t("span", lab, class_=f"chip {k}"),
-                          class_="opt-title"),
-                        t("span", note, class_="hint") if note else None, class_="opt-row dev-opt"))
+                        t("span", t("strong", clientviews.app_names(cat, opt)), " ",
+                          None if cur else [t("span", lab, class_=f"chip {k}"), " ",
+                                            t("span", flag[0], class_="chip warn")
+                                            if flag and not (cur_flag and cur_flag[0] == flag[0]) else None],
+                          class_="opt-title"), class_="opt-row dev-opt"))
     radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="none", data_auto=True),
                     t("span", f"Не нужен: {title}", class_="opt-title"), class_="opt-row dev-opt"))
     foreign = next((n for i in ids if (n := clientviews.foreign_note(cat, cat.client(i) or {}, plat, mode == "admin"))), "")
     extra = distviews.ios_note() if plat == "ios" and mode == "admin" and ios_hint else None
     head = t("summary", t("strong", title, class_="dev-name"), t("span", clientviews.app_names(cat, ids), class_="dev-set"),
              t("span", label, class_=f"chip {kind}"),
-             t("span", foreign, class_="chip warn", title=clientviews.FOREIGN_STORE) if foreign else None,
+             t("span", foreign, class_="chip warn") if foreign else None,
              t("span", "сменить", class_="dev-change"), class_="dev-head")
-    return t("div", t("details", head, t("div", radios, class_="opts"), class_="dev-d"), extra, class_="dev-row")
+    return t("div", t("details", head, t("div", radios, class_="opts"), class_="dev-d"), extra, class_="dev-row"), flags, chosen_flag
 
 
 def _clients_block(d: Draft, managed: list[str], ios_hint: bool = True) -> Markup:
@@ -400,6 +436,8 @@ def _clients_block(d: Draft, managed: list[str], ios_hint: bool = True) -> Marku
                         t("span", title), class_="chip-check") for p, title in cat.platforms.items()],
               class_="dev-chips")
     rows: list[Markup] = []
+    flags: list[tuple[str, list[str]]] = []
+    chosen_flag = False
     picked: dict[str, list[str]] = {}
     for plat in cat.platforms:
         if plat not in devices:
@@ -407,8 +445,11 @@ def _clients_block(d: Draft, managed: list[str], ios_hint: bool = True) -> Marku
         chosen = [i for i in d.clients.get(plat, []) if cat.client(i)]
         used = {a for p, ids in d.clients.items() if p != plat for a in ids}
         opts = _device_options(cat, plat, protocols, chosen, plan.get(plat, []), d.install_mode, used)
-        rows.append(_device_row(cat, plat, cat.platforms[plat], protocols, chosen or None, opts, names, d.install_mode,
-                                ios_hint))
+        row, row_flags, row_chosen = _device_row(cat, plat, cat.platforms[plat], protocols, chosen or None, opts, names,
+                                     d.install_mode, ios_hint)
+        rows.append(row)
+        flags += row_flags
+        chosen_flag = chosen_flag or row_chosen
         if opts:
             picked[plat] = chosen or opts[0]
     line = groups.apps_line(cat, picked)
@@ -416,11 +457,12 @@ def _clients_block(d: Draft, managed: list[str], ios_hint: bool = True) -> Marku
     total = (t("p", t("strong", f"Всего {plural(count, 'приложение', 'приложения', 'приложений')}: "), line, class_="dev-total")
              if line else t("p", "Устройства не выбраны.", class_="muted"))
     cav = clientviews.caveat_items(cat, picked, protocols, names)
-    caveats = t("div", t("span", "Оговорки", class_="label"),
-                t("ul", [t("li", text) for text, _ in cav], class_="cav-list"),
+    legend = _flag_legend(flags)
+    caveats = t("div", t("span", "Оговорки" if cav or chosen_flag else "Про варианты в «сменить»", class_="label"),
+                t("ul", [[t("li", text) for text, _ in cav], [t("li", line) for line in legend]], class_="cav-list"),
                 t("details", t("summary", "подробнее"), t("ul", [t("li", f"{text}: {note}") for text, note in cav if note],
                                                            class_="cav-list"), class_="more"),
-                class_="cav") if cav else None
+                class_="cav") if cav or legend else None
     unverified = any(not (cat.client(c) or {}).get("verified", {}).get("device", True) for ids in picked.values() for c in ids)
     return t("div", t("span", "Устройства", class_="label"), chips, t("div", rows, class_="dev-rows"), total, caveats,
              t("p", clientviews.UNVERIFIED, class_="hint") if unverified else None,
@@ -630,11 +672,15 @@ def _stepper(step: int, custom: bool = False, final: bool = False) -> Markup:
              class_="stepper")
 
 
+NO_PEOPLE_DATA = "Замеров с устройств пока нет — такие варианты выбраны по надёжности."
+
+
 def _preset_why(pr: dict[str, Any], names: dict[str, str], by_id: dict[str, Fact]) -> str:
-    """Одна строка «почему» из того же источника, по которому выбрано: клиентские пробы, а нет их — надёжность."""
+    """Строка «почему» из того же источника, по которому выбрано: клиентские пробы. Пустая — проб нет (одна общая
+    строка под вариантами, не по строке на вариант)."""
     mine = [(p, by_id[p].people_speed) for p in pr["protocols"] if p in by_id and by_id[p].people_speed]
     if not mine:
-        return "замеров с устройств пока нет — выбран по надёжности"
+        return ""
     best = max((f.people_speed for f in by_id.values()), default=0.0)
     pid, speed = max(mine, key=lambda x: x[1])
     if speed >= best:
@@ -643,9 +689,10 @@ def _preset_why(pr: dict[str, Any], names: dict[str, str], by_id: dict[str, Fact
 
 
 def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str], by_id: dict[str, Fact],
-                chosen: bool, rec: bool, admin: bool) -> Markup:
+                chosen: bool, rec: bool, admin: bool) -> tuple[Markup, list[str]]:
     """Готовый вариант: название, протоколы чипами, приложения одной строкой, «почему». Один primary и «рекомендуем» — у
-    варианта без оговорок (rec); есть оговорки — «с оговорками», а про магазин (iPhone) — строка под приложениями."""
+    варианта без оговорок (rec); есть оговорки — чип «с оговорками». Возвращает и сами оговорки (магазин iPhone
+    и прочие): _start_block выводит их одним списком под вариантами, каждую один раз."""
     issues, foreign = [], []
     if not pr["complete"]:
         issues.append("не на всех устройствах все протоколы")
@@ -658,18 +705,17 @@ def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str],
     foreign = list(dict.fromkeys(foreign))
     if pr["foreign"] and not foreign:
         issues.append("есть приложения не из магазина РФ")
-    flag = (t("span", "с оговорками", class_="chip warn", title="; ".join(dict.fromkeys([*foreign, *issues])))
-            if issues or pr["foreign"] else None)
+    flag = t("span", "с оговорками", class_="chip warn") if issues or pr["foreign"] else None
+    why = _preset_why(pr, names, by_id)
     return t("div", t("span",
                       t("span", t("strong", PRESET_TITLES[pr["id"]]),
                         t("span", "рекомендуем", class_="chip info") if rec else None,
                         t("span", "выбрано", class_="chip") if chosen else None, flag, class_="opt-title"),
                       t("div", [t("span", names.get(p, p), class_="chip") for p in pr["protocols"]], class_="chips"),
                       t("span", groups.apps_line(cat, pr["plan"]), class_="hint"),
-                      t("span", " · ".join(foreign), class_="hint") if foreign else None,
-                      t("span", _preset_why(pr, names, by_id), class_="hint"), class_="opt-body"),
+                      t("span", why, class_="hint") if why else None, class_="opt-body"),
              t("button", "Выбрать", type="submit", name="go", value=pr["id"], class_="btn primary" if rec else "btn"),
-             class_="opt preset" + (" sel" if chosen else ""))
+             class_="opt preset" + (" sel" if chosen else "")), list(dict.fromkeys([*foreign, *issues]))
 
 
 def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
@@ -683,8 +729,15 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
     by_id = {f.id: f for f in facts}
     prs = groups.presets(cat, managed, d.install_mode)
     best = groups.recommended_preset(prs)
-    rows = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode == "admin")
+    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode == "admin")
             for pr in prs]
+    rows = [m[0] for m in made]
+    where: dict[str, list[str]] = {}
+    for pr, (_, notes) in zip(prs, made):
+        for n in notes:
+            where.setdefault(n, []).append(PRESET_TITLES[pr["id"]])
+    flagged = len({x for ws in where.values() for x in ws})
+    legend = [t("li", n + (f" ({', '.join(ws)})" if len(ws) < flagged else "")) for n, ws in where.items()]
     rows.append(t("div", t("span", t("span", t("strong", "Свой набор"),
                                     t("span", "выбрано", class_="chip") if d.preset == "custom" else None, class_="opt-title"),
                            t("span", "Протоколы и приложения выбираю сам.", class_="hint"), class_="opt-body"),
@@ -693,7 +746,10 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
     return t("div", _mode_seg(d.install_mode), t("p", MODE_HINTS[d.install_mode], class_="hint"),
              t("button", "Пересчитать", type="submit", name="go", value="refresh", class_="btn small", data_refresh=True,
                formnovalidate=True),
-             t("div", rows, class_="opts"))
+             t("div", rows, class_="opts"),
+             t("div", t("span", "Оговорки", class_="label"), t("ul", legend, class_="cav-list"), class_="cav")
+             if legend else None,
+             t("p", NO_PEOPLE_DATA, class_="hint") if any(not _preset_why(pr, names, by_id) for pr in prs) else None)
 
 
 def _proto_summary(d: Draft, managed: list[str], names: dict[str, str]) -> Markup:
@@ -905,6 +961,7 @@ def connect_done(app: "App", req: "Request") -> "Response":
                 t("div", t("a", "Карточки (печать, ZIP, CSV)", href=link, class_="btn primary", data_swap=True),
                   t("span", st.counter, class_="chip ok") if st.known and st.on else None, class_="actions"),
                 t("p", clientviews.SEND_WARN, class_="hint"),
+                t("p", clientviews.NO_KEYS, class_="hint") if rows else None,
                 t("div", rows, class_="urows") if rows else None, clientviews.hints(ctx)[1:] if rows and ctx else None)
     body = [*head, hand, _texts_card(g, ctx) if ctx and g.clients else None, dist]
     return app.render(req, TITLE, body, active="/groups")

@@ -124,13 +124,18 @@ def metrics(proto: str, ctx: Ctx) -> Markup:
 
 
 def caption(ctx: Ctx) -> Markup:
+    """Одна строка над карточками: что значат цифры (трафик за сегодня без служебных замеров; «≈» у Xray) и свежесть."""
+    what = [" · трафик за сегодня, без служебных замеров"]
+    if ctx.approx:
+        what.append("«≈» — у Xray-протоколов служебный трафик делится по долям замеров")
+    what = " · ".join(what)
     if ctx.live:
         last = max(d["ts"] for d in ctx.live.values())
         stale = ctx.now - last > 3 * 600
-        return t("p", f"метрики раз в 10 мин · обновлено {live.ago(last, ctx.now)}",
+        return t("p", f"метрики раз в 10 мин · обновлено {live.ago(last, ctx.now)}", what,
                  t("span", " · замеры не идут: systemctl status zoo-live.timer", class_="stale") if stale else None,
                  class_="quiet")
-    return t("p", "метрики раз в 10 мин · первый замер — через пару минут после установки", class_="quiet")
+    return t("p", "метрики раз в 10 мин · первый замер — через пару минут после установки", what, class_="quiet")
 
 
 # ---------- кнопки ----------

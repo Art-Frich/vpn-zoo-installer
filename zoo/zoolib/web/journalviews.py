@@ -66,7 +66,7 @@ def _kind_badge(kind: str, n: int | None = None) -> Markup:
     """Вид события: нажатие открывает справку (окно kh-<вид>, см. _kind_dialogs)."""
     title = journal.KINDS[kind][1] + (f" {n}" if n is not None else "")
     return t("button", title, type="button", class_=f"badge {KIND_BADGE.get(kind, 'muted')}",
-             data_dialog=f"kh-{kind}", title="Что это значит")
+             data_dialog=f"kh-{kind}")
 
 
 def _kind_dialogs() -> Markup:
@@ -83,23 +83,25 @@ def _kind_dialogs() -> Markup:
 
 
 def _timeline(data: dict[str, Any]) -> Markup:
+    """График по группам; легенды нет: цвет группы — квадратик у её карточки выше (там же название и число)."""
     tl = data["timeline"]
     if not tl["series"]:
         return empty("За период попыток не было")
-    return join(charts.columns(tl["buckets"], tl["step"], tl["series"], "Попытки по времени", 1100, 260,
-                               fmt=charts.count_label, nice=charts.nice_count, empty_tip="попыток не было"),
-                charts.legend(tl["series"], fmt=charts.count_label))
+    return charts.columns(tl["buckets"], tl["step"], tl["series"], "Попытки по времени", 1100, 260,
+                          fmt=charts.count_label, nice=charts.nice_count, empty_tip="попыток не было")
 
 
 def _group_cards(data: dict[str, Any]) -> Markup:
     """Карточки групп с попытками; группы без попыток — одной строкой «…— попыток не было»,
     а слепой детектор (REALITY) — отдельной строкой «не отслеживается», а не нулём."""
     cards = []
+    color = {s["key"]: i for i, s in enumerate(data["timeline"]["series"])}
     for g in data["groups"]:
         if not g["n"]:
             continue
         chips = [t("span", f"{k['title']}: {k['n']}", class_="chip") for k in g["kinds"]]
-        cards.append(card(g["title"],
+        swatch = t("span", class_=f"swatch {charts.series_class(color[g['key']])}") if g["key"] in color else None
+        cards.append(card([swatch, " " if swatch else None, g["title"]],
                           t("div", t("div", charts.count_label(g["n"]), class_="num-big", title="попыток"),
                             t("div", f"адресов: {g['ips']}", class_="muted small")),
                           t("div", chips, class_="chips") if chips else None, cls="proto"))
@@ -112,11 +114,11 @@ def _group_cards(data: dict[str, Any]) -> Markup:
 
 
 def _ports_cell(ports: list[int]) -> Markup | str:
-    """Не больше двух портов, остальное — «+N»; полный список в title."""
+    """Не больше двух портов, остальное — «+N»; полный список — в title, только если что-то скрыто."""
     if not ports:
         return "—"
     shown = ", ".join(map(str, ports[:2])) + (f" +{len(ports) - 2}" if len(ports) > 2 else "")
-    return t("span", shown, title=", ".join(map(str, ports)))
+    return t("span", shown, title=", ".join(map(str, ports)) if len(ports) > 2 else None)
 
 
 def _ports_table(data: dict[str, Any]) -> Markup:
@@ -168,7 +170,7 @@ def _help(data: dict[str, Any]) -> Markup:
     """«?» у таблицы источников: виды событий (нажать — справка), чего мы не видим, свои адреса."""
     return join(
         t("p", t("strong", "Что значат виды событий"), " — нажмите на вид"),
-        t("ul", [t("li", _kind_badge(k), " ", lines[0]) for k, lines in journal.KIND_HELP.items()]),
+        t("div", [_kind_badge(k) for k in journal.KIND_HELP], class_="chips"),
         t("p", t("strong", "Чего мы не видим")),
         t("ul", [t("li", t("strong", b["what"] + ": "), b["why"]) for b in data["blind"]]),
         t("p", "ufw пишет блокировки не чаще 3 в минуту на весь сервер, поэтому число попыток по портам — "
@@ -221,7 +223,7 @@ def _more(st: dict[str, Any], nxt: str | None) -> Markup | None:
 
 
 def _ip_cell(ip: str, st: dict[str, Any]) -> Markup:
-    return t("a", t("code", ip), href=_url(st, ip=ip, after=""), data_swap=True, title="Что делал этот адрес")
+    return t("a", t("code", ip), href=_url(st, ip=ip, after=""), data_swap=True)
 
 
 def _ips_table(rows: list[dict[str, Any]], st: dict[str, Any]) -> Markup:
@@ -314,8 +316,7 @@ def _own_page(app: "App", req: "Request", st: dict[str, Any]) -> "Response":
         app.cache_put(key, d, 120)
     if d.get("empty"):
         return app.render(req, "Атаки", [head, card("Не учтены", empty("Нет данных · сбор каждые 5 мин"))], active="/journal")
-    rows = [[t("a", t("code", r["ip"]), href=_url(st, own="", ip=r["ip"], after=""), data_swap=True,
-                title="Что делал этот адрес"),
+    rows = [[t("a", t("code", r["ip"]), href=_url(st, own="", ip=r["ip"], after=""), data_swap=True),
              badge(*SCOPE_BADGE[r["scope"]]), _why(r), charts.count_label(r["n"]), ago(r["last"])] for r in d["rows"]]
     total = (f"За период {d['title']}: {charts.count_label(d['total'])} с {_ru(d['ips'], 'адреса', 'адресов', 'адресов')}. "
              "Эти попытки не входят ни в числа, ни в графики, ни в тревоги."
@@ -348,9 +349,9 @@ def _build(data: dict[str, Any], app: "App") -> tuple[list[Any], list[Any]]:
     top = data["top_ips"][0] if data["top_ips"] else None
     skipped = data["hidden"]["own"] + data["hidden"]["local"]
     tiles = t("div",
-              _tile("Попыток", charts.count_label(t_["events"]), title="извне на сервер"),
-              _tile("Адресов", str(t_["ips"]), title="разных источников"),
-              _tile("Банов fail2ban", str(t_["bans"]), title="по SSH"),
+              _tile("Попыток", charts.count_label(t_["events"]), "извне на сервер"),
+              _tile("Адресов", str(t_["ips"]), "разных источников"),
+              _tile("Банов fail2ban", str(t_["bans"]), "по SSH"),
               _tile("Чаще всего", top["ip"] if top else "—",
                     f"{top['n']}" + (f" · {top['cc']}" if top["cc"] else "") if top else "тихо"),
               class_="tiles")

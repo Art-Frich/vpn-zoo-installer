@@ -242,9 +242,10 @@ class WizardTest(GroupWebBase):
         self.assertIn("нет Hysteria2", text, "честная метка у набора, который не покрыл протокол")
         self.assertEqual(self.checked(body, "android"), ["happ", "amneziawg"])
         self.assertEqual(self.checked(body, "windows"), ["v2rayn", "amneziavpn"])
-        # подсказка про магазин — только у невыбранных вариантов
+        # метка про магазин — только у невыбранных вариантов, объяснение — один раз под строками
         row = self.rows(body)["iPhone"]
-        self.assertIn("Happ: нет в App Store РФ", row)
+        self.assertIn("нет в App Store РФ", row)
+        self.assertEqual(text.count("нет в App Store РФ: нужен Apple ID другой страны"), 1)
         self.assertNotIn("нет в App Store РФ", self.heads(body)["iPhone"], "у выбранного набора иностранного приложения нет")
     def test_step2_refresh_keeps_manual_choice_and_none_drops_device(self):
         base = dict(name="Семья", proto=["hysteria2", "vless-reality"], clients_for="hysteria2,vless-reality|self", devs="1",
@@ -355,17 +356,19 @@ class WizardTest(GroupWebBase):
 
     def test_self_mode_is_honest_about_github_on_computers(self):
         cat = clients.load()
-        self.assertIn("не из магазина, ставится файлом", groupviews._set_note(cat, "windows", ["v2rayn"], "self"))
-        self.assertIn("установщик с GitHub", groupviews._set_note(cat, "linux", ["v2rayn"], "self"))
-        self.assertEqual(groupviews._set_note(cat, "windows", ["v2rayn"], "admin"), "")
-        self.assertEqual(groupviews._set_note(cat, "windows", ["hiddify"], "self"), "", "Hiddify есть в Microsoft Store")
-        self.assertEqual(groupviews._set_note(cat, "ios", ["amneziavpn"], "self"), "AmneziaVPN: нет в App Store РФ")
+        self.assertEqual(groupviews._set_flag(cat, "windows", ["v2rayn"], "self"), ("не из магазина", ["v2rayN"]))
+        self.assertEqual(groupviews._set_flag(cat, "linux", ["v2rayn"], "self"), ("в магазине нет", ["v2rayN"]))
+        self.assertIn("ставится файлом", " ".join(groupviews._flag_legend([("не из магазина", ["v2rayN"])])))
+        self.assertIn("установщик с GitHub", " ".join(groupviews._flag_legend([("в магазине нет", ["v2rayN"])])))
+        self.assertIsNone(groupviews._set_flag(cat, "windows", ["v2rayn"], "admin"))
+        self.assertIsNone(groupviews._set_flag(cat, "windows", ["hiddify"], "self"), "Hiddify есть в Microsoft Store")
+        self.assertEqual(groupviews._set_flag(cat, "ios", ["amneziavpn"], "self"), ("нет в App Store РФ", ["AmneziaVPN"]))
         # iPhone «ставится файлом» не бывает: нет в App Store РФ — так и сказано
         broken = clients.load()
         broken.client("incy")["platforms"]["ios"] = [{"kind": "site", "url": "https://example.org/", "checked": True}]
-        note = groupviews._set_note(broken, "ios", ["incy"], "self")
-        self.assertEqual(note, "iPhone: в App Store РФ нет")
-        self.assertNotIn("файл", note)
+        flag = groupviews._set_flag(broken, "ios", ["incy"], "self")
+        self.assertEqual(flag, ("нет в App Store РФ", ["INCY"]))
+        self.assertNotIn("файл", flag[0])
         _, body = self.c.get("/connect/new?mode=self")
         self.assertIn("Приложения из магазина и один QR. Где магазина нет — предупредим.", body)
     def test_wizard_device_chips_add_and_remove_devices(self):
@@ -1142,7 +1145,7 @@ class StartStepTest(GroupWebBase):
         self.assertIn("Happ — Android · INCY — iPhone · v2rayN — Windows", text, "приложения — одной строкой одного вида")
         self.assertNotIn("приложение на устройство", text)
         self.assertNotIn("Мбит/с", text, "скорость в пресетах — только по замерам с устройств")
-        self.assertIn("замеров с устройств пока нет — выбран по надёжности", text)
+        self.assertEqual(text.count(groupviews.NO_PEOPLE_DATA), 1, "про отсутствие замеров — одна строка на шаг")
         self.assertNotIn("с сервера", text)
         self.assertNotRegex(body, r'name="proto"')
         self.assertIn("data-expanded", body)
@@ -1590,8 +1593,8 @@ class LeftoversTest(GroupWebBase):
         simple = text[text.index("Просто"):text.index("Надёжно")]
         self.assertIn("Hysteria2", simple)
         self.assertIn("Hiddify — Android, iPhone, Windows", simple, "одно приложение на всех устройствах")
-        self.assertIn("iPhone: нужен иностранный Apple ID", simple)
         self.assertIn("с оговорками", simple)
+        self.assertEqual(text.count("iPhone: нужен иностранный Apple ID"), 1, "оговорка про iPhone — одна на шаг, не в каждом варианте")
         reliable = text[text.index("Надёжно"):text.index("Свой набор")]
         self.assertIn("Hysteria2", reliable)
         self.assertIn("VLESS XHTTP", reliable)
@@ -1693,7 +1696,7 @@ class ProtocolRowsTest(GroupWebBase):
             self.assertIn(name, text, name)
         for gone in ("HY2", "SS-2022", "Протокол ", "REALITY", "3.1", "v5"):
             self.assertNotIn(gone, text, "одно название протокола на всех экранах")
-        self.assertIn('title="Протокол vless-reality"', body, "длинное имя — только в подсказке")
+        self.assertNotIn('title="Протокол vless-reality"', body, "подсказка с названием протокола ничего не добавляет")
         self.assertEqual(len(self.rows(body)), 7)
 
     def test_salamander_is_an_independent_row(self):

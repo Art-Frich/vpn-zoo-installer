@@ -450,7 +450,8 @@ class ClientsPageTest(AppTestBase):
         table = table[:table.index("</section>")]
         self.assertNotIn('class="chip bad"', table, "не работающие протоколы — одной строкой, без красных чипов")
         self.assertIn("Не работает: VLESS Vision, VLESS XHTTP, AmneziaWG", table)
-        self.assertIn('class="chip" title="не проверено: в исследовании не проверяли', body)
+        self.assertIn("в исследовании не проверяли — INCY: ", table, "одинаковая заметка — одной строкой под таблицей")
+        self.assertNotIn('title="в исследовании не проверяли', table, "и не подсказкой у каждого чипа")
         self.assertRegex(body, r"X25519MLKEM768", "причины — в «Почему «с оговоркой» и «не работает»»")
 
     def table_rows(self, body):
@@ -470,15 +471,16 @@ class ClientsPageTest(AppTestBase):
         # столбцы устройств: есть / есть, но не из РФ-магазина / нет
         happ = rows["Happ"]
         self.assertEqual(happ.count('class="chip ok">✓</span>'), 1, "Android")
-        self.assertIn('class="chip warn" title="В российском App Store его нет', happ)
+        self.assertNotIn("В российском App Store его нет", happ, "объяснение — один раз под таблицей, не подсказкой в строке")
         self.assertIn(">нет в App Store РФ</span>", happ, "iPhone: Happ нет в App Store РФ")
         self.assertNotIn("✓!", body, "«!» заменён словами, как в мастере")
         self.assertIn(">—</span>", happ, "Windows: Happ нет")
         # протоколы — по каталогу: зелёный заявлен, жёлтый с оговоркой; не работающие — строкой
         hid = rows["Hiddify"]
-        self.assertRegex(hid, r'class="chip warn" title="с оговоркой: работает[^"]*">Hysteria2 · стенд</span>')
-        self.assertRegex(hid, r'class="chip ok" title="[^"]*проверено на стенде[^"]*">TUIC.{0,3}стенд</span>')
-        self.assertIn("Не работает: VLESS Vision, VLESS XHTTP, AmneziaWG", hid)
+        self.assertRegex(hid, r'class="chip warn" title="работает[^"]*">Hysteria2.{1,4}стенд</span>')
+        self.assertRegex(hid, r'class="chip ok">TUIC.{0,3}стенд</span>', "заметка общая с Shadowsocks: строкой под таблицей")
+        self.assertNotIn("Не работает", hid)
+        self.assertIn("Не работает: VLESS Vision, VLESS XHTTP, AmneziaWG — sing-box, Hiddify", body)
         self.assertNotIn('class="chip bad"', hid)
         self.assertIn(">Hysteria2</span>", rows["Happ"], "без отметки «стенд»: Happ только по документации")
         self.assertNotIn("стенд", rows["Happ"])
@@ -953,8 +955,7 @@ class HandoffPageTest(AppTestBase):
     def test_tiles_stay_as_advanced_block(self):
         _, body = self.c.get("/users/masha")
         self.assertRegex(body, r'<details class="card more"><summary>Все ссылки и QR</summary>')
-        self.assertIn("Приложения: ", body, "плитки по-прежнему со списком приложений из каталога")
-        self.assertNotIn("sing-box", body.split("Приложения: ")[1].split('"')[0], "sing-box ссылок не берёт")
+        self.assertNotIn('title="Приложения: ', body, "какое приложение открывает протокол, сказано в «Подключить», а не подсказкой")
         self.assertIn("Быстрый старт", body)
 
     def test_disabled_catalog_keeps_tiles_open(self):

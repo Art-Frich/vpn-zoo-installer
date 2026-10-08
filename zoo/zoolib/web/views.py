@@ -1,7 +1,9 @@
 """Страницы админки: обзор, трафик, проверка, логи, настройки, задачи.
 Пользователи — в userviews.py. Данные — те же функции zoolib, что у CLI.
 
-Правило текста: на странице видна одна строка, пояснение — в «?» (card(help=)) или в title=."""
+Правило текста: на странице видна одна строка, пояснение — в «?» (card(help=)) или в title=. title= — только то, чего
+на экране нет (не повтор и не начало видимого текста); каждое пояснение на странице один раз: общая оговорка — одной
+строкой («Оговорки», легенда), а не в каждой строке. Следит tests/test_no_duplicates.py."""
 
 from __future__ import annotations
 
@@ -48,7 +50,7 @@ def users_line(p: dict[str, Any]) -> Markup:
 NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", "Группы"), ("/apps", "Через VPN"), ("/clients", "Приложения"), ("/traffic", "Трафик"),
        ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
 NAV_TITLES = frozenset(label for _, label in NAV)
-USERS_TRAFFIC_TITLE = "трафик пользователей сегодня (без служебного пробника)"
+USERS_TRAFFIC_TITLE = "Без служебного трафика пробника zoo-probe"
 
 
 # ---------- общие куски ----------
@@ -128,10 +130,10 @@ def no_history_hint(csrf: str = "") -> Markup:
 def _tile(label: str, value: str, hint: str = "", extra: Any = None, title: str | None = None,
           label_title: str | None = None) -> Markup:
     """Плитка-сетка: подпись, значение, место под полоску (занято всегда), подсказка — всё в одну строку."""
-    return t("div", t("div", label, class_="label", title=label_title or label),
-             t("div", value, class_="value", title=value),
+    return t("div", t("div", label, class_="label", title=label_title),
+             t("div", value, class_="value"),
              t("div", extra, class_="meter-slot"),
-             t("div", hint, class_="hint", title=title or hint or None), class_="tile")
+             t("div", hint, class_="hint", title=title), class_="tile")
 
 
 # ---------- обзор ----------
@@ -236,8 +238,7 @@ def overview(app: "App", req: "Request") -> "Response":
                     f"{active_users}/{st['users']['total']} активны"
                     + (f" · служебный {human_bytes(service_bytes)}" if service_bytes else ""),
                     label_title=USERS_TRAFFIC_TITLE,
-                    title=f"{USERS_TRAFFIC_TITLE}; служебный трафик пробника zoo-probe: {human_bytes(service_bytes)}"
-                    if service_bytes else USERS_TRAFFIC_TITLE),
+                    ),
               _tile("Аптайм", human_duration(host.get("uptime")),
                     f"Xray {st['xray'].get('state') or '—'}" if st["xray"] else ""),
               class_="tiles")
@@ -256,14 +257,13 @@ def overview(app: "App", req: "Request") -> "Response":
             t("div", t("span", f"{p['port']}/{p['layer']}", class_="chip", title=about), problems, class_="chips"),
             protoviews.metrics_row(p, pctx, csrf),
             t("div",
-              t("div", t("div", protoviews.approx(pctx, p["id"]) + human_bytes(protoviews.today_bytes(pctx, p["id"])), class_="num-big",
-                         title="сегодня, без служебных замеров" + (" (≈: у Xray-протоколов служебный трафик делится по долям замеров)"
-                                                                    if protoviews.approx(pctx, p["id"]) else "")),
+              t("div", t("div", protoviews.approx(pctx, p["id"]) + human_bytes(protoviews.today_bytes(pctx, p["id"])),
+                         class_="num-big"),
                 users_line(p)),
               charts.sparkline(spark.get(p["id"], []), charts.series_class(i)),
               class_="row"),
             protoviews.switch_row(p, pctx, csrf),
-            cls="proto", tip=p["name"], extra=protoviews.head_badge(p, pctx)))
+            cls="proto", extra=protoviews.head_badge(p, pctx)))
     if cards:
         protos: Any = t("div", cards, class_="grid")
     else:
@@ -425,9 +425,9 @@ def load_selftest() -> dict[str, Any] | None:
 
 
 def _proto_name(pid: Any, mans: dict[str, Any]) -> Markup:
-    """Название протокола как на всех экранах; длинное имя из манифеста — в подсказке. Идентификатора на экране нет."""
+    """Название протокола как на всех экранах, без подсказки. Идентификатора на экране нет."""
     m = mans.get(pid)
-    return t("strong", manifests.TITLES.get(pid) or (m.short if m else pid), title=m.name if m else None)
+    return t("strong", manifests.TITLES.get(pid) or (m.short if m else pid))
 
 
 def results_table(results: list[dict[str, Any]]) -> Markup:
@@ -489,7 +489,8 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
                 method="post", action="/probe/run", class_="inline", data_swap=True)
     local = card("Самопроверка с сервера", *local_body, extra=run_btn,
                  help=verdict_legend(last["results"]) if last else None)
-    cmp_help = t("p", "Отчёт клиентского пробника — файл ", t("code", "probe/probe-report.json"),
+    cmp_help = t("p", "Сравнивается с самопроверкой и записывается в историю. Отчёт клиентского пробника — файл ",
+                 t("code", "probe/probe-report.json"),
                  " после запуска контейнера zoo-probe на машине пользователя (README, «Блокирует ли ваш "
                  "провайдер»). Пакет для пробника: ", t("code", str(paths.probe_export_file())),
                  " (его создаёт самопроверка; в нём ключи — передавайте по scp и удалите после).")
@@ -508,8 +509,7 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
             t("div", t("label", "устройство", for_="device"),
               t("input", type="text", name="device", id="device", maxlength="40", placeholder="pixel7"),
               class_="field"),
-            t("button", "Сравнить", type="submit", class_="btn primary",
-              title="Сравнить с самопроверкой и записать в историю"), class_="form-row"),
+            t("button", "Сравнить", type="submit", class_="btn primary"), class_="form-row"),
           method="post", action="/probe/compare", class_="stack", data_swap=True)]
     if error:
         cmp_body.insert(0, alert_list([("bad", error)]))
