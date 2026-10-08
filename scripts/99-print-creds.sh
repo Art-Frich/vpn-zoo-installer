@@ -74,6 +74,7 @@ m_files() { jq -r --arg u "$WHO" '[.files[]? | select(.user == $u and (.enabled 
 
 ssh_port="$(ssh_login_port)"
 ssh_user="${SUDO_USER:-root}"
+zoo_sudo=""; [ "$ssh_user" = root ] || zoo_sudo="sudo "
 ssh_host="$SERVER_IP"; [[ "$ssh_host" == *:* ]] && ssh_host="[$ssh_host]"
 ssh_p=""; [ "${ssh_port:-22}" = "22" ] || ssh_p=" -p $ssh_port"
 panel_path="${PANEL_PATH#/}"; panel_path="${panel_path%/}"
@@ -180,9 +181,9 @@ echo "  изменить: zoo allow list | add | del | reset (--user ИМЯ — 
 echo
 if [ -n "${ZOO_WEB_PORT:-}" ]; then
     printf '%b\n' "${C_BLUE}-- Админка zoo (с вашего компьютера, пароль сервера) --${C_RESET}"
-    zoo_sudo=""; [ "$ssh_user" = root ] || zoo_sudo="sudo "
     echo "  ssh -t$ssh_p -L $ZOO_WEB_PORT:127.0.0.1:$ZOO_WEB_PORT $ssh_user@$ssh_host ${zoo_sudo}zoo web --link"
     echo "  появится ссылка — откройте её в браузере; админка работает, пока открыто окно"
+    [ "$ZOO_WEB_PORT" = 7070 ] || echo "  порт не 7070: стандартный был занят или задан вручную; команда всегда — в zoo web --info"
     echo "  дальше: «Обзор» → «Подключить людей»"
     echo
 fi
@@ -308,6 +309,7 @@ md_escape() { sed 's/|/\\|/g'; }
     echo "## Пользователи и админка"
     echo
     echo "- новый пользователь во всех протоколах: \`sudo zoo user add ИМЯ --note \"кто\"\`, его ссылки и QR: \`sudo zoo links ИМЯ --qr\`"
+    [ -z "${ZOO_WEB_PORT:-}" ] || echo "- открыть админку (с вашего компьютера, пароль сервера): \`ssh -t${ssh_p} -L $ZOO_WEB_PORT:127.0.0.1:$ZOO_WEB_PORT $ssh_user@$ssh_host ${zoo_sudo}zoo web --link\`"
     echo "- админка: \`sudo zoo web --info\` (туннель, адрес, токен); трафик: \`sudo zoo traffic\`; состояние: \`sudo zoo status\`"
     echo "- клон репозитория на сервере: \`$REPO_ROOT\` (не удалять: из него \`zoo upgrade\` и \`scripts/install.sh\`)"
     echo
