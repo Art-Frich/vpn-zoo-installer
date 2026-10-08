@@ -101,7 +101,7 @@ ssh -t -L 7070:127.0.0.1:7070 root@IP zoo web --link
 | Группы с общими настройками | админка → «Группы» · `zoo group` |
 | Состояние и трафик | «Обзор», «Трафик» · `zoo status`, `zoo traffic` |
 | Логи и кто стучался в сервер | «Логи», «Атаки» · `zoo journal` |
-| Обновить | `sudo zoo upgrade --pull --apply` |
+| Обновить vpn-zoo с GitHub (админку и протоколы) | `sudo zoo upgrade --pull --apply` · без `--apply` — только показать, что изменится |
 
 Людям отправляйте [docs/USER-GUIDE.md](docs/USER-GUIDE.md). Для Android проще всего QR **AmneziaWG**: через VPN идут только выбранные приложения, банки и Госуслуги — мимо. Все команды `zoo` — в [справочнике](docs/REFERENCE.md#админка-и-инструмент-zoo).
 
