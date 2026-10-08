@@ -59,10 +59,16 @@ class BulkCreateTest(Base):
         self.assertEqual(resp.status, 200)
         self.assertIn("Будет создано: 33", body)
         self.assertIn("Совпали имена, добавлен номер: 28", body)
-        self.assertIn("<strong>ivanov-ivan</strong>", body)
-        self.assertIn("<strong>ivanov-ivan-2</strong>", body)
+        self.assertIn("<code>ivanov-ivan</code>", body)
+        self.assertIn("<code>ivanov-ivan-2</code>", body)
+        self.assertIn("<strong>Иванов Иван</strong>", body, "имя — как написано, логин — отдельной колонкой")
+        head = re.search(r"<thead>(.*?)</thead>", body, re.S).group(1)
+        self.assertEqual(re.findall(r"<th[^>]*>([^<]*)</th>", head), ["№", "Имя", "Логин", "Заметка", ""])
+        self.assertNotIn("латиницей</span>", body, "серых чипов «латиницей» нет: про латиницу сказано один раз в сводке")
+        self.assertEqual(body.count("Логин — имя латиницей"), 1)
         self.assertIn("row-warn", body, "совпавшие имена подсвечены")
         self.assertIn("повтор в списке", body)
+        self.assertIn("Создать группу и 33 чел.", body)
         self.assertEqual(body.count("<tr class="), 28)
         self.assertIn('name="confirm" value="1"', body)
         self.assertEqual(len(self.reg()), 1, "предпросмотр ничего не создаёт")
@@ -76,13 +82,15 @@ class BulkCreateTest(Base):
         reg = self.reg()
         self.assertEqual(len(reg), 34)
         self.assertEqual({u["group"] for n, u in reg.items() if n != "owner"}, {"g1"})
-        self.assertEqual(reg["ivanov-ivan"]["note"], "Иванов Иван · офис")
-        self.assertEqual(reg["kuznetsov-aleksey"]["note"], "Кузнецов Алексей · офис")
+        self.assertEqual((reg["ivanov-ivan"]["note"], reg["ivanov-ivan"]["display"]), ("офис", "Иванов Иван"))
+        self.assertEqual((reg["kuznetsov-aleksey"]["note"], reg["kuznetsov-aleksey"]["display"]), ("офис", "Кузнецов Алексей"))
+        self.assertNotIn("display", reg["owner"])
         loc = header(resp, "Location")[0]
         _, page = self.c.get(loc)
         self.assertIn("создано: 33", text_of(page))
         self.assertIn("Совпали имена, добавлен номер: 28: Иванов Иван → ivanov-ivan-2", text_of(page))
-        self.assertIn("Раздать 33 человек", page)
+        self.assertIn("Группа «Офис» готова: 33 чел.", text_of(page))
+        self.assertIn("Карточки (печать, ZIP, CSV)", page)
         self.assertIn('href="/handoff?group=g1"', page)
         self.assertNotIn('name="conn-user"', page, "строка с QR на каждого не рисуется")
 
@@ -90,7 +98,7 @@ class BulkCreateTest(Base):
         resp, body = self.wiz(3, go="edit", name="Офис", proto=["vless-reality"], client__android="happ",
                               users_new="Иван Петров; бух", existing=[], allow_mode="common")
         self.assertEqual(resp.status, 200)
-        self.assertIn("4. Люди", body)
+        self.assertIn("<h3>Люди</h3>", body)
         self.assertRegex(body, r'<textarea[^>]*name="users_new"[^>]*>Иван Петров; бух</textarea>')
 
     def test_group_page_adds_list_with_preview(self):
@@ -99,19 +107,21 @@ class BulkCreateTest(Base):
         resp, body = self.post("/groups/g1/members", {"users_new": [text]})
         self.assertEqual(resp.status, 200)
         self.assertIn("Проверьте список", body)
-        self.assertIn("<strong>masha-2</strong>", body)
+        self.assertIn("<code>masha-2</code>", body)
         self.assertIn("занято: добавлен номер", body)
+        self.assertIn(">Добавить 3 чел.</button>", body)
         self.assertNotIn("ivan-petrov", self.reg())
         resp, body = self.post("/groups/g1/members", {"users_new": [text], "go": ["edit"]})
         self.assertEqual(resp.status, 200)
         self.assertIn("Иван Петров; бух", body)
-        self.assertIn("Проверить список", body)
+        self.assertIn("Проверить список →", body)
         resp, _ = self.post("/groups/g1/members", {"users_new": [text], "confirm": ["1"]})
         self.assertEqual(resp.status, 303)
         reg = self.reg()
         for n in ("ivan-petrov", "masha-2", "mariya"):
             self.assertEqual(reg[n]["group"], "g1", n)
         self.assertEqual(reg["masha-2"]["note"], "тёзка")
+        self.assertEqual((reg["ivan-petrov"]["note"], reg["ivan-petrov"]["display"]), ("бух", "Иван Петров"))
         _, page = self.c.get("/groups/g1")
         self.assertIn("создано: ivan-petrov, masha-2, mariya", text_of(page))
         self.assertIn("Совпали имена, добавлен номер: masha → masha-2", text_of(page))
@@ -186,6 +196,41 @@ class BulkCreateTest(Base):
         self.assertLessEqual(lists, 2 * 2, "по одному user_list на протокол, а не на человека")
 
 
+class DisplayNameTest(Base):
+    """«Иван Петров; бухгалтерия»: к человеку обращаются по имени, логин — мелкой подписью."""
+
+    def setUp(self):
+        super().setUp()
+        resp, _ = self.create_group(users_new="Иван Петров; бухгалтерия\nmasha")
+        self.assertEqual(resp.status, 303)
+
+    def test_card_instruction_and_files_use_the_name(self):
+        _, body = self.c.get("/handoff?group=g1")
+        card = body[body.index('data-name="ivan-petrov"'):]
+        card = card[:card.index("</article>")]
+        self.assertIn('<header class="hhead"><strong>Иван Петров</strong><span class="hnote">ivan-petrov</span>'
+                      '<span class="hnote">бухгалтерия</span>', card)
+        self.assertNotIn("Иван Петров · ", body)
+        self.assertIn('<strong>masha</strong>', body, "без имени из списка — логин")
+        _, z = self.zip_of("", group="g1")
+        text = z.read("ivan-petrov/instruction.txt").decode("utf-8")
+        self.assertTrue(text.startswith("Иван Петров (ivan-petrov) — бухгалтерия\nГруппа: Семья\n"), text[:90])
+        rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
+        self.assertEqual({r[0] for r in rows[1:]}, {"Иван Петров", "masha"})
+        self.assertIn("ivan-petrov/qr-vless-vision.png", z.namelist(), "папка — по логину")
+        _, user = self.c.get("/users/ivan-petrov")
+        self.assertTrue(self.msg(user).startswith("Иван Петров, VPN на Android"))
+        self.assertIn("<h1>Иван Петров</h1>", user)
+
+    def test_group_members_and_list_show_name_and_login_once(self):
+        _, page = self.c.get("/groups/g1")
+        card = page.split("<h3>Участники</h3>")[1].split("Добавить людей списком")[0]
+        self.assertEqual(card.count(">Иван Петров (ivan-petrov)<"), 2, "чип и строка выбора, без третьего повтора")
+        _, lst = self.c.get("/groups")
+        self.assertIn(">Иван Петров</a>", lst)
+        self.assertIn('title="ivan-petrov"', lst)
+
+
 class CardsPageTest(Base):
     def setUp(self):
         super().setUp()
@@ -222,7 +267,7 @@ class CardsPageTest(Base):
         # у телефонов свои магазины и шаги, у компьютеров — свой файл релиза: блоки не сливаются
         blocks = dict(re.findall(r'<h4 class="plat-title">([^<]+)</h4>(.*?)</section>', body, re.S)[:4])
         self.assertEqual(sorted(blocks), ["Android", "Windows", "iPhone", "macOS"])
-        self.assertIn("hiddify-app/releases/latest — в «Assets» скачайте файл для Windows", blocks["Windows"])
+        self.assertIn("apps.microsoft.com/detail/9pdfnl3qv2s5", blocks["Windows"], "на Windows у Hiddify есть Microsoft Store")
         self.assertIn("файл «.dmg»", blocks["macOS"])
         self.assertIn("App Store", blocks["iPhone"])
         self.assertIn("нет в App Store РФ", blocks["iPhone"])
@@ -377,7 +422,7 @@ class ExportTest(Base):
         self.assertIn("QR: qr-", text)
         self.assertIn("не отправляйте через MAX и VK", text)
         self.assertNotIn("{name}", text)
-        self.assertIn("masha/qr-protokol-vless-reality.png", names)
+        self.assertIn("masha/qr-vless-vision.png", names)
         self.assertNotIn("я пришлю", text, "ключ уже у человека: «пришлю» на карточке и в папке не нужно")
         self.assertIn("камеру на QR из этой папки", text)
         self.assertNotIn("\r", text)
@@ -394,7 +439,7 @@ class ExportTest(Base):
         rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig")), delimiter=";"))
         self.assertEqual(rows[0], ["имя", "заметка", "протокол", "ссылка"])
         body = {(r[0], r[2]): r for r in rows[1:]}
-        key = ("masha", "Протокол vless-reality")
+        key = ("masha", "VLESS Vision")
         self.assertIn(key, body)
         self.assertEqual(body[key][1], "сестра")
         self.assertTrue(body[key][3].startswith("vless://masha@"))
@@ -455,9 +500,9 @@ class ExportTest(Base):
                 mock.patch.object(qr, "svg", side_effect=qr.QrError("нет qrencode")):
             _, z = self.zip_of("", group="g2")
         readme = z.read("README.txt").decode("utf-8")
-        self.assertEqual(readme.count("ivan: QR «Протокол hysteria2» не построен"), 1, readme)
+        self.assertEqual(readme.count("ivan: QR «Hysteria2» не построен"), 1, readme)
         text = z.read("ivan/instruction.txt").decode("utf-8")
-        self.assertEqual(text.count("  Протокол hysteria2\n"), 1, text)
+        self.assertEqual(text.count("  Hysteria2\n"), 1, text)
 
     def test_png_falls_back_to_svg_then_skips(self):
         with mock.patch.object(qr, "png", side_effect=qr.QrError("нет PNG")):

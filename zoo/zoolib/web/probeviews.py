@@ -58,7 +58,7 @@ def _verdict_badge(v: str) -> Markup:
 def server_protos() -> list[Server]:
     """Протоколы сервера: {id, name (короткое), full, enabled}; включённые первыми. Манифестов нет — пусто."""
     good, _ = manifests.load_all()
-    out = [{"id": m.id, "name": m.short, "full": m.name, "enabled": m.enabled} for m in good]
+    out = [{"id": m.id, "name": manifests.TITLES.get(m.id, m.short), "full": m.name, "enabled": m.enabled} for m in good]
     return sorted(out, key=lambda s: not s["enabled"])
 
 

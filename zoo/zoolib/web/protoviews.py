@@ -6,11 +6,13 @@
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from .. import manifests, protoctl, traffic
+from .. import manifests, probe as probe_mod, protoctl, traffic
 from ..output import human_bytes
 from ..probe import live, verdicts
 from . import logs
@@ -32,6 +34,25 @@ class Ctx:
     jobs: dict[str, dict[str, Any]] = field(default_factory=dict)
     busy: dict[str, Any] | None = None
     ctls: dict[str, protoctl.Ctl] = field(default_factory=dict)
+    cap: dict[str, tuple[float, str]] = field(default_factory=dict)   # ёмкость сервера по самопроверке: Мбит/с и дата
+
+
+def capacity() -> dict[str, tuple[float, str]]:
+    """Ёмкость сервера: скорость самопроверки (5 МБ через туннель) по протоколам и дата прогона «06.10»."""
+    try:
+        data = json.loads(probe_mod.selftest_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    day = ""
+    try:
+        day = datetime.fromisoformat(str(data.get("generated"))).strftime("%d.%m") if data.get("generated") else ""
+    except ValueError:
+        pass
+    return {r["id"]: (float(r["speed_mbps"]), day) for r in data.get("results") or []
+            if isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("speed_mbps"), (int, float))
+            and r["speed_mbps"] > 0}
 
 
 def context() -> Ctx:
@@ -44,6 +65,7 @@ def context() -> Ctx:
     ctx.jobs = protoctl.active_by_proto()
     ctx.busy = protoctl.active()
     ctx.ctls = protoctl.controls()
+    ctx.cap = capacity()
     return ctx
 
 
@@ -64,7 +86,8 @@ def today_bytes(ctx: Ctx, proto: str) -> int:
 
 
 def metrics(proto: str, ctx: Ctx) -> Markup:
-    """«23 мс · ±4 · 38 Мбит/с · ↓1.2 ГБ ↑90 МБ»; точка — свежесть и итог последнего замера."""
+    """«23 мс · ±4 · сервер тянет ≈408 Мбит/с · 06.10 · ↓1.2 ГБ ↑90 МБ»; точка — свежесть и итог последнего замера.
+    Скорости живого замера нет (занижена): ёмкость берётся из самопроверки."""
     d = ctx.live.get(proto)
     parts: list[str] = []
     dot, title = "muted", "замера ещё не было"
@@ -80,16 +103,18 @@ def metrics(proto: str, ctx: Ctx) -> Markup:
             parts.append(f"сбой: {d['verdict']}")
             dot, title = "bad", f"{verdicts.DESCRIPTIONS.get(d['verdict'], d['verdict'])} · {age}"
         else:
-            parts += live.parts(d, ctx.now)
+            parts += live.parts(d, ctx.now, speed=False)
             if not parts:
                 parts.append("нет замера")
             dot = "muted" if stale else ("ok" if d["verdict"] == verdicts.OK else "warn")
-            note = live.speed_note(d, ctx.now)
-            title = " · ".join(x for x in (f"замер {age}", note,
+            title = " · ".join(x for x in (f"замер {age}",
                                            verdicts.DESCRIPTIONS.get(d["verdict"], "") if d["verdict"] != verdicts.OK else "") if x)
         if stale and dot != "bad":
             dot = "muted"
             title += " · устарел"
+    if proto in ctx.cap:
+        mbps, day = ctx.cap[proto]
+        parts.append(f"сервер тянет ≈{mbps:.0f} Мбит/с" + (f" · {day}" if day else ""))
     if ctx.split:
         up, down = ctx.split.get(proto, (0, 0))
         parts.append(f"{approx(ctx, proto)}↓{_bytes(down)} ↑{_bytes(up)}")

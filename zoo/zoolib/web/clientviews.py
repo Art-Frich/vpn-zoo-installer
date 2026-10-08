@@ -1,6 +1,6 @@
-"""Страница «Клиенты» (что ставить по протоколам и платформам) и блок «Подключить»: приложения платформы,
-QR и ссылки конкретного человека и один текст инструкции на группу. Данные — каталог
-zoo/data/clients.json и кэш версий; в сеть страницы не ходят."""
+"""Страница «Приложения» (справочник: какое приложение что умеет) и блок «Подключить»: приложения платформы,
+QR и ссылки конкретного человека и одна инструкция на группу. Данные — каталог zoo/data/clients.json и кэш
+версий; в сеть страницы не ходят."""
 
 from __future__ import annotations
 
@@ -21,20 +21,43 @@ if TYPE_CHECKING:
 DESKTOP = {"windows", "macos", "linux"}
 MAIN_PLATFORMS = groups.MAIN_DEVICES   # устройства по умолчанию в мастере и на /clients; остальные — чипы выключены
 LEGEND = "✓ заявлено поддерживаемым · ! с оговоркой · ✕ не работает · ? не проверено · — не заявлено"
-UNVERIFIED = "Шаги и статусы — по коду и документации клиентов, на устройстве не проверялись."
+UNVERIFIED = "Шаги и статусы — по коду и документации приложений, на устройстве не проверялись."
 RECOMMEND_BASIS = "по документации и исследованию 04.10.2026, на устройстве не проверено"
 SEND_WARN = ("Ссылки и QR — ключи доступа: не отправляйте через MAX и VK, лучше лично или мессенджером "
              "со сквозным шифрованием.")
 FOREIGN_STORE = "В российском App Store его нет: нужен Apple ID другой страны, подделки с похожим названием не ставьте."
-NAME_TOKEN = "{name}"
-MISMATCH = "текст группы не подходит этому человеку — показан свой"
-STALE = "набор клиентов изменился — проверьте текст"
+NAME_TOKEN = "{name}"      # так подстановка имени хранится в группе
+NAME_TOKEN_RU = "{имя}"    # так — показывается и вводится в редакторе; принимаются оба
+MISMATCH = "инструкция группы не подходит этому человеку — показана его собственная"
+STALE = "набор приложений изменился — проверьте инструкцию"
+NO_APPS = "Приложения не выбраны"
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def fill_name(text: str, label: str) -> str:
+    """Подставить имя человека вместо «{name}» и «{имя}»."""
+    return text.replace(NAME_TOKEN, label).replace(NAME_TOKEN_RU, label)
+
+
+def editor_text(text: str) -> str:
+    """Текст для показа и редактора: «{имя}» вместо внутреннего «{name}»."""
+    return text.replace(NAME_TOKEN, NAME_TOKEN_RU)
+
+
+def stored_text(text: str) -> str:
+    """Текст для хранения: внутренний «{name}» вместо «{имя}»."""
+    return text.replace(NAME_TOKEN_RU, NAME_TOKEN)
+
+
+def no_apps(g: "groups.Group | None") -> Markup:
+    """«Приложения не выбраны → Настроить»: у группы нет набора, раздавать нечего."""
+    return t("span", NO_APPS, " ", t("a", "Настроить →", href=f"/groups/{g.id}#settings", data_swap=True) if g else None,
+             class_="muted")
 
 
 def _sorted_links(links: list[dict[str, Any]], store_first: bool = False) -> list[dict[str, Any]]:
     """Проверенные ссылки раньше собранных по id пакета; store_first — магазины раньше всего (люди ставят сами, D49)."""
-    return sorted(links, key=lambda ln: (store_first and ln["kind"] not in groups.STORE_KINDS, not ln["checked"]))
+    return sorted(links, key=lambda ln: (store_first and ln["kind"] not in groups.LINK_STORE_KINDS, not ln["checked"]))
 
 
 def store_first(g: "groups.Group | None") -> bool:
@@ -63,10 +86,15 @@ def _link_anchors(links: list[dict[str, Any]], presorted: bool = False) -> list[
 # ---------- страница ----------
 
 def proto_names(cat: clients.Catalog) -> dict[str, str]:
-    """Названия протоколов: как в плитках сервера, для неизвестных серверу — из каталога клиентов."""
-    names = {p: d["title"] for p, d in cat.protocols.items()}
-    names.update({m.id: m.short for m in manifests.load_all()[0]})
+    """Названия протоколов на всех экранах (manifests.proto_title); незнакомым — short манифеста или название каталога."""
+    names = {p: manifests.TITLES.get(p, d["title"]) for p, d in cat.protocols.items()}
+    names.update({m.id: manifests.TITLES.get(m.id, m.short) for m in manifests.load_all()[0]})
     return names
+
+
+def supports_list(cat: clients.Catalog, client: dict[str, Any], platform: str) -> bool:
+    """Умеет ли приложение пускать в туннель только приложения «через VPN» на платформе (иначе через VPN идёт всё)."""
+    return client.get("per_app") in ("config", "rules") or bool(cat.per_app_steps(client, platform))
 
 
 def app_names(cat: clients.Catalog, ids: list[str]) -> str:
@@ -75,20 +103,25 @@ def app_names(cat: clients.Catalog, ids: list[str]) -> str:
 
 def coverage_label(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str],
                    names: dict[str, str]) -> tuple[str, str]:
-    """«все N» / «готово» (зелёная), «… с оговоркой» или «без X» (жёлтая): что набор приложений даёт по протоколам."""
-    done, miss = groups.coverage(cat, plat, protocols, ids)
+    """Один чип покрытия: «все протоколы» (ok), «с оговоркой» или «нет Hysteria2» (warn)."""
+    _, miss = groups.coverage(cat, plat, protocols, ids)
     if miss:
-        return "без " + ", ".join(names.get(p, p) for p in miss), "warn"
-    label = f"все {len(done)}" if len(done) > 1 else "готово"
+        return "нет " + ", ".join(names.get(p, p) for p in miss), "warn"
     if groups.caveats(cat, plat, protocols, ids):
-        return label + ", с оговоркой", "warn"
-    return label, "ok"
+        return "с оговоркой", "warn"
+    return "все протоколы", "ok"
 
 
-def caveat_note(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str], names: dict[str, str]) -> str:
-    """«Hysteria2 в Hiddify: <заметка каталога>» по протоколам, покрытым только с оговоркой (как жёлтое в «Все приложения»)."""
-    return "; ".join(f"{names.get(p, p)} в {app}: {note}" if note else f"{names.get(p, p)} в {app}: с оговоркой"
-                     for p, app, note in groups.caveats(cat, plat, protocols, ids))
+def caveat_items(cat: clients.Catalog, picked: dict[str, list[str]], protocols: list[str],
+                 names: dict[str, str]) -> list[tuple[str, str]]:
+    """Оговорки набора приложений по устройствам, каждая один раз: [(строка «Hiddify: Hysteria2 без проверки
+    сертификата», полная заметка каталога)]. Одно название у приложения и протокола не повторяется."""
+    out: dict[str, str] = {}
+    for plat, ids in picked.items():
+        for p, app, short, note in groups.caveats(cat, plat, protocols, ids):
+            title = names.get(p, p)
+            out.setdefault(f"{app}: {short}" if title == app else f"{app}: {title} {short}", note)
+    return list(out.items())
 
 
 def _version_cell(client: dict[str, Any], cache: dict[str, Any], platform: str | None = None) -> Any:
@@ -123,46 +156,27 @@ def _dev_nav(cat: clients.Catalog, dev: str | None) -> Markup:
     return t("nav", links, class_="seg", aria_label="Устройство")
 
 
-def _install_rows(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], devs: list[str]) -> Markup:
-    """«Ставить»: по устройству — набор приложений (тот же подбор, что в мастере для людей, которые ставят сами), метка
-    покрытия, у каждого приложения версия и ссылки."""
-    plan = groups.suggest_set(cat, devs, protos, "self")
-    names = proto_names(cat)
-    rows = []
-    for plat in devs:
-        ids = plan.get(plat)
-        title = cat.platforms[plat]
-        if not ids:
-            rows.append(t("div", t("strong", title, class_="dev-name"), t("span", "нет приложения под эти протоколы",
-                                                                          class_="muted"), class_="dev-row"))
-            continue
-        label, kind = coverage_label(cat, plat, protos, ids, names)
-        apps = []
-        for cid in ids:
-            c = cat.client(cid)
-            if c is None:
-                continue
-            foreign = t("span", "нет в магазине РФ", class_="chip warn", title=FOREIGN_STORE) if cat.no_ru_store(c, plat) else None
-            apps.append(t("div", t("strong", c["name"]), " ", _version_cell(c, cache, plat), " ", foreign,
-                          t("div", _link_anchors(c["platforms"][plat]), class_="chips"), class_="app-line"))
-        rows.append(t("div", t("div", t("strong", title, class_="dev-name"), t("span", app_names(cat, ids), class_="dev-set"),
-                               t("span", label, class_=f"plat-sum {kind}"), class_="dev-head"), apps, class_="dev-row"))
-    return t("div", rows, class_="dev-rows")
-
-
 def _proto_cell(cat: clients.Catalog, c: dict[str, Any], protos: list[str]) -> Markup:
-    """Протоколы клиента по каталогу: зелёный — заявлен, жёлтый — с оговоркой, красный — не работает; «стенд» — проверено прогоном."""
-    chips = []
+    """Протоколы приложения по каталогу: зелёный — заявлен, жёлтый — с оговоркой (наведите), «стенд» — проверено
+    прогоном; не работающие — одной строкой «Не работает: …», без красных чипов."""
+    chips, broken = [], []
+    names = proto_names(cat)
     for p in protos:
         st = c["protocols"].get(p)
         if not st:
             continue
+        if st["s"] == "no":
+            broken.append(names.get(p, p))
+            continue
         note = st.get("note") or ""
         stand = "проверено на стенде" in note
-        kind = {"ok": "chip ok", "warn": "chip warn", "no": "chip bad"}.get(st["s"], "chip")
-        chips.append(t("span", cat.protocols[p]["title"], stand and " · стенд" or None, class_=kind,
+        kind = {"ok": "chip ok", "warn": "chip warn"}.get(st["s"], "chip")
+        chips.append(t("span", names.get(p, p), " · стенд" if stand else None, class_=kind,
                        title=f"{clients.STATUS_TEXT[st['s']]}" + (f": {note}" if note else "")))
-    return t("div", chips, class_="chips") if chips else t("span", "—", class_="muted")
+    if not chips and not broken:
+        return t("span", "—", class_="muted")
+    return t("div", t("div", chips, class_="chips") if chips else None,
+             t("span", "Не работает: " + ", ".join(broken), class_="hint") if broken else None)
 
 
 def _apps_table(cat: clients.Catalog, cache: dict[str, Any], protos: list[str], dev: str | None) -> Markup:
@@ -194,38 +208,35 @@ def clients_page(app: "App", req: "Request") -> "Response":
     try:
         cat = clients.load()
     except clients.ClientsError as e:
-        return app.render(req, "Клиенты", [page_head("Клиенты"), card("Каталог", alert_list([("bad", str(e))]))],
+        return app.render(req, "Приложения", [page_head("Приложения"), card("Каталог", alert_list([("bad", str(e))]))],
                           active="/clients")
     cache = clients.load_cache()
     enabled = {m.id for m in manifests.load_all()[0] if m.enabled}
     protos = [p for p in cat.real_protocols() if p in enabled] if enabled else cat.real_protocols()
     dev = req.query.get("dev") if req.query.get("dev") in cat.platforms else None
-    devs = [dev] if dev else list(groups.MAIN_DEVICES)
+    names = proto_names(cat)
 
-    install = card("Ставить", _install_rows(cat, cache, protos, devs),
-                   help="Подбор для людей, которые ставят сами: приложения из магазинов, протоколы сервера. "
-                        "В мастере «Новая группа» то же считается под выбранные протоколы.")
     table_card = card("Все приложения", t("p", LEGEND, class_="hint"), _apps_table(cat, cache, protos, dev),
                       help=UNVERIFIED)
 
-    caveats = [("warn", f"{cat.protocols[p]['title']}: {cat.protocols[p]['caveat']}")
+    caveats = [("warn", f"{names.get(p, p)}: {cat.protocols[p]['caveat']}")
                for p in protos if cat.protocols[p].get("caveat")]
-    why = [("warn", f"{c['name']} · {cat.protocols[p]['title']}: {st['note']}")
+    why = [("warn", f"{c['name']} · {names.get(p, p)}: {st['note']}")
            for c in cat.clients for p, st in c["protocols"].items()
            if p in protos and st["s"] in ("no", "warn") and st.get("note")]
     notes = [alert_list(caveats) if caveats else None,
              t("details", t("summary", f"Почему ✕ и ! ({len(why)})"), alert_list(why), class_="more") if why else None]
 
-    names = {c["id"]: c["name"] for c in cat.clients}
-    failed = [names.get(k, k) for k, v in cache["versions"].items() if v.get("error")]
+    ids = {c["id"]: c["name"] for c in cat.clients}
+    failed = [ids.get(k, k) for k, v in cache["versions"].items() if v.get("error")]
     foot = t("p", "Версии из GitHub: раз в сутки и по кнопке, страница в сеть не ходит"
              + (f" · не удалось: {', '.join(failed)}" if failed else "") + f" · каталог от {cat.raw['updated']}",
              class_="hint")
-    intro = t("p", UNVERIFIED, " ", "Зелёное — заявлено, жёлтое — с оговоркой (наведите), «стенд» — проверено прогоном на сервере.",
+    intro = t("p", t("a", "Что ставить группе — в «Подключить людей» и на странице группы →", href="/groups", data_swap=True),
               class_="hint")
-    body = [page_head("Клиенты", "что ставить на устройство", _check_controls(cache, csrf)), _dev_nav(cat, dev), intro,
-            install, table_card, *[n for n in notes if n], foot]
-    return app.render(req, "Клиенты", body, active="/clients")
+    body = [page_head("Приложения", "справочник: что умеет каждое", _check_controls(cache, csrf)), _dev_nav(cat, dev), intro,
+            table_card, *[n for n in notes if n], foot]
+    return app.render(req, "Приложения", body, active="/clients")
 
 
 def check_now(app: "App", req: "Request") -> "Response":
@@ -276,21 +287,23 @@ class Pack:
     platform_title: str
     sections: list[Section]
     apps: str = ""   # приложения «через VPN» в тексте шага (список группы или человека) — входят в подпись набора
+    admin: bool = False   # приложения ставит ИТ: людям шагов установки нет
 
     @property
     def message(self) -> str:
-        """Текст инструкции платформы одним списком: сначала установка всех приложений, потом по порядку
-        импорт и настройки каждого (с несколькими приложениями — с их названием), в конце проверка по
-        первому протоколу. Начинается с {name}: имя подставляет тот, кто показывает текст человеку."""
-        many = len(self.sections) > 1
-        steps = [s.install for s in self.sections]
+        """Инструкция платформы одним списком: установка всех приложений (если люди ставят сами), потом по порядку
+        импорт и настройки каждого (каждый шаг начинается с названия приложения), в конце проверка. Начинается с
+        {name}: имя подставляет тот, кто показывает текст человеку. Протоколов в тексте нет."""
+        steps = [] if self.admin else [s.install for s in self.sections]
         for s in self.sections:
-            for n, x in enumerate(s.steps):
-                lead = (f"{s.client['name']} ({s.tiles}): " if n == 0 else f"{s.client['name']}: ") if many else ""
-                steps.append(lead + x)
+            steps += s.steps
         steps.append(self.sections[0].check)
-        return "\n".join([f"{NAME_TOKEN}, VPN на {self.platform_title}: что сделать",
-                          *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
+        if self.admin:
+            names = " и ".join(f"«{s.client['name']}»" for s in self.sections)
+            head = f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}."
+        else:
+            head = f"{NAME_TOKEN}, VPN на {self.platform_title}: что сделать"
+        return "\n".join([head, *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
 
 
 def _usable(proto: str, client_id: str, link: protolib.Link) -> bool:
@@ -332,7 +345,7 @@ def pick_link(proto: str, client: dict[str, Any], platform: str, links: list[pro
 
 def _tile_title(cat: clients.Catalog, mans: list[Any], proto: str) -> str:
     m = next((x for x in mans if x.id == proto), None)
-    return (m.name if m else cat.protocols[proto]["title"]).partition(" (")[0]
+    return manifests.TITLES.get(proto) or (m.short if m else cat.protocols[proto]["title"])
 
 
 def _assign(platform: str, links: list[protolib.Link], have: set[str], cs: list[dict[str, Any]],
@@ -358,23 +371,14 @@ def _assign(platform: str, links: list[protolib.Link], have: set[str], cs: list[
 
 def _plan(cat: clients.Catalog, platform: str, links: list[protolib.Link], have: set[str],
           prefer: dict[str, list[str]] | None, order: list[str] | None) -> list[tuple[dict[str, Any], list[tuple[str, str]]]]:
-    """Набор клиентов платформы и их протоколы. Набор группы главнее рекомендованных: протоколы идут по PRIORITY
-    (выбранные группой; у «всех включённых» — все, что есть у человека).
-    Группа выбрала клиентов, а для платформы — «не нужна» (нет записи): пакета нет. Если набор устарел
-    (клиент убран из каталога или платформы) или не покрывает ничего включённого — рекомендованные
-    клиенты по протоколам (если клиенты группы были выбраны — только в рамках протоколов группы)."""
-    handoff = cat.raw["handoff"].get(platform, [])
-    if prefer:
-        ids = prefer.get(platform) or []
-        if not ids:
-            return []
-        cs = [c for c in (cat.client(i) for i in ids) if c is not None and platform in c["platforms"]]
-        got = _assign(platform, links, have, cs, order if order is not None else groups.by_priority(have))
-        if got:
-            return got
-    protos = [p for p in handoff if not (prefer and order is not None) or p in order]
-    if prefer and order is not None:
-        protos = [p for p in order if p in protos]   # порядок группы — PRIORITY, не каталога
+    """Набор приложений платформы и их протоколы. Набор группы — единственный источник: рендерится ровно он, протоколы
+    идут по PRIORITY (выбранные группой; у «всех включённых» — все, что есть у человека). Нет записи для платформы
+    (устройство «не нужно») или у группы нет набора — пакета нет. Без группы (prefer=None) — рекомендованные каталогом
+    приложения по протоколам раздачи."""
+    if prefer is not None:
+        cs = [c for c in (cat.client(i) for i in prefer.get(platform) or []) if c is not None and platform in c["platforms"]]
+        return _assign(platform, links, have, cs, order if order is not None else groups.by_priority(have))
+    protos = list(cat.raw["handoff"].get(platform, []))
     rec: list[dict[str, Any]] = []
     for proto in protos:
         c = cat.recommended(platform, proto)
@@ -399,8 +403,6 @@ def _install_target(ln: dict[str, Any], platform: str) -> str:
     return f"{url} — в «Assets» скачайте {hint}" if hint else url
 
 
-BRAVE_IDS = {"com.brave.browser", "brave.exe"}
-VIA_LIST = "приложении из списка «через VPN»"
 APPS_SHOWN = 6
 
 
@@ -421,11 +423,13 @@ def join_names(names: list[str]) -> str:
 
 def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links: list[protolib.Link],
                mans: list[Any], prefer: dict[str, list[str]] | None = None, order: list[str] | None = None,
-               stores: bool = False, al: allowlist.Allowlist | None = None, apps: list[str] | None = None) -> Pack | None:
-    """prefer — наборы клиентов группы по платформам, order — протоколы группы (по PRIORITY);
-    без них — рекомендованные клиенты и порядок раздачи из каталога. stores — ссылки магазинов первыми.
+               stores: bool = False, al: allowlist.Allowlist | None = None, apps: list[str] | None = None,
+               admin: bool = False) -> Pack | None:
+    """prefer — наборы приложений группы по платформам (у группы без набора — {}: раздавать нечего), order —
+    протоколы группы (по PRIORITY); prefer=None (человек без группы) — рекомендованные каталогом приложения и
+    порядок раздачи. stores — ссылки магазинов первыми. admin — приложения ставит ИТ: шагов установки нет.
     apps — список «через VPN» этой платформы (группы или человека; None — общий из al): его названия идут
-    в шаг выбора приложений, а проверка «в Brave» — только если Brave в нём есть."""
+    в шаг выбора приложений."""
     have = {ln.variant for ln in links}
     plan = _plan(cat, platform, links, have, prefer, order)
     if not plan:
@@ -447,21 +451,18 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
                 sec.extras.append(Item(ex["proto"], "file", _tile_title(cat, mans, ex["proto"])))
         app_step = cat.per_app_steps(c, platform)
         if app_step:
-            sec.steps.append("Приложения через VPN: " + app_step.replace("{apps}", names or "нужные приложения"))
-        # Brave — «приложение под VPN»: только там, где клиент умеет пускать в туннель выбранные приложения
-        brave = (c.get("per_app") in ("config", "rules") and platform != "ios") or bool(app_step)
-        browser = "Brave" if brave else "любом браузере"
-        if brave and apps is not None and not any(i.lower() in BRAVE_IDS for i in apps):
-            browser = VIA_LIST   # Brave нет в списке: в нём сайт пойдёт мимо VPN
-        sec.check = (cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]).replace("{browser}", browser)
+            sec.steps.append(f"Приложения через VPN в «{c['name']}»: "
+                             + app_step.replace("{apps}", names or "нужные приложения"))
+        sec.check = cat.raw["check"].get(sec.proto) or cat.raw["check"]["*"]
         sections.append(sec)
-    return Pack(platform, cat.platforms[platform], sections, names)
+    return Pack(platform, cat.platforms[platform], sections, names, admin)
 
 
-def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]], list[str] | None]:
-    """Наборы клиентов и протоколы группы по PRIORITY для «Подключить» (у «всех включённых» — None: что есть у человека)."""
+def group_prefs(g: groups.Group | None) -> tuple[dict[str, list[str]] | None, list[str] | None]:
+    """Наборы приложений и протоколы группы по PRIORITY для «Подключить» (у «всех включённых» — None: что есть у
+    человека). Человек без группы — (None, None): рекомендованные каталогом. У группы без набора — ({}, …): раздавать нечего."""
     if g is None:
-        return {}, None
+        return None, None
     prefer = {p: list(ids) for p, ids in g.clients.items()}
     return prefer, (None if g.all_protocols else groups.by_priority(g.protocols))
 
@@ -525,19 +526,20 @@ class Ctx:
         if key not in self.packs:
             prefer, order = group_prefs(g)
             self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.offered(self.selectable)), self.mans,
-                                         prefer, order, store_first(g), self.al, self.apps_for(plat, g))
+                                         prefer, order, store_first(g), self.al, self.apps_for(plat, g),
+                                         g.install_mode == "admin")
         return self.packs[key]
 
     def group_sig(self, g: groups.Group, plat: str) -> str:
         return pack_sig(self.group_pack(g, plat))
 
     def default_text(self, g: groups.Group, plat: str) -> str | None:
-        """Текст по умолчанию: набор клиентов группы по всем её протоколам. None — для платформы пакета нет."""
+        """Инструкция по умолчанию: набор приложений группы по всем её протоколам. None — для платформы пакета нет."""
         pack = self.group_pack(g, plat)
         return pack.message if pack else None
 
     def text(self, g: groups.Group, plat: str) -> str | None:
-        """Текст группы для платформы: свой или по умолчанию."""
+        """Инструкция группы для платформы: своя или по умолчанию."""
         return g.messages.get(plat) or self.default_text(g, plat)
 
 
@@ -587,50 +589,61 @@ def _key_html(k: Key, name: str, kid: str) -> Markup:
     return t("div", parts, class_="key")
 
 
-def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.Catalog, uid: str) -> Markup:
+def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.Catalog, uid: str,
+              admin: bool = False) -> Markup:
+    """Приложение набора: название, версия, магазины и ключи человека. Приложения ставит ИТ — магазинов и
+    предупреждения про App Store нет: человеку их не показывают."""
     head = t("div", t("strong", sec.client["name"]),
              t("span", sec.version, class_="mono muted") if sec.version else None,
-             t("span", "нет в App Store РФ", class_="chip warn", title=FOREIGN_STORE) if cat.no_ru_store(sec.client, plat)
-             else None,
-             t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
+             None if admin or not cat.no_ru_store(sec.client, plat)
+             else t("span", "нет в App Store РФ", class_="chip warn", title=FOREIGN_STORE),
+             None if admin else t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
     return t("div", head, t("div", [_key_html(k, name, f"k-{uid}{plat}-{sec.client['id']}-{n}")
                                     for n, k in enumerate(keys)], class_="keys"), class_="app")
 
 
+def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, links: bool = False) -> Markup:
+    """Инструкция только для чтения: <pre>, «Скопировать» и «Изменить для группы →» (править её можно только на
+    странице группы). links — предложить дописать ссылки человека в копируемый текст (нужен JS)."""
+    return t("div",
+             t("span", "Инструкция", class_="label"),
+             t("pre", text, id=mid, class_="msg-pre"),
+             t("div",
+               t("button", "Скопировать", type="button", class_="btn primary", data_copy=mid,
+                 title="Копируется текст выше, без ключей"),
+               t("label", t("input", type="checkbox", data_addlinks=mid), " добавить ссылки в текст",
+                 class_="chk", data_links=True, hidden=True) if links else None,
+               t("a", "Изменить для группы →", href=f"/groups/{g.id}#text", class_="small", data_swap=True) if g else None,
+               class_="actions"),
+             extra, class_="msg")
+
+
 def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
-                  uid: str = "") -> Markup | None:
-    """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, текст
-    группы с его именем. Без JS видны все платформы подряд; с JS список оставляет одну. uid — приставка id
-    полей, если на странице несколько блоков."""
+                  uid: str = "", label: str | None = None) -> Markup | None:
+    """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, инструкция
+    группы с его именем (label; нет — логин) только для чтения. Без JS видны все платформы подряд; с JS список
+    оставляет одну. uid — приставка id полей, если на странице несколько блоков."""
     if not links:
         return None
+    label = label or name
     prefer, order = group_prefs(g)
+    admin = bool(g and g.install_mode == "admin")
     panels: list[Markup] = []
     plats: list[tuple[str, str]] = []
     for plat, title in ctx.cat.platforms.items():
         pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g), ctx.al,
-                          ctx.apps_for(plat, g, name))
+                          ctx.apps_for(plat, g, name), admin)
         if pack is None:
             continue
         group_text = ctx.text(g, plat) if g else None
         own = bool(g and group_text and pack_sig(pack) != ctx.group_sig(g, plat))
-        # у человека свои протоколы или другие приложения, чем в наборе группы: текст группы про другое
-        text = ((None if own else group_text) or pack.message).replace(NAME_TOKEN, name)
-        mid = f"msg-{uid}{plat}"
+        # у человека свои протоколы или другие приложения, чем в наборе группы: инструкция группы про другое
+        text = fill_name((None if own else group_text) or pack.message, label)
         keys = [_keys(s, plat, links) for s in pack.sections]
-        apps = [_app_html(s, k, plat, name, ctx.cat, uid) for s, k in zip(pack.sections, keys)]
-        msg = t("div",
-                alert_list([("warn", MISMATCH)]) if own else None,
-                t("label", "Текст сообщения — можно править", for_=mid),
-                t("textarea", text, id=mid, rows=str(min(16, text.count("\n") + 3)), spellcheck="false"),
-                t("div",
-                  t("button", "Скопировать текст", type="button", class_="btn primary", data_copy=mid,
-                    title="Копируется текст из поля выше, без ключей"),
-                  t("label", t("input", type="checkbox", data_addlinks=mid), " добавить ссылки в текст",
-                    class_="chk", data_links=True, hidden=True) if any(k.uri for ks in keys for k in ks) else None,
-                  t("a", "текст для всей группы", href=f"/groups/{g.id}#texts", class_="small") if g else None,
-                  class_="actions"),
-                t("p", "Ключей в тексте нет: QR и ссылки выше отправьте отдельно.", class_="hint"), class_="msg")
+        apps = [_app_html(s, k, plat, name, ctx.cat, uid, admin) for s, k in zip(pack.sections, keys)]
+        msg = text_block(text, f"msg-{uid}{plat}", g, links=any(k.uri for ks in keys for k in ks),
+                         extra=[alert_list([("warn", MISMATCH)]) if own else None,
+                                t("p", "Ключей в инструкции нет: QR и ссылки выше отправьте отдельно.", class_="hint")])
         panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))
         plats.append((plat, title))
     if not panels:
@@ -650,10 +663,14 @@ def hints(ctx: Ctx) -> list[Markup]:
 
 
 def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: groups.Group | None,
-                 uid: str = "") -> Markup | None:
-    panel = connect_panel(links, name, ctx, g, uid) if ctx else None
+                 uid: str = "", label: str | None = None) -> Markup | None:
+    if ctx is None:
+        return None
+    if g is not None and not g.clients:
+        return card("Подключить", t("p", no_apps(g)))
+    panel = connect_panel(links, name, ctx, g, uid, label)
     if panel is None:
         return None
-    return card("Подключить", panel, hints(ctx),
-                help="Приложения и текст — как у группы (менять на её странице). QR и ссылки — этого человека: "
-                     "показывайте только ему.")
+    return card("Подключить", t("p", "Приложения и инструкция — общие для группы." if g else "Приложения — по протоколам.",
+                                " QR и ссылки — этого человека: показывайте только ему.", class_="hint"),
+                panel, hints(ctx))

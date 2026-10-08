@@ -2,6 +2,7 @@
 
 import copy
 import json
+import html
 import re
 import time
 import unittest
@@ -336,6 +337,65 @@ class UnitsTest(unittest.TestCase):
             self.assertNotIn(b"\r", f.read_bytes(), f"{f.name}: CRLF")
 
 
+class CatalogFactsTest(unittest.TestCase):
+    """Каталог по проверке App Store (12 витрин), Google Play и Microsoft Store от 07.10.2026."""
+
+    def test_app_store_and_store_links(self):
+        cat = catalog()
+        awg = cat.client("amneziawg")
+        self.assertEqual(awg["platforms"]["ios"], [{"kind": "appstore", "checked": True,
+                                                   "url": "https://apps.apple.com/ru/app/amneziawg/id6478942365"}])
+        self.assertFalse(cat.no_ru_store(awg, "ios"), "AmneziaWG в App Store РФ есть")
+        self.assertEqual(cat.status(awg, "amneziawg", "ios"), "warn", "импорт формата 3.1 не проверен на стенде")
+        self.assertEqual(cat.status(awg, "amneziawg", "android"), "ok")
+        self.assertTrue(next(ln for ln in awg["platforms"]["android"] if ln["kind"] == "play")["checked"],
+                        "Play org.amnezia.awg проверен")
+        vpn = cat.client("amneziavpn")
+        self.assertEqual(vpn["platforms"]["ios"][0]["url"], "https://apps.apple.com/us/app/amneziavpn/id1600529900")
+        self.assertTrue(cat.no_ru_store(vpn, "ios"))
+        self.assertIn("org.amnezia.vpn", [ln["url"] for ln in vpn["platforms"]["android"]][1])
+        self.assertEqual(cat.recommended("ios", "amneziawg")["id"], "amneziawg", "на iPhone уступает AmneziaWG из РФ-магазина")
+        sb = cat.client("singbox")
+        self.assertEqual(sb["name"], "sing-box")
+        self.assertEqual(sb["platforms"]["ios"][0], {"kind": "appstore", "checked": True,
+                                                    "url": "https://apps.apple.com/ru/app/sing-box-mt/id6785326793"})
+        self.assertIn("play.google.com/store/apps/details?id=io.nekohasekai.sfa", sb["platforms"]["android"][1]["url"])
+        self.assertEqual(sb["import"], {}, "ссылок не берёт: JSON-профили мы не выдаём")
+        self.assertNotIn("TestFlight", sb["notes"])
+        hid = cat.client("hiddify")
+        self.assertIn({"kind": "msstore", "url": "https://apps.microsoft.com/detail/9pdfnl3qv2s5", "checked": True},
+                      hid["platforms"]["windows"])
+        self.assertIn("кроме РФ", hid["notes"])
+        self.assertTrue(cat.no_ru_store(hid, "ios"))
+        happ = cat.client("happ")
+        self.assertTrue(all(ln["checked"] for plat in ("android", "ios") for ln in happ["platforms"][plat]))
+        self.assertIn("6791998089", happ["notes"], "подделки в RU-поиске")
+        self.assertTrue(all(ln["checked"] for ln in cat.client("wgtunnel")["platforms"]["android"]))
+        self.assertEqual(cat.client("incy")["platforms"]["ios"][0]["url"], "https://apps.apple.com/ru/app/incy/id6756943388")
+        for fake in ("v2raytun", "foxray"):
+            self.assertIsNone(cat.client(fake), "по id ничего нет, в поиске подделки")
+
+    def test_names_of_protocols_and_the_rules_key(self):
+        cat = catalog()
+        self.assertEqual({p: cat.protocols[p]["title"] for p in cat.protocols if p != "allowlist"},
+                         {"vless-reality": "VLESS Vision", "vless-xhttp": "VLESS XHTTP", "ss2022": "Shadowsocks",
+                          "hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "amneziawg": "AmneziaWG",
+                          "tuic": "TUIC"})
+        self.assertEqual(cat.protocols["allowlist"]["title"], "Правила маршрутизации v2rayN")
+        self.assertEqual(cat.raw["check"], {"*": "Проверьте: откройте заблокированный сайт — он должен открыться. "
+                                                  "Банк и Госуслуги работают как обычно."})
+        for c in cat.clients:   # каждый шаг импорта начинается с названия приложения или говорит, что скопировать
+            for how, text in c.get("import", {}).items():
+                self.assertTrue(f"«{c['name']}»" in text or c["id"] == "hysteria", (c["id"], how, text))
+
+    def test_client_without_import_is_never_picked_and_not_listed_on_tiles(self):
+        cat = catalog()
+        for plat in cat.platforms:
+            ids = [o["client"]["id"] for o in groups.client_options(cat, plat, cat.real_protocols())]
+            self.assertNotIn("singbox", ids, plat)
+        self.assertNotIn("sing-box", cat.names_for("hysteria2"))
+
+
 class ClientsPageTest(AppTestBase):
     def setUp(self):
         super().setUp()
@@ -346,12 +406,17 @@ class ClientsPageTest(AppTestBase):
             resp, body = self.c.get("/clients")
         self.assertEqual(resp.status, 200, body[-400:])
         self.assertIn('href="/clients"', body)
-        for want in ("Android", "iPhone", "Windows", "Happ", "AmneziaWG", "INCY", "v2rayN", "Все приложения", "Ставить",
+        for want in ("Android", "iPhone", "Windows", "Happ", "AmneziaWG", "INCY", "v2rayN", "Все приложения",
                      "X25519MLKEM768", "ещё не проверялись"):
             self.assertIn(want, body)
         self.assertNotIn("style=", body)
         self.assertNotRegex(body, r"\son\w+=")
         self.assertNotIn("<script>", body)
+        self.assertNotIn("<h3>Ставить</h3>", body, "что ставить группе — в «Подключить людей», а не второй подбор здесь")
+        self.assertIn("Что ставить группе — в «Подключить людей» и на странице группы →", body)
+        self.assertIn('<a href="/clients" class="active" aria-current="page">Приложения</a>', body)
+        self.assertIn('<a href="/apps">Через VPN</a>', body)
+        self.assertNotIn(">Клиенты<", body)
 
     def test_versions_from_cache_and_links(self):
         clients.check_upstream(fetch=fake_fetch)
@@ -376,13 +441,17 @@ class ClientsPageTest(AppTestBase):
         _, body = self.c.get("/clients")
         matrix = body[body.index("Все приложения"):]
         self.assertIn(">AmneziaWG<", matrix)
-        self.assertNotIn(">TUIC v5<", matrix)
+        self.assertNotIn(">TUIC<", matrix)
         self.assertNotIn(">Hysteria2<", matrix)
 
     def test_matrix_marks(self):
         _, body = self.c.get("/clients")
-        self.assertRegex(body, r'class="chip bad" title="не работает: [^"]*X25519MLKEM768')
+        table = body[body.index("<h3>Все приложения</h3>"):]
+        table = table[:table.index("</section>")]
+        self.assertNotIn('class="chip bad"', table, "не работающие протоколы — одной строкой, без красных чипов")
+        self.assertIn("Не работает: VLESS Vision, VLESS XHTTP, AmneziaWG", table)
         self.assertIn('class="chip" title="не проверено: в исследовании не проверяли', body)
+        self.assertRegex(body, r"X25519MLKEM768", "причины — в «Почему ✕ и !»")
 
     def table_rows(self, body):
         """Строки таблицы «Все приложения»: {имя приложения: html строки}."""
@@ -404,12 +473,12 @@ class ClientsPageTest(AppTestBase):
         self.assertIn('class="chip warn" title="В российском App Store его нет', happ)
         self.assertIn(">✓!</span>", happ, "iPhone: Happ нет в App Store РФ")
         self.assertIn(">—</span>", happ, "Windows: Happ нет")
-        # протоколы — по каталогу: зелёный заявлен, жёлтый с оговоркой, красный не работает
+        # протоколы — по каталогу: зелёный заявлен, жёлтый с оговоркой; не работающие — строкой
         hid = rows["Hiddify"]
         self.assertRegex(hid, r'class="chip warn" title="с оговоркой: работает[^"]*">Hysteria2 · стенд</span>')
-        self.assertRegex(hid, r'class="chip ok" title="заявлено поддерживаемым: проверено на стенде[^"]*">TUIC v5 · стенд</span>')
-        self.assertRegex(hid, r'class="chip bad" title="не работает: [^"]*">VLESS \+ REALITY · стенд</span>')
-        self.assertRegex(hid, r'class="chip bad"[^>]*>AmneziaWG')
+        self.assertRegex(hid, r'class="chip ok" title="[^"]*проверено на стенде[^"]*">TUIC.{0,3}стенд</span>')
+        self.assertIn("Не работает: VLESS Vision, VLESS XHTTP, AmneziaWG", hid)
+        self.assertNotIn('class="chip bad"', hid)
         self.assertIn(">Hysteria2</span>", rows["Happ"], "без отметки «стенд»: Happ только по документации")
         self.assertNotIn("стенд", rows["Happ"])
         # ссылки и заметка — внутри строки, под спойлером
@@ -419,19 +488,12 @@ class ClientsPageTest(AppTestBase):
         self.assertIn("Названия пунктов", happ, "заметка клиента — в строке")
         self.assertLess(list(rows).index("Happ"), list(rows).index("Hiddify"), "рекомендованные — первыми")
 
-    def test_install_block_is_the_same_set_the_wizard_proposes(self):
+    def test_there_is_no_second_install_picker_here(self):
         _, body = self.c.get("/clients")
-        cat = catalog()
-        plan = groups.suggest_set(cat, ["android", "ios", "windows"], cat.real_protocols(), "self")
-        card = body[body.index("<h3>Ставить</h3>"):]
-        card = card[:card.index("</section>")]
-        for plat, ids in plan.items():
-            row = card[card.index(f'class="dev-name">{cat.platforms[plat]}</strong>'):]
-            row = row[:row.index('class="dev-row"')] if 'class="dev-row"' in row else row
-            self.assertIn(" + ".join(cat.client(i)["name"] for i in ids), re.sub(r"<[^>]+>", "", row), plat)
-        self.assertNotRegex(card, r'class="dev-name">macOS')
-        self.assertIn("нет в магазине РФ", card, "Happ/Hiddify на iPhone — не из РФ-магазина")
-
+        self.assertNotIn("Ставить</h3>", body)
+        self.assertNotIn('class="dev-row"', body)
+        self.assertNotIn("В мастере «Новая группа» то же считается", body)
+        self.assertRegex(body, r'<a href="/groups" data-swap>Что ставить группе')
     def test_dev_filter_is_a_link_not_js_and_filters_the_table(self):
         _, body = self.c.get("/clients?dev=windows")
         self.assertIn('href="/clients?dev=windows" class="active"', body)
@@ -439,10 +501,6 @@ class ClientsPageTest(AppTestBase):
         self.assertIn("v2rayN", rows)
         self.assertNotIn("INCY", rows, "INCY на Windows нет")
         self.assertNotIn("Happ", rows)
-        card = body[body.index("<h3>Ставить</h3>"):]
-        card = card[:card.index("</section>")]
-        self.assertEqual(card.count('class="dev-row"'), 1, "«Ставить» — про одно устройство")
-        self.assertIn("Windows", card)
         _, body = self.c.get("/clients?dev=macos")
         self.assertIn("<strong>AmneziaVPN</strong>", body)
         _, body = self.c.get("/clients?dev=nope")
@@ -506,9 +564,9 @@ class PackTest(unittest.TestCase):
         s = p.sections[0]
         self.assertEqual((s.proto, s.method), ("amneziawg", "qr"))
         self.assertTrue(s.install.startswith("Установите «AmneziaWG»"))
-        self.assertIn("github.com/amnezia-vpn/amneziawg-android", s.install, "проверенные ссылки — раньше")
-        self.assertIn("Brave", s.check)
-        self.assertIn("2ip.ru", s.check, "у AWG echo-правила нет: адрес сервера виден")
+        self.assertIn("play.google.com/store/apps/details?id=org.amnezia.awg", s.install, "проверенные ссылки — раньше")
+        self.assertEqual(s.check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
+        self.assertNotIn("2ip", s.check)
 
     def test_per_app_step_names_the_group_list_not_brave(self):
         from zoolib import allowlist
@@ -517,12 +575,11 @@ class PackTest(unittest.TestCase):
         args = (catalog(), {"checked": None, "versions": {}}, "android", [VLESS], [], {"android": ["happ"]})
         s = clientviews.build_pack(*args, al=al).sections[0]
         self.assertIn("отметьте Brave и Telegram.", " ".join(s.steps), "без списка группы — общий список")
-        self.assertIn("Brave", s.check)
+        self.assertIn("Приложения через VPN в «Happ»: ", " ".join(s.steps))
         s = clientviews.build_pack(*args, al=al, apps=["com.whatsapp", "com.example.crm"]).sections[0]
         steps = " ".join(s.steps)
         self.assertIn("отметьте WhatsApp и CRM.", steps)
-        self.assertNotIn("Brave", steps + s.check, "Brave нет в списке группы — проверка не в нём")
-        self.assertIn("приложении из списка", s.check)
+        self.assertNotIn("Brave", steps + s.check, "Brave нет в списке группы")
         self.assertNotIn("{apps}", steps)
         many = [f"com.x.app{i}" for i in range(9)]
         steps = " ".join(clientviews.build_pack(*args, al=al, apps=many).sections[0].steps)
@@ -549,8 +606,10 @@ class PackTest(unittest.TestCase):
         # группа «все включённые»: порядок фиксированный (PRIORITY), клиент — группы
         s = self.gpack("android", links, {"android": ["v2rayng"]}, None).sections
         self.assertEqual([i.proto for i in s[0].items], ["hysteria2", "vless-reality"])
-        # без клиентов группы — рекомендованные каталога: AWG и остальное
-        self.assertEqual([x.client["id"] for x in self.gpack("android", links, {}, ["hysteria2"]).sections],
+        # у группы без набора приложений раздавать нечего: фолбэка на рекомендованные каталога нет
+        self.assertIsNone(self.gpack("android", links, {}, ["hysteria2"]))
+        # человек без группы — рекомендованные каталога: AWG и остальное
+        self.assertEqual([x.client["id"] for x in self.gpack("android", links, None, ["hysteria2"]).sections],
                          ["amneziawg", "happ"])
 
     def test_group_prefs_order_is_the_fixed_priority(self):
@@ -560,6 +619,8 @@ class PackTest(unittest.TestCase):
                          "порядок группы нормализуется при чтении")
         self.assertEqual(clientviews.group_prefs(g)[1], g.protocols)
         self.assertIsNone(clientviews.group_prefs(groups.Group("main", "Основная", ["*"]))[1])
+        self.assertEqual(clientviews.group_prefs(None), (None, None), "без группы — рекомендованные каталога")
+        self.assertEqual(clientviews.group_prefs(g)[0], {}, "группа без набора — ничего, не «как без группы»")
 
     def test_salamander_and_plain_hysteria2_are_picked_separately(self):
         plain = link("hysteria2", "hysteria2://x@1.2.3.4:443/?sni=x#x")
@@ -612,28 +673,38 @@ class PackTest(unittest.TestCase):
     def test_warn_coverage_is_not_plain_ready(self):
         cat = catalog()
         names = clientviews.proto_names(cat)
-        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["hiddify"], names),
-                         ("готово, с оговоркой", "warn"))
-        self.assertIn("Hiddify", clientviews.caveat_note(cat, "android", ["hysteria2"], ["hiddify"], names))
-        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["happ"], names), ("готово", "ok"))
-        self.assertEqual(clientviews.caveat_note(cat, "android", ["hysteria2"], ["happ", "hiddify"], names), "",
+        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["hiddify"], names), ("с оговоркой", "warn"))
+        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["happ"], names), ("все протоколы", "ok"))
+        self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2", "amneziawg"], ["happ"], names),
+                         ("нет AmneziaWG", "warn"))
+        items = clientviews.caveat_items(cat, {"android": ["hiddify"], "windows": ["hiddify"]}, ["hysteria2"], names)
+        self.assertEqual([t_ for t_, _ in items], ["Hiddify: Hysteria2 без проверки сертификата"], "одна на все устройства")
+        self.assertIn("insecure=1", items[0][1], "детали ядра — в полной заметке («подробнее»)")
+        self.assertEqual(clientviews.caveat_items(cat, {"android": ["happ", "hiddify"]}, ["hysteria2"], names), [],
                          "есть приложение без оговорки — оговорки нет")
-
+        # AmneziaWG на iPhone — «ok» по коду клиента, но импорт 3.1 не проверен: с оговоркой только там
+        self.assertEqual(clientviews.coverage_label(cat, "ios", ["amneziawg"], ["amneziawg"], names), ("с оговоркой", "warn"))
+        self.assertEqual(clientviews.coverage_label(cat, "android", ["amneziawg"], ["amneziawg"], names), ("все протоколы", "ok"))
+        self.assertEqual([t_ for t_, _ in clientviews.caveat_items(cat, {"ios": ["amneziawg"]}, ["amneziawg"], names)],
+                         ["AmneziaWG: импорт формата 3.1 не проверен"])
     def test_group_set_gives_one_section_per_client_with_own_protocols(self):
         hy2 = link("hysteria2", "hysteria2://x@1.2.3.4:443#x")
         p = self.gpack("android", [VLESS, hy2, AWG_ANDROID], {"android": ["happ", "amneziawg"]},
                        ["hysteria2", "vless-reality", "amneziawg"])
         self.assertEqual([(s.client["id"], [i.proto for i in s.items]) for s in p.sections],
                          [("happ", ["hysteria2", "vless-reality"]), ("amneziawg", ["amneziawg"])])
-        self.assertEqual(p.sections[0].tiles, "Hysteria2, VLESS + REALITY")
+        self.assertEqual(p.sections[0].tiles, "Hysteria2, VLESS Vision")
         msg = p.message
-        # одним списком: сначала установка всех приложений, потом импорт каждого
+        # одним списком: сначала установка всех приложений, потом импорт каждого; каждый шаг начинается с приложения
         self.assertTrue(msg.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
         self.assertIn("\n2) Установите «AmneziaWG»", msg)
-        self.assertIn("\n3) Happ (Hysteria2, VLESS + REALITY): ", msg)
-        self.assertIn("AmneziaWG (AmneziaWG): ", msg)
-        self.assertLess(msg.index("Установите «AmneziaWG»"), msg.index("Happ (Hysteria2"))
-        self.assertEqual(msg.count("Включите VPN"), 1, "проверка одна, по основному протоколу")
+        self.assertIn("\n3) В «Happ» нажмите «+» → «Сканировать QR»", msg)
+        self.assertIn("\n5) В «AmneziaWG» нажмите «+» → «Сканировать QR»", msg)
+        self.assertLess(msg.index("Установите «AmneziaWG»"), msg.index("В «Happ» нажмите"))
+        self.assertEqual(msg.count("Проверьте:"), 1, "проверка одна, одной фразой")
+        self.assertTrue(msg.endswith("Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно."))
+        for gone in ("Hysteria2", "VLESS", "REALITY", "2ip", "Brave"):
+            self.assertNotIn(gone, msg, "названий протоколов в тексте для человека нет")
         self.assertNotIn("vless://", msg)
         # с одним приложением названий перед шагами нет
         one = self.gpack("android", [VLESS], {"android": ["happ", "amneziawg"]}, ["vless-reality", "amneziawg"])
@@ -670,30 +741,41 @@ class PackTest(unittest.TestCase):
                          ["vless-reality"])
         self.assertEqual(self.gpack("windows", both, {"windows": ["karing"]}, None).sections[0].proto, "tuic")
 
-    def test_stale_or_useless_group_client_falls_back_to_recommended(self):
-        # клиента убрали из каталога
-        s = self.gpack("android", [VLESS], {"android": ["ghost"]}, None).sections[0]
-        self.assertEqual((s.client["id"], s.proto), ("happ", "vless-reality"))
+    def test_stale_or_useless_group_client_gives_no_pack_not_a_catalog_fallback(self):
+        # клиента убрали из каталога — человеку раздавать нечего: рендерится ровно набор группы
+        self.assertIsNone(self.gpack("android", [VLESS], {"android": ["ghost"]}, None))
         # клиент есть, но не для этой платформы
-        self.assertEqual(self.gpack("windows", [VLESS], {"windows": ["happ"]}, None).sections[0].client["id"], "v2rayn")
+        self.assertIsNone(self.gpack("windows", [VLESS], {"windows": ["happ"]}, None))
         # клиент группы ничего из включённого не умеет: Karing не умеет VLESS
-        self.assertEqual(self.gpack("windows", [VLESS], {"windows": ["karing"]}, None).sections[0].client["id"], "v2rayn")
-        # а «не нужна» по-прежнему означает «пакета нет»
+        self.assertIsNone(self.gpack("windows", [VLESS], {"windows": ["karing"]}, None))
+        # «не нужна» — тоже пакета нет
         self.assertIsNone(self.gpack("windows", [VLESS], {"android": ["happ"]}, None))
-
+        # человек без группы — рекомендованные каталогом
+        self.assertEqual(self.gpack("windows", [VLESS], None, None).sections[0].client["id"], "v2rayn")
     def test_per_app_step_only_where_client_can(self):
         # iPhone: приложений через VPN нет, браузер любой
         s = self.gpack("ios", [VLESS], {"ios": ["incy"]}, ["vless-reality"]).sections[0]
         self.assertNotIn("Приложения через VPN", " ".join(s.steps))
-        self.assertIn("любом браузере", s.check)
+        self.assertEqual(s.check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
         # Windows у AmneziaVPN — только исключение приложений: шага «только из списка» нет
         w = self.gpack("windows", [AWG_COMMON, AWG_KEY], {"windows": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertEqual(w.client["id"], "amneziavpn")
         self.assertNotIn("только приложения из списка", " ".join(w.steps))
-        self.assertIn("любом браузере", w.check)
         a = self.gpack("android", [AWG_KEY], {"android": ["amneziavpn"]}, ["amneziawg"]).sections[0]
         self.assertIn("только приложения из списка", " ".join(a.steps))
-        self.assertIn("Brave", a.check)
+
+    def test_admin_pack_has_no_install_steps_and_no_stores(self):
+        p = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "android", [VLESS, AWG_ANDROID], [],
+                                   {"android": ["happ", "amneziawg"]}, ["vless-reality", "amneziawg"], False, None, None, True)
+        msg = p.message
+        self.assertTrue(msg.startswith("{name}, VPN уже установлен. Включите его в «Happ» и «AmneziaWG».\n1) В «Happ» нажмите"), msg)
+        for gone in ("Установите", "github", "GitHub", "Assets", "play.google.com"):
+            self.assertNotIn(gone, msg)
+        self.assertEqual(msg.count("\n"), 4, "два импорта, шаг «через VPN» у Happ и проверка")
+        self.assertTrue(msg.endswith("Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно."))
+        one = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "ios", [VLESS], [],
+                                     {"ios": ["incy"]}, ["vless-reality"], False, None, None, True)
+        self.assertTrue(one.message.startswith("{name}, VPN уже установлен. Включите его в «INCY»."))
 
     def test_foreign_apple_id_warning(self):
         p = self.gpack("ios", [VLESS], {"ios": ["happ"]}, ["vless-reality"])
@@ -707,20 +789,22 @@ class PackTest(unittest.TestCase):
         p = self.pack("android", [VLESS])
         s = p.sections[0]
         self.assertEqual((len(p.sections), s.client["id"], s.method), (1, "happ", "qr"))
-        self.assertIn("Приложения через VPN:", " ".join(s.steps))
-        self.assertIn("не откроется", s.check, "echo-сервисы на сервере блокируются для Xray-протоколов")
+        self.assertIn("Приложения через VPN в «Happ»:", " ".join(s.steps))
+        self.assertEqual(s.check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
+        self.assertNotIn("не откроется", s.check)
 
     def test_windows_link_and_rules_file(self):
         s = self.pack("windows", [VLESS, RULES]).sections[0]
         self.assertEqual((s.client["id"], s.method), ("v2rayn", "link"))
         self.assertEqual([i.proto for i in s.extras], ["allowlist"])
         self.assertIn("v2rayn-routing.json", " ".join(s.steps))
+        self.assertIn("Правила маршрутизации v2rayN: ", " ".join(s.steps))
         self.assertEqual(self.pack("windows", [VLESS]).sections[0].extras, [], "без файла правил — шага нет")
 
     def test_ios_and_no_match(self):
         p = self.pack("ios", [VLESS])
         self.assertEqual(p.sections[0].client["id"], "incy")
-        self.assertIn("любом браузере", p.sections[0].check)
+        self.assertEqual(p.sections[0].check, "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно.")
         self.assertIsNone(self.pack("ios", [link("tuic", "tuic://x")]), "для TUIC на iPhone клиента не выбрано")
         self.assertIsNone(self.pack("macos", [VLESS]), "на macOS для VLESS проверенного клиента нет")
         self.assertIsNone(self.pack("android", []))
@@ -746,10 +830,11 @@ class PackTest(unittest.TestCase):
         self.assertNotIn(".conf", p.message)
         self.assertNotIn("плитк", p.message, "ссылок на плитки в тексте нет")
         self.assertTrue(p.message.startswith("{name}, VPN на Android: что сделать\n1) Установите «AmneziaWG»"))
-        self.assertIn("\n3) AmneziaWG (AmneziaWG): ", p.message, "два приложения — установка, затем шаги с названием")
+        self.assertIn("\n3) В «AmneziaWG» нажмите «+»", p.message, "два приложения — установка, затем шаги с названием")
         one = self.pack("android", [VLESS]).message
         self.assertTrue(one.startswith("{name}, VPN на Android: что сделать\n1) Установите «Happ»"))
-        self.assertNotIn("Happ (", one, "одно приложение — названий перед шагами нет")
+        self.assertNotIn("Happ (", one, "названий протоколов перед шагами нет")
+        self.assertIn("\n2) В «Happ» нажмите «+» → «Сканировать QR»", one)
 
 
 class PickLinkTest(unittest.TestCase):
@@ -793,7 +878,7 @@ class HandoffPageTest(AppTestBase):
         self.c.login()
 
     def msg(self, body, plat="android", uid=""):
-        return re.search(rf'<textarea id="msg-{uid}{plat}"[^>]*>(.*?)</textarea>', body, re.S).group(1)
+        return html.unescape(re.search(rf'<pre id="msg-{uid}{plat}"[^>]*>(.*?)</pre>', body, re.S).group(1))
 
     def test_connect_block_is_first_and_per_user(self):
         clients.check_upstream(fetch=fake_fetch)
@@ -820,8 +905,12 @@ class HandoffPageTest(AppTestBase):
         self.assertTrue(msg.startswith("masha, VPN на Android: что сделать\n1) Установите «"), msg)
         self.assertNotIn("{name}", body)
         self.assertNotIn("vless://", msg)
-        self.assertIn("Скопировать текст", body)
+        self.assertIn(">Скопировать</button>", body)
         self.assertIn('data-copy="msg-android"', body)
+        self.assertIn("Приложения — по протоколам.", body, "человек без группы: рекомендованные каталога")
+        self.assertNotIn("Изменить для группы", body)
+        self.assertNotIn("<textarea", main.split(">Подключить<")[1].split("Все ссылки и QR")[0], "инструкция — только для чтения")
+        self.assertNotIn("можно править", body)
         self.assertRegex(body, r'<label class="chk" data-links hidden><input type="checkbox" data-addlinks="msg-android">')
         self.assertNotIn("Скопировать сообщение", body)
         self.assertNotIn("плитках выше", body)
@@ -829,6 +918,22 @@ class HandoffPageTest(AppTestBase):
         self.assertIn("не отправляйте через MAX и VK", body)
         self.assertNotIn("style=", body)
         self.assertNotRegex(body, r"\son\w+=")
+
+    def test_group_member_sees_the_group_apps_and_text_read_only(self):
+        groups.ensure()
+        cat = clients.load()
+        main = groups.Groups.load().get("main")
+        self.assertTrue(main.clients, "группе без набора приложений подобран набор при первом обращении")
+        _, body = self.c.get("/users/masha")
+        self.assertIn("Приложения и инструкция — общие для группы.", body)
+        self.assertIn('<a href="/groups/main#text" class="small" data-swap>Изменить для группы →</a>', body)
+        got = {plat for plat in cat.platforms if f'data-pp="{plat}"' in body}
+        self.assertEqual(got, set(main.clients), "ровно платформы набора группы")
+        groups.update("main", clients={})
+        _, body = self.c.get("/users/masha")
+        self.assertIn("Приложения не выбраны", body)
+        self.assertIn('href="/groups/main#settings"', body)
+        self.assertNotIn('data-pp="', body, "пустой набор — ничего из каталога не раздаётся")
 
     def test_windows_panel_offers_link_not_qr(self):
         _, body = self.c.get("/users/masha")
@@ -842,12 +947,13 @@ class HandoffPageTest(AppTestBase):
         _, body = self.c.get("/users/masha")
         self.assertEqual(self.msg(body), "Привет, masha!\nСтавь Happ, дальше по QR.")
         self.assertTrue(self.msg(body, "windows").startswith("masha, VPN на Windows"), "остальные — по умолчанию")
-        self.assertIn('href="/groups/main#texts"', body)
+        self.assertIn('href="/groups/main#text"', body)
 
     def test_tiles_stay_as_advanced_block(self):
         _, body = self.c.get("/users/masha")
         self.assertRegex(body, r'<details class="card more"><summary>Все ссылки и QR</summary>')
-        self.assertIn("Клиенты: ", body, "плитки по-прежнему со списком клиентов из каталога")
+        self.assertIn("Приложения: ", body, "плитки по-прежнему со списком приложений из каталога")
+        self.assertNotIn("sing-box", body.split("Приложения: ")[1].split('"')[0], "sing-box ссылок не берёт")
         self.assertIn("Быстрый старт", body)
 
     def test_disabled_catalog_keeps_tiles_open(self):

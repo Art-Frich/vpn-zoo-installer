@@ -756,8 +756,9 @@ class OverviewStartTest(AppTestBase):
     def test_get_started_button(self):
         self.c.login()
         _, body = self.c.get("/")
-        self.assertIn('<a href="/connect/new" class="btn primary" data-swap title="Новая группа: протоколы, клиенты, люди и что им отправить">Get started</a>', body)
-        self.assertEqual(body.count("Get started"), 1)
+        self.assertIn('<a href="/connect/new" class="btn primary" data-swap title="Группа: протоколы, приложения, люди и что им отправить">Подключить людей</a>', body)
+        self.assertEqual(body.count("Подключить людей"), 1)
+        self.assertNotIn("Get started", body)
 
 
 class ProbeViewTest(AppTestBase):
@@ -1448,7 +1449,7 @@ class TilesTest(unittest.TestCase):
         self.assertNotIn(">Запасная 3</button>", out)
         self.assertIn('title="Port hopping: порт меняется"', out)
         self.assertEqual(out.count('class="ptile '), 2)
-        self.assertIn('ptile-name">hysteria2-obfs<', out)
+        self.assertIn('ptile-name">Hysteria2 + Salamander<', out)
         self.assertNotIn("Для:", out)
         self.assertNotIn("нужен Xray-клиент", out)
 
@@ -1532,7 +1533,7 @@ class QuietPagesTest(AppTestBase):
         self.assertIn("служебный 4.8 МБ", body)
         self.assertIn("служебный трафик пробника: 4.8 МБ", body)
         self.assertRegex(body, r'<h3 title="VLESS \+ REALITY \+ Vision">VLESS Vision</h3>')
-        self.assertRegex(body, r'<h3 title="Hysteria2 &lt;b&gt;">Hysteria2 &lt;b&gt;</h3>')   # нет short — полное имя
+        self.assertRegex(body, r'<h3 title="Hysteria2 &lt;b&gt;">Hysteria2</h3>')   # одно название; полное имя — в подсказке
 
     def test_overview_no_service_line_without_probe_traffic(self):
         self._seed_run()

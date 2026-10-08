@@ -74,5 +74,16 @@ class LoadTest(unittest.TestCase):
             self.assertEqual(manifests.load_all(), ([], []))
 
 
+class ProtoTitleTest(unittest.TestCase):
+    def test_one_name_per_protocol_whatever_the_manifest_says(self):
+        want = {"hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "vless-xhttp": "VLESS XHTTP",
+                "vless-reality": "VLESS Vision", "amneziawg": "AmneziaWG", "tuic": "TUIC", "ss2022": "Shadowsocks"}
+        for pid, title in want.items():
+            self.assertEqual(manifests.proto_title(pid), title)
+            self.assertEqual(manifests.proto_title(pid, "HY2 + Salamander"), title, "short манифеста — только для незнакомых")
+        self.assertEqual(manifests.proto_title("brand-new", "Новый"), "Новый")
+        self.assertEqual(manifests.proto_title("brand-new"), "brand-new")
+
+
 if __name__ == "__main__":
     unittest.main()

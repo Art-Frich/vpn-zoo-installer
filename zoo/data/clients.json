@@ -1,6 +1,6 @@
 {
-  "_doc": "Каталог клиентских приложений (docs/PLAN-builder.md). no_unify — список платформ, где клиента не берут ради «одного приложения на всех устройствах» (только если без него протокол не покрыть): на Android AmneziaVPN (баг после Doze, приложения не из .conf) и INCY (приложения только из подписки, которой у нас нет). Статусы протоколов: ok — заявлено поддерживаемым (по коду и документации), warn — работает с оговоркой, no — не работает, unk — не проверено; нет записи — не заявлено. device=false — на устройстве не проверялось. checked=false у ссылки — адреса нет в исследованиях, собран по id пакета. Источники: research/2026-10-04/clients-and-allowlist_04-10-26.md, research/2026-10-05/field-test-vps_05-10-26.md, research/2026-10-07/hiddify-compat_07-10-26.md (прогон ядер на стенде), docs/REFERENCE.md.",
-  "updated": "2026-10-07",
+  "_doc": "Каталог клиентских приложений (docs/PLAN-builder.md). no_unify — список платформ, где клиента не берут ради «одного приложения на всех устройствах» (только если без него протокол не покрыть): на Android AmneziaVPN (баг после Doze, приложения не из .conf) и INCY (приложения только из подписки, которой у нас нет). Статусы протоколов: ok — заявлено поддерживаемым (по коду и документации), warn — работает с оговоркой, no — не работает, unk — не проверено; нет записи — не заявлено. device=false — на устройстве не проверялось. checked=false у ссылки — адреса нет в исследованиях, собран по id пакета. short у статуса — короткая оговорка для списка «Оговорки» в мастере; warn_on — платформы, где «ok» пока с оговоркой. Пустой import — клиент ссылки и QR не принимает, в подбор не входит. Источники: research/2026-10-04/clients-and-allowlist_04-10-26.md, research/2026-10-05/field-test-vps_05-10-26.md, research/2026-10-07/hiddify-compat_07-10-26.md (прогон ядер на стенде), docs/REFERENCE.md.",
+  "updated": "2026-10-08",
   "platforms": {
     "android": "Android",
     "ios": "iPhone",
@@ -10,7 +10,7 @@
   },
   "protocols": {
     "vless-reality": {
-      "title": "VLESS + REALITY",
+      "title": "VLESS Vision",
       "caveat": "Нужен клиент на ядре Xray 26+: клиенты на sing-box (Hiddify, Karing, SFA/SFI, NekoBox) и Shadowrocket показывают «подключено», но трафика нет (сервер требует X25519MLKEM768)."
     },
     "vless-xhttp": {
@@ -18,7 +18,7 @@
       "caveat": "Тот же запрет на sing-box-клиенты, что у VLESS + REALITY; у самого sing-box транспорта XHTTP нет."
     },
     "ss2022": {
-      "title": "Shadowsocks-2022",
+      "title": "Shadowsocks",
       "caveat": "По умолчанию выключен: в полевом тесте соединения теряли данные (research/2026-10-05)."
     },
     "hysteria2": {
@@ -31,10 +31,10 @@
       "title": "AmneziaWG"
     },
     "tuic": {
-      "title": "TUIC v5"
+      "title": "TUIC"
     },
     "allowlist": {
-      "title": "Приложения через VPN",
+      "title": "Правила маршрутизации v2rayN",
       "pseudo": true
     }
   },
@@ -56,15 +56,17 @@
       "platforms": {
         "android": [
           {"kind": "github", "url": "https://github.com/amnezia-vpn/amneziawg-android/releases", "checked": false},
-          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "checked": false}
-        ]
+          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=org.amnezia.awg", "checked": true}
+        ],
+        "ios": [{"kind": "appstore", "url": "https://apps.apple.com/ru/app/amneziawg/id6478942365", "checked": true}]
       },
       "protocols": {
-        "amneziawg": {"s": "ok", "note": "IncludedApplications из .conf разбирается парсером клиента"}
+        "amneziawg": {"s": "ok", "warn_on": ["ios"], "short": "импорт формата 3.1 не проверен",
+                      "note": "IncludedApplications из .conf разбирается парсером клиента; на iPhone (3.1.4, есть в App Store РФ) импорт формата 3.1 не проверен на стенде"}
       },
       "import": {
-        "qr": "Нажмите «+» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
-        "file": "Нажмите «+» → «Импорт из файла» и выберите файл, который я пришлю."
+        "qr": "В «AmneziaWG» нажмите «+» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
+        "file": "В «AmneziaWG» нажмите «+» → «Импорт из файла» и выберите файл, который я пришлю."
       },
       "per_app": "config",
       "verified": {"date": "2026-10-04", "version": null, "device": false, "how": "код клиента"},
@@ -78,15 +80,15 @@
       "platforms": {
         "android": [
           {"kind": "github", "url": "https://github.com/wgtunnel/android/releases", "checked": true},
-          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=com.zaneschepke.wireguardautotunnel", "checked": false}
+          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=com.zaneschepke.wireguardautotunnel", "checked": true}
         ]
       },
       "protocols": {
         "amneziawg": {"s": "ok", "note": "5.7.5 применяет IncludedApplications при импорте"}
       },
       "import": {
-        "qr": "Нажмите «+» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
-        "file": "Нажмите «+» → «Импорт из файла» и выберите файл, который я пришлю."
+        "qr": "В «WG Tunnel» нажмите «+» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
+        "file": "В «WG Tunnel» нажмите «+» → «Импорт из файла» и выберите файл, который я пришлю."
       },
       "per_app": "config",
       "verified": {"date": "2026-10-04", "version": "5.7.5", "device": false, "how": "код клиента"},
@@ -98,8 +100,11 @@
       "engine": "AmneziaWG + Xray",
       "repo": "amnezia-vpn/amnezia-client",
       "platforms": {
-        "android": [{"kind": "github", "url": "https://github.com/amnezia-vpn/amnezia-client/releases", "checked": true}],
-        "ios": [{"kind": "site", "url": "https://amnezia.org/", "checked": false}],
+        "android": [
+          {"kind": "github", "url": "https://github.com/amnezia-vpn/amnezia-client/releases", "checked": true},
+          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=org.amnezia.vpn", "checked": true}
+        ],
+        "ios": [{"kind": "appstore", "url": "https://apps.apple.com/us/app/amneziavpn/id1600529900", "checked": true}],
         "windows": [{"kind": "github", "url": "https://github.com/amnezia-vpn/amnezia-client/releases", "checked": true}],
         "macos": [{"kind": "github", "url": "https://github.com/amnezia-vpn/amnezia-client/releases", "checked": true}],
         "linux": [{"kind": "github", "url": "https://github.com/amnezia-vpn/amnezia-client/releases", "checked": true}]
@@ -109,9 +114,10 @@
         "vless-reality": {"s": "unk", "note": "версия Xray в клиенте неизвестна"}
       },
       "import": {
-        "link": "Нажмите «Добавить» и вставьте ключ, который я пришлю.",
-        "file": "Нажмите «Добавить» → «Из файла» и выберите файл, который я пришлю."
+        "link": "В «AmneziaVPN» нажмите «Добавить» и вставьте ключ, который я пришлю.",
+        "file": "В «AmneziaVPN» нажмите «Добавить» → «Из файла» и выберите файл, который я пришлю."
       },
+      "no_ru_store": ["ios"],
       "no_unify": ["android"],
       "per_app": "ui",
       "per_app_steps": {"android": "Раздельное туннелирование приложений → «только приложения из списка», отметьте {apps}."},
@@ -126,9 +132,9 @@
       "platforms": {
         "android": [
           {"kind": "github", "url": "https://github.com/Happ-proxy/happ-android/releases", "checked": true},
-          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=com.happproxy", "checked": false}
+          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=com.happproxy", "checked": true}
         ],
-        "ios": [{"kind": "appstore", "url": "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215", "checked": false}]
+        "ios": [{"kind": "appstore", "url": "https://apps.apple.com/us/app/happ-proxy-utility/id6504287215", "checked": true}]
       },
       "protocols": {
         "vless-reality": {"s": "ok"},
@@ -137,14 +143,14 @@
         "hysteria2": {"s": "ok", "note": "по документации, импорт не проверен"}
       },
       "import": {
-        "qr": "Нажмите «+» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
-        "link": "Скопируйте ссылку, которую я пришлю, нажмите «+» → «Вставить из буфера»."
+        "qr": "В «Happ» нажмите «+» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
+        "link": "Скопируйте ссылку, которую я пришлю. В «Happ» нажмите «+» → «Вставить из буфера»."
       },
       "no_ru_store": ["ios"],
       "per_app": "ui",
       "per_app_steps": {"android": "«Настройки» → «Настройки туннеля» → «Прокси для выбранных приложений» → «ВКЛ» (не «Обход»), отметьте {apps}."},
       "verified": {"date": "2026-10-04", "version": "4.6.1", "device": false, "how": "документация"},
-      "notes": "В App Store РФ его нет: нужен иностранный Apple ID, а подделки со словом «Happ» не ставить. Названия пунктов взяты из чужих инструкций, не проверены."
+      "notes": "В App Store РФ его нет: нужен иностранный Apple ID; ставить только по ссылке, в RU-поиске подделки (6791998089, 6784291053, 6800274884…). Названия пунктов взяты из чужих инструкций, не проверены."
     },
     {
       "id": "incy",
@@ -163,8 +169,8 @@
         "hysteria2": {"s": "unk", "note": "в исследовании не проверяли"}
       },
       "import": {
-        "qr": "Нажмите «+» и отсканируйте QR, который я пришлю.",
-        "link": "Скопируйте ссылку, которую я пришлю, и добавьте её в INCY из буфера обмена."
+        "qr": "В «INCY» нажмите «+» и отсканируйте QR, который я пришлю.",
+        "link": "Скопируйте ссылку, которую я пришлю, и добавьте её в «INCY» из буфера обмена."
       },
       "no_unify": ["android"],
       "per_app": "header",
@@ -187,8 +193,8 @@
         "hysteria2-obfs": {"s": "ok", "note": "по документации, импорт не проверен"}
       },
       "import": {
-        "qr": "Нажмите «+» → «Импорт из QR-кода» и наведите камеру на QR, который я пришлю.",
-        "link": "Скопируйте ссылку, которую я пришлю, нажмите «+» → «Импорт из буфера обмена»."
+        "qr": "В «v2rayNG» нажмите «+» → «Импорт из QR-кода» и наведите камеру на QR, который я пришлю.",
+        "link": "Скопируйте ссылку, которую я пришлю. В «v2rayNG» нажмите «+» → «Импорт из буфера обмена»."
       },
       "per_app": "ui",
       "per_app_steps": {"android": "Боковое меню → «Выбор приложений»: включить, режим обхода выключить, отметить {apps}."},
@@ -213,14 +219,14 @@
         "allowlist": {"s": "ok", "note": "правило process в Xray TUN (Windows); не проверено на Windows"}
       },
       "import": {
-        "link": "Скопируйте ссылку, которую я пришлю, и в v2rayN: «Серверы» → «Импорт ссылок общего доступа из буфера обмена»."
+        "link": "Скопируйте ссылку, которую я пришлю. В «v2rayN»: «Серверы» → «Импорт ссылок общего доступа из буфера обмена»."
       },
       "per_app": "rules",
       "extra": [
         {
           "proto": "allowlist",
           "platform": "windows",
-          "text": "Правила: «Настройки» → «Настройки маршрутизации» → «Добавить набор правил» → «Импорт правил из файла» (файл v2rayn-routing.json), сделайте его активным. В «Настройках режима TUN» выключите «Устаревшая защита TUN»."
+          "text": "Правила маршрутизации v2rayN: «Настройки» → «Настройки маршрутизации» → «Добавить набор правил» → «Импорт правил из файла» (файл v2rayn-routing.json), сделайте его активным. В «Настройках режима TUN» выключите «Устаревшая защита TUN»."
         }
       ],
       "verified": {"date": "2026-10-04", "version": "7.25.4", "device": false, "how": "исходники"},
@@ -228,12 +234,15 @@
     },
     {
       "id": "singbox",
-      "name": "sing-box (SFA/SFI)",
+      "name": "sing-box",
       "engine": "sing-box",
       "repo": "SagerNet/sing-box",
       "platforms": {
-        "android": [{"kind": "github", "url": "https://github.com/SagerNet/sing-box/releases", "checked": false}],
-        "ios": [{"kind": "site", "url": "https://sing-box.sagernet.org/clients/apple/", "checked": false}]
+        "android": [
+          {"kind": "github", "url": "https://github.com/SagerNet/sing-box/releases", "checked": false},
+          {"kind": "play", "url": "https://play.google.com/store/apps/details?id=io.nekohasekai.sfa", "checked": true}
+        ],
+        "ios": [{"kind": "appstore", "url": "https://apps.apple.com/ru/app/sing-box-mt/id6785326793", "checked": true}]
       },
       "protocols": {
         "vless-reality": {"s": "no", "note": "не проходит REALITY у Xray 26.9.30 (X25519MLKEM768): «reality verification failed»; проверено на стенде 07.10.2026, sing-box 1.13.1, 1.14.2 и 1.15.0-alpha.10 (sing-box#4520); устройство не проверялось"},
@@ -244,12 +253,10 @@
         "tuic": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро sing-box 1.13.1 и 1.14.2; на устройстве не проверено"},
         "amneziawg": {"s": "no", "note": "ядро не знает параметры обфускации AmneziaWG: «unknown field amnezia»; проверено на стенде 07.10.2026, sing-box 1.13.1, 1.14.2 и 1.15.0-alpha.10"}
       },
-      "import": {
-        "link": "Скопируйте ссылку, которую я пришлю, и добавьте профиль из буфера обмена."
-      },
+      "import": {},
       "per_app": "profile",
       "verified": {"date": "2026-10-07", "version": "1.14.2", "device": false, "how": "стенд (ядро), приложение не запускалось"},
-      "notes": "Для VLESS и XHTTP не подходит. SFA и SFI берут JSON-профиль, а не ссылки hysteria2://, tuic://, ss:// (по коду SFA, ProfileImportHandler); профилей мы пока не выдаём, поэтому пользователям проще Hiddify. SFI в App Store недоступен, только TestFlight для спонсоров (документация sing-box)."
+      "notes": "Для VLESS и XHTTP не подходит. SFA и SFI берут JSON-профиль, а не ссылки hysteria2://, tuic://, ss:// (по коду SFA, ProfileImportHandler); профилей мы пока не выдаём, поэтому import пуст и в подбор приложение не входит, пользователям проще Hiddify. На iPhone есть в App Store, в том числе российском (sing-box MT)."
     },
     {
       "id": "hiddify",
@@ -262,7 +269,10 @@
           {"kind": "play", "url": "https://play.google.com/store/apps/details?id=app.hiddify.com", "checked": true}
         ],
         "ios": [{"kind": "appstore", "url": "https://apps.apple.com/us/app/hiddify-proxy-vpn/id6596777532", "checked": true}],
-        "windows": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}],
+        "windows": [
+          {"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true},
+          {"kind": "msstore", "url": "https://apps.microsoft.com/detail/9pdfnl3qv2s5", "checked": true}
+        ],
         "macos": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}],
         "linux": [{"kind": "github", "url": "https://github.com/hiddify/hiddify-app/releases", "checked": true}]
       },
@@ -270,20 +280,20 @@
         "vless-reality": {"s": "no", "note": "не проходит REALITY у Xray 26.9.30 (X25519MLKEM768): «reality verification failed»; проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); устройство не проверялось"},
         "vless-xhttp": {"s": "no", "note": "соединение обрывается после рукопожатия; проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); причина, скорее всего, та же, что у REALITY"},
         "ss2022": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); на устройстве не проверено"},
-        "hysteria2": {"s": "warn", "note": "работает (проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0, sing-box 1.13.1); пин сертификата не проверяется, подключение идёт по insecure=1; на устройстве не проверено"},
-        "hysteria2-obfs": {"s": "warn", "note": "Salamander работает (проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0); пин сертификата не проверяется; на устройстве не проверено"},
+        "hysteria2": {"s": "warn", "short": "без проверки сертификата", "note": "работает (проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0, sing-box 1.13.1); пин сертификата не проверяется, подключение идёт по insecure=1; на устройстве не проверено"},
+        "hysteria2-obfs": {"s": "warn", "short": "без проверки сертификата", "note": "Salamander работает (проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0); пин сертификата не проверяется; на устройстве не проверено"},
         "tuic": {"s": "ok", "note": "проверено на стенде 07.10.2026, ядро hiddify-core 4.1.0 (sing-box 1.13.1); на устройстве не проверено"},
         "amneziawg": {"s": "no", "note": "ядро не знает параметры обфускации AmneziaWG (Jc, S1, H1…); проверено на стенде 07.10.2026, hiddify-core 4.1.0"}
       },
       "import": {
-        "qr": "Нажмите «Добавить профиль» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
-        "link": "Скопируйте ссылку, которую я пришлю, нажмите «Добавить профиль» и добавьте её из буфера обмена."
+        "qr": "В «Hiddify» нажмите «Добавить профиль» → «Сканировать QR» и наведите камеру на QR, который я пришлю.",
+        "link": "Скопируйте ссылку, которую я пришлю. В «Hiddify» нажмите «Добавить профиль» и добавьте её из буфера обмена."
       },
       "no_ru_store": ["ios"],
       "per_app": "ui",
       "per_app_steps": {"android": "«Настройки» → «Маршрутизация» → «Прокси для приложений» → режим «Прокси» (только выбранные), отметьте {apps}."},
       "verified": {"date": "2026-10-07", "version": "4.1.1 (ядро hiddify-core 4.1.0)", "device": false, "how": "стенд (ядро), приложение не запускалось"},
-      "notes": "Один клиент на Android, Windows, macOS и Linux для Hysteria2, Salamander, TUIC и SS-2022. VLESS, XHTTP и AmneziaWG не умеет. Пин сертификата Hysteria2 игнорирует. В App Store РФ его нет (только магазин США, версия 4.0 — ядро iOS-сборки не проверяли). Названия пунктов приложений взяты из переводов в исходниках, на устройстве не проверены."
+      "notes": "Один клиент на Android, Windows, macOS и Linux для Hysteria2, Salamander, TUIC и SS-2022. VLESS, XHTTP и AmneziaWG не умеет. Пин сертификата Hysteria2 игнорирует. iOS 4.0 (GitHub 4.1.1), ядро iOS-сборки не проверяли; в App Store всех проверенных стран, кроме РФ. На Windows есть в Microsoft Store. Названия пунктов приложений взяты из переводов в исходниках, на устройстве не проверены."
     },
     {
       "id": "karing",
@@ -301,7 +311,7 @@
         "tuic": {"s": "ok", "note": "по документации, импорт не проверен"}
       },
       "import": {
-        "link": "Скопируйте ссылку, которую я пришлю, и добавьте её из буфера обмена."
+        "link": "Скопируйте ссылку, которую я пришлю, и добавьте её в «Karing» из буфера обмена."
       },
       "per_app": "unk",
       "verified": {"date": "2026-10-04", "version": null, "device": false, "how": "исследование"},
@@ -324,6 +334,7 @@
       "import": {
         "link": "Запустите: hysteria client -c config.yaml (в конфиге — ссылка, которую я пришлю)."
       },
+      "no_unify": ["windows"],
       "per_app": "no",
       "verified": {"date": "2026-10-05", "version": "2.12.3", "device": false, "how": "стенд"},
       "notes": "Консольный клиент для опытных."
@@ -342,7 +353,7 @@
     "ios": {
       "vless-reality": "incy",
       "vless-xhttp": "incy",
-      "amneziawg": "amneziavpn"
+      "amneziawg": "amneziawg"
     },
     "windows": {
       "vless-reality": "v2rayn",
@@ -371,7 +382,6 @@
     "linux": ["vless-reality", "hysteria2", "hysteria2-obfs", "amneziawg"]
   },
   "check": {
-    "amneziawg": "Включите VPN и откройте 2ip.ru в {browser}: там должен быть адрес сервера, а не ваш. Банк и Госуслуги работают как обычно, с вашим адресом.",
-    "*": "Включите VPN и откройте в {browser} заблокированный сайт: он должен открыться. 2ip.ru здесь не откроется: сервер прячет свой адрес от сайтов «мой IP». Банк и Госуслуги работают как обычно."
+    "*": "Проверьте: откройте заблокированный сайт — он должен открыться. Банк и Госуслуги работают как обычно."
   }
 }

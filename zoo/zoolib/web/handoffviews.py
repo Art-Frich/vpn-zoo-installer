@@ -172,7 +172,8 @@ class Card:
 
     @property
     def title(self) -> str:
-        return self.user.name
+        """Как к человеку обращаться: имя из списка, нет его — логин."""
+        return self.user.label
 
 
 SENT_RE = re.compile(r",? (?:который|которую) я пришлю")
@@ -184,13 +185,13 @@ def words(step: str, where: str) -> str:
 
 
 def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: clientviews.Pack, name: str) -> list[str]:
-    """Шаги — строки текста группы (или пакета, если у человека свои протоколы), без заголовка и номеров."""
+    """Шаги — строки инструкции группы (или пакета, если у человека свои протоколы), без заголовка и номеров."""
     body = None
     if g is not None:
         gt = ctx.text(g, plat)
         if gt and clientviews.pack_sig(pack) == ctx.group_sig(g, plat):
             body = gt
-    lines = (body or pack.message).replace(clientviews.NAME_TOKEN, name).splitlines()[1:]
+    lines = clientviews.fill_name(body or pack.message, name).splitlines()[1:]
     return [re.sub(r"^\d+\)\s*", "", ln).strip() for ln in lines if ln.strip()]
 
 
@@ -198,17 +199,18 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
                  links: list[protolib.Link]) -> list[Block]:
     """Платформы с одинаковыми приложениями и ключами сворачиваются в один блок («Android, iPhone — Happ»)."""
     prefer, order = clientviews.group_prefs(g)
+    admin = bool(g and g.install_mode == "admin")   # ставит ИТ: человеку магазины и «нет в App Store» не показываются
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
         pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
-                                      clientviews.store_first(g), ctx.al, ctx.apps_for(plat, g, user.name))
+                                      clientviews.store_first(g), ctx.al, ctx.apps_for(plat, g, user.name), admin)
         if pack is None:
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
-        apps = [CardApp(s.client["name"], s.version, ctx.cat.no_ru_store(s.client, plat), s.links,
-                        [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
+        apps = [CardApp(s.client["name"], s.version, not admin and ctx.cat.no_ru_store(s.client, plat),
+                        [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
                 for s, ks in zip(pack.sections, keys)]
-        steps = _steps(ctx, g, plat, pack, user.name)
+        steps = _steps(ctx, g, plat, pack, user.label)
         # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
         sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
                       tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps))
@@ -289,7 +291,7 @@ def _block_html(b: Block, name: str) -> Markup:
               t("span", " нет в App Store РФ", class_="chip warn", title=clientviews.FOREIGN_STORE) if a.foreign else None,
               t("div", [t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
                           rel="noopener noreferrer", class_="chip info noprint") for ln in a.stores],
-                class_="chips"),
+                class_="chips") if a.stores else None,
               t("div", [_key_html(k, name) for k in a.keys], class_="hkeys"), class_="happ") for a in b.apps]
     return t("section", t("h4", ", ".join(b.platforms), class_="plat-title"), apps,
              t("ol", [t("li", words(s, "с этой карточки")) for s in b.steps], class_="hsteps") if b.steps else None, class_="hblock")
@@ -297,10 +299,12 @@ def _block_html(b: Block, name: str) -> Markup:
 
 def _card_html(c: Card, st: Status) -> Markup:
     u = c.user
-    head = t("header", t("strong", u.name), t("span", u.note, class_="hnote") if u.note else None,
-             status_chip(st, u.name), class_="hhead")
+    head = t("header", t("strong", u.label), t("span", u.name, class_="hnote") if u.display else None,
+             t("span", u.note, class_="hnote") if u.note else None, status_chip(st, u.name), class_="hhead")
     if c.pending:
         body: Any = t("p", "Ссылки ещё собираются — обновите страницу.", class_="muted")
+    elif c.group is not None and not c.group.clients:
+        body = t("p", clientviews.no_apps(c.group))
     elif c.blocks:
         body = [_block_html(b, u.name) for b in c.blocks]
     else:
@@ -371,7 +375,7 @@ def _cell(v: str) -> str:
 
 
 def csv_bytes(cards: list[Card], with_files: dict[str, dict[str, str]] | None = None) -> bytes:
-    """index.csv: имя;заметка;протокол;ссылка. Файловые ключи — путь внутри архива (with_files: {имя: {файл ключа:
+    """index.csv: имя (как в списке);заметка;протокол;ссылка. Файловые ключи — путь внутри архива (with_files: {имя: {файл ключа:
     имя в папке}} — только то, что в архив попало), без ссылки — пропуск."""
     buf = io.StringIO(newline="")
     w = csv.writer(buf, delimiter=";", lineterminator="\n")
@@ -385,7 +389,7 @@ def csv_bytes(cards: list[Card], with_files: dict[str, dict[str, str]] | None = 
                     link = k.uri or (f"{c.user.name}/{put_as}" if put_as else "")
                     if link and (k.title, link) not in seen:
                         seen.add((k.title, link))
-                        w.writerow([c.user.name, _cell(c.user.note), k.title, link])
+                        w.writerow([_cell(c.user.label), _cell(c.user.note), k.title, link])
     return b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
 
 
@@ -403,7 +407,8 @@ def _qr_file(payload: str, base: str) -> tuple[str, bytes] | None:
 
 def instruction_text(c: Card, qr_files: dict[Any, str], files: dict[str, str]) -> str:
     u = c.user
-    out = [u.name + (f" — {u.note}" if u.note else ""), ("Группа: " + c.group.name) if c.group else "", ""]
+    who = u.label + (f" ({u.name})" if u.display else "")
+    out = [who + (f" — {u.note}" if u.note else ""), ("Группа: " + c.group.name) if c.group else "", ""]
     for b in c.blocks:
         out.append(f"{', '.join(b.platforms)}: " + ", ".join(f"«{a.name}»" for a in b.apps))
         out += [f"  {i}) {words(s, 'из этой папки')}" for i, s in enumerate(b.steps, 1)]

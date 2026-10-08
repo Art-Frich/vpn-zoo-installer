@@ -247,14 +247,15 @@ def _num(v: float, big: int = 10) -> str:
     return f"{v:.0f}" if v >= big else f"{v:.1f}"
 
 
-def parts(d: dict[str, Any], now: float, jitter: bool = True) -> list[str]:
-    """Цифры замера одним набором для обоих экранов: «8 мс», «±1», «51 Мбит/с», «3 мин назад»."""
+def parts(d: dict[str, Any], now: float, jitter: bool = True, speed: bool = True) -> list[str]:
+    """Цифры замера: «8 мс», «±1», «51 Мбит/с», «3 мин назад». speed=False — без скорости: у лёгкого замера (1 МБ,
+    медленный старт) она занижена в десятки раз, админка её не показывает (ёмкость сервера — из самопроверки)."""
     out: list[str] = []
     if d.get("rtt_ms") is not None:
         out.append(f"{d['rtt_ms']:.0f} мс")
     if jitter and d.get("jitter_ms") is not None:
         out.append(f"±{d['jitter_ms']:.0f}")
-    if d.get("speed") is not None:
+    if speed and d.get("speed") is not None:
         out.append(f"{_num(d['speed'])} Мбит/с")
     if out:
         out.append(ago(d["ts"], now))

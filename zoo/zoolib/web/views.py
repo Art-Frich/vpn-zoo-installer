@@ -45,7 +45,7 @@ def users_line(p: dict[str, Any]) -> Markup:
              class_="muted small", title=NL.join(tip))
 
 
-NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", "Группы"), ("/apps", "Приложения"), ("/clients", "Клиенты"), ("/traffic", "Трафик"),
+NAV = [("/", "Обзор"), ("/users", "Пользователи"), ("/groups", "Группы"), ("/apps", "Через VPN"), ("/clients", "Приложения"), ("/traffic", "Трафик"),
        ("/probe", "Проверка"), ("/journal", "Атаки"), ("/logs", "Логи"), ("/settings", "Настройки")]
 NAV_TITLES = frozenset(label for _, label in NAV)
 USERS_TRAFFIC_TITLE = "трафик пользователей сегодня (без служебного пробника)"
@@ -252,7 +252,7 @@ def overview(app: "App", req: "Request") -> "Response":
         problems = [t("span", f"{u}: {s}", class_="chip bad") for u, s in p["services"].items() if s != "active"]
         problems += [t("span", f"{k} не слушает", class_="chip bad") for k, v in p["listening"].items() if not v]
         cards.append(card(
-            p.get("short") or p["name"].partition(" (")[0],
+            manifests.TITLES.get(p["id"]) or p.get("short") or p["name"].partition(" (")[0],
             t("div", t("span", f"{p['port']}/{p['layer']}", class_="chip", title=about), problems, class_="chips"),
             protoviews.metrics_row(p, pctx, csrf),
             t("div",
@@ -291,8 +291,8 @@ def overview(app: "App", req: "Request") -> "Response":
     if st["exposed"]:
         rows.append(("лишние открытые порты", ", ".join(f"{e['port']}/{e['proto']}" for e in st["exposed"])))
     sys_card = card("Сервер", kv(rows), table(["файл", "до", ""], certs) if certs else None)
-    start = t("a", "Get started", href="/connect/new", class_="btn primary", data_swap=True,
-              title="Новая группа: протоколы, клиенты, люди и что им отправить")
+    start = t("a", "Подключить людей", href="/connect/new", class_="btn primary", data_swap=True,
+              title="Группа: протоколы, приложения, люди и что им отправить")
     body = [page_head("Обзор", None, [start, None if alerts else badge("✓ всё в порядке", "ok")]),
             alert_list(alerts) if alerts else None,
             tiles, t("h2", "Протоколы"), protoviews.caption(pctx), protos,
@@ -424,13 +424,20 @@ def load_selftest() -> dict[str, Any] | None:
     return data if isinstance(data, dict) and isinstance(data.get("results"), list) else None
 
 
+def _proto_name(pid: Any, mans: dict[str, Any]) -> Markup:
+    """Название протокола как на всех экранах; длинное имя из манифеста — в подсказке. Идентификатора на экране нет."""
+    m = mans.get(pid)
+    return t("strong", manifests.TITLES.get(pid) or (m.short if m else pid), title=m.name if m else None)
+
+
 def results_table(results: list[dict[str, Any]]) -> Markup:
     rows = []
+    mans = {m.id: m for m in manifests.load_all()[0]}
     for r in results:
         why = "; ".join(([r["reason"]] if r.get("reason") else []) + list(r.get("notes") or []))
         rtt = (r.get("l4") or {}).get("rtt_ms")
         lat = r.get("latency_ms")
-        rows.append([t("span", t("strong", r.get("id")),
+        rows.append([t("span", _proto_name(r.get("id"), mans),
                        t("span", f"{r.get('port') or '?'}/{r.get('layer') or '?'}", class_="sub")),
                      verdict_badge(r.get("verdict")),
                      t("span", "—" if lat is None else f"{lat:.0f} мс",
@@ -439,7 +446,8 @@ def results_table(results: list[dict[str, Any]]) -> Markup:
                      r.get("egress_ip") or "—", t("span", why, class_="small")])
     return table(["протокол", "итог", ("задержка", "время до первого байта через туннель; ниже — TCP-соединение "
                                         "с портом сервера (RTT), если протокол по TCP"),
-                  "скорость", "IP выхода", "причина"], rows,
+                  ("скорость", "самопроверка, 5 МБ через туннель: сколько тянет сервер, а не скорость у людей"),
+                  "IP выхода", "причина"], rows,
                  num=[2, 3], empty="протоколов для проверки нет", stack=True)
 
 
@@ -508,7 +516,8 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
     if notice:
         cmp_body.insert(0, alert_list([("info", notice)]))
     if compare_rows is not None:
-        rows = [[t("strong", r["id"]), verdict_badge(r.get("server")), verdict_badge(r.get("client")),
+        mans = {m.id: m for m in manifests.load_all()[0]}
+        rows = [[_proto_name(r["id"], mans), verdict_badge(r.get("server")), verdict_badge(r.get("client")),
                  badge(r.get("verdict", ""), CATEGORY.get(r.get("category", ""), "muted"))] for r in compare_rows]
         cmp_body += [t("h3", "Сравнение"), table(["протокол", "сервер", "клиент", "вывод"], rows, stack=True)]
     body = [page_head("Проверка"), local, *probeviews.cards(app, req),

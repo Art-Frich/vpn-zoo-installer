@@ -901,11 +901,26 @@ class OverviewMetricsTest(AppTestBase):
         now = time.time()
         seed_live("vless-reality", now, age=240)
         _, body = self.c.get("/")
-        self.assertIn("23 мс · ±4 · 38 Мбит/с · 4 мин назад", re.sub(r"<[^>]+>", "", body))
+        text = re.sub(r"<[^>]+>", "", body)
+        self.assertIn("23 мс · ±4 · 4 мин назад", text)
+        self.assertNotIn("38 Мбит/с", text, "живая скорость (1 МБ, медленный старт) занижена: не показывается")
         self.assertIn("нет замера", body, "у протокола без замеров — так, без нулей")
         self.assertIn("метрики раз в 10 мин · обновлено 4 мин назад", body)
         self.assertIn('action="/live/vless-reality"', body)
         self.assertIn('data-swap', body)
+
+    def test_card_shows_server_capacity_from_the_selftest_not_live_speed(self):
+        from zoolib import probe
+        from zoolib.fsutil import atomic_write_json
+        seed_live("vless-reality", time.time(), age=240)
+        atomic_write_json(probe.selftest_file(), {"generated": "2026-10-06T10:00:00+00:00", "server_ip": "10.0.0.1",
+                                                   "results": [{"id": "vless-reality", "verdict": "OK", "speed_mbps": 408.2},
+                                                               {"id": "hysteria2", "verdict": "OK", "speed_mbps": None}]})
+        _, body = self.c.get("/")
+        text = re.sub(r"<[^>]+>", "", body)
+        self.assertIn("сервер тянет ≈408 Мбит/с · 06.10", text)
+        self.assertEqual(text.count("сервер тянет"), 1, "у протокола без скорости самопроверки — ничего")
+        self.assertNotIn("38 Мбит/с", text)
 
     def test_traffic_in_card_excludes_service_user(self):
         users.bootstrap()

@@ -1,5 +1,5 @@
-"""Дистрибутивы клиентов для групп «приложения ставит ИТ»: блок «Скачать дистрибутивы» (страница группы и
-последний шаг мастера), скачивание файла залогиненным администратором и заявка «Обновить».
+"""Дистрибутивы приложений для групп «ставит ИТ»: блок «Дистрибутивы» (страница группы и последний шаг мастера) с
+памяткой «Как установить (для ИТ)», скачивание файла залогиненным администратором и заявка «Скачать на сервер» / «Обновить».
 Админка сеть не трогает: файлы кладёт zoo clients --fetch-dist (zoolib/dist.py), здесь только чтение каталога."""
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .. import clients, dist, groups, output
+from . import clientviews
 from .html import Markup, card, csrf_input, t, table
 from .views import ago
 
@@ -35,26 +36,59 @@ def _links(links: list[dict[str, Any]]) -> Markup:
                        rel="noopener noreferrer", class_="chip info") for ln in links], class_="chips")
 
 
+def _head(r: dict[str, Any], cat: clients.Catalog) -> list[Any]:
+    return [t("strong", r["client"]["name"]), t("div", cat.platforms.get(r["platform"], r["platform"]), class_="muted small")]
+
+
 def _row(r: dict[str, Any], cat: clients.Catalog) -> list[Any]:
-    c, plat, f = r["client"], r["platform"], r["file"]
-    head = [t("strong", c["name"]), t("div", cat.platforms.get(plat, plat), class_="muted small")]
+    """Строка таблицы, когда хоть что-то скачано: приложение, версия, файл (sha256 — в подсказке имени), размер."""
+    f = r["file"]
+    head = _head(r, cat)
     if f:
-        sha = t("code", f["sha256"], class_="sha",
-                title="sha256 указан GitHub и совпал" if f.get("verified") else "sha256 посчитан при скачивании")
-        return [head, t("span", f["version"], class_="mono"), t("a", f["name"], href=f["path"], class_="dl-name"),
-                output.human_bytes(f["size"]), [sha, " ", t("span", "GitHub ✓" if f.get("verified") else "у нас", class_="muted small")],
-                t("a", "Скачать", href=f["path"], class_="btn small primary")]
+        sha = (f"sha256 {f['sha256']} — " + ("указан GitHub и совпал" if f.get("verified") else "посчитан при скачивании"))
+        return [head, t("span", f["version"], class_="mono"),
+                t("a", f["name"], href=f["path"], class_="dl-name", title=sha),
+                output.human_bytes(f["size"]), t("a", "Скачать", href=f["path"], class_="btn small primary")]
+    return [head, "—", [_why(r), _links(r["links"])], "—", ""]
+
+
+def _why(r: dict[str, Any]) -> Any:
     if r["store"]:
-        why: Any = t("span", "ставится из магазина", class_="muted")
-    elif r["error"]:
-        why = t("span", "не скачан: " + r["error"], class_="muted small")
+        return t("span", "ставится из магазина", class_="muted")
+    if r["error"]:
+        return t("span", "не скачан: " + r["error"], class_="muted small")
+    return t("span", "Файла пока нет", class_="muted")
+
+
+def _list(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup:
+    """Пока ничего не скачано: приложение, где его взять и «Файла пока нет» — без пустых столбцов версии, размера, sha256."""
+    return t("ul", [t("li", t("strong", r["client"]["name"]), " ", t("span", cat.platforms.get(r["platform"], r["platform"]),
+                                                                       class_="muted small"),
+                      " ", _why(r), _links(r["links"]), class_="dist-item") for r in rows], class_="dist-list")
+
+
+def _how(r: dict[str, Any], cat: clients.Catalog) -> str:
+    c, plat = r["client"], r["platform"]
+    where = cat.platforms.get(plat, plat)
+    if plat == "ios":
+        how = "из App Store" + (" — в российском его нет, нужен аккаунт другой страны" if cat.no_ru_store(c, plat) else "")
+    elif r["store"] or not any(ln["kind"] == "github" for ln in r["links"]):
+        how = "из магазина (ссылка в таблице)"
     else:
-        why = t("span", "ещё не скачан — «Обновить»", class_="muted")
-    return [head, "—", [why, _links(r["links"])], "—", "—", ""]
+        how = ("скачайте " + clientviews.GITHUB_FILE.get(plat, "установщик") + " (кнопка «Скачать» или страница GitHub), "
+               "передайте на устройство и откройте" + ("; разрешите установку из неизвестных источников"
+                                                       if plat == "android" else ""))
+    return f"{where} — «{c['name']}»: {how}."
+
+
+def memo(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup:
+    """«Как установить (для ИТ)»: шаги установки по приложениям — людям в инструкцию они не попадают."""
+    return t("details", t("summary", "Как установить (для ИТ)"), t("ol", [t("li", _how(r, cat)) for r in rows], class_="hint"),
+             class_="more")
 
 
 def card_for(gs: groups.Groups, group_id: str | None, back: str, csrf: str) -> Markup | None:
-    """Блок «Скачать дистрибутивы» по группе (или по всем группам «ставит ИТ»); None — таких групп нет."""
+    """Блок «Дистрибутивы» по группе (или по всем группам «ставит ИТ»); None — таких групп нет."""
     try:
         cat = clients.load()
     except clients.ClientsError:
@@ -62,25 +96,30 @@ def card_for(gs: groups.Groups, group_id: str | None, back: str, csrf: str) -> M
     rows = dist.listing(gs, cat, group_id)
     if not rows:
         return None
+    have = any(r["file"] for r in rows)
+    label = "Обновить" if have else "Скачать на сервер"
     checked = dist.status()["checked"]
     ok, why = dist.request_state()
     if ok:
         form: Markup = t("form", csrf_input(csrf), t("input", type="hidden", name="back", value=back),
-                         t("button", "Обновить", type="submit", class_="btn small",
+                         t("button", label, type="submit", class_="btn small" + ("" if have else " primary"),
                            title="Скачать свежие версии с GitHub (сервер сам, через несколько минут)"),
                          method="post", action="/dist/refresh", class_="inline", data_swap=True)
     else:
-        form = t("button", "Обновить", type="button", class_="btn small", disabled=True, title=why)
+        form = t("button", label, type="button", class_="btn small", disabled=True, title=why)
     ios = any(r["platform"] == "ios" for r in rows)
     state = t("span", f"скачано · {ago(checked)}" if checked else "ещё не скачивалось", class_="muted small")
     body = [t("div", state, form, class_="actions"),
-            table(["приложение", "версия", "файл", "размер", "sha256", ""], [_row(r, cat) for r in rows], stack=True,
-                  empty="нет файлов"),
+            table(["приложение", "версия", "файл", "размер", ""], [_row(r, cat) for r in rows], stack=True,
+                  empty="нет файлов") if have else _list(rows, cat),
+            memo(rows, cat),
             ios_note() if ios else None,
-            t("p", "Файлы лежат на сервере и скачиваются через туннель; сверьте sha256 перед раздачей.", class_="hint")]
-    return card("Скачать дистрибутивы", *body, id_="dist",
-                help="Сервер скачивает последние релизы клиентов с GitHub раз в сутки и по кнопке; хранит две последние "
-                     "версии, всего не больше 300 МБ. Нет подходящего файла — ссылка на страницу клиента.")
+            t("p", "Файлы лежат на сервере и скачиваются через туннель; sha256 — в подсказке имени файла, сверьте его "
+                   "перед раздачей." if have else "Файлы появятся на сервере через несколько минут после кнопки.",
+              class_="hint")]
+    return card("Дистрибутивы", *body, id_="dist",
+                help="Сервер скачивает последние релизы приложений с GitHub раз в сутки и по кнопке; хранит две последние "
+                     "версии, всего не больше 300 МБ. Нет подходящего файла — ссылка на страницу приложения.")
 
 
 def download(app: "App", req: "Request", cid: str, ver: str, fname: str) -> "Response":

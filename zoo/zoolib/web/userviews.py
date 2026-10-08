@@ -123,9 +123,10 @@ def _proto_chip(u: users.User, managed: list[str], gs: groups.Groups) -> Markup:
 def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tbl.Spec:
     def name_cell(r: dict[str, Any]) -> Markup:
         u = r["user"]
+        sub = " · ".join(x for x in (u.display, u.note) if x)
         return t("span", t("a", t("strong", u.name), href=f"/users/{u.name}"), " " if not u.enabled else None,
                  badge("откл.", "muted") if not u.enabled else None,
-                 t("span", u.note, class_="sub") if u.note else None)
+                 t("span", sub, class_="sub") if sub else None)
 
     def toggle(r: dict[str, Any]) -> Markup:
         u = r["user"]
@@ -134,7 +135,7 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
                            confirm=_disable_confirm(u.name) if u.enabled else None)
 
     cols = [
-        tbl.Col("name", "пользователь", cell=name_cell, value=lambda r: r["name"], find=lambda r: r["user"].note,
+        tbl.Col("name", "пользователь", cell=name_cell, value=lambda r: r["name"], find=lambda r: f"{r['user'].display} {r['user'].note}",
                 sort=True, search=True),
         tbl.Col("access", "доступ", sort=True, chip=True, hidden=True),
         tbl.Col("group", "группа", cell=lambda r: _group_cell(gs, r["user"]), sort=True, chip=True),
@@ -509,15 +510,15 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
         actions = badge("служебный: пробник", "muted")
     try:
         al = allowlist.Allowlist.load()
-        apps = "свой список приложений" if al.own(name) else (
-            "список приложений группы" if al.from_group(name) else "общий список приложений")
+        apps = "свой список" if al.own(name) else ("список группы" if al.from_group(name) else "общий список")
     except allowlist.AllowlistError:
-        apps = "общий список приложений"
+        apps = "общий список"
     info = card("Профиль", kv([
         ("статус", badge("включён", "ok") if user.enabled else
          t("span", "отключён", class_="badge muted", title="креды сохранены, доступ закрыт")),
         ("группа", _group_link(user)),
         ("через VPN", t("a", apps, href=f"/apps?user={name}")),
+        *([("имя", user.display)] if user.display else []),
         ("заметка", user.note or "—"),
         ("создан", _created_local(user.created)),
         ("активность", ago(seen)),
@@ -543,13 +544,14 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     err_list = alert_list([("warn", f"{pid}: ссылки не получены — {e}") for pid, e in errors.items()]) if errors else None
     grp = _group_of(user)
     show = link_filter(user, grp)
-    connect = clientviews.connect_card(links, name, clientviews.Ctx.load(), grp)
+    connect = clientviews.connect_card(links, name, clientviews.Ctx.load(), grp, label=user.label)
     tiles = connect_tiles(links, manifests.load_all()[0], name, show)
     # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
     advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show), tiles,
                  t("p", "Ссылки и QR — ключи доступа: показывайте только самому пользователю.", class_="hint"),
                  class_="card more", open=connect is None or None) if tiles else None
-    body = [page_head(name, user.note or None, actions, top=False), err_list, connect, advanced,
+    sub = " · ".join(x for x in ((name if user.display else ""), user.note) if x)
+    body = [page_head(user.label, sub or None, actions, top=False), err_list, connect, advanced,
             None if connect or advanced else card("Подключить", t("p", "Ссылок нет.", class_="muted")),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
@@ -705,13 +707,14 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
     dialogs = []
     for n, pid in enumerate(order):
         m = by_id.get(pid)
-        title = (m.name if m else ("Приложения через VPN" if pid == allowlist.V2RAYN_PROTO else pid)).partition(" (")[0]
+        title = ("Правила маршрутизации v2rayN" if pid == allowlist.V2RAYN_PROTO
+                 else manifests.TITLES.get(pid) or (m.short if m else pid))
         dlg_id = f"dlg-{n}"
         sections[pid in MAIN_PROTOS].append(t(
             "button", t("span", title, class_="ptile-name"),
             t("span", PLATFORMS.get(pid, "—"), class_="ptile-sub"),
             type="button", class_=f"ptile acc{n % 8 + 1}", data_dialog=dlg_id,
-            title=f"Клиенты: {cat.names_for(pid)}" if cat and cat.names_for(pid) else None))
+            title=f"Приложения: {cat.names_for(pid)}" if cat and cat.names_for(pid) else None))
         items = sorted(groups[pid], key=lambda it: _variant_order(it[1]))  # sorted стабилен: порядок модуля цел
         tabs_data, uri_n = [], 0
         for k, (_, link) in enumerate(items):
