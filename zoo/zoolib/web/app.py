@@ -110,6 +110,7 @@ class App:
             ("GET", r"/login", self.login_page, False),
             ("POST", r"/login", self.login_post, False),
             ("POST", r"/logout", self.logout, True),
+            ("GET", r"/theme", self.theme, True),
             ("GET", r"/", views.overview, True),
             ("GET", r"/users", userviews.users_list, True),
             ("POST", r"/users", userviews.user_add, True),
@@ -391,9 +392,20 @@ class App:
                  t("p", t("a", "← на главную", href="/")), class_="card")
         return self.render(req, title, body, bare=req.session is None, status=status)
 
+    def theme(self, app: "App", req: Request) -> Response:
+        """Тема: авто → светлая → тёмная. Cookie ставит сервер (HttpOnly), app.js меняет тему сразу и зовёт этот адрес."""
+        to = req.query.get("to", "")
+        resp = redirect(_safe_next(req.query.get("back")))
+        if to in ("light", "dark"):
+            resp.headers.append(("Set-Cookie", cookie(THEME_COOKIE, to, max_age=400 * 86400)))
+        else:
+            resp.headers.append(("Set-Cookie", cookie(THEME_COOKIE, "", max_age=0)))
+        return resp
+
     def render(self, req: Request, title: str, body: Any, active: str = "", status: int = 200,
                bare: bool = False, refresh: int | None = None) -> Response:
         cfg_label = ""
+        theme = req.cookies.get(THEME_COOKIE, "")
         if not bare:
             cfg = self.cfg()
             cfg_label = " · ".join(x for x in (cfg.get("LABEL"), cfg.get("SERVER_IP")) if x)
@@ -416,11 +428,17 @@ class App:
             nav = t("nav", [t("a", label, href=href, class_="active" if href == active else None,
                               aria_current="page" if href == active else None) for href, label in NAV],
                     class_="nav", aria_label="Разделы")
+            cur = theme if theme in ("light", "dark") else "auto"
+            # адрес возврата — только у нормальных страниц: на 404 не повторяем в разметке произвольный путь
+            back = (urllib.parse.quote(req.path + ("?" + urllib.parse.urlencode(req.query) if req.query else ""), safe="/")
+                    if status < 400 else "/")
+            toggle = t("a", THEME_ICON[cur], href=f"/theme?to={THEME_NEXT[cur]}&back={back}", class_="btn small theme",
+                       title=THEME_TITLE[cur], aria_label=THEME_TITLE[cur], data_theme_toggle=True)
             logout = t("form", csrf_input(req.session.csrf if req.session else ""),
                        t("button", "Выйти", type="submit", class_="btn small"), method="post", action="/logout",
                        data_confirm="Выйти из админки?")
             header = t("header", t("div", t("a", "vpn-zoo", t("span", cfg_label) if cfg_label else None,
-                                            href="/", class_="brand"), nav, logout, class_="top-inner"),
+                                            href="/", class_="brand"), nav, toggle, logout, class_="top-inner"),
                        class_="top")
             flash = t("ul", [t("li", t("span", {"ok": "✓", "bad": "✕"}.get(k, "!"), class_="ico"),
                                t("span", self.safe_msg(msg) if k in ("bad", "warn") else msg,
@@ -432,8 +450,16 @@ class App:
             footer = t("footer", f"zoo {__version__}",
                        t("span", id="live", data_live="10", data_stamp=req.stamp or None, hidden=True))
             content = [header, t("main", flash, body), footer]
-        doc = Markup("<!doctype html>") + t("html", t("head", head), t("body", content), lang="ru")
+        doc = Markup("<!doctype html>") + t("html", t("head", head), t("body", content), lang="ru",
+                                              data_theme=theme if theme in ("light", "dark") else None)
         return Response(status, doc.encode("utf-8"))
+
+
+THEME_COOKIE = "zoo_theme"
+THEME_NEXT = {"auto": "light", "light": "dark", "dark": "auto"}
+THEME_ICON = {"auto": "◐", "light": "☀", "dark": "☾"}
+THEME_TITLE = {"auto": "Тема как в системе — сменить на светлую", "light": "Светлая тема — сменить на тёмную",
+               "dark": "Тёмная тема — сменить на системную"}
 
 
 def _safe_next(value: str | None) -> str:

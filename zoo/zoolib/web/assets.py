@@ -25,7 +25,7 @@ CSS = r"""
   --mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: #121211; --surface: #1b1b1a; --surface-2: #232321; --border: #2f2f2c;
     --text: #f2f2ef; --text-2: #c3c2b7; --muted: #8f8e86;
@@ -38,6 +38,19 @@ CSS = r"""
     --shadow: none;
   }
 }
+:root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #121211; --surface: #1b1b1a; --surface-2: #232321; --border: #2f2f2c;
+    --text: #f2f2ef; --text-2: #c3c2b7; --muted: #8f8e86;
+    --accent: #3987e5; --accent-ink: #ffffff; --accent-soft: #18304d;
+    --ok: #4cc27a; --ok-soft: #173322; --warn: #e2a93b; --warn-soft: #3a2c10;
+    --bad: #f07a72; --bad-soft: #401c1a; --info-soft: #18304d;
+    --grid: #2a2a28; --track: #2c2c29;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    --shadow: none;
+}
+:root[data-theme="light"] { color-scheme: light; }
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; scrollbar-gutter: stable; }
 body {
@@ -624,6 +637,25 @@ table.preview code { overflow-wrap: anywhere; }
 JS = r"""
 (function () {
   'use strict';
+  // тема: авто → светлая → тёмная. Меняем сразу, cookie ставит сервер по тому же адресу (фоном)
+  var THEME_NEXT = {auto: 'light', light: 'dark', dark: 'auto'};
+  var THEME_ICON = {auto: '◐', light: '☀', dark: '☾'};
+  var THEME_TITLE = {auto: 'Тема как в системе — сменить на светлую', light: 'Светлая тема — сменить на тёмную',
+                     dark: 'Тёмная тема — сменить на системную'};
+  document.addEventListener('click', function (ev) {
+    var a = ev.target.closest ? ev.target.closest('a[data-theme-toggle]') : null;
+    if (!a) return;
+    ev.preventDefault();
+    var url = new URL(a.href, location.href), to = url.searchParams.get('to') || 'auto';
+    if (to === 'auto') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', to);
+    fetch(url.pathname + url.search, {credentials: 'same-origin', redirect: 'manual'}).catch(function () {});
+    url.searchParams.set('to', THEME_NEXT[to]);
+    a.href = url.pathname + url.search;
+    a.textContent = THEME_ICON[to];
+    a.title = THEME_TITLE[to];
+    a.setAttribute('aria-label', THEME_TITLE[to]);
+  });
   document.documentElement.classList.add('js');   // кнопки «Пересчитать» и подобные с JS не нужны
   // копирование в буфер: data-copy="id" — поле, значение которого берём
   document.addEventListener('click', function (ev) {

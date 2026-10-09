@@ -397,6 +397,32 @@ class AppTestBase(unittest.TestCase):
         self.env.__exit__(None, None, None)
 
 
+class ThemeTest(AppTestBase):
+    def test_toggle_cycles_and_page_follows_cookie(self):
+        self.c.login()
+        _, body = self.c.get("/users")
+        self.assertIn('href="/theme?to=light&amp;back=/users"', body)
+        self.assertNotIn("data-theme=", body.split("<head>")[0])
+        resp, _ = self.c.get("/theme?to=dark&back=/users")
+        self.assertEqual(resp.status, 303)
+        self.assertEqual(header(resp, "Location"), ["/users"])
+        self.assertEqual(self.c.cookies.get("zoo_theme"), "dark")
+        _, body = self.c.get("/users")
+        self.assertIn('<html lang="ru" data-theme="dark">', body)
+        self.assertIn('href="/theme?to=auto&amp;back=/users"', body)
+        self.c.get("/theme?to=auto&back=/")
+        self.assertNotIn("zoo_theme", self.c.cookies)
+
+    def test_bad_values_are_safe(self):
+        self.c.login()
+        resp, _ = self.c.get("/theme?to=<script>&back=//evil.example")
+        self.assertEqual(header(resp, "Location"), ["/"])
+        self.assertNotIn("zoo_theme", self.c.cookies)
+        self.c.cookies["zoo_theme"] = '"><script>'
+        _, body = self.c.get("/")
+        self.assertNotIn("data-theme=", body.split("<head>")[0])
+
+
 class RoutingTest(AppTestBase):
     def test_auth_required(self):
         for path in ("/", "/users", "/traffic", "/probe", "/logs", "/settings", "/users/owner", "/jobs/1"):
