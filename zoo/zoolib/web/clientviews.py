@@ -541,6 +541,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     names = join_names(titles) if titles else ""
     brave = has_brave(apps) if apps is not None else True   # списка нет — общий пресет, Brave в нём есть
     sections = []
+    said = False   # «один способ из двух» — один раз на устройство
     for c, mine in plan:
         items = [Item(proto, method, _tile_title(cat, mans, proto)) for proto, method in mine]
         sec = Section(c, _version(c, platform, cache), _sorted_links(c["platforms"][platform], stores), items)
@@ -558,7 +559,8 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         # QR с другого экрана — телефонам, у которых главный способ не QR
         alt = tiles if qr_ok and platform not in DESKTOP and "qr" not in imports else None
         named = len(plan) > 1   # два приложения на устройстве: ключи называются, как подписаны у человека
-        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named)
+        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named, not said)
+        said = said or alt is not None
         if qr_ok and not sec.extras:
             sec.paper = cat.steps(c, platform, [("qr", tiles)], names, lambda p: p in have, named=named)
         sec.via = cat.via(c, platform)
@@ -570,7 +572,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     lists = "apps" in modes
     pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0], names),
                 report=cat.raw["report"], one_on=cat.raw["one_on"])
-    if brave and lists and platform in cat.raw.get("brave", {}):
+    if ((brave and lists) or "brave" in modes) and platform in cat.raw.get("brave", {}):   # brave — VPN только в нём
         pack.before.append(cat.raw["brave"][platform])
     if lists and platform in cat.raw.get("rules", {}):
         pack.after.append(cat.raw["rules"][platform])

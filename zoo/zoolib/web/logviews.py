@@ -222,6 +222,18 @@ def _search_form(st: dict[str, Any]) -> Markup:
 
 # ---------- просмотр ----------
 
+# строки чужих программ, которые пугают зря: (что ищем, что это значит) — пояснение под логом, сам лог не меняется
+KNOWN_LINES = (
+    ("Remove Inbound User", "«Remove Inbound User … due to expiration or traffic limit» — так 3x-ui пишет, когда снимает "
+                            "клиента с Xray. Сроков и лимитов трафика zoo не ставит: обычно это «Отключить», «Удалить» "
+                            "или «Новые ключи» в админке. Человека нет на «Пользователях» — его удалили."),
+)
+
+
+def _known_notes(lines: list[logread.Line]) -> list[str]:
+    return [why for needle, why in KNOWN_LINES if any(needle in ln.text for ln in lines)]
+
+
 def _view_card(app: "App", st: dict[str, Any], kind: str, name: str, chunk: logread.Chunk) -> Markup:
     tail = not (st["before"] or st["after"] or st["at"])
     clean = logs.sanitize("\n".join(line.text for line in chunk.lines), app.cfg())
@@ -253,7 +265,8 @@ def _view_card(app: "App", st: dict[str, Any], kind: str, name: str, chunk: logr
     sizes = t("nav", [t("a", str(n), href=_url(st, lines=n, before="", after="", at=""),
                         class_="active" if n == st["lines"] else None) for n in LINES], class_="seg small",
               aria_label="Строк", title="строк за раз")
-    return card(name, bar, pre, below, extra=[sizes, export],
+    notes = [t("p", why, class_="hint") for why in _known_notes(chunk.lines)]
+    return card(name, bar, pre, below, notes, extra=[sizes, export],
                 help="Весь доступный лог: ↑ или прокрутка вверх подгружает предыдущие строки. Ключи, пароли и ссылки скрыты.")
 
 

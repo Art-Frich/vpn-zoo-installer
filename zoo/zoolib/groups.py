@@ -117,6 +117,7 @@ class Group:
     messages: dict[str, str] = field(default_factory=dict)
     msg_sigs: dict[str, str] = field(default_factory=dict)   # подпись набора клиентов на момент сохранения текста
     install_mode: str = "self"   # «self» — люди ставят сами по инструкции, «admin» — приложения ставит ИТ
+    extra: list[str] = field(default_factory=list)   # устройства с приложениями, но не по умолчанию (Mac у одного человека)
 
     def __post_init__(self) -> None:
         self.protocols = _norm_protocols(self.protocols)   # набор, не очередь: порядок — PRIORITY
@@ -142,11 +143,14 @@ class Group:
             clients={str(k): ids for k, v in (raw_cl.items() if isinstance(raw_cl, dict) else ())
                      if (ids := client_ids(v))},
             allowlist=own if own and all(own.values()) else None,
-            messages=msgs, msg_sigs=sigs, install_mode=clean_mode(d.get("install_mode")))
+            messages=msgs, msg_sigs=sigs, install_mode=clean_mode(d.get("install_mode")),
+            extra=[str(x)[:20] for x in d.get("extra_devices") or [] if isinstance(x, str)][:10])
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"id": self.id, "name": self.name, "protocols": list(self.protocols),
                                "clients": {k: list(v) for k, v in self.clients.items()}, "allowlist": self.allowlist}
+        if extra := [p for p in self.extra if self.clients.get(p)]:
+            out["extra_devices"] = extra
         if self.install_mode != "self":
             out["install_mode"] = self.install_mode
         if self.messages:
@@ -172,7 +176,13 @@ class Group:
 
     @property
     def devices(self) -> list[str]:
-        """Устройства группы — платформы, для которых выбраны приложения; по умолчанию они же у каждого участника."""
+        """Устройства группы — платформы, для которых выбраны приложения; по умолчанию они же у каждого участника.
+        Кроме extra: их приложения есть, но получают их только те, у кого это устройство указано."""
+        return [p for p, ids in self.clients.items() if ids and p not in self.extra]
+
+    @property
+    def app_devices(self) -> list[str]:
+        """Все платформы, для которых у группы есть приложения (и устройства по умолчанию, и extra)."""
         return [p for p, ids in self.clients.items() if ids]
 
 
@@ -211,6 +221,7 @@ class Groups:
         self.custom_recomputed = 0   # метка разового пересчёта custom у «Основной» (_migrate)
         self.obfs_split = 0          # метка: Salamander выбирается отдельно, прежним группам с Hysteria2 он добавлен (_migrate)
         self.clients_filled = 0      # метка: группам без набора приложений один раз подобран набор (_migrate)
+        self.main_preset = 0         # метка: «Основной» один раз дан набор рекомендованного варианта (_migrate)
 
     @classmethod
     def load(cls) -> "Groups":
@@ -231,6 +242,7 @@ class Groups:
         gs.custom_recomputed = 1 if data.get("custom_recomputed") == 1 else 0
         gs.obfs_split = 1 if data.get("obfs_split") == 1 else 0
         gs.clients_filled = 1 if data.get("clients_filled") == 1 else 0
+        gs.main_preset = 1 if data.get("main_preset") == 1 else 0
         return gs
 
     def save(self) -> None:
@@ -241,6 +253,8 @@ class Groups:
             data["obfs_split"] = self.obfs_split
         if self.clients_filled:
             data["clients_filled"] = self.clients_filled
+        if self.main_preset:
+            data["main_preset"] = self.main_preset
         atomic_write_json(self.path, data)
         self.exists = True
 
@@ -278,7 +292,7 @@ class Groups:
 def clean_name(name: str, gs: Groups, ignore: str | None = None) -> str:
     name = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]", " ", name or "")).strip()
     if not name:
-        raise GroupError("у группы должно быть название")
+        raise GroupError("назовите группу, например «Бухгалтерия»")
     if len(name) > NAME_MAX:
         raise GroupError(f"название длиннее {NAME_MAX} знаков")
     other = gs.get(name)
@@ -653,14 +667,36 @@ def easy_protocols(cat: clientcat.Catalog) -> set[str]:
 
 # Готовые варианты — presets каталога (zoo/data/clients.json), одни для обоих режимов «кто ставит»: через VPN только
 # приложения из списка там, где клиент это умеет (D55). «Просто»: Android — AmneziaWG (список внутри QR), iPhone — INCY
-# с «РФ напрямую», Windows — v2rayN с правилами; «Надёжно» — то же и Happ на Android на случай, если режут UDP.
+# с «РФ напрямую», Windows — v2rayN с правилами, Mac и Linux — v2rayN с VPN только в Brave; «Надёжно» — то же и Happ
+# на Android на случай, если режут UDP (советуется он: у «Просто» Android только на UDP, D59).
 # Протокола варианта нет на сервере или на устройстве не осталось приложения — подбор по общим правилам.
 
 
 def recommended_preset(prs: list[dict[str, Any]]) -> str | None:
-    """Какой вариант советовать: первый без оговорок (clean) — «Просто»; у обоих оговорки — никакой."""
-    clean = [p["id"] for p in prs if p.get("clean")]
-    return clean[0] if clean else None
+    """Какой вариант советовать: первый без оговорок (clean), где ни одно устройство не осталось только на UDP (мобильные
+    сети и офисный Wi-Fi режут его чаще TCP) — сейчас «Надёжно»; таких нет — первый без оговорок; у всех оговорки — никакой."""
+    clean = [p for p in prs if p.get("clean")]
+    both = [p["id"] for p in clean if not p.get("udp_only")]
+    return both[0] if both else (clean[0]["id"] if clean else None)
+
+
+def recommended(cat: clientcat.Catalog, available: list[str], mode: str = "self",
+                devices: Any = MAIN_DEVICES) -> dict[str, Any] | None:
+    """Рекомендованный вариант целиком (протоколы и приложения); не советуется ни один — первый из вариантов."""
+    prs = presets(cat, available, mode, devices)
+    best = recommended_preset(prs)
+    return next((p for p in prs if p["id"] == best), prs[0] if prs else None)
+
+
+def device_plan(cat: clientcat.Catalog, protocols: list[str], plat: str, mode: str = "self") -> list[str]:
+    """Приложения для устройства, которого у группы ещё нет (человек с Mac в группе без macOS): как в рекомендованном
+    варианте каталога, если они берут протоколы группы; иначе — общий подбор."""
+    specs = sorted(cat.raw.get("presets", []), key=lambda x: x["id"] != "reliable")
+    for spec in specs:
+        ids = [i for i in spec["plan"].get(plat, []) if coverage(cat, plat, protocols, [i])[0]]
+        if ids:
+            return ids
+    return suggest_set(cat, [plat], protocols, mode).get(plat, [])
 
 
 def _pinned(cat: clientcat.Catalog, pid: str, cands: list[str], devices: list[str]) -> tuple[list[str], dict[str, list[str]]] | None:
@@ -701,7 +737,10 @@ def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
                "gaps": sum(len(miss) for _, miss in cover.values()),
                "complete": set(plan) == set(devices) and all(done for done, _ in cover.values()),
                "foreign": sum(1 for plat, ids in plan.items() for i in ids if cat.no_ru_store(cat.client(i) or {}, plat)),
-               "warns": sum(len(caveats(cat, plat, protos, ids)) for plat, ids in plan.items())}
+               "warns": sum(len(caveats(cat, plat, protos, ids)) for plat, ids in plan.items()),
+               # устройства, где все протоколы его приложений — UDP: где режут UDP, не подключатся
+               "udp_only": [plat for plat, (done, _) in cover.items()
+                            if done and all(TRANSPORT.get(p) == "udp" for p in done)]}
         out["clean"] = out["complete"] and not out["foreign"] and not out["warns"]
         return out
 
@@ -847,6 +886,46 @@ def _obfs_pending(gs: Groups) -> bool:
     return gs.exists and not gs.obfs_split and OBFS in users.variant_modules()
 
 
+def _main_preset() -> dict[str, Any] | None:
+    """Рекомендованный вариант для «Основной» (людям, которые ставят сами); каталога или протоколов нет — None."""
+    try:
+        cat = clientcat.load()
+    except clientcat.ClientsError:
+        return None
+    return recommended(cat, users.selectable_protocols(), "self")
+
+
+def _foreign_set(cat: clientcat.Catalog, g: Group) -> bool:
+    """В наборе группы есть приложение, которого нет ни в одном варианте каталога на этом устройстве (прежний
+    автоподбор «Основной» ставил Hiddify, который не берёт VLESS и AmneziaWG)."""
+    known = {plat: {i for spec in cat.raw.get("presets", []) for i in spec["plan"].get(plat, [])} for plat in cat.platforms}
+    return any(i not in known.get(plat, set()) for plat, ids in g.clients.items() for i in ids)
+
+
+def _main_pending(gs: Groups) -> bool:
+    return gs.exists and not gs.main_preset and gs.get(MAIN_ID) is not None
+
+
+def _fix_main(gs: Groups, ureg: users.Registry) -> None:
+    """Один раз (метка main_preset): набор «Основной» с приложением не из вариантов каталога заменяется набором
+    рекомендованного варианта; участникам — отметка «переслать сообщение целиком». Протоколы не трогаются: у людей
+    уже есть ключи."""
+    main = gs.get(MAIN_ID)
+    pr = _main_preset()
+    try:
+        cat = clientcat.load()
+    except clientcat.ClientsError:
+        return
+    if main is not None and pr is not None and pr["plan"] and _foreign_set(cat, main):
+        main.clients = {plat: list(ids) for plat, ids in pr["plan"].items()}
+        if ureg.exists:
+            from . import resend
+            names = [u.name for u in members_of(gs, ureg, MAIN_ID) if u.name != users.OWNER]
+            if resend.mark(ureg, names):
+                ureg.save()
+    gs.main_preset = 1
+
+
 def _fill_pending(gs: Groups) -> bool:
     """Есть ли группы без набора приложений, которым его ещё не подбирали (метка clients_filled) и есть из чего."""
     return (gs.exists and not gs.clients_filled and any(not g.clients for g in gs.groups)
@@ -863,7 +942,9 @@ def _fill_clients(gs: Groups) -> None:
     selectable = users.selectable_protocols()
     for g in gs.groups:
         if not g.clients and (protos := g.offered(selectable)):
-            g.clients = suggest_set(cat, MAIN_DEVICES, protos, g.install_mode)
+            pr = _main_preset() if g.id == MAIN_ID and g.install_mode == "self" else None
+            g.clients = ({plat: list(ids) for plat, ids in pr["plan"].items()} if pr and pr["plan"]
+                         else suggest_set(cat, MAIN_DEVICES, protos, g.install_mode))
     gs.clients_filled = 1
 
 
@@ -877,7 +958,18 @@ def _migrate(gs: Groups, ureg: users.Registry) -> bool:
     True — что-то записано."""
     changed = False
     if not gs.exists:
-        gs.groups.append(Group(MAIN_ID, MAIN_NAME, [ALL]))
+        main = Group(MAIN_ID, MAIN_NAME, [ALL])
+        if pr := _main_preset():
+            # приложения «Основной» — как у рекомендованного варианта мастера (D59); протоколы — «все включённые»: она
+            # следует за включением протоколов, и у людей, заведённых до групп, есть ключи всех
+            main.clients = {plat: list(ids) for plat, ids in pr["plan"].items()}
+            gs.clients_filled = 1
+        gs.groups.append(main)
+        gs.main_preset = 1
+        gs.save()
+        changed = True
+    if _main_pending(gs):
+        _fix_main(gs, ureg)
         gs.save()
         changed = True
     if _obfs_pending(gs):
@@ -925,7 +1017,7 @@ def _pending(gs: Groups, ureg: users.Registry) -> bool:
     """Нужна ли запись миграции (проверка без блокировки: страницы читают её на каждом показе)."""
     if not gs.exists:
         return ureg.exists
-    if _obfs_pending(gs) or _fill_pending(gs):
+    if _obfs_pending(gs) or _fill_pending(gs) or _main_pending(gs):
         return True
     if gs.get(MAIN_ID) is None:
         return False
@@ -1216,6 +1308,35 @@ def remove(ref: str) -> Group:
         gs.save()
         refresh_mirror(gs, ureg)
         return g
+
+
+def add_devices(ref: str, plans: dict[str, list[str]]) -> Group:
+    """Дать группе приложения для устройств, которых у неё нет (человек с Mac): устройства по умолчанию у остальных не
+    меняются (extra), пересылать им нечего."""
+    with users._lock():
+        gs, _ = _open()
+        g = gs.require(ref)
+        new = {p: ids for p, ids in clean_clients(plans, g.protocols).items() if not g.clients.get(p)}
+        for plat, ids in new.items():
+            g.clients[plat] = ids
+            if plat not in g.extra:
+                g.extra.append(plat)
+        if new:
+            gs.save()
+        return g
+
+
+def lacking_plans(have: Any, protocols: list[str], wanted: list[str], mode: str = "self") -> dict[str, list[str]]:
+    """{устройство: приложения} для устройств из списка людей (wanted), для которых у группы или черновика (have —
+    устройства с приложениями) приложений нет."""
+    try:
+        cat = clientcat.load()
+    except clientcat.ClientsError:
+        return {}
+    have = set(have)
+    protos = users.selectable_protocols() if not protocols or ALL in protocols else protocols
+    return {p: ids for p in cat.platforms if p in wanted and p not in have
+            and (ids := device_plan(cat, protos, p, mode))}
 
 
 def add_members(ref: str, new: list[tuple[str, ...]], existing: list[str]) -> GroupReport:

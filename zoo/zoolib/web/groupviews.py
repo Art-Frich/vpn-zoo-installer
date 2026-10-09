@@ -33,22 +33,24 @@ PROTO_STEP = "Протоколы"   # подшаг: только у «Своег
 MODE_LABELS = {"self": "Ставят сами", "admin": "Ставит ИТ"}
 MODE_WORDS = {"self": "ставят сами", "admin": "ставит ИТ"}
 MODE_WHO = {"self": "сами", "admin": "ИТ"}   # «Ставит: …» в сводке
-MODE_HINTS = {"self": "Приложения из магазина и один QR. Где магазина нет — предупредим.",
+MODE_HINTS = {"self": "Приложения — из магазинов (v2rayN — с GitHub), ключи и файлы — в сообщении каждому.",
               "admin": "Сервер скачает APK и установщики — раздача из «Дистрибутивов»."}
+MODE_PICK = ("Офису: ИТ само ставит программы на рабочие компьютеры и телефоны — «Ставит ИТ»; "
+             "личные телефоны, ставят сами — «Ставят сами».")
 PRESET_TITLES = {"simple": "Просто", "reliable": "Надёжно"}
 SETS_SHOWN = 4   # наборов в «сменить» (не считая «Не нужен»)
 # Полевой тест 05.10.2026 (находка 7): у VLESS+Vision новые соединения рвутся на части путей,
 # Hysteria2 и XHTTP устойчивы: предвыбор — Hysteria2, XHTTP и AmneziaWG
 DEFAULT_PROTOS = ("hysteria2", "vless-xhttp", "amneziawg")
-# назначение протокола одной строкой (ориентир из PLAN-builder и каталога приложений, не замер)
+# чем протокол отличается, одной строкой (ориентир из PLAN-builder и каталога, не замер); вид UDP/TCP — из groups.TRANSPORT.
+# «Основной» и «запасной» здесь не пишутся: это решает группа (какой ключ включать — в инструкции человека)
 PURPOSE = {
-    "hysteria2": "Быстрый, основной (UDP)",
-    "hysteria2-obfs": "Если Hysteria2 режут",
-    "vless-xhttp": "Если режут UDP",
-    "vless-reality": "Если режут UDP, запасной",
-    "amneziawg": "Запасной",
-    "tuic": "Запасной (UDP)",
-    "ss2022": "По умолчанию выключен: в полевом тесте соединения теряли данные",
+    "hysteria2": "быстрый на плохих сетях",
+    "hysteria2-obfs": "Hysteria2 с маскировкой — если режут сам Hysteria2",
+    "vless-xhttp": "похож на обычный HTTPS",
+    "vless-reality": "похож на обычный HTTPS, в полевом тесте часть соединений рвалась",
+    "amneziawg": "список приложений Android — внутри файла",
+    "ss2022": "по умолчанию выключен: в полевом тесте соединения теряли данные",
 }
 ERRORS_SHOWN = 6
 DONE_ROWS_MAX = 3   # больше людей — на шаге раздачи не панели с QR каждого, а переход к карточкам
@@ -282,7 +284,8 @@ def suggest(facts: list[Fact], only: set[str] | None = None) -> list[str]:
 
 
 def _proto_row(f: Fact, checked: bool) -> Markup:
-    purpose = PURPOSE.get(f.id)
+    kind = groups.TRANSPORT.get(f.id, "").upper()
+    purpose = " · ".join(x for x in (kind, PURPOSE.get(f.id, "")) if x)
     return t("label", t("input", type="checkbox", name="proto", value=f.id, checked=checked),
              t("span", t("span", t("strong", f.title), class_="opt-title"),
                t("div", f.chip(), class_="chips"),
@@ -539,9 +542,8 @@ def _via_counts(al: allowlist.Allowlist, own: dict[str, list[str]] | None = None
 
 
 def _via_line(d: Draft) -> Markup | None:
-    """Шаг «Люди»: одна строка «Через VPN: общий список (Telegram, YouTube… ещё 10) · Android 12 · Windows 6». Группы ещё
-    нет, поэтому правка — в её настройках после создания (на «Раздаче» там же ссылка); приложения, которые список не
-    умеют, — «В Hiddify через VPN идёт всё»."""
+    """Шаг «Люди»: одна строка «Через VPN: общий список (Telegram, YouTube… ещё 10) · Android 12 · Windows 6»; приложения,
+    которые список не умеют, — «В Hiddify через VPN идёт всё»."""
     try:
         al = allowlist.Allowlist.load()
         cat = clients.load()
@@ -556,11 +558,17 @@ def _via_line(d: Draft) -> Markup | None:
     titles = clientviews.via_vpn_names(al, "android", d.allow["android"] if own and d.allow["android"] else al.common("android"))
     shown = ", ".join(titles[:2]) + (f"… ещё {len(titles) - 2}" if len(titles) > 2 else "")
     counts = _via_counts(al, d.allow if own else None)
-    return t("p", "Через VPN: " + ("свой список" if own else f"общий список ({shown})")
-             + f" · {counts} · изменить — в настройках группы после создания",
+    return t("p", "Через VPN: " + ("свой список" if own else f"общий список ({shown})") + f" · {counts}",
              t("br") if plain else None,
              f"В {', '.join(f'«{n}»' for n in plain)} через VPN идёт всё." if plain else None,
              class_="hint")
+
+
+def _via_choice(d: Draft) -> Markup:
+    """Шаг «Люди»: что пойдёт через VPN — выбрать до раздачи, а не после (иначе раздавать дважды). Свёрнуто: обычно
+    подходит общий список."""
+    return t("details", t("summary", "Через VPN — общий список или свой для группы"), _via_line(d), _apps_block(d),
+             open=d.allow_mode == "own" or None, class_="more")
 
 
 def _mode_seg(mode: str) -> Markup:
@@ -610,7 +618,9 @@ def _users_block(d: Draft, group_id: str | None = None) -> Markup:
                t("textarea", d.new_users, name="users_new", id="users_new", rows="8", maxlength=str(people.TEXT_MAX),
                  placeholder="Иван Петров; бухгалтерия; android, windows\nМария Сидорова\nОльга; склад; iphone",
                  autocomplete="off", spellcheck="false"),
-               t("div", f"По строке на человека: «Имя; заметка; устройства» (android, iphone, windows). Без устройств — "
+               t("div", f"По строке на человека: «Имя; заметка; устройства». Поля — через «;», запятую или табуляцию "
+                        "(столбцы из Excel), поэтому имя пишите без запятой: «Иван Петров». Устройства: android, iphone, "
+                        "windows, mac, linux — можно по-русски (айфон, андроид, ноутбук, samsung). Без устройств — "
                         f"как у группы. До {people.LINES_MAX}.", class_="hint"),
                class_="field"),
              _existing_block(d, group_id), class_="stack")
@@ -624,12 +634,39 @@ def _preview_rows(plan: people.Plan, group_devs: list[str] | None = None) -> Mar
         lack = [d for d in r.devices if group_devs is not None and d not in group_devs]
         chips = [t("span", f"{r.clash}: добавлен номер", class_="chip warn", title="такое имя уже есть: добавлен номер")
                  if r.clash else None,
-                 t("span", f"нет приложений для {people.device_titles(lack)}", class_="chip warn") if lack else None,
+                 t("span", f"у группы нет приложений для {people.device_titles(lack)}", class_="chip warn") if lack else None,
+                 t("span", "не понял: " + ", ".join(r.unknown), class_="chip warn") if r.unknown else None,
+                 t("span", r.hint, class_="chip warn") if r.hint else None,
                  t("span", r.problem, class_="chip bad") if r.problem else None]
         devs = people.device_titles(r.devices) if r.devices else t("span", "как у группы", class_="muted")
         rows.append([str(r.line), t("strong", r.display), t("code", r.name) if r.name else "—", r.note or "—", devs, chips])
-        cls.append("row-bad" if r.problem else ("row-warn" if r.clash or lack else None))
+        cls.append("row-bad" if r.problem else ("row-warn" if r.clash or lack or r.unknown or r.hint else None))
     return table(["№", "Имя", "Логин", "Заметка", "Устройства", ""], rows, num=[0], cls="preview", row_cls=cls, stack=True)
+
+
+def _wanted_devices(plan: people.Plan) -> list[str]:
+    return list(dict.fromkeys(d for r in plan.rows for d in r.devices))
+
+
+def _lacking_block(plans: dict[str, list[str]]) -> Markup | None:
+    """Устройства из списка, для которых у группы нет приложений: выбор прямо в предпросмотре — дать группе приложение
+    (галочка стоит) или завести людей без него."""
+    if not plans:
+        return None
+    try:
+        cat = clients.load()
+    except clients.ClientsError:
+        return None
+    rows = []
+    for plat, ids in plans.items():
+        via = groups.via_line(cat, {plat: ids})
+        rows.append(t("label", t("input", type="checkbox", name="add_dev", value=plat, checked=True),
+                      t("span", f"Дать группе приложение для {cat.platforms[plat]}: {clientviews.app_names(cat, ids)}",
+                        t("span", " · " + via.removeprefix("Через VPN: ").split(" — ", 1)[-1] if via else "",
+                          class_="muted small"), class_="opt-title"), class_="opt-row"))
+    return t("div", t("span", "Устройства без приложений", class_="label"), rows,
+             t("p", "Без галочки человек будет заведён, но для этого устройства инструкции и ключей у него не будет.",
+               class_="hint"), class_="stack")
 
 
 def _preview_summary(plan: people.Plan, existing: int = 0) -> str:
@@ -652,9 +689,11 @@ def _preview(app: "App", req: "Request", d: Draft, plan: people.Plan) -> "Respon
     """Шаг «Люди» → создание: что получится из списка; создаёт только кнопка под таблицей (confirm=1). Таблица внутри
     формы: панель кнопок прилипает к низу экрана, пока список не кончился."""
     csrf = req.session.csrf if req.session else ""
+    have = [p for p, ids in d.clients.items() if ids]
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value="3"),
              t("input", type="hidden", name="confirm", value="1"), _hidden(d, 4),
-             _preview_rows(plan, [p for p, ids in d.clients.items() if ids]),
+             _preview_rows(plan, have),
+             _lacking_block(groups.lacking_plans(have, d.protocols, _wanted_devices(plan), d.install_mode)),
              t("div", t("button", _count_label("Создать группу", len(plan.rows), len(d.existing), "и"), type="submit", name="go",
                         value="create", class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
@@ -710,6 +749,9 @@ def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str],
             if note:
                 foreign.append(f"{cat.platforms.get(plat, plat)}: {note}")
         issues += [f"{app}: {names.get(p, p)} {short}" for p, app, short, _ in groups.caveats(cat, plat, pr["protocols"], ids)]
+    if pr.get("udp_only"):
+        issues.append(f"{', '.join(cat.platforms.get(p, p) for p in pr['udp_only'])} — только UDP: где его режут "
+                      "(мобильный интернет, офисный Wi-Fi), не подключится")
     foreign = list(dict.fromkeys(foreign))
     if pr["foreign"] and not foreign:
         issues.append("есть приложения не из магазина РФ")
@@ -754,14 +796,15 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
                            t("span", "Протоколы и приложения выбираю сам.", class_="hint"), class_="opt-body"),
                   t("button", "Выбрать", type="submit", name="go", value="custom", class_="btn", formnovalidate=True),
                   class_="opt preset" + (" sel" if d.preset == "custom" else "")))
-    return t("div", _mode_seg(d.install_mode), t("p", MODE_HINTS[d.install_mode], class_="hint"),
+    return t("div", _mode_seg(d.install_mode), t("p", MODE_HINTS[d.install_mode], t("br"), MODE_PICK, class_="hint"),
              t("button", "Пересчитать", type="submit", name="go", value="refresh", class_="btn small", data_refresh=True,
                formnovalidate=True),
              t("div", rows, class_="opts"),
              t("p", next(iter(vias)), class_="hint") if same and next(iter(vias)) else None,
              t("div", t("span", "Оговорки", class_="label"), t("ul", legend, class_="cav-list"), class_="cav")
              if legend else None,
-             t("p", NO_PEOPLE_DATA, class_="hint") if any(not _preset_why(pr, names, by_id) for pr in prs) else None)
+             t("p", NO_PEOPLE_DATA, " ", t("a", "Как получить замеры →", href="/probe", data_swap=True), class_="hint")
+             if any(not _preset_why(pr, names, by_id) for pr in prs) else None)
 
 
 def _proto_summary(d: Draft, managed: list[str], names: dict[str, str]) -> Markup:
@@ -799,12 +842,11 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
                 _mode_seg(d.install_mode), _proto_summary(d, managed, names), _clients_block(d, managed)]
         title, hint = STEPS[1], "Что поставить на каждое устройство."
     else:
-        if not d.name:
-            d.name = gs.next_name()
+        # название не подставляется: «Группа 3» потом не отличить от других — пусть админ назовёт сам
         body = [t("div", t("label", "Название группы", for_="name"),
                   t("input", type="text", name="name", id="name", value=d.name, required=True, maxlength=str(groups.NAME_MAX),
-                    autocomplete="off"), class_="field"),
-                _users_block(d), _via_line(d)]
+                    autocomplete="off", placeholder="например, Бухгалтерия"), class_="field"),
+                _users_block(d), _via_choice(d)]
         title, hint = STEPS[2], "Кого подключаем."
     last = step == 3
     nav = t("div",
@@ -836,8 +878,14 @@ def _group_pick(gs: groups.Groups) -> Markup | None:
     if not any(count.values()):
         return None
     best = max(gs.groups, key=lambda g: count[g.id])
+    owner = {g.id for g in gs.groups if any(u.name == users.OWNER for u in groups.members_of(gs, ureg, g.id))}
+
+    def label(g: groups.Group) -> str:   # owner — ключи самого админа, в счёт людей не идёт, но и «0 чел.» — неправда
+        n = count[g.id]
+        return f"{g.name} · " + (f"{n} чел." if n else "только ваши ключи (owner)" if g.id in owner else "пусто")
+
     return card("В существующую группу",
-                t("form", t("select", [t("option", f"{g.name} · {count[g.id]} чел.", value=g.id, selected=g is best)
+                t("form", t("select", [t("option", label(g), value=g.id, selected=g is best)
                                        for g in gs.groups], name="to", aria_label="Группа"),
                   t("button", "Добавить людей →", type="submit", class_="btn primary"),
                   method="get", action="/connect/new", class_="actions"))
@@ -941,8 +989,11 @@ def connect_post(app: "App", req: "Request") -> "Response":
     plan = people.plan_for_registry(d.new_users)
     if plan.rows and not req.form.get("confirm"):
         return _preview(app, req, d, plan)
+    extra = _picked_devices(req, [p for p, ids in d.clients.items() if ids], d.protocols, plan, d.install_mode)
     try:
         rep = groups.connect(d.name, d.protocols, d.clients, d.allow_arg(), plan.entries(), d.existing, d.install_mode)
+        if extra and not rep.removed:
+            groups.add_devices(rep.group.id, extra)
     except CATCH as e:
         return _wizard(app, req, 3, d, [_err(e)], 422)
     app.invalidate("status")
@@ -955,6 +1006,13 @@ def connect_post(app: "App", req: "Request") -> "Response":
         return _redirect(f"/groups/{rep.group.id}")
     who = ",".join(rep.created + rep.moved)
     return _redirect("/connect/done?" + urllib.parse.urlencode({"group": rep.group.id, "u": who}))
+
+
+def _picked_devices(req: "Request", have: list[str], protocols: list[str], plan: people.Plan,
+                    mode: str) -> dict[str, list[str]]:
+    """Отмеченные в предпросмотре «Дать группе приложение для …»: план собирается заново на сервере (форме не верим)."""
+    want = set(req.multi.get("add_dev", [])[:10])
+    return {p: ids for p, ids in groups.lacking_plans(have, protocols, _wanted_devices(plan), mode).items() if p in want}
 
 
 def connect_done(app: "App", req: "Request") -> "Response":
@@ -999,22 +1057,25 @@ def connect_done(app: "App", req: "Request") -> "Response":
                 t("p", clientviews.SEND_WARN, class_="hint"),
                 t("p", clientviews.NO_KEYS, class_="hint") if rows else None,
                 t("div", rows, class_="urows") if rows else None, clientviews.hints(ctx)[1:] if rows and ctx else None)
-    body = [*head, hand, _texts_card(g, ctx) if ctx and g.clients else None, dist]
+    example = next((u.label for u in members if u.name != users.OWNER), members[0].label)
+    body = [*head, hand, _texts_card(g, ctx, example) if ctx and g.clients else None, dist]
     return app.render(req, TITLE, body, active="/groups")
 
 
-def _texts_card(g: groups.Group, ctx: clientviews.Ctx) -> Markup | None:
-    """«Инструкция» группы: свёрнута, только для чтения. Править её — на странице группы."""
+def _texts_card(g: groups.Group, ctx: clientviews.Ctx, example: str) -> Markup | None:
+    """«Инструкция» группы: свёрнута, только для чтения, с именем первого человека (шаблон «{имя}» здесь не показывается:
+    его правят на странице группы). Править её — на странице группы."""
     items = []
     for plat, title in ctx.cat.platforms.items():
         text = ctx.text(g, plat)
         if text:
             items.append(t("div", t("h4", title, class_="plat-title"),
-                           clientviews.text_block(clientviews.editor_text(text), f"msg-g-{plat}", None, primary=False),
+                           clientviews.text_block(clientviews.fill_name(text, example), f"msg-g-{plat}", None, primary=False),
                            class_="conn-plat"))
     if not items:
         return None
-    return t("details", t("summary", "Инструкция"), t("div", items),
+    return t("details", t("summary", "Инструкция"), t("p", f"Для «{example}»; каждому — с его именем.", class_="hint"),
+             t("div", items),
              t("p", t("a", "Изменить для группы →", href=f"/groups/{g.id}#text", data_swap=True), class_="small"),
              class_="card more")
 
@@ -1158,10 +1219,10 @@ def _members_card(g: groups.Group, gs: groups.Groups, ureg: users.Registry, al: 
             t("button", "Как у группы", type="submit", name="act", value="reset", class_="btn small",
               title="Вернуть протоколы и приложения группы") if any(u.custom for u in mem) else None]
     devs = None
-    if len(g.devices) > 1:
+    if len(g.app_devices) > 1:
         try:
             cat = clients.load()
-            devs = t("div", t("span", "Устройства:", class_="label"), userviews.device_boxes(cat, g.devices, None),
+            devs = t("div", t("span", "Устройства:", class_="label"), userviews.device_boxes(cat, g.app_devices, g.devices),
                      t("button", "Задать отмеченным", type="submit", name="act", value="devices", class_="btn small"),
                      class_="actions")
         except clients.ClientsError:
@@ -1354,6 +1415,9 @@ def group_members(app: "App", req: "Request", gid: str) -> "Response":
             return group_page(app, req, gid, add_draft=Draft(new_users=text, existing=existing))
         if plan.rows and not req.form.get("confirm"):
             return _members_preview(app, req, g, plan, text, existing)
+        extra = _picked_devices(req, g.app_devices, g.protocols, plan, g.install_mode)
+        if extra:
+            groups.add_devices(g.id, extra)
         rep = groups.add_members(g.id, plan.entries(), existing)
     except CATCH as e:
         req.session.flash("bad", _err(e))
@@ -1362,6 +1426,11 @@ def group_members(app: "App", req: "Request", gid: str) -> "Response":
     app.invalidate("status")
     app.invalidate_links()
     flash_report(req, rep, _renamed(plan))
+    fresh = [n for n in rep.created + rep.moved if n != users.OWNER]
+    if fresh:   # раздать только новым, а не искать их среди всей группы
+        req.session.flash("info", f"Раздать новым ({len(fresh)}): карточки, ZIP или сообщение",
+                          [("карточки новым", "/handoff?" + urllib.parse.urlencode({"u": ",".join(fresh)}))]
+                          + ([("страница", f"/users/{fresh[0]}")] if len(fresh) == 1 else []))
     return _redirect(f"/groups/{g.id}")
 
 
@@ -1371,7 +1440,8 @@ def _members_preview(app: "App", req: "Request", g: groups.Group, plan: people.P
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="users_new", value=text),
              t("input", type="hidden", name="confirm", value="1"),
              [t("input", type="hidden", name="existing", value=n) for n in existing],
-             _preview_rows(plan, g.devices),
+             _preview_rows(plan, g.app_devices),
+             _lacking_block(groups.lacking_plans(g.app_devices, g.protocols, _wanted_devices(plan), g.install_mode)),
              t("div", t("button", _count_label("Добавить", len(plan.rows), len(existing)), type="submit",
                         class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
@@ -1443,7 +1513,8 @@ def group_delete_confirm(app: "App", req: "Request", gid: str) -> "Response":
                             t("span", f"{users.OWNER} не удаляется — он перейдёт в «{groups.MAIN_NAME}»"
                               + (" (свой набор протоколов сохранится)" if kept_own else ""), class_="hint")
                             if users.OWNER in mem else None,
-                            t("span", "Креды удалённых будут стёрты из протоколов, ссылки и QR перестанут работать.",
+                            t("span", "VPN у них перестанет работать на всех устройствах; вернуть — только завести "
+                                      "заново и раздать новые ключи.",
                               class_="hint") if gone else None, class_="opt-title"),
                           class_="opt-row"))
     else:

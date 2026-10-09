@@ -18,6 +18,8 @@ GUIDE_FILE = paths.ZOO_PKG_ROOT.parent / "docs" / "USER-GUIDE.md"
 SENT_RE = re.compile(r",? (?:который|которую) я пришлю")
 APPS_WORD = "приложения из списка администратора"
 DESKTOP = ("windows", "macos", "linux")
+# список у каждого свой (у кого-то только Telegram): проверка — без привязки к Brave
+GUIDE_CHECK = "Проверьте: приложение из вашего списка (например, Brave или Telegram) загружает новое — значит, VPN работает."
 
 
 class GuideError(Exception):
@@ -63,7 +65,7 @@ def _variant(cat: clients.Catalog, plat: str, n: int, cid: str) -> list[str]:
     steps = [install] + cat.steps(c, plat, imports, APPS_WORD, alt_qr=alt)
     if mode == "apps" and plat in cat.raw.get("rules", {}):
         steps.append(cat.raw["rules"][plat])
-    steps.append(cat.check(mode, True))
+    steps.append(GUIDE_CHECK if mode == "apps" else cat.check(mode, True))
     out += [f"{i}. {_neutral(s)}" for i, s in enumerate(steps, 1)]
     return out + [""]
 
@@ -74,7 +76,8 @@ def _unfit(cat: clients.Catalog, plat: str) -> str:
            and c["protocols"].get("vless-reality", {}).get("s") == "no"]
     if not bad:
         return ""
-    return (f"**Не подходят:** {', '.join(bad)} — с нашими VLESS они показывают «подключено», но интернета нет.")
+    they = "они показывают" if len(bad) > 1 else "оно показывает"
+    return (f"**Не подходят:** {', '.join(bad)} — с нашими VLESS {they} «подключено», но интернета нет.")
 
 
 def platforms(cat: clients.Catalog) -> str:
@@ -87,8 +90,9 @@ def platforms(cat: clients.Catalog) -> str:
             out += _variant(cat, plat, n, cid)
         if unfit := _unfit(cat, plat):
             out += [unfit, ""]
-        if g.get("tips"):
-            out += ["**Полезно знать:**", "", *[f"- {x}" for x in g["tips"]], ""]
+        tips = [cat.raw["both_guide"], *g.get("tips", [])] if cat.raw.get("both_guide") else g.get("tips", [])
+        if tips:
+            out += ["**Полезно знать:**", "", *[f"- {x}" for x in tips], ""]
         out += ["---", ""]
     return "\n".join(out).rstrip("\n-").rstrip() + "\n"
 

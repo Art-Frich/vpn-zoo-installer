@@ -114,16 +114,30 @@ class Catalog:
         text = client["import"][method].replace("{key}", key_phrase(method, titles, named))
         return self.raw["other_screen"] + text[:1].lower() + text[1:] if other else text
 
+    def both_step(self, titles: list[str]) -> str:
+        """Ключей у приложения несколько: какой включать, какой запасной (названия — как подписаны у человека)."""
+        q = [f"«{x}»" for x in titles]
+        return self.raw["both"].replace("{first}", q[0]).replace("{rest}", " или ".join(q[1:]))
+
     def steps(self, client: dict[str, Any], platform: str, imports: list[tuple[str, list[str]]], apps: str = "",
               extras: Callable[[str], bool] = lambda proto: True, alt_qr: list[str] | None = None,
-              named: bool = True) -> list[str]:
-        """Шаги одного приложения после установки: импорт ключа ([(способ, названия ключей)]), QR с другого экрана
-        (alt_qr — названия; None — не предлагать), файлы-дополнения (extras — какие протоколы-файлы есть у человека),
-        выбор приложений «через VPN» (apps — их названия), настройка. named — называть ключи (на устройстве два
-        приложения: какой ключ в какое)."""
+              named: bool = True, one_way: bool = True) -> list[str]:
+        """Шаги одного приложения после установки: импорт ключа ([(способ, названия ключей)]) и в том же шаге — QR с
+        другого экрана как другой способ (alt_qr — названия; None — не предлагать), файлы-дополнения (extras — какие
+        протоколы-файлы есть у человека), выбор приложений «через VPN» (apps — их названия), настройка. named —
+        называть ключи (на устройстве два приложения: какой ключ в какое); ключей у приложения несколько — названы
+        всегда, и шаг «какой включать». one_way — сказать «один способ из двух» (у второго приложения не повторяется)."""
+        keys = list(dict.fromkeys(x for _, ts in imports for x in ts))
+        named = named or len(keys) > 1
         out = [self.import_step(client, m, ts, named=named) for m, ts in imports]
         if alt_qr is not None:
-            out.append(self.import_step(client, "qr", alt_qr, other=True, named=named))
+            alt = self.import_step(client, "qr", alt_qr, other=True, named=named)
+            if out:   # другой способ, а не следующий шаг: иначе человек сделает оба и получит два подключения
+                out[-1] = f"{out[-1]} {alt}" + (f" {self.raw['one_way']}" if one_way else "")
+            else:
+                out.append(alt)
+        if len(keys) > 1:
+            out.append(self.both_step(keys))
         out += [ex["text"] for ex in client.get("extra", []) if ex["platform"] == platform and extras(ex["proto"])]
         if step := self.per_app_steps(client, platform):
             out.append(f"Приложения через VPN в «{client['name']}»: " + step.replace("{apps}", apps or "нужные приложения"))
@@ -132,6 +146,8 @@ class Catalog:
     def check(self, via: str, brave: bool, first_app: str = "") -> str:
         """Шаг проверки: в Brave (он в списке), в первом приложении списка или на любом сайте (через VPN идёт всё)."""
         chk = self.raw["check"]
+        if via == "brave":
+            return chk["brave"]
         if via == "apps" and (brave or not first_app):
             return chk["brave"]
         if via == "apps":
@@ -210,6 +226,9 @@ def validate(raw: Any) -> None:
          "check: нужны brave, apps (с {app}) и device")
     need(isinstance(raw.get("report"), str) and bool(raw["report"]), "report: что прислать, если не работает")
     need(isinstance(raw.get("other_screen"), str) and bool(raw["other_screen"]), "other_screen: QR с другого экрана")
+    need(isinstance(raw.get("one_way"), str) and bool(raw["one_way"]), "one_way: один способ импорта из двух")
+    need(isinstance(raw.get("both"), str) and "{first}" in raw["both"] and "{rest}" in raw["both"],
+         "both: нужны {first} и {rest}")
     need(isinstance(raw.get("one_on"), str) and "{first}" in raw["one_on"] and "{rest}" in raw["one_on"],
          "one_on: нужны {first} и {rest}")
     for key in ("brave", "rules"):

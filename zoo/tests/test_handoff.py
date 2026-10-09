@@ -431,7 +431,7 @@ class ExportTest(Base):
         self.assertNotIn("я пришлю", text, "ключ уже у человека: «пришлю» на карточке и в папке не нужно")
         # папку открывают на том же телефоне: ссылка из инструкции, QR — только с другого экрана
         self.assertIn("Скопируйте ссылку ниже, из «Ключей доступа». В «Happ» нажмите «+» → «Вставить из буфера».", text)
-        self.assertIn("Открываете папку на другом экране — в «Happ» нажмите «+» → «Сканировать QR»", text)
+        self.assertIn("Или, если папка открыта на другом экране: в «Happ» нажмите «+» → «Сканировать QR»", text)
         self.assertIn("  VLESS Vision — в «Happ»\n", text, "какой ключ в какое приложение")
         self.assertNotIn("\r", text)
         self.assertNotIn("kolya", text, "в инструкции — ключи только этого человека")
@@ -594,7 +594,7 @@ class ExportTest(Base):
         cards[1].pending = True
         z = zipfile.ZipFile(io.BytesIO(handoffviews.build_zip(self.app, cards, [])))
         self.assertNotIn("kolya/instruction.txt", z.namelist())
-        self.assertIn("kolya: ссылок нет (не успели собрать)", z.read("README.txt").decode("utf-8"))
+        self.assertIn("kolya: ссылки не успели собрать", z.read("README.txt").decode("utf-8"))
 
 
 class DevicesTest(Base):

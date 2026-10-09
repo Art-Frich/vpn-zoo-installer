@@ -25,12 +25,17 @@ SEPARATORS = (";", "\t", ",")
 # устройства человека в списке: id платформы каталога (clients.json) → название; слова, которыми их пишут
 DEVICES = {"android": "Android", "ios": "iPhone", "windows": "Windows", "macos": "macOS", "linux": "Linux"}
 DEVICE_WORDS = {
-    "android": "android", "андроид": "android", "андройд": "android",
-    "iphone": "ios", "ios": "ios", "айфон": "ios", "ipad": "ios",
-    "windows": "windows", "win": "windows", "виндовс": "windows", "винда": "windows",
-    "macos": "macos", "mac": "macos", "macbook": "macos", "мак": "macos", "макбук": "macos",
-    "linux": "linux", "линукс": "linux",
+    "android": "android", "андроид": "android", "андройд": "android", "samsung": "android", "самсунг": "android",
+    "xiaomi": "android", "сяоми": "android", "ксиоми": "android", "redmi": "android", "редми": "android",
+    "poco": "android", "honor": "android", "хонор": "android", "huawei": "android", "хуавей": "android",
+    "realme": "android", "pixel": "android", "oneplus": "android", "tecno": "android", "infinix": "android",
+    "iphone": "ios", "ios": "ios", "айфон": "ios", "ipad": "ios", "айпад": "ios", "apple": "ios",
+    "windows": "windows", "win": "windows", "виндовс": "windows", "винда": "windows", "пк": "windows", "pc": "windows",
+    "ноутбук": "windows", "ноут": "windows", "компьютер": "windows", "комп": "windows", "laptop": "windows",
+    "macos": "macos", "mac": "macos", "macbook": "macos", "мак": "macos", "макбук": "macos", "imac": "macos",
+    "linux": "linux", "линукс": "linux", "ubuntu": "linux", "убунту": "linux",
 }
+FIELD_WORDS = 2   # в поле устройств слово-другое («айфон», «ноутбук асус»); длиннее — это заметка
 
 _RU = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
@@ -62,6 +67,8 @@ class Row:
     clash: str = ""      # почему к id добавлен номер: «занято», «служебное», «повтор в списке»
     problem: str = ""    # строку создать нельзя
     devices: list[str] = field(default_factory=list)   # устройства из списка (id платформ); пусто — как у группы
+    unknown: list[str] = field(default_factory=list)   # слова в поле устройств, которых мы не знаем («планшет»)
+    hint: str = ""       # похоже на ошибку разбора, но строку создать можно («Петров, Иван»: запятая отрезала имя)
 
 
 @dataclass
@@ -106,25 +113,51 @@ def split_line(line: str) -> tuple[str, str]:
     return clean(name), clean(note)
 
 
+def _words(piece: str) -> list[str]:
+    return [w for w in re.split(r"[\s+/()]+", piece.strip().casefold().strip(".!")) if w]
+
+
 def _device_ids(piece: str) -> list[str] | None:
     """«android, iPhone» → ['android', 'ios']; есть слово не про устройство — None."""
-    words = [w for w in re.split(r"[\s+/]+", piece.strip().casefold()) if w]
+    words = _words(piece)
     if not words or any(w not in DEVICE_WORDS for w in words):
         return None
     return [DEVICE_WORDS[w] for w in words]
 
 
-def split_devices(note: str) -> tuple[str, list[str]]:
-    """Заметка → (заметка, устройства): хвостовые поля (через «;» или запятую) из одних названий устройств."""
-    parts = re.split(r"([;,])", note)
-    k = len(parts)
+def split_devices(note: str) -> tuple[str, list[str], list[str]]:
+    """Заметка → (заметка, устройства, непонятые слова). Устройства — последнее поле после «;» (без «;» — хвост через
+    запятые), с первого названия устройства; короткие слова после него, которых мы не знаем («айфон, планшет»), не
+    уходят молча в заметку, а возвращаются: предпросмотр спросит о них."""
+    head, sep, tail = note.rpartition(";")   # есть «;» — устройства только в последнем поле, иначе — в хвосте через запятые
+    if not sep:
+        head, tail = "", note
+    parts = re.split(r"(,)", tail)
+    fields = parts[0::2]
+    k = len(fields)
+    while k > 0 and len(_words(fields[k - 1])) <= FIELD_WORDS and fields[k - 1].strip():
+        k -= 1
+    while k < len(fields) and _device_ids(fields[k]) is None:   # поле устройств начинается с узнанного устройства
+        k += 1
+    if k >= len(fields):
+        return note, [], []
     found: list[str] = []
-    while k > 0 and (ids := _device_ids(parts[k - 1])) is not None:
-        found = ids + found
-        k -= 2
-    if not found:
-        return note, []
-    return "".join(parts[:max(k, 0)]).strip(" ;,"), list(dict.fromkeys(found))
+    unknown: list[str] = []
+    for f in fields[k:]:
+        for w in _words(f):
+            if w in DEVICE_WORDS:
+                found.append(DEVICE_WORDS[w])
+            else:
+                unknown.append(w)
+    rest = "".join(parts[:max(2 * k - 1, 0)]).strip(" ,")
+    note = "; ".join(x for x in (head.strip(" ;,"), rest) if x)
+    return note, list(dict.fromkeys(found)), list(dict.fromkeys(unknown))
+
+
+def _comma_cut(raw: str, note: str) -> bool:
+    """Строку разрезала запятая, а заметка — одно слово с большой буквы: похоже на «Петров, Иван» из Excel."""
+    cuts = [i for i in (raw.find(s) for s in SEPARATORS) if i >= 0]
+    return bool(cuts) and raw[min(cuts)] == "," and bool(re.fullmatch(r"[A-ZА-ЯЁ][a-zа-яё-]+", note))
 
 
 def device_titles(ids: list[str] | tuple[str, ...]) -> str:
@@ -161,8 +194,10 @@ def build(text: str, taken: set[str] | frozenset[str] = frozenset()) -> Plan:
     used = set(taken) | set(users.SYSTEM_USERS)
     for n, raw in enumerate(lines, 1):
         display, note = split_line(raw)
-        note, devices = split_devices(note)
-        row = Row(n, raw.strip(), display, note[:NOTE_MAX], devices=devices)
+        note, devices, unknown = split_devices(note)
+        row = Row(n, raw.strip(), display, note[:NOTE_MAX], devices=devices, unknown=unknown)
+        if note and not devices and _comma_cut(raw, note):
+            row.hint = f"«{note}» — заметка; если это часть имени, уберите запятую"
         base = slug(display)
         if not display:
             row.problem = "нет имени"

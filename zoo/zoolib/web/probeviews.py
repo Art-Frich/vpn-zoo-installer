@@ -109,6 +109,11 @@ def _block_rows(c: dict[str, Any], servers: list[Server], names: dict[str, Serve
     return rows, cls
 
 
+# полная команда замера (подготовка — README «Блокирует ли мой провайдер?»): метка сети и устройство — для рейтинга
+PROBE_RUN = ('docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -v "$PWD/probe:/data" zoo-probe '
+             "--tag mobile-mts --device pixel7")
+
+
 def best_card(ranking: list[dict[str, Any]], period: str, servers: list[Server] | None = None,
               off_ranking: list[dict[str, Any]] | None = None) -> Markup:
     servers = servers or []
@@ -122,13 +127,14 @@ def best_card(ranking: list[dict[str, Any]], period: str, servers: list[Server] 
                      "разброс: от 25 % до 75 % замеров (от 3 замеров). Места — от 3 прогонов в блоке и от 3 замеров "
                      "у протокола, по оценке: один замер — шум, а не рейтинг."),
               t("p", "Пробник — Docker на компьютере в сети человека (на телефон не ставится; мобильный интернет — "
-                     "через раздачу с телефона): ", t("code", "zoo-probe --tag mobile-mts --device pixel7"),
+                     "через раздачу с телефона на ноутбук). Один раз: репозиторий, ", t("code", "probe-export.json"),
+                " с сервера и образ — README, раздел «Блокирует ли мой провайдер?». Замер: ", t("code", PROBE_RUN),
                 "; отчёт ", t("code", "probe/probe-report.json"), " вставьте в форму ниже или отправьте командой ",
                 t("code", "scripts/history.sh push"), "."))
     if not ranking:
         body: list[Any] = [empty("Нет клиентских проб",
-                                 join("Docker на компьютере в сети человека: ",
-                                      t("code", "zoo-probe --tag mobile-mts --device pixel7")))]
+                                 join("Нужен компьютер с Docker в сети человека (с телефона — через раздачу на ноутбук): ",
+                                      t("code", PROBE_RUN)))]
     else:
         body = []
         anywhere = {p["proto"] for c in ranking for p in c["protocols"]}

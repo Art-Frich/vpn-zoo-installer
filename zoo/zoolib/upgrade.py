@@ -306,7 +306,7 @@ def _render_check(d: dict[str, Any]) -> None:
         print("Применить: zoo upgrade --apply" + ("" if d["repo"] else " --repo DIR"))
     else:
         print()
-        output.ok("всё актуально")
+        output.ok("установлено как закреплено: применять нечего (свежие релизы — в «доступно»)")
 
 
 # ---------- upstream: свежие версии ----------

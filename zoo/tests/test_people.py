@@ -48,6 +48,18 @@ class BuildTest(unittest.TestCase):
         self.assertEqual([r.display for r in plan.rows], ["Иван Петров", "Мария", "Ольга", "Пётр"])
         self.assertEqual([r.converted for r in plan.rows], [True] * 4)
 
+    def test_device_aliases_unknown_words_and_comma_hint(self):
+        """Обход офиса (D59): «айфон, ноутбук», «samsung» — устройства; незнакомое слово — «не понял», а не заметка."""
+        plan = people.build("Иван; директор; айфон, ноутбук\nОля; samsung\nАнна; айфон, планшет\nПетров, Иван\n"
+                            "Дима; macbook\nПавел; ubuntu\nМаша; Android; склад")
+        rows = [(r.display, r.note, r.devices, r.unknown) for r in plan.rows]
+        self.assertEqual(rows, [("Иван", "директор", ["ios", "windows"], []), ("Оля", "", ["android"], []),
+                                ("Анна", "", ["ios"], ["планшет"]), ("Петров", "Иван", [], []),
+                                ("Дима", "", ["macos"], []), ("Павел", "", ["linux"], []),
+                                ("Маша", "Android; склад", [], [])])
+        self.assertIn("уберите запятую", plan.rows[3].hint, "«Петров, Иван» из Excel — подсказка в предпросмотре")
+        self.assertFalse(plan.rows[0].hint)
+
     def test_devices_column(self):
         plan = people.build("Иван Петров; бухгалтерия; android,windows\nСергей; iPhone + Windows\n"
                             "Анна, склад, android, айфон\nОльга, склад, 2 этаж\nМаша; Android; склад\nПётр")

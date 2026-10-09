@@ -265,7 +265,7 @@ def _page(app: "App", req: "Request", scope: Scope, err: str = "", draft: dict[s
                                   "(банки, Госуслуги, MAX).", _who_nav(gs, scope, u.label if u else ""))]
     alerts = [("bad", m) for m in ([err] if err else []) + (errors or [])]
     if not al.exists:
-        alerts.append(("info", f"{al.path.name} ещё нет: действует пресет."))
+        alerts.append(("info", "Общий список ещё не меняли — действует список по умолчанию."))
     if alerts:
         parts.append(alert_list(alerts))
     parts.append(_scope_bar(al, scope, csrf))
@@ -306,9 +306,45 @@ def flash_resend(req: "Request", text: str, marked: list[str], affected: bool) -
         req.session.flash("ok", text)
 
 
+def _unaffected(scope: Scope) -> list[str]:
+    """Люди, у которых список не действует ни на одном устройстве (iPhone, AmneziaVPN на Windows): «Имя (iPhone — всё,
+    кроме российских сайтов)». Молчать про них — неправда умолчанием: через VPN у них по-прежнему идёт всё."""
+    try:
+        cat = clients.load()
+        gs = groups.Groups.load()
+    except (clients.ClientsError, groups.GroupError):
+        return []
+    reg = users.list_users()
+    if scope.user:
+        people = [u for u in [reg.get(scope.user)] if u]
+    elif scope.group is not None:
+        people = groups.members_of(gs, reg, scope.group.id)
+    else:
+        people = [u for g in gs.groups if not g.allowlist for u in groups.members_of(gs, reg, g.id)]
+    out = []
+    for u in people:
+        if u.name == users.OWNER or not u.enabled:
+            continue
+        found = resend.apps_of(cat, u, gs.get(u.group))
+        if found and all(i.effect == resend.NONE for i in found):
+            via = cat.raw.get("via", {})
+            how = "; ".join(dict.fromkeys(f"{cat.platforms.get(i.platform, i.platform)} — {via.get(cat.via(i.client, i.platform), 'всё')}"
+                                          for i in found))
+            out.append(f"{u.label} ({how})")
+    return out
+
+
+def flash_unaffected(req: "Request", scope: Scope) -> None:
+    if lost := _unaffected(scope):
+        shown = ", ".join(lost[:5]) + (f" и ещё {len(lost) - 5}" if len(lost) > 5 else "")
+        req.session.flash("info", f"Список не действует: {shown}.")
+
+
 def _finish(app: "App", req: "Request", ch: allowlist.Change, text: str, scope: Scope) -> "Response":
     app.invalidate_links()  # клиентские файлы пересобраны: старые ссылки и QR не годятся
     flash_resend(req, text, ch.resend, bool(ch.affected))
+    if ch.added or ch.removed:
+        flash_unaffected(req, scope)
     awg = str(ch.applied.get("amneziawg", ""))
     if awg.startswith("ошибка"):
         req.session.flash("bad", f"AmneziaWG: {awg}. Повторить: sudo zoo allow apply")
@@ -319,6 +355,8 @@ def _group_done(app: "App", req: "Request", rep: groups.GroupReport, changed: bo
     app.invalidate("status")
     app.invalidate_links()
     flash_resend(req, "Сохранено" if changed else "Без изменений", rep.resend, changed)
+    if changed:
+        flash_unaffected(req, scope)
     for e in rep.errors:
         req.session.flash("bad", e)
     return _back(scope)
