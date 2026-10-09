@@ -121,6 +121,7 @@ class App:
             ("POST", rf"/users/{name}/delete", userviews.user_delete, True),
             ("POST", rf"/users/{name}/devices", userviews.user_devices, True),
             ("POST", rf"/users/{name}/rekey", userviews.user_rekey, True),
+            ("POST", rf"/users/{name}/lost", userviews.user_lost, True),
             ("GET", r"/resend", resendviews.page, True),
             ("POST", r"/resend", resendviews.post, True),
             ("GET", rf"/users/{name}/file/(?P<fname>[A-Za-z0-9._-]{{1,64}})", userviews.user_file, True),

@@ -54,7 +54,8 @@ class Status:
 
     @property
     def counter(self) -> str:
-        return f"подключились {len(self.on)} из {self.total}" if self.known else "подключения по трафику не видны"
+        return (f"подключились {len(self.on)} из {self.total}" if self.known
+                else "кто подключился — видно через 5 минут после первого сбора трафика")
 
 
 def connection(names: list[str], now: float | None = None) -> Status:
@@ -200,7 +201,7 @@ def words(step: str, where: str) -> str:
 
 
 def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: clientviews.Pack, name: str,
-           update: str = "") -> list[str]:
+           update: str = "", login: str = "") -> list[str]:
     """Строки инструкции группы (или пакета, если у человека свои протоколы) как есть, с номерами и заголовком
     запасного приложения, без обращения и строки «Через VPN» (она на карточке отдельно). update — строка «удалите
     старые подключения» первой."""
@@ -209,7 +210,7 @@ def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: client
         gt = ctx.text(g, plat)
         if gt and clientviews.pack_sig(pack) == ctx.group_sig(g, plat):
             body = gt
-    lines = clientviews.fill_name(body or pack.message, name).splitlines()[1:]
+    lines = clientviews.fill_name(body or pack.message, name, login).splitlines()[1:]
     return ([update] if update else []) + [ln.strip() for ln in lines
                                            if ln.strip() and not ln.startswith(clientviews.VIA_PREFIX)]
 
@@ -219,22 +220,22 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
     """Платформы с одинаковыми приложениями и ключами сворачиваются в один блок («Android, iPhone — Happ»). Только
     устройства человека (groups.devices_of)."""
     prefer, order = clientviews.group_prefs(g)
-    admin = bool(g and g.install_mode == "admin")   # ставит ИТ: человеку магазины не показываются, а iPhone — «нужен иностранный Apple ID»
     devices = groups.devices_of(user, g)
-    update = resend.update_line(ctx.cat, user, g)
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
         if devices is not None and plat not in devices:
             continue
+        admin = clientviews.admin_on(g, plat)   # ставит ИТ: человеку магазины не показываются, а iPhone — «нужен иностранный Apple ID»
+        update = resend.update_line(ctx.cat, user, g, plat)
         pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
-                                      clientviews.store_first(g), ctx.al, ctx.apps_for(plat, g, user.name), admin)
+                                      clientviews.store_first(g, plat), ctx.al, ctx.apps_for(plat, g, user.name), admin)
         if pack is None:
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
         apps = [CardApp(s.client["name"], s.version, clientviews.foreign_note(ctx.cat, s.client, plat, admin),
                         [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
                 for s, ks in zip(pack.sections, keys)]
-        steps = _steps(ctx, g, plat, pack, user.label, update)
+        steps = _steps(ctx, g, plat, pack, user.label, update, user.name)
         paper, head, more = pack.parts(paper=True)
         # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
         sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
@@ -544,8 +545,9 @@ def build_zip(app: "App", cards: list[Card], skipped: list[str], budget: float =
                                     problems.append(f"{name}: файла {k.file} нет на сервере — в архив не вошёл")
                             else:
                                 try:
-                                    put(f"{name}/{f.name}", f.read_bytes())
-                                    files[k.file] = f.name
+                                    # то же имя, под каким файл скачивается и назван в сообщении: «ivan-v2rayn-routing.json»
+                                    put(f"{name}/{clientviews.file_name(name, f.name)}", f.read_bytes())
+                                    files[k.file] = clientviews.file_name(name, f.name)
                                 except OSError as e:
                                     problems.append(f"{name}: {k.file}: {e}")
             put(f"{name}/instruction.txt", instruction_text(c, qr_files, files).encode("utf-8"))

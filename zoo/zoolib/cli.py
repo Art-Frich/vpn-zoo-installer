@@ -563,7 +563,7 @@ def build_parser() -> argparse.ArgumentParser:
                             "вместе они должны покрывать протоколы группы")
         p.add_argument("--install", choices=groups.INSTALL_MODES,
                        help="кто ставит приложения: self — люди сами по инструкции, admin — ИТ (сервер кэширует "
-                            "дистрибутивы: zoo clients --fetch-dist)")
+                            "дистрибутивы: zoo clients --fetch-dist), mixed — телефоны сами, компьютеры ИТ")
         p.add_argument("--allow", action="append", metavar="ПРИЛОЖЕНИЕ",
                        help="свой список приложений группы (ключ каталога, пакет, процесс); не указанная "
                             "платформа остаётся как есть")

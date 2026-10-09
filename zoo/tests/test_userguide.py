@@ -26,7 +26,7 @@ class UserGuideTest(unittest.TestCase):
                 c = self.cat.client(cid)
                 for step in self.cat.setup(c, plat):
                     self.assertIn(userguide._neutral(step), self.text, (cid, plat))
-        self.assertIn(self.cat.raw["report"], self.text)
+        self.assertIn(self.cat.report("guide"), self.text)
         for gone in ("sudo zoo", "Для владельца", "как обычно.\n", "я пришлю", "ещё 4"):
             self.assertNotIn(gone, self.text)
         self.assertIn("«Устаревшая защита TUN»", self.text)

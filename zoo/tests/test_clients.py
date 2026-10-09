@@ -687,7 +687,10 @@ class PackTest(unittest.TestCase):
         self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["hiddify"], names), ("с оговоркой", "warn"))
         self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2"], ["happ"], names), ("все протоколы", "ok"))
         self.assertEqual(clientviews.coverage_label(cat, "android", ["hysteria2", "amneziawg"], ["happ"], names),
-                         ("нет AmneziaWG", "warn"))
+                         ("Hysteria2 (UDP)", "info"), "берёт не все — что берёт и каким транспортом, а не «нет …» (D61)")
+        self.assertEqual(clientviews.coverage_label(cat, "ios", ["vless-xhttp", "vless-reality", "amneziawg"], ["incy"], names),
+                         ("VLESS (TCP)", "info"), "iPhone в «Надёжно» — норма, а не ошибка")
+        self.assertEqual(clientviews.coverage_label(cat, "ios", ["amneziawg"], ["incy"], names), ("нет AmneziaWG", "warn"))
         items = clientviews.caveat_items(cat, {"android": ["hiddify"], "windows": ["hiddify"]}, ["hysteria2"], names)
         self.assertEqual([t_ for t_, _ in items], ["Hiddify: Hysteria2 без проверки сертификата"], "одна на все устройства")
         self.assertIn("insecure=1", items[0][1], "детали ядра — в полной заметке («подробнее»)")
@@ -732,7 +735,7 @@ class PackTest(unittest.TestCase):
         # два приложения: какое держать включённым (Android держит один VPN)
         self.assertIn("Включённым держите одно приложение — «Happ». Не подключается — выключите его и включите «AmneziaWG»",
                       msg)
-        self.assertTrue(msg.endswith(f"\n12) {catalog().raw['report']}"), msg)
+        self.assertTrue(msg.endswith(f"\n12) {catalog().report('brave')}"), msg)
         for gone in ("REALITY", "2ip", "vless://"):
             self.assertNotIn(gone, msg)
         # с одним приложением ключи не называются: протоколов в тексте нет
@@ -746,7 +749,7 @@ class PackTest(unittest.TestCase):
         # бумажная карточка: импорт QR-кодом, без «сообщения»
         paper = "\n".join(p.steps(paper=True))
         self.assertIn("В «Happ» нажмите «+» → «Сканировать QR» и наведите камеру на QR «Hysteria2» и «VLESS Vision».", paper)
-        self.assertNotIn("сообщени", paper.replace(catalog().raw["report"], ""))
+        self.assertNotIn("сообщени", paper.replace(catalog().report("brave"), ""))
         self.assertEqual(p.paper_rest, [])
 
     def test_protocol_covered_by_earlier_client_is_not_repeated(self):
@@ -809,12 +812,14 @@ class PackTest(unittest.TestCase):
                                        "только приложения из списка, остальное напрямую.\n1) Скопируйте ссылку"), msg)
         for gone in ("Установите", "releases", "Assets", "play.google.com"):
             self.assertNotIn(gone, msg)
-        self.assertEqual(msg.count("\n"), 12, "строка «через VPN», импорт (с QR) и три настройки Happ, правило Android, "
-                                              "проверка; пустая строка и заголовок запасного, импорт (с QR) AWG, какое "
-                                              "держать включённым и что прислать")
-        self.assertIn(f"6) {CHECK['brave']}\n\nЕсли «Happ» не подключается — запасное приложение «AmneziaWG»:\n7) ", msg,
+        self.assertEqual(msg.count("\n"), 9, "строка «через VPN», импорт (с QR) Happ, правило Android, проверка; пустая "
+                                             "строка и заголовок запасного, импорт (с QR) AWG, какое держать включённым и "
+                                             "что прислать; выбор приложений и настройки Happ делает ИТ (D61)")
+        for gone in ("Прокси для выбранных приложений", "Inbounds", "roscomvpn-routing"):
+            self.assertNotIn(gone, msg, "разовая настройка — в памятке для ИТ")
+        self.assertIn(f"3) {CHECK['brave']}\n\nЕсли «Happ» не подключается — запасное приложение «AmneziaWG»:\n4) ", msg,
                       "запасное — после проверки, отдельным блоком, нумерация сквозная")
-        self.assertTrue(msg.endswith(f"9) {catalog().raw['report']}"))
+        self.assertTrue(msg.endswith(f"6) {catalog().report('brave')}"))
         one = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "ios", [VLESS], [],
                                      {"ios": ["incy"]}, ["vless-reality"], False, None, None, True)
         self.assertTrue(one.message.startswith("{name}, VPN уже установлен. Включите его в «INCY»."))
@@ -901,7 +906,7 @@ class PackTest(unittest.TestCase):
         self.assertIn("\n3) Скопируйте ссылку из сообщения. В «Happ» нажмите «+» → «Вставить из буфера». Или, если "
                       "сообщение открыто на другом экране: в «Happ» нажмите «+» → «Сканировать QR»", one)
         self.assertIn(catalog().raw["one_way"], one)
-        self.assertTrue(one.endswith(catalog().raw["report"]), "в конце — что прислать администратору")
+        self.assertTrue(one.endswith(catalog().report("brave")), "в конце — что прислать администратору")
 
 
 class PickLinkTest(unittest.TestCase):
@@ -1035,8 +1040,8 @@ class HandoffPageTest(AppTestBase):
 
     def test_page_stays_light(self):
         _, body = self.c.get("/users/masha")
-        self.assertLessEqual(len(body.encode("utf-8")), 40 * 1024, "30 КБ + «Если у человека не работает» (D58) + Mac и "
-                                                                    "Linux с шагами Brave (D59)")
+        self.assertLessEqual(len(body.encode("utf-8")), 42 * 1024, "30 КБ + «Если у человека не работает» (D58) + Mac и "
+                                                                    "Linux с шагами Brave (D59) + «Потерял …» (D61)")
 
 
 if __name__ == "__main__":

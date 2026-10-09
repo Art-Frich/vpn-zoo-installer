@@ -106,13 +106,31 @@ class Catalog:
         """Шаги настройки, которым нужны права администратора компьютера (TUN в v2rayN)."""
         return list((client.get("admin_setup") or {}).get(platform, []))
 
+    def config(self, client: dict[str, Any], platform: str) -> list[str]:
+        """Разовая настройка приложения после импорта (режим, «РФ напрямую», ярлык): при «Ставит ИТ» её делает ИТ."""
+        return list((client.get("config") or {}).get(platform, []))
+
     def setup(self, client: dict[str, Any], platform: str, admin: bool = False) -> list[str]:
-        """Шаги настройки после импорта (маршрутизация, TUN, служебный вход). admin — приложения ставит ИТ: шаги с правами
-        администратора делает он (памятка у дистрибутивов), человеку их нет; иначе первый из них — с предупреждением."""
+        """Шаги настройки после импорта (TUN, маршрутизация, что знать). admin — приложения ставит ИТ: шаги с правами
+        администратора и разовую настройку делает он (памятка у дистрибутивов), человеку их нет; иначе первый шаг с
+        правами — с предупреждением."""
         rights = [] if admin else self.admin_setup(client, platform)
         if rights:
             rights[0] = self.raw["admin_rights"] + rights[0]
-        return rights + list((client.get("setup") or {}).get(platform, []))
+        return rights + ([] if admin else self.config(client, platform)) + list((client.get("setup") or {}).get(platform, []))
+
+    def it_steps(self, client: dict[str, Any], platform: str, apps: str = "") -> list[str]:
+        """Что делает ИТ при «Ставит ИТ» после установки: шаги с правами администратора, выбор приложений «через VPN» в
+        самом приложении (apps — их названия) и разовая настройка."""
+        out = self.admin_setup(client, platform)
+        if step := self.per_app_steps(client, platform):
+            out.append(f"Приложения через VPN в «{client['name']}»: " + step.replace("{apps}", apps or "приложения из списка"))
+        return out + self.config(client, platform)
+
+    def report(self, speed: str = "brave") -> str:
+        """Что прислать администратору; speed — как мерить «медленно»: brave (VPN только в Brave), device (через VPN
+        идёт всё), apps (Brave в списке нет), guide (общий документ)."""
+        return self.raw["report"].replace("{speed}", self.raw["speed"][speed])
 
     def install_note(self, client: dict[str, Any], platform: str) -> str:
         """Что делать, если система не открывает приложение после установки (Gatekeeper на Mac); нет — пусто."""
@@ -152,7 +170,7 @@ class Catalog:
         if len(keys) > 1 and out:
             out[-1] = f"{out[-1]} {self.both_step(keys)}"
         out += [ex["text"] for ex in client.get("extra", []) if ex["platform"] == platform and extras(ex["proto"])]
-        if step := self.per_app_steps(client, platform):
+        if (step := self.per_app_steps(client, platform)) and not admin:   # при «Ставит ИТ» выбирает ИТ (it_steps)
             out.append(f"Приложения через VPN в «{client['name']}»: " + step.replace("{apps}", apps or "нужные приложения"))
         return out + self.setup(client, platform, admin)
 
@@ -221,10 +239,11 @@ def validate(raw: Any) -> None:
         via = c.get("via", {})
         need(isinstance(via, dict) and set(via) <= set(c["platforms"]) and all(m in raw.get("via", {}) for m in via.values()),
              f"{cid}: via — платформа клиента → ключ справочника via")
-        setup = c.get("setup", {})
-        need(isinstance(setup, dict) and set(setup) <= set(c["platforms"])
-             and all(isinstance(v, list) and all(isinstance(s, str) and s for s in v) for v in setup.values()),
-             f"{cid}: setup — платформа клиента → список шагов")
+        for key in ("setup", "config"):
+            steps_of = c.get(key, {})
+            need(isinstance(steps_of, dict) and set(steps_of) <= set(c["platforms"])
+                 and all(isinstance(v, list) and all(isinstance(s, str) and s for s in v) for v in steps_of.values()),
+                 f"{cid}: {key} — платформа клиента → список шагов")
         asset = c.get("asset", {})
         need(isinstance(asset, dict) and set(asset) <= set(c["platforms"]), f"{cid}: asset")
         rights = c.get("admin_setup", {})
@@ -244,7 +263,9 @@ def validate(raw: Any) -> None:
         need(plat in plats and all(p in protos for p in order), f"handoff {plat}")
     need(set(raw.get("check", {})) >= {"brave", "apps", "device"} and "{app}" in raw["check"]["apps"],
          "check: нужны brave, apps (с {app}) и device")
-    need(isinstance(raw.get("report"), str) and bool(raw["report"]), "report: что прислать, если не работает")
+    need(isinstance(raw.get("report"), str) and "{speed}" in raw["report"], "report: что прислать, если не работает, с {speed}")
+    need(isinstance(raw.get("speed"), dict) and set(raw["speed"]) >= {"brave", "device", "apps", "guide"},
+         "speed: brave, device, apps, guide")
     need(isinstance(raw.get("other_screen"), str) and bool(raw["other_screen"]), "other_screen: QR с другого экрана")
     need(isinstance(raw.get("one_way"), str) and bool(raw["one_way"]), "one_way: один способ импорта из двух")
     need(isinstance(raw.get("both"), str) and "{first}" in raw["both"] and "{rest}" in raw["both"],
@@ -254,8 +275,16 @@ def validate(raw: Any) -> None:
     need(isinstance(raw.get("fallback"), str) and "{first}" in raw["fallback"] and "{rest}" in raw["fallback"],
          "fallback: нужны {first} и {rest}")
     need(isinstance(raw.get("admin_rights"), str) and bool(raw["admin_rights"]), "admin_rights: нужны права администратора")
-    need(isinstance(raw.get("update"), dict) and set(raw["update"]) == {"keys", "all"}
-         and all("{apps}" in v for v in raw["update"].values()), "update: keys и all с {apps}")
+    upd = raw.get("update")
+    need(isinstance(upd, dict) and set(upd) == {"keys", "all", "lost", "add", "drop", "app", "switch"}
+         and all("{apps}" in upd[k] for k in ("keys", "all", "add")) and "{keys}" in upd["add"]
+         and "{device}" in upd["lost"] and "{old}" in upd["drop"] and "{new}" in upd["app"]
+         and "{old}" in upd["switch"] and "{new}" in upd["switch"],
+         "update: keys, all, add с {apps}; add с {keys}; lost с {device}; drop, app, switch с {old}/{new}")
+    lists = raw.get("lists")
+    need(isinstance(lists, dict) and set(lists) == {"head", "file", "rules", "manual"} and "{name}" in lists["head"]
+         and "{file}" in lists["file"] and "{step}" in lists["rules"] and "{step}" in lists["manual"],
+         "lists: head ({name}), file ({file}), rules и manual ({step})")
     for key in ("brave", "rules"):
         need(isinstance(raw.get(key, {}), dict) and set(raw.get(key, {})) <= set(plats), f"{key}: платформа → текст")
     need(all(c.get("per_app") in raw.get("per_app", {}) for c in raw["clients"]), "per_app клиента не из справочника")

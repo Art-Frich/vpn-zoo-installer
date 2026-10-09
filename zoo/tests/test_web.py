@@ -1397,9 +1397,9 @@ class ConnectPageTest(AppTestBase):
         self.assertLess(main.index("Подключить"), main.index("Все ссылки и QR"))
         self.assertLess(main.index("Все ссылки и QR"), main.index("Профиль"))
         self.assertLess(main.index("Подключить"), main.index(">Трафик<"))
-        self.assertLessEqual(len(body.encode("utf-8")), 40 * 1024,
+        self.assertLessEqual(len(body.encode("utf-8")), 42 * 1024,
                              "страница с 6 протоколами и 5 платформами должна быть лёгкой (30 КБ + «Если у человека не "
-                             "работает» + Mac и Linux с шагами Brave, D59)")
+                             "работает» + Mac и Linux с шагами Brave, D59 + «Потерял …», D61)")
         self.assertNotIn("<svg", body.split("Профиль")[0], "QR — отдельные картинки по требованию")
         self.assertIn('data-src="/users/masha/qr/', body)
         self.assertNotIn("нужен Xray-клиент", body)
@@ -1613,8 +1613,8 @@ class TilesTest(unittest.TestCase):
         self.assertNotIn("Правила v2rayN", protocols, "файл правил не в списке протоколов")
         self.assertIn("Правила v2rayN", files)
         # импорт файла — тем же текстом, что в инструкции
-        text = clientviews.rules_text(clients.load())
-        self.assertIn("«Добавить набор правил» → «Импорт правил из файла»", text)
+        text = clientviews.rules_text(clients.load(), "masha")
+        self.assertIn("«Добавить набор правил» → «Импорт правил из файла», файл masha-v2rayn-routing.json", text)
         self.assertIn(text, out)
         self.assertNotIn("Маршрутизация → Импорт из файла", out)
 

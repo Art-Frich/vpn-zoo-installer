@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -202,6 +203,7 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
             out.append(("warn", t("span", "Нужна перезагрузка сервера", title=pkgs or None)))
     if lost := stranded_alert(st):
         out.append(lost)
+    out += fallback_alerts(st)
     if traffic.last_run() is None:
         out.append(("warn", "Трафик ещё не собирался: первое снятие — в течение 5 минут после установки"))
     out += protoviews.alerts()
@@ -224,6 +226,23 @@ def stranded_alert(st: dict[str, Any]) -> tuple[Any, ...] | None:
     parts = [x for i, (name, (gid, n)) in enumerate(lost.items())
              for x in ((", " if i else ""), t("a", f"{name} ({n} чел.)", href=f"/groups/{gid}") if gid else f"{name} ({n} чел.)")]
     return ("bad", t("span", "Без VPN остались: ", *parts, " — у них других протоколов нет."))
+
+
+def fallback_alerts(st: dict[str, Any]) -> list[tuple[Any, ...]]:
+    """«Офис, Android (2 чел.): пусть включат запасное «Happ»» — у основного приложения протокол упал, а запасное
+    работает: сами люди об этом не узнают."""
+    try:
+        found = support.fallbacks(st["protocols"], users.list_users(), groups.Groups.load())
+    except (users.UserError, groups.GroupError, OSError, ValueError):
+        return []
+    out: list[tuple[Any, ...]] = []
+    for fb in found:
+        who = "/handoff?" + urllib.parse.urlencode({"u": ",".join(u.name for u in fb.people)})
+        out.append(("warn", t("span", t("a", fb.group, href=f"/groups/{fb.gid}"),
+                              f", {fb.device} ({len(fb.people)} чел.: ", _names(fb.people),
+                              f"): пусть включат запасное «{fb.app}» — основное приложение сейчас не подключится."),
+                    t("a", "Кому написать", href=who)))
+    return out
 
 
 def _names(us: list[Any]) -> Markup:

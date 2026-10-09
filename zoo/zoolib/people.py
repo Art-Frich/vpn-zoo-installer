@@ -1,7 +1,9 @@
 """Список людей одним текстом (мастер «Подключить людей», «Добавить людей списком»).
 
 Строка — «имя», «имя; заметка» или «имя; заметка; android, windows» (разделитель — первая «;», табуляция или
-запятая; последнее поле из одних названий устройств — устройства человека, без него — как у группы). Имя может быть
+запятая; любое поле после имени из одних названий устройств — устройства человека, без них — как у группы). Столбцы
+из Excel: строка заголовка («Имя | Отдел | Телефон») пропускается, «Фамилия | Имя» — склеиваются в имя, пустая клетка
+устройства — подсказка «как у группы». Имя может быть
 русским: из него получается логин пользователя (транслит, нижний регистр, только a-z 0-9 - _), при
 совпадении с занятым или с предыдущей строкой добавляется номер («ivan-2»). Исходное имя не теряется:
 оно хранится у человека отдельно (users.User.display), и к нему обращаются в инструкциях и карточках.
@@ -31,7 +33,6 @@ DEVICE_WORDS = {
     "realme": "android", "pixel": "android", "oneplus": "android", "tecno": "android", "infinix": "android",
     "iphone": "ios", "ios": "ios", "айфон": "ios", "ipad": "ios", "айпад": "ios", "apple": "ios",
     "windows": "windows", "win": "windows", "виндовс": "windows", "винда": "windows", "пк": "windows", "pc": "windows",
-    "ноутбук": "windows", "ноут": "windows", "компьютер": "windows", "комп": "windows", "laptop": "windows",
     "macos": "macos", "mac": "macos", "macbook": "macos", "мак": "macos", "макбук": "macos", "imac": "macos",
     "linux": "linux", "линукс": "linux", "ubuntu": "linux", "убунту": "linux",
 }
@@ -39,7 +40,17 @@ FIELD_WORDS = 2   # в поле устройств слово-другое («а
 # слова про устройство, по которым не понять, какое оно: предпросмотр спрашивает, а не молчит
 AMBIGUOUS = {"телефон": "Android или iPhone?", "смартфон": "Android или iPhone?", "мобильный": "Android или iPhone?",
              "сотовый": "Android или iPhone?", "phone": "Android или iPhone?", "smartphone": "Android или iPhone?",
-             "планшет": "Android или iPad?", "tablet": "Android или iPad?"}
+             "планшет": "Android или iPad?", "tablet": "Android или iPad?",
+             # в офисе бывают и MacBook: «ноутбук» молча в Windows не превращаем
+             "ноутбук": "Windows или Mac?", "ноут": "Windows или Mac?", "laptop": "Windows или Mac?",
+             "notebook": "Windows или Mac?", "компьютер": "Windows или Mac?", "комп": "Windows или Mac?",
+             "computer": "Windows или Mac?"}
+# заголовок таблицы из Excel: первая клетка — «Имя», «ФИО», «Сотрудник»…; такую строку не заводим человеком
+HEADER_NAMES = ("имя", "фио", "ф.и.о", "ф. и. о", "фамилия", "сотрудник", "сотрудники", "name", "full name", "employee")
+# заголовки столбцов про устройства: пустая клетка в них — «устройство не указано»
+DEVICE_HEADS = {"устройство", "устройства", "телефон", "компьютер", "ноутбук", "смартфон", "мобильный", "планшет", "пк",
+                "ос", "платформа", "device", "devices", "phone", "computer", "laptop", "os", "platform"}
+NAME_PARTS = {"фамилия", "имя", "отчество", "surname", "name", "first name", "last name"}
 # названия устройств, которые бывают и фамилией или словом имени: в конце имени — только вопрос, имя не трогаем
 NAMEY = {"мак", "mac", "apple", "хонор", "honor", "pixel", "poco", "realme", "tecno", "infinix", "win"}
 DEVICES_HELP = "android, iphone, windows, mac, linux"
@@ -82,6 +93,7 @@ class Row:
 class Plan:
     rows: list[Row] = field(default_factory=list)
     problem: str = ""    # общий отказ: слишком много строк
+    header: str = ""     # пропущенная строка заголовка из Excel («Имя | Отдел | Телефон»)
 
     @property
     def ok(self) -> bool:
@@ -145,15 +157,55 @@ def unknown_text(words: list[str]) -> str:
     return "не понял: " + ", ".join(parts) + tail
 
 
-def split_devices(note: str) -> tuple[str, list[str], list[str]]:
-    """Заметка → (заметка, устройства, непонятые слова). Устройства — последнее поле после «;» (без «;» — хвост через
-    запятые), с первого названия устройства или слова вроде «телефон»; короткие слова там, которых мы не знаем
-    («айфон, планшет», «смартфон»), не уходят молча в заметку, а возвращаются: предпросмотр спросит о них. Третье поле
-    («Оля; склад; хз») без единого знакомого слова остаётся в заметке, но тоже возвращается вопросом."""
-    head, sep, tail = note.rpartition(";")   # есть «;» — устройства только в последнем поле, иначе — в хвосте через запятые
-    if not sep:
-        head, tail = "", note
-    parts = re.split(r"(,)", tail)
+def _field_words(piece: str) -> tuple[list[str], list[str]]:
+    """Поле из одних названий устройств («Android», «iPhone + MacBook», «ноутбук»): (устройства, слова-вопросы)."""
+    words = _words(piece)
+    return [DEVICE_WORDS[w] for w in words if w in DEVICE_WORDS], [w for w in words if w not in DEVICE_WORDS]
+
+
+def split_devices(note: str, dev_cols: set[int] | frozenset[int] = frozenset()) -> tuple[str, list[str], list[str], bool]:
+    """Заметка → (заметка, устройства, непонятые слова, есть ли пустое поле). Поля через «;» (столбцы из Excel): любое
+    поле из одних названий устройств или слов вроде «телефон» — устройства, в каком бы столбце оно ни стояло («ИТ;
+    Android; Windows»). Последнее поле, кроме того, разбирается хвостом через запятые («склад, android»); короткие
+    незнакомые слова в нём («Оля; склад; хз») — вопрос, если устройств в других полях нет. dev_cols — номера полей
+    заметки (с 0), которые заголовок таблицы назвал устройствами: незнакомое слово в них — тоже вопрос."""
+    if ";" not in note:
+        rest, found, unknown = _tail_devices(note, False)
+        return rest, found, unknown, False
+    fields = note.split(";")
+    keep: list[str] = []
+    found: list[str] = []
+    unknown: list[str] = []
+    empty = False
+    last = len(fields) - 1
+    for k, f in enumerate(fields):
+        if not f.strip():
+            empty = empty or k > 0 or len(fields) > 1
+            continue
+        if _device_like(f):
+            devs, ask = _field_words(f)
+            found += devs
+            unknown += ask
+            continue
+        if k == last:
+            rest, devs, ask = _tail_devices(f, not found)
+            found += devs
+            unknown += ask
+            if rest:
+                keep.append(rest.strip())
+            continue
+        if k in dev_cols and len(_words(f)) <= FIELD_WORDS:
+            unknown += _words(f)
+            continue
+        keep.append(f.strip())
+    return "; ".join(keep), list(dict.fromkeys(found)), list(dict.fromkeys(unknown)), empty and not found
+
+
+def _tail_devices(note: str, ask: bool) -> tuple[str, list[str], list[str]]:
+    """Одно поле: устройства — хвост через запятые, с первого названия устройства или слова вроде «телефон»; короткие
+    слова там, которых мы не знаем («айфон, планшет»), возвращаются вопросом. ask — поле без единого знакомого слова,
+    но короткое («хз»), тоже вопрос (третье поле строки, а устройств в других полях нет)."""
+    parts = re.split(r"(,)", note)
     fields = parts[0::2]
     k = len(fields)
     while k > 0 and len(_words(fields[k - 1])) <= FIELD_WORDS and fields[k - 1].strip():
@@ -161,19 +213,16 @@ def split_devices(note: str) -> tuple[str, list[str], list[str]]:
     while k < len(fields) and not _device_like(fields[k]):   # поле устройств начинается со слова про устройство
         k += 1
     if k >= len(fields):
-        short = _words(tail)
-        return note, [], (short if sep and short and len(short) <= FIELD_WORDS else [])
+        short = _words(note)
+        return note.strip(), [], (short if ask and short and len(short) <= FIELD_WORDS else [])
     found: list[str] = []
     unknown: list[str] = []
     for f in fields[k:]:
-        for w in _words(f):
-            if w in DEVICE_WORDS:
-                found.append(DEVICE_WORDS[w])
-            else:
-                unknown.append(w)
+        devs, words = _field_words(f)
+        found += devs
+        unknown += words
     rest = "".join(parts[:max(2 * k - 1, 0)]).strip(" ,")
-    note = "; ".join(x for x in (head.strip(" ;,"), rest) if x)
-    return note, list(dict.fromkeys(found)), list(dict.fromkeys(unknown))
+    return rest, list(dict.fromkeys(found)), list(dict.fromkeys(unknown))
 
 
 def name_devices(display: str) -> tuple[str, list[str], str]:
@@ -192,10 +241,43 @@ def name_devices(display: str) -> tuple[str, list[str], str]:
     return " ".join(words), list(dict.fromkeys(found)), ""
 
 
-def _comma_cut(raw: str, note: str) -> bool:
-    """Строку разрезала запятая, а заметка — одно слово с большой буквы: похоже на «Петров, Иван» из Excel."""
+def _comma_cut(raw: str, note: str) -> str:
+    """Строку разрезала запятая, а следом — одно слово с большой буквы: похоже на «Петров, Иван» из Excel (и с полями
+    дальше: «Петров, Иван; продажи; android»). Возвращает это слово или пусто."""
     cuts = [i for i in (raw.find(s) for s in SEPARATORS) if i >= 0]
-    return bool(cuts) and raw[min(cuts)] == "," and bool(re.fullmatch(r"[A-ZА-ЯЁ][a-zа-яё-]+", note))
+    first = re.split(r"[;\t,]", note, maxsplit=1)[0].strip()
+    ok = bool(cuts) and raw[min(cuts)] == "," and bool(re.fullmatch(r"[A-ZА-ЯЁ][a-zа-яё-]+", first))
+    return first if ok else ""
+
+
+def _cells(line: str) -> list[str]:
+    """Клетки строки: по табуляции (Excel), иначе по «;»."""
+    sep = "\t" if "\t" in line else ";"
+    return [c.strip().strip('"').strip() for c in line.split(sep)]
+
+
+def _header(line: str) -> tuple[int, frozenset[int]] | None:
+    """Строка заголовка из Excel («Имя | Отдел | Телефон | Компьютер»): (сколько первых столбцов — части имени, номера
+    полей заметки — столбцов про устройства). Не заголовок — None."""
+    cells = [c.casefold() for c in _cells(line)]
+    first = cells[0].strip(" .:") if cells else ""
+    if not first or not any(first == h or first.startswith(h + " ") for h in HEADER_NAMES):
+        return None
+    parts = 1
+    while parts < len(cells) and cells[parts].strip(" .:") in NAME_PARTS and parts < 3:
+        parts += 1
+    devs = frozenset(i - parts for i, c in enumerate(cells) if i >= parts
+                     and (c.strip(" .:") in DEVICE_HEADS or (_words(c) and all(w in DEVICE_HEADS or w in DEVICE_WORDS
+                                                                              or w in AMBIGUOUS for w in _words(c)))))
+    return parts, devs
+
+
+def _join_name(line: str, parts: int) -> str:
+    """«Петров⇥Иван⇥бух» при заголовке «Фамилия | Имя» → «Петров Иван⇥бух»."""
+    if parts < 2 or "\t" not in line:
+        return line
+    cells = line.split("\t")
+    return "\t".join([" ".join(c.strip() for c in cells[:parts] if c.strip()), *cells[parts:]])
 
 
 def device_titles(ids: list[str] | tuple[str, ...]) -> str:
@@ -230,17 +312,27 @@ def build(text: str, taken: set[str] | frozenset[str] = frozenset()) -> Plan:
         plan.problem = f"за раз — не больше {LINES_MAX} человек, в списке {len(lines)}"
         lines = lines[:LINES_MAX]
     used = set(taken) | set(users.SYSTEM_USERS)
+    head = _header(lines[0]) if lines else None
+    parts, dev_cols = head or (1, frozenset())
     for n, raw in enumerate(lines, 1):
-        display, note = split_line(raw)
-        note, devices, unknown = split_devices(note)
+        if n == 1 and head is not None:
+            plan.header = raw.strip()
+            continue
+        display, note = split_line(_join_name(raw, parts))
+        comma = _comma_cut(raw, note) if parts == 1 else ""
+        note, devices, unknown, empty = split_devices(note, dev_cols)
         display, tail, ask = (display, [], "") if devices else name_devices(display)
         row = Row(n, raw.strip(), display, note[:NOTE_MAX], devices=devices or tail, unknown=unknown)
+        hints = []
         if tail:
-            row.hint = f"«{device_titles(tail)}» из конца имени — устройство, не имя"
+            hints.append(f"«{device_titles(tail)}» из конца имени — устройство, не имя")
         elif ask:
-            row.hint = f"«{ask}» в конце имени — устройство? Тогда через «;»: «Имя; ; {ask}»"
-        elif note and not devices and _comma_cut(raw, note):
-            row.hint = f"«{note}» — заметка; если это часть имени, уберите запятую"
+            hints.append(f"«{ask}» в конце имени — устройство? Тогда через «;»: «Имя; ; {ask}»")
+        if comma:
+            hints.append(f"«{comma}» — заметка; если это часть имени, уберите запятую")
+        if not row.devices and not unknown and (dev_cols or (empty and "\t" in raw)):
+            hints.append("устройство не указано — будут устройства группы")
+        row.hint = "; ".join(hints)
         base = slug(display)
         if not display:
             row.problem = "нет имени"

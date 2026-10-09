@@ -31,6 +31,8 @@ FOREIGN_WHY = {"нет в App Store РФ": "нужен Apple ID другой с�
                "нужен иностранный Apple ID": "в российском App Store приложения нет, подделки с похожим названием не ставьте"}
 NAME_TOKEN = "{name}"      # так подстановка имени хранится в группе
 NAME_TOKEN_RU = "{имя}"    # так — показывается и вводится в редакторе; принимаются оба
+LOGIN_TOKEN = "{login}"    # логин: файлы человека называются «логин-файл» (ivan-v2rayn-routing.json)
+LOGIN_TOKEN_RU = "{логин}"
 MISMATCH = "инструкция группы не подходит этому человеку — показана его собственная"
 NO_KEYS = ("В сообщении — инструкция и ссылки этого человека: «Скопировать сообщение» и отправьте; файл (если он есть) "
            "приложите к сообщению — «Скачать файл» или ZIP.")
@@ -39,19 +41,25 @@ NO_APPS = "Приложения не выбраны"
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
-def fill_name(text: str, label: str) -> str:
-    """Подставить имя человека вместо «{name}» и «{имя}»."""
-    return text.replace(NAME_TOKEN, label).replace(NAME_TOKEN_RU, label)
+def fill_name(text: str, label: str, login: str = "") -> str:
+    """Подставить имя человека вместо «{name}» и «{имя}», логин — вместо «{login}» и «{логин}» (имена его файлов)."""
+    out = text.replace(NAME_TOKEN, label).replace(NAME_TOKEN_RU, label)
+    return out.replace(LOGIN_TOKEN, login or "имя").replace(LOGIN_TOKEN_RU, login or "имя")
 
 
 def editor_text(text: str) -> str:
-    """Текст для показа и редактора: «{имя}» вместо внутреннего «{name}»."""
-    return text.replace(NAME_TOKEN, NAME_TOKEN_RU)
+    """Текст для показа и редактора: «{имя}», «{логин}» вместо внутренних «{name}», «{login}»."""
+    return text.replace(NAME_TOKEN, NAME_TOKEN_RU).replace(LOGIN_TOKEN, LOGIN_TOKEN_RU)
 
 
 def stored_text(text: str) -> str:
-    """Текст для хранения: внутренний «{name}» вместо «{имя}»."""
-    return text.replace(NAME_TOKEN_RU, NAME_TOKEN)
+    """Текст для хранения: внутренние «{name}», «{login}» вместо «{имя}», «{логин}»."""
+    return text.replace(NAME_TOKEN_RU, NAME_TOKEN).replace(LOGIN_TOKEN_RU, LOGIN_TOKEN)
+
+
+def file_name(login: str, fname: str) -> str:
+    """Под этим именем файл человека скачивается, лежит в ZIP и назван в сообщении: «ivan-v2rayn-routing.json»."""
+    return f"{login}-{fname}" if login else fname
 
 
 def no_apps(g: "groups.Group | None") -> Markup:
@@ -65,9 +73,14 @@ def _sorted_links(links: list[dict[str, Any]], store_first: bool = False) -> lis
     return sorted(links, key=lambda ln: (store_first and ln["kind"] not in groups.LINK_STORE_KINDS, not ln["checked"]))
 
 
-def store_first(g: "groups.Group | None") -> bool:
-    """Люди ставят сами: ставить из магазина, а не APK со страницы релизов."""
-    return g is None or g.install_mode == "self"
+def store_first(g: "groups.Group | None", plat: str = "android") -> bool:
+    """Люди ставят сами (на этом устройстве): ставить из магазина, а не APK со страницы релизов."""
+    return g is None or g.mode(plat) == "self"
+
+
+def admin_on(g: "groups.Group | None", plat: str) -> bool:
+    """На этом устройстве приложения ставит ИТ («Ставит ИТ» или компьютер при «телефоны — сами, компьютеры — ИТ»)."""
+    return bool(g and g.mode(plat) == "admin")
 
 
 def _has_github(client: dict[str, Any], platform: str) -> bool:
@@ -84,7 +97,7 @@ def _link_anchors(links: list[dict[str, Any]], presorted: bool = False) -> list[
         out.append(t("a", clients.LINK_KINDS[ln["kind"]], href=ln["url"], target="_blank",
                      rel="noopener noreferrer", class_="chip info"))
         if not ln["checked"]:
-            out.append(t("span", "не проверена", class_="muted small"))
+            out.append(t("span", "ссылка не проверена", class_="muted small"))
     return out
 
 
@@ -112,9 +125,10 @@ def foreign_note(cat: clients.Catalog, client: dict[str, Any], plat: str, admin:
     return f"нет в {'App Store' if plat == 'ios' else 'магазине'} РФ"
 
 
-def rules_text(cat: clients.Catalog) -> str:
-    """Шаг импорта файла правил v2rayN: тот же текст, что в инструкции (extra каталога)."""
-    return next((ex["text"] for c in cat.clients for ex in c.get("extra", []) if ex["proto"] == allowlist.V2RAYN_PROTO), "")
+def rules_text(cat: clients.Catalog, login: str = "") -> str:
+    """Шаг импорта файла правил v2rayN: тот же текст, что в инструкции (extra каталога), с именем файла человека."""
+    return fill_name(next((ex["text"] for c in cat.clients for ex in c.get("extra", [])
+                           if ex["proto"] == allowlist.V2RAYN_PROTO), ""), "", login)
 
 
 def app_names(cat: clients.Catalog, ids: list[str]) -> str:
@@ -122,9 +136,18 @@ def app_names(cat: clients.Catalog, ids: list[str]) -> str:
 
 
 def coverage_label(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str],
-                   names: dict[str, str]) -> tuple[str, str]:
-    """Один чип покрытия: «все протоколы» (ok), «с оговоркой» или «нет Hysteria2» (warn)."""
-    _, miss = groups.coverage(cat, plat, protocols, ids)
+                   names: dict[str, str], friendly: bool = True) -> tuple[str, str]:
+    """Один чип покрытия: «все протоколы» (ok), «с оговоркой» (warn); берёт не все — что берёт и каким транспортом
+    («VLESS (TCP)»: у iPhone в «Надёжно» это норма, а не ошибка; friendly=False — «нет …», для сравнения наборов в
+    «сменить»); не берёт ничего — «нет …» (warn)."""
+    done, miss = groups.coverage(cat, plat, protocols, ids)
+    if miss and done and friendly:
+        fams = list(dict.fromkeys(names.get(p, p).split()[0] for p in done))
+        kinds = list(dict.fromkeys(groups.TRANSPORT.get(p, "").upper() for p in done if groups.TRANSPORT.get(p)))
+        if len(kinds) > 1:
+            return "UDP и TCP", "info"
+        label = ", ".join(fams) + (f" ({kinds[0]})" if kinds else "")
+        return (label if len(label) < 24 or not kinds else f"только {kinds[0]}"), "info"
     if miss:
         return "нет " + ", ".join(names.get(p, p) for p in miss), "warn"
     if groups.caveats(cat, plat, protocols, ids):
@@ -526,11 +549,12 @@ def via_line(cat: clients.Catalog, mode: str, names: str) -> str:
 
 
 def via_vpn_names(al: allowlist.Allowlist | None, platform: str, ids: list[str]) -> list[str]:
-    """Названия приложений списка «через VPN» для текста: своё название, из каталога (до « — »), иначе идентификатор."""
+    """Названия приложений списка «через VPN» для текста: своё название, из каталога (до « — » и без пометки в скобках:
+    «Telegram (APK с telegram.org)» — тот же Telegram), иначе идентификатор."""
     out = []
     for i in ids:
         name = (al.titles.get(i.lower(), "") if al else "") or allowlist.title_of(platform, i) or i
-        out.append(name.split(" — ")[0])
+        out.append(re.sub(r"\s*\([^)]*\)\s*$", "", name.split(" — ")[0]) or name)
     return list(dict.fromkeys(out))
 
 
@@ -566,8 +590,10 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         sec.foreign = cat.no_ru_store(c, platform)
         foreign = f" {FOREIGN_STORE}" if sec.foreign else ""
         note = cat.install_note(c, platform)
-        sec.install = (f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform, c)}{foreign}"
-                       + (f" {note}" if note else ""))
+        target = _install_target(sec.links[0], platform, c)
+        if target != sec.links[0]["url"] and (foreign or note):   # «…скачайте файл с «macos»…» — точка перед следующей фразой
+            target = target.rstrip(".") + "."
+        sec.install = f"Установите «{c['name']}»{ver}: {target}{foreign}" + (f" {note}" if note else "")
         imports: dict[str, list[str]] = {}
         for i in items:
             imports.setdefault(i.method, []).append(i.tile)
@@ -589,8 +615,10 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         sections.append(sec)
     modes = [s.via for s in sections]
     lists = "apps" in modes
+    # «медленно»: замер в Brave, если VPN только в нём; иначе с VPN и без; Brave в списке нет — спросить, что медленно
+    speed = "brave" if (lists and brave) or "brave" in modes else ("apps" if lists else "device")
     pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0], names),
-                report=cat.raw["report"], one_on=cat.raw["one_on"], fallback=cat.raw["fallback"])
+                report=cat.report(speed), one_on=cat.raw["one_on"], fallback=cat.raw["fallback"])
     if ((brave and lists) or "brave" in modes) and platform in cat.raw.get("brave", {}):   # brave — VPN только в нём
         pack.before.append(cat.raw["brave"][platform])
     if lists and platform in cat.raw.get("rules", {}):
@@ -666,8 +694,8 @@ class Ctx:
         if key not in self.packs:
             prefer, order = group_prefs(g)
             self.packs[key] = build_pack(self.cat, self.cache, plat, synth_links(g.offered(self.selectable)), self.mans,
-                                         prefer, order, store_first(g), self.al, self.apps_for(plat, g),
-                                         g.install_mode == "admin")
+                                         prefer, order, store_first(g, plat), self.al, self.apps_for(plat, g),
+                                         admin_on(g, plat))
         return self.packs[key]
 
     def group_sig(self, g: groups.Group, plat: str) -> str:
@@ -766,20 +794,47 @@ def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, k
 KEYS_HEAD = "Ключи — только для вас, никому не пересылайте:"
 
 
-def keys_text(keys: list[list[Key]], name: str) -> str:
-    """Ключи человека в конец сообщения: ссылки целиком, файлы — названием (их прикладывают к сообщению)."""
+def keys_text(keys: list[list[Key]], name: str, files_only: bool = False) -> str:
+    """Ключи человека в конец сообщения: ссылки целиком, файлы — названием (их прикладывают к сообщению). files_only —
+    только файлы (короткое сообщение о новом списке «через VPN»: ключи у него уже есть)."""
     lines: list[str] = []
     for ks in keys:
         for k in ks:
-            if k.uri:
+            if k.uri and not files_only:
                 line = f"{k.title}: {k.uri}"
             elif k.file and FILE_NAME_RE.fullmatch(k.file):
-                line = f"{k.title}: файл {name}-{k.file} — во вложении"
+                line = f"{k.title}: файл {file_name(name, k.file)} — во вложении"
             else:
                 continue
             if line not in lines:
                 lines.append(line)
     return "\n".join([KEYS_HEAD, *lines]) if lines else ""
+
+
+def lists_text(cat: clients.Catalog, pack: Pack, keys: list[list[Key]], label: str, login: str) -> str:
+    """Короткое сообщение, когда на устройстве сменился только список «через VPN»: что сделать в его приложениях
+    (новый файл, новый набор правил или отметить в самом приложении), без шагов установки и импорта ключей."""
+    from .. import resend
+    tpl = cat.raw["lists"]
+    lines = [tpl["head"].replace("{name}", label)]
+    for sec, ks in zip(pack.sections, keys):
+        eff = resend.effect(cat, sec.client, pack.platform)
+        app = sec.client["name"]
+        if eff == resend.FILE:
+            f = next((k.file for k in ks if k.file and k.file.endswith(".conf")), "")
+            lines.append(tpl["file"].replace("{app}", app).replace("{file}", file_name(login, f) if f else "из сообщения"))
+        elif eff == resend.RULES:
+            step = next((ex["text"] for ex in sec.client.get("extra", []) if ex["platform"] == pack.platform), "")
+            if step:
+                lines.append(tpl["rules"].replace("{app}", app).replace("{step}", step))
+        elif eff == resend.MANUAL and (step := cat.per_app_steps(sec.client, pack.platform)):
+            lines.append(tpl["manual"].replace("{step}", f"Приложения через VPN в «{app}»: "
+                                               + step.replace("{apps}", pack.apps or "нужные приложения")))
+    lines = [f"{i}) {x}" if i else x for i, x in enumerate(lines)]
+    text = fill_name("\n".join(lines), label, login)
+    if ktext := keys_text(keys, login, files_only=True):
+        text = f"{text}\n\n{ktext}"
+    return text
 
 
 def with_update(text: str, line: str) -> str:
@@ -793,33 +848,36 @@ def with_update(text: str, line: str) -> str:
 def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
                   uid: str = "", label: str | None = None, primary: bool = True,
                   shown: dict[str, str] | None = None, devices: list[str] | None = None,
-                  update: str = "") -> Markup | None:
+                  who: users.User | None = None) -> Markup | None:
     """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека и сообщение: инструкция
     группы с его именем (label; нет — логин) и его ссылками в конце — копируется одной кнопкой. Без JS видны все
     платформы подряд; с JS список оставляет одну. uid — приставка id полей, если на странице несколько блоков. shown —
     сюда кладутся {ссылка: id поля на странице}: «Все ссылки и QR» копируют из этих полей, а не показывают те же ссылки
-    второй раз. devices — устройства человека (groups.devices_of); None — все, для которых есть приложения. update —
-    строка «удалите старые подключения» (сообщение взамен старого: новые ключи, другой набор)."""
+    второй раз. devices — устройства человека (groups.devices_of); None — все, для которых есть приложения. who —
+    человек с отметками «переслать»: сообщение для устройства начинается с того, что сделать со старым (resend.update_line),
+    а если на устройстве сменился только список «через VPN» — главным идёт короткое сообщение об этом."""
+    from .. import resend
     if not links:
         return None
     label = label or name
     prefer, order = group_prefs(g)
-    admin = bool(g and g.install_mode == "admin")
     panels: list[Markup] = []
     plats: list[tuple[str, str]] = []
     mismatch: list[str] = []
     for plat, title in ctx.cat.platforms.items():
         if devices is not None and plat not in devices:
             continue
-        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g), ctx.al,
+        admin = admin_on(g, plat)
+        pack = build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, store_first(g, plat), ctx.al,
                           ctx.apps_for(plat, g, name), admin)
         if pack is None:
             continue
+        update = resend.update_line(ctx.cat, who, g, plat) if who is not None else ""
         group_text = ctx.text(g, plat) if g else None
         own = bool(g and group_text and pack_sig(pack) != ctx.group_sig(g, plat))
         # у человека свои протоколы или другие приложения, чем в наборе группы: инструкция группы про другое
         keys = [_keys(s, plat, links) for s in pack.sections]
-        text = with_update(fill_name((None if own else group_text) or pack.message, label), update)
+        text = with_update(fill_name((None if own else group_text) or pack.message, label, name), update)
         if ktext := keys_text(keys, name):
             text = f"{text}\n\n{ktext}"
         apps = [_app_html(s, k, plat, name, ctx.cat, uid, admin) for s, k in zip(pack.sections, keys)]
@@ -834,6 +892,11 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
                     if k.uri:
                         shown.setdefault(k.uri, _key_id(uid, plat, s, n))
         msg = text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary)
+        if who is not None and resend.lists_only(who, plat):
+            # сменился только список «через VPN»: шаги установки и импорт ключей дали бы дубли подключений; полная
+            # инструкция — в ZIP и на «Карточках»
+            msg = text_block(lists_text(ctx.cat, pack, keys, label, name), f"msg-{uid}{plat}", None, keys=True,
+                             primary=primary)
         panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))
         plats.append((plat, title))
     if not panels:
@@ -862,12 +925,12 @@ def no_devices(cat: clients.Catalog, devices: list[str], g: "groups.Group | None
 
 def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: groups.Group | None,
                  uid: str = "", label: str | None = None, shown: dict[str, str] | None = None,
-                 devices: list[str] | None = None, csrf: str = "", update: str = "") -> Markup | None:
+                 devices: list[str] | None = None, csrf: str = "", who: users.User | None = None) -> Markup | None:
     if ctx is None:
         return None
     if g is not None and not g.clients:
         return card("Подключить", t("p", no_apps(g)))
-    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown, devices=devices, update=update)
+    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown, devices=devices, who=who)
     if panel is None:
         return card("Подключить", t("p", no_devices(ctx.cat, devices, g))) if devices and links else None
     return card("Подключить", t("p", "Приложения и инструкция — общие для группы." if g else "Приложения — по протоколам.",

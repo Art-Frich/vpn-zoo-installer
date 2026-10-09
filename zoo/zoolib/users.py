@@ -5,8 +5,9 @@
                              "group": id, "custom": true, "display": "Иван Петров", "devices": ["android"]}]}
 group — id группы (groups.json); custom — набор протоколов задан вручную, группа его не трогает;
 devices — устройства человека (нет — как у группы): инструкции и карточки только для них;
-resend — что ему нужно переслать после изменений (D57): keys — новые ключи, all — другой набор протоколов или
-приложений (сообщение целиком), apps:<платформа> — сменился список «через VPN». Снимает «Отправлено» в админке.
+resend — что ему нужно переслать после изменений (D57, D61): keys — новые ключи, all — другой набор целиком, по
+устройствам — потерянное, другое приложение, ещё один ключ, apps:<платформа> — сменился список «через VPN» (RESEND_RE).
+Снимает «Отправлено» в админке.
 
 Операции расходятся по всем включённым протоколам с пользователями через protolib.
 При ошибке в одном протоколе изменения в остальных откатываются (partial=True — оставить
@@ -65,16 +66,23 @@ def clean_devices(v: Any) -> list[str]:
     return list(dict.fromkeys(str(x) for x in items if DEVICE_RE.match(str(x))))[:8]
 
 
-RESEND_RE = re.compile(r"^(keys|all|apps:[a-z]{1,16})$")
-RESEND_FULL = ("keys", "all")   # сообщение целиком: отдельные списки в нём уже есть
+# keys — новые ключи во всех протоколах; keys:<модуль> — только в этом (потерян один телефон); lost:<устройство> —
+# устройство новое (потерянное заменили), ставить всё заново; new:<устройство> — у устройства раньше не было приложений;
+# all — другой набор целиком; app/drop:<устройство>:<приложение> — приложение добавлено / убрано с устройства;
+# upd:<устройство>:<приложение> — в приложении другие ключи; add:<устройство>:<протокол> — ещё один ключ, старые
+# работают; apps:<устройство> — сменился список «через VPN» (resend.py)
+RESEND_RE = re.compile(r"^(keys|all|(?:keys|lost|new|apps):[a-z0-9-]{1,32}|(?:app|drop|upd|add):[a-z]{1,16}:[a-z0-9-]{1,32})$")
+RESEND_FULL = ("keys", "all")   # сообщение целиком на всех устройствах: отдельные правки в нём уже есть
+RESEND_MAX = 32
 
 
 def clean_resend(v: Any) -> list[str]:
-    """Отметки «переслать»: без повторов; есть полное сообщение (keys, all) — отметки списков не нужны."""
+    """Отметки «переслать»: без повторов; есть полное сообщение (keys, all) — остальные не нужны, кроме lost (новое
+    устройство: ставить заново, а не «удалите старое»)."""
     items = list(dict.fromkeys(str(x) for x in (v if isinstance(v, (list, tuple)) else []) if RESEND_RE.match(str(x))))
     if any(k in items for k in RESEND_FULL):
-        items = [k for k in items if k in RESEND_FULL]
-    return items[:8]
+        items = [k for k in items if k in RESEND_FULL or k.startswith("lost:")]
+    return items[:RESEND_MAX]
 
 
 @dataclass
@@ -89,7 +97,7 @@ class User:
     custom: bool = False
     display: str = ""   # имя человека, как оно написано в списке («Иван Петров»); name — латинский логин
     devices: list[str] = field(default_factory=list)   # его устройства (id платформ каталога); пусто — как у группы
-    resend: list[str] = field(default_factory=list)    # что переслать (keys, all, apps:<платформа>); пусто — ничего
+    resend: list[str] = field(default_factory=list)    # что переслать (RESEND_RE); пусто — ничего
 
     @property
     def label(self) -> str:
@@ -502,25 +510,28 @@ def clear_resend(names: list[str]) -> list[str]:
         return done
 
 
-def rekey(name: str) -> OpReport:
-    """Новые ключи во всех протоколах человека («потерял телефон»): старые перестают работать сразу."""
+def rekey(name: str, only: list[str] | None = None, lost: str = "") -> OpReport:
+    """Новые ключи человека: во всех протоколах или (only) только в этих — потерян один телефон, а компьютер с другими
+    ключами не трогается. lost — устройство, которое заменили новым: в сообщении для него — «поставьте заново»."""
     with _lock():
-        return _rekey_in(_load_registry(), name)
+        return _rekey_in(_load_registry(), name, only, lost)
 
 
-def _rekey_in(reg: Registry, name: str) -> OpReport:
+def _rekey_in(reg: Registry, name: str, only: list[str] | None = None, lost: str = "") -> OpReport:
     """Сначала удаление во всех протоколах, потом заведение заново: у Xray один клиент на все протоколы, и новый uuid
-    он получает, только когда старый удалён везде. Отключённый остаётся отключённым. Протокол, где завести заново не
-    вышло, остаётся в реестре: повтор «Новые ключи» его доведёт. Реестр сохраняется здесь."""
+    он получает, только когда старый удалён везде (поэтому only с одним Xray-протоколом вызывающий дополняет всеми).
+    Отключённый остаётся отключённым. Протокол, где завести заново не вышло, остаётся в реестре: повтор «Новые ключи»
+    его доведёт. Реестр сохраняется здесь."""
     why = bulk_refusal(reg, name, "rekey")
     if why:
         raise UserError(f"{name}: {why}")
     user = reg.require(name)
-    if not user.protocols:
+    todo = [p for p in user.protocols if only is None or p in only]
+    if not todo:
         raise UserError(f"{name}: ни одного протокола — выдавать нечего")
     rep = OpReport("rekey", name)
     gone: list[str] = []
-    for pid in user.protocols:
+    for pid in todo:
         try:
             protolib.user_del(pid, name)
             rep.steps.append(Step(pid, "del", True))
@@ -552,7 +563,9 @@ def _rekey_in(reg: Registry, name: str) -> OpReport:
     _write_allowlist_files(name)
     kept = [s.proto_id for s in rep.steps if s.action == "del" and not s.ok]
     if len(failed) < len(gone):
-        mark_resend(reg, {name: ["keys"]})
+        done = [p for p in gone if p not in failed]
+        marks = ["keys"] if only is None else [f"keys:{p}" for p in done]
+        mark_resend(reg, {name: marks + ([f"lost:{lost}"] if lost else [])})
     reg.save()
     rep.ok = not (failed or kept)
     if rep.ok:

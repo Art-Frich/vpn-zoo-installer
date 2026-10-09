@@ -53,11 +53,14 @@ class BuildTest(unittest.TestCase):
         plan = people.build("Иван; директор; айфон, ноутбук\nОля; samsung\nАнна; айфон, планшет\nПетров, Иван\n"
                             "Дима; macbook\nПавел; ubuntu\nМаша; Android; склад")
         rows = [(r.display, r.note, r.devices, r.unknown) for r in plan.rows]
-        self.assertEqual(rows, [("Иван", "директор", ["ios", "windows"], []), ("Оля", "", ["android"], []),
+        self.assertEqual(rows, [("Иван", "директор", ["ios"], ["ноутбук"]), ("Оля", "", ["android"], []),
                                 ("Анна", "", ["ios"], ["планшет"]), ("Петров", "Иван", [], []),
                                 ("Дима", "", ["macos"], []), ("Павел", "", ["linux"], []),
-                                ("Маша", "Android; склад", [], ["склад"])])
-        self.assertIn("не понял: склад — устройство?", people.unknown_text(plan.rows[6].unknown),
+                                ("Маша", "склад", ["android"], [])])
+        self.assertIn("ноутбук — Windows или Mac?", people.unknown_text(plan.rows[0].unknown),
+                      "в офисе бывают MacBook: «ноутбук» — вопрос, а не молча Windows (четвёртый обход)")
+        third = people.build("Оля; склад; хз")
+        self.assertIn("не понял: хз — устройство?", people.unknown_text(third.rows[0].unknown),
                       "третье поле без единого устройства — вопрос, а не молча «как у группы»")
         self.assertIn("уберите запятую", plan.rows[3].hint, "«Петров, Иван» из Excel — подсказка в предпросмотре")
         self.assertFalse(plan.rows[0].hint)
@@ -69,7 +72,7 @@ class BuildTest(unittest.TestCase):
                             "Анна Смирнова android\nБорис Котов windows\nИван Мак")
         rows = [(r.display, r.name, r.note, r.devices, r.unknown) for r in plan.rows]
         self.assertEqual(rows, [("Оля", "olya", "склад", [], ["планшет"]), ("Коля", "kolya", "склад", [], ["телефон"]),
-                                ("Иван", "ivan", "", ["windows"], ["смартфон"]),
+                                ("Иван", "ivan", "", [], ["смартфон", "ноутбук"]),
                                 ("Анна Смирнова", "anna-smirnova", "", ["android"], []),
                                 ("Борис Котов", "boris-kotov", "", ["windows"], []),
                                 ("Иван Мак", "ivan-mak", "", [], [])])
@@ -82,7 +85,7 @@ class BuildTest(unittest.TestCase):
                             "Анна, склад, android, айфон\nОльга, склад, 2 этаж\nМаша; Android; склад\nПётр")
         self.assertEqual([(r.note, r.devices) for r in plan.rows], [
             ("бухгалтерия", ["android", "windows"]), ("", ["ios", "windows"]), ("склад", ["android", "ios"]),
-            ("склад, 2 этаж", []), ("Android; склад", []), ("", [])])
+            ("склад, 2 этаж", []), ("склад", ["android"]), ("", [])])
         self.assertEqual(plan.entries()[0], ("ivan-petrov", "бухгалтерия", "Иван Петров", ("android", "windows")))
         self.assertEqual(people.device_titles(["ios", "windows"]), "iPhone, Windows")
         from zoolib import clients
@@ -163,6 +166,32 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(len({r.name for r in plan.rows}), 33)
         self.assertEqual(plan.rows[0].name, "ivanov-ivan")
         self.assertEqual(plan.rows[4].name, "ivanov-ivan-2")
+
+
+class ExcelTest(unittest.TestCase):
+    """Четвёртый обход (D61): столбцы из Excel — заголовок, устройства в любом столбце после имени, пустая клетка."""
+
+    def test_header_is_skipped_and_devices_found_in_any_column(self):
+        plan = people.build("Имя\tОтдел\tТелефон\tКомпьютер\nЕгор Ким\tИТ\tAndroid\tWindows\n"
+                            "Лена Ли\tбух\tiPhone\tMacBook\nОля Бо\tсклад\tAndroid\t\nВася Пу\tсклад\t\t")
+        self.assertEqual(plan.header, "Имя\tОтдел\tТелефон\tКомпьютер")
+        self.assertEqual([(r.display, r.note, r.devices) for r in plan.rows], [
+            ("Егор Ким", "ИТ", ["android", "windows"]), ("Лена Ли", "бух", ["ios", "macos"]),
+            ("Оля Бо", "склад", ["android"]), ("Вася Пу", "склад", [])])
+        self.assertNotIn("imya", [r.name for r in plan.rows], "заголовок — не сотрудник")
+        self.assertEqual([r.line for r in plan.rows], [2, 3, 4, 5], "номера строк — как в тексте")
+        self.assertIn("устройство не указано", plan.rows[3].hint, "пустая клетка устройства — подсказка")
+        self.assertFalse(plan.rows[2].hint, "одно устройство из двух столбцов — не ошибка")
+
+    def test_surname_and_name_columns_are_joined(self):
+        plan = people.build("Фамилия\tИмя\tОтдел\tТелефон\nПетров\tИван\tбух\tandroid")
+        r, = plan.rows
+        self.assertEqual((r.display, r.note, r.devices), ("Петров Иван", "бух", ["android"]))
+
+    def test_comma_hint_also_with_devices(self):
+        r, = people.build("Петров, Иван; продажи; android").rows
+        self.assertEqual(r.devices, ["android"])
+        self.assertIn("«Иван» — заметка; если это часть имени, уберите запятую", r.hint)
 
 
 if __name__ == "__main__":

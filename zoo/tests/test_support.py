@@ -214,7 +214,9 @@ class PagesTest(AppTestBase):
             _, body = self.c.get("/users/masha")
         text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body))
         self.assertIn("подключался 10 мин назад · Hysteria2", text)
-        self.assertIn('<summary>Если у человека не работает</summary>', body)
+        self.assertIn('<summary>Не работает или медленно</summary>', body)
+        self.assertLess(body.index("Не работает или медленно"), body.index(">Подключить<"),
+                        "всегда над сообщениями, даже свёрнутый (четвёртый обход)")
         self.assertIn("до сервера доходит", text)
         _, body = self.c.get("/users/petya")
         self.assertIn("подключался ни разу", re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)))

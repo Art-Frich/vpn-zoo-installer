@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from .. import clients, dist, groups, output
+from .. import allowlist, clients, dist, groups, output
 from . import clientviews
 from .html import Markup, card, csrf_input, t, table
 from .views import ago
@@ -67,31 +67,82 @@ def _list(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup:
                       " ", _why(r), _links(r["links"]), class_="dist-item") for r in rows], class_="dist-list")
 
 
-def _how(r: dict[str, Any], cat: clients.Catalog) -> str:
+def _how(r: dict[str, Any], cat: clients.Catalog, apps: str = "") -> str:
+    """Строка памятки: где взять и как поставить (тот же файл из «Assets», что у людей, которые ставят сами), затем шаги с
+    правами администратора и разовая настройка (выбор приложений «через VPN» — apps, «РФ напрямую», ярлык)."""
     c, plat = r["client"], r["platform"]
     where = cat.platforms.get(plat, plat)
     if r["store"] or not any(ln["kind"] == "github" for ln in r["links"]):
         how = "из магазина (ссылка в таблице)"
     else:
-        how = ("скачайте " + clientviews.GITHUB_FILE.get(plat, "установщик") + " (кнопка «Скачать» или страница GitHub), "
-               "передайте на устройство и откройте" + ("; разрешите установку из неизвестных источников"
-                                                       if plat == "android" else ""))
+        asset = (c.get("asset") or {}).get(plat) or clientviews.GITHUB_FILE.get(plat, "установщик")
+        how = ("скачайте " + asset + " (кнопка «Скачать» или страница GitHub), передайте на устройство и откройте"
+               + ("; разрешите установку из неизвестных источников" if plat == "android" else ""))
     out = f"{where} — «{c['name']}»: {how}."
     if note := cat.install_note(c, plat):
         out += f" {note}"
     if rights := cat.admin_setup(c, plat):   # людям в инструкцию эти шаги не попадают: прав администратора у них нет
         out += " Затем с правами администратора: " + " ".join(rights)
+    if rest := [x for x in cat.it_steps(c, plat, apps) if x not in rights]:   # людям при «Ставит ИТ» их тоже нет
+        out += " Настройте: " + " ".join(rest)
     return out
 
 
-def memo(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup | None:
-    """«Как установить (для ИТ)»: шаги установки по приложениям — людям в инструкцию они не попадают. iPhone в памятке нет:
-    про App Store и Apple ID — строка ios_note, один раз на экран."""
+BRAVE_FROM = {"android": "из Google Play, не из RuStore"}   # остальные — с brave.com
+
+
+def _brave(cat: clients.Catalog, plats: list[str], lists: dict[str, list[str]] | None) -> str:
+    """Одна строка памятки: Brave и приложения списка «через VPN» по устройствам «Ставит ИТ» — людям шага «Установите»
+    при этом нет. lists — названия из списка группы (None — групп несколько: общими словами). Ставить нечего — пусто."""
+    titles = cat.platforms
+    if lists is None:
+        brave = [p for p in plats if p in cat.raw.get("brave", {})]
+        others = "Поставьте и приложения из списка «Через VPN» группы."
+    else:
+        brave = [p for p in plats if "Brave" in lists.get(p, [])]
+        rest: dict[str, list[str]] = {}
+        for p in plats:
+            for n in lists.get(p, []):
+                if n != "Brave":
+                    rest.setdefault(n, []).append(titles.get(p, p))
+        others = ("Через VPN пойдут и " + "; ".join(f"{n} ({', '.join(ps)})" for n, ps in rest.items())
+                  + ": поставьте их тоже.") if rest else ""
+    where: dict[str, list[str]] = {}
+    for p in brave:
+        where.setdefault(BRAVE_FROM.get(p, "с brave.com"), []).append(titles.get(p, p))
+    head = ("Brave — " + "; ".join(f"{', '.join(ps)}: {src}" for src, ps in where.items())
+            + ". Браузером по умолчанию его не делайте.") if where else ""
+    return " ".join(x for x in (head, others) if x)
+
+
+def memo(rows: list[dict[str, Any]], cat: clients.Catalog, lists: dict[str, list[str]] | None = None) -> Markup | None:
+    """«Как установить (для ИТ)»: шаги установки и разовой настройки по приложениям, затем Brave и приложения списка
+    «Через VPN» — людям в инструкцию они не попадают. lists — названия из списка группы по устройствам (None — группа не
+    одна). iPhone в памятке нет: про App Store и Apple ID — строка ios_note, один раз на экран."""
     rows = [r for r in rows if r["platform"] != "ios"]
     if not rows:
         return None
-    return t("details", t("summary", "Как установить (для ИТ)"), t("ol", [t("li", _how(r, cat)) for r in rows], class_="hint"),
+    items = [_how(r, cat, ", ".join((lists or {}).get(r["platform"]) or [])) for r in rows]
+    if line := _brave(cat, list(dict.fromkeys(r["platform"] for r in rows)), lists):
+        items.append(line)
+    return t("details", t("summary", "Как установить (для ИТ)"), t("ol", [t("li", x) for x in items], class_="hint"),
              class_="more")
+
+
+def _lists(gs: groups.Groups, group_id: str | None, cat: clients.Catalog) -> dict[str, list[str]] | None:
+    """Названия приложений списка «через VPN» группы по устройствам (Brave, Telegram…); группа не одна — None."""
+    g = gs.get(group_id) if group_id else None
+    if g is None:
+        return None
+    try:
+        al = allowlist.Allowlist.load()
+    except allowlist.AllowlistError:
+        return None
+    out = {p: clientviews.via_vpn_names(al, p, g.allowlist[p] if g.allowlist else al.common(p)) for p in allowlist.PLATFORMS}
+    for plat, ids in g.clients.items():   # Mac и Linux: через VPN только Brave (v2rayN), списка там нет
+        if plat not in out and any(cat.via(c, plat) == "brave" for i in ids if (c := cat.client(i))):
+            out[plat] = ["Brave"]
+    return out
 
 
 def card_for(gs: groups.Groups, group_id: str | None, back: str, csrf: str) -> Markup | None:
@@ -119,7 +170,7 @@ def card_for(gs: groups.Groups, group_id: str | None, back: str, csrf: str) -> M
     body = [t("div", state, form, class_="actions"),
             table(["приложение", "версия", "файл", "размер", ""], [_row(r, cat) for r in rows], stack=True,
                   empty="нет файлов") if have else _list(rows, cat),
-            memo(rows, cat),
+            memo(rows, cat, _lists(gs, group_id, cat)),
             ios_note() if ios else None,
             t("p", "Файлы лежат на сервере и скачиваются через туннель; sha256 — в подсказке имени файла, сверьте его "
                    "перед раздачей." if have else "Файлы появятся на сервере через несколько минут после кнопки.",

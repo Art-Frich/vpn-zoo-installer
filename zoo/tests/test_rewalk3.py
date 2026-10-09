@@ -56,12 +56,18 @@ class MessagesTest(unittest.TestCase):
         self.assertEqual(userviews._variant_label(conf, 0)[0], "Файл Windows, iPhone", "без сведений — как раньше")
 
     def test_lost_device_text_follows_his_devices(self):
-        self.assertIn("Потерял компьютер", userviews.lost_text(["windows"], ["Windows"]))
-        self.assertNotIn("телефон", userviews.lost_text(["windows"], ["Windows"]))
-        self.assertIn("Потерял телефон —", userviews.lost_text(["ios"], ["iPhone"]))
-        both = userviews.lost_text(["android", "windows"], ["Android", "Windows"])
+        from zoolib import resend
+        cat = clients.load()
+        win = resend.LostPlan("windows", ["vless-xhttp"])
+        self.assertIn("Потерял компьютер", userviews.lost_text(cat, [win]))
+        self.assertNotIn("телефон", userviews.lost_text(cat, [win]))
+        self.assertIn("Потерял телефон —", userviews.lost_text(cat, [resend.LostPlan("ios", ["vless-xhttp"])]))
+        both = userviews.lost_text(cat, [resend.LostPlan("android", ["amneziawg"]), win])
         self.assertIn("Потерял телефон или компьютер", both)
-        self.assertIn("(Android, Windows)", both)
+        self.assertIn("Android: сменятся AmneziaWG, остальное не тронем", both)
+        shared = userviews.lost_text(cat, [resend.LostPlan("android", ["vless-xhttp"], {"windows": ["v2rayN"]})])
+        self.assertIn("Windows («v2rayN») — тот же ключ, настроить заново", shared)
+        self.assertIn("До встречи можно «Отключить»", shared)
 
 
 @needs_bash
@@ -78,7 +84,8 @@ class OfficeWebTest(GroupWebBase):
         rep = groups.update(gid, clients={**g.clients, "windows": ["v2rayn"]})
         self.assertEqual(rep.resend, ["gleb"], "у Дины только Android: правка Windows её не касается")
         self.assertEqual(users.list_users().get("dina").resend, [])
-        self.assertEqual(users.list_users().get("gleb").resend, ["all"])
+        self.assertEqual(users.list_users().get("gleb").resend, ["drop:windows:amneziavpn", "app:windows:v2rayn"],
+                         "сменилось приложение: в старом выключить и удалить подключение (D61)")
 
     def test_add_one_person_asks_devices(self):
         _, page = self.c.get("/users")
@@ -114,7 +121,8 @@ class OfficeWebTest(GroupWebBase):
         text = text_of(str(card))
         self.assertNotIn("Устройства не отмечены", text)
         self.assertNotIn("Android", text, "у Бориса только Windows — подсказки только по нему")
-        self.assertIn('title="новое сообщение получат 2 чел. с Windows"', str(card), "Анна «как у группы» — тоже с Windows")
+        self.assertRegex(text, r"Правка — на всю группу «Офис»: (новое сообщение|ещё один ключ) получат \d чел\.",
+                         "число — тем же сравнением, что «Кому переслать»")
 
     def test_only_telegram_warns_about_the_site_version_and_iphone_dead_end(self):
         gid = self.make(name="Бухгалтерия", client__android="amneziawg", client__ios="incy",

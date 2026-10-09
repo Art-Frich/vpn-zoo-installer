@@ -1,4 +1,4 @@
-"""Дистрибутивы клиентов для групп, где приложения ставит ИТ (groups.install_mode = "admin").
+"""Дистрибутивы клиентов для устройств групп, где приложения ставит ИТ (groups.Group.mode = "admin").
 
 `zoo clients --fetch-dist` (его запускает zoo-clients.service: раз в сутки и по заявке «Обновить» с
 админки, файл dist-req → zoo-clients.path) берёт последний релиз GitHub каждого клиента, выбранного хотя бы
@@ -161,13 +161,13 @@ def download(url: str, dest: Path, size: int, timeout: float = TIMEOUT) -> str:
 # ---------- что нужно скачать ----------
 
 def needed(gs: Any, cat: clientcat.Catalog) -> dict[str, list[str]]:
-    """{клиент: [платформы]} по группам с install_mode = admin: клиент из набора устройства группы, у которого
-    есть репозиторий GitHub и ссылка на GitHub для этой платформы."""
+    """{клиент: [платформы]} по устройствам групп, где приложения ставит ИТ (groups.Group.mode): клиент из набора
+    устройства, у которого есть репозиторий GitHub и ссылка на GitHub для этой платформы."""
     out: dict[str, list[str]] = {}
     for g in gs.groups:
-        if g.install_mode != "admin":
-            continue
         for plat, ids in g.clients.items():
+            if g.mode(plat) != "admin":
+                continue
             for cid in ids:
                 c = cat.client(cid)
                 if c and plat in PLATFORMS and github_link(c, plat) and plat not in out.setdefault(cid, []):
@@ -374,9 +374,11 @@ def listing(gs: Any, cat: clientcat.Catalog, group_id: str | None = None) -> lis
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for g in gs.groups:
-        if g.install_mode != "admin" or (group_id and g.id != group_id):
+        if group_id and g.id != group_id:
             continue
         for plat, ids in g.clients.items():
+            if g.mode(plat) != "admin":
+                continue
             for cid in ids:
                 c = cat.client(cid)
                 if c is None or (cid, plat) in seen:

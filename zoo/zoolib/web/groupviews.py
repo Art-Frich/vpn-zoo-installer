@@ -30,13 +30,15 @@ TITLE = "Подключить людей"
 PLAT_NAMES = {"android": "Android", "windows": "Windows"}
 STEPS = ("Вариант", "Приложения", "Люди", "Раздача")
 PROTO_STEP = "Протоколы"   # подшаг: только у «Своего набора» и по ссылке «сменить протоколы»
-MODE_LABELS = {"self": "Ставят сами", "admin": "Ставит ИТ"}
-MODE_WORDS = {"self": "ставят сами", "admin": "ставит ИТ"}
-MODE_WHO = {"self": "сами", "admin": "ИТ"}   # «Ставит: …» в сводке
+# кто ставит — по устройствам (D61): в офисе рабочие компьютеры у ИТ, личные телефоны люди ставят сами
+MODE_LABELS = {"mixed": "Телефоны — сами, компьютеры — ИТ", "admin": "Всё ставит ИТ", "self": "Всё ставят сами"}
+MODE_WORDS = {"self": "ставят сами", "admin": "ставит ИТ", "mixed": "телефоны — сами, компьютеры — ИТ"}
+MODE_WHO = {"self": "сами", "admin": "ИТ", "mixed": "телефоны — сами, компьютеры — ИТ"}   # «Ставит: …» в сводке
 MODE_HINTS = {"self": "Приложения — из магазинов (v2rayN — с GitHub), ключи и файлы — в сообщении каждому.",
-              "admin": "Сервер скачает APK и установщики — раздача из «Дистрибутивов»."}
-MODE_PICK = ("Офису: ИТ само ставит программы на рабочие компьютеры и телефоны — «Ставит ИТ»; "
-             "личные телефоны, ставят сами — «Ставят сами».")
+              "admin": "Сервер скачает APK и установщики — раздача из «Дистрибутивов».",
+              "mixed": "Телефоны — из магазинов по сообщению; на компьютеры ставит ИТ (установщики — в «Дистрибутивах»)."}
+MODE_PICK = ("Рабочие телефоны тоже настраивает ИТ — «Всё ставит ИТ»; ИТ нет — «Всё ставят сами».")
+MODE_DEFAULT = "mixed"   # мастер: офис, где компьютеры рабочие, а телефоны личные
 PRESET_TITLES = {"simple": "Просто", "reliable": "Надёжно"}
 SETS_SHOWN = 4   # наборов в «сменить» (не считая «Не нужен»)
 # Полевой тест 05.10.2026 (находка 7): у VLESS+Vision новые соединения рвутся на части путей,
@@ -327,12 +329,12 @@ def _set_flag(cat: clients.Catalog, plat: str, ids: list[str], mode: str) -> tup
     Apple ID»); людям, которые ставят сами, — приложение не из магазина. Метка короткая, объяснение — один раз
     на экран (_flag_legend). На iPhone «ставится файлом» не бывает: приложения только из App Store."""
     cs = [c for c in (cat.client(i) for i in ids) if c]
-    admin = mode == "admin"
+    admin = groups.mode_for(mode, plat) == "admin"
     foreign = [(c["name"], clientviews.foreign_note(cat, c, plat, admin)) for c in cs]
     foreign = [(n, label) for n, label in foreign if label]
     if foreign:
         return foreign[0][1], [n for n, _ in foreign]
-    if mode == "self":
+    if not admin:
         raw = [c["name"] for c in cs if not groups.has_store_link(c, plat)]
         if raw and plat == "ios":
             return "нет в App Store РФ", raw
@@ -400,7 +402,7 @@ def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str
             flags.append(flag)
         if flag and cur and flag[0] in clientviews.FOREIGN_WHY:
             chosen_flag = True
-        lab, k = clientviews.coverage_label(cat, plat, protocols, opt, names)
+        lab, k = clientviews.coverage_label(cat, plat, protocols, opt, names, friendly=False)
         radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="+".join(opt), checked=cur,
                                    data_auto=True),
                         t("span", t("strong", clientviews.app_names(cat, opt)), " ",
@@ -410,8 +412,9 @@ def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str
                           class_="opt-title"), class_="opt-row dev-opt"))
     radios.append(t("label", t("input", type="radio", name=f"set:{plat}", value="none", data_auto=True),
                     t("span", f"Не нужен: {title}", class_="opt-title"), class_="opt-row dev-opt"))
-    foreign = next((n for i in ids if (n := clientviews.foreign_note(cat, cat.client(i) or {}, plat, mode == "admin"))), "")
-    extra = distviews.ios_note() if plat == "ios" and mode == "admin" and ios_hint else None
+    admin = groups.mode_for(mode, plat) == "admin"
+    foreign = next((n for i in ids if (n := clientviews.foreign_note(cat, cat.client(i) or {}, plat, admin))), "")
+    extra = distviews.ios_note() if plat == "ios" and admin and ios_hint else None
     head = t("summary", t("strong", title, class_="dev-name"), t("span", clientviews.app_names(cat, ids), class_="dev-set"),
              t("span", label, class_=f"chip {kind}"),
              t("span", foreign, class_="chip warn") if foreign else None,
@@ -522,7 +525,7 @@ def _apps_block(d: Draft) -> Markup:
     rows = [allowviews._row_cells(r, on, on)
             for r in allowviews._rows(al, {p: al.common(p) for p in allowlist.PLATFORMS}, base, al.titles)]
     common = " · ".join(f"{PLAT_NAMES.get(p, p)} {len(al.common(p))}" for p in allowlist.PLATFORMS)
-    return t("div",
+    return t("div", _no_list_line(d),
              t("label", t("input", type="radio", name="allow_mode", value="common", checked=not own),
                t("span", "Общий список ", t("span", f"({common})", class_="muted small"), class_="opt-title"),
                class_="opt-row"),
@@ -533,6 +536,16 @@ def _apps_block(d: Draft) -> Markup:
                t("p", "Нужен хотя бы один пункт на Android и на Windows. Свой список пользователя "
                       "потом можно задать отдельно («Через VPN»).", class_="hint"),
                open=own or None, class_="more"))
+
+
+def _no_list_line(d: Draft) -> Markup | None:
+    """Устройства группы, где список «через VPN» не действует (iPhone, Mac): без строки Mac молча выпадал из списка."""
+    try:
+        cat = clients.load()
+    except clients.ClientsError:
+        return None
+    line = groups.via_line(cat, {p: ids for p, ids in d.clients.items() if p not in allowlist.PLATFORMS})
+    return t("p", line, class_="hint") if line else None
 
 
 def _via_counts(al: allowlist.Allowlist, own: dict[str, list[str]] | None = None) -> str:
@@ -557,9 +570,11 @@ def _via_line(d: Draft) -> Markup | None:
     titles = clientviews.via_vpn_names(al, "android", d.allow["android"] if own and d.allow["android"] else al.common("android"))
     shown = ", ".join(titles[:2]) + (f"… ещё {len(titles) - 2}" if len(titles) > 2 else "")
     counts = _via_counts(al, d.allow if own else None)
+    rest = groups.via_line(cat, {p: ids for p, ids in d.clients.items() if p not in allowlist.PLATFORMS})
     return t("p", "Через VPN: " + ("свой список" if own else f"общий список ({shown})") + f" · {counts}",
              t("br") if plain else None,
              f"В {', '.join(f'«{n}»' for n in plain)} через VPN идёт всё." if plain else None,
+             [t("br"), rest.removeprefix("Через VPN: ")] if rest else None,
              class_="hint")
 
 
@@ -617,10 +632,11 @@ def _users_block(d: Draft, group_id: str | None = None) -> Markup:
                t("textarea", d.new_users, name="users_new", id="users_new", rows="8", maxlength=str(people.TEXT_MAX),
                  placeholder="Иван Петров; бухгалтерия; android, windows\nМария Сидорова\nОльга; склад; iphone",
                  autocomplete="off", spellcheck="false"),
-               t("div", f"По строке на человека: «Имя; заметка; устройства». Поля — через «;», запятую или табуляцию "
-                        "(столбцы из Excel), поэтому имя пишите без запятой: «Иван Петров». Устройства: android, iphone, "
-                        "windows, mac, linux — можно по-русски (айфон, андроид, ноутбук, samsung). Без устройств — "
-                        f"как у группы. До {people.LINES_MAX}.", class_="hint"),
+               t("div", f"По строке на человека: «Имя; заметка; устройства». Поля — через «;», запятую или табуляцию; "
+                        "столбцы из Excel вставляйте как есть: строку заголовка («Имя | Отдел | Телефон») мастер "
+                        "пропустит, устройства найдёт в любом столбце после имени. Имя — без запятой: «Иван Петров». "
+                        "Устройства: android, iphone, windows, mac, linux — можно по-русски (айфон, андроид, макбук, "
+                        f"samsung). Без устройств — как у группы. До {people.LINES_MAX}.", class_="hint"),
                class_="field"),
              _existing_block(d, group_id), class_="stack")
 
@@ -685,7 +701,9 @@ def _lacking_block(plans: dict[str, list[str]]) -> Markup | None:
 
 
 def _preview_summary(plan: people.Plan, existing: int = 0) -> str:
-    text = f"Будет создано: {len(plan.rows)}"
+    shown = " | ".join(c.strip() for c in plan.header.split("\t"))[:60]
+    head = f"Строка «{shown}» — заголовок таблицы, пропущена. " if plan.header else ""
+    text = head + f"Будет создано: {len(plan.rows)}"
     if existing:
         text += f", переведено из имеющихся: {existing}"
     if plan.renamed:
@@ -750,7 +768,7 @@ def _preset_why(pr: dict[str, Any], names: dict[str, str], by_id: dict[str, Fact
 
 
 def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str], by_id: dict[str, Fact],
-                chosen: bool, rec: bool, admin: bool, via: bool = True) -> tuple[Markup, list[str]]:
+                chosen: bool, rec: bool, mode: str, via: bool = True) -> tuple[Markup, list[str]]:
     """Готовый вариант: название, протоколы чипами, приложения одной строкой, что идёт через VPN на каждом устройстве
     (via=False — у всех вариантов одинаково, строка одна под вариантами), «почему». Один primary и «рекомендуем» — у
     варианта без оговорок (rec); есть оговорки — чип «с оговорками». Возвращает и сами оговорки (магазин iPhone
@@ -760,7 +778,7 @@ def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str],
         issues.append("не на всех устройствах есть приложение")
     for plat, ids in pr["plan"].items():
         for i in ids:
-            note = clientviews.foreign_note(cat, cat.client(i) or {}, plat, admin)
+            note = clientviews.foreign_note(cat, cat.client(i) or {}, plat, groups.mode_for(mode, plat) == "admin")
             if note:
                 foreign.append(f"{cat.platforms.get(plat, plat)}: {note}")
         issues += [f"{app}: {names.get(p, p)} {short}" for p, app, short, _ in groups.caveats(cat, plat, pr["protocols"], ids)]
@@ -797,7 +815,7 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
     best = groups.recommended_preset(prs)
     vias = {groups.via_line(cat, pr["plan"]) for pr in prs}
     same = len(prs) > 1 and len(vias) == 1
-    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode == "admin", not same)
+    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode, not same)
             for pr in prs]
     rows = [m[0] for m in made]
     where: dict[str, list[str]] = {}
@@ -909,7 +927,7 @@ def _group_pick(gs: groups.Groups) -> Markup | None:
 
 def _easy_only(d: Draft, managed: list[str]) -> set[str] | None:
     """Протоколы по умолчанию: людям, которые ставят сами, — только те, что входят одним QR из магазинного приложения."""
-    if d.install_mode != "self":
+    if all(groups.mode_for(d.install_mode, p) == "admin" for p in groups.PHONES):
         return None
     try:
         easy = groups.easy_protocols(clients.load())
@@ -930,7 +948,7 @@ def connect_page(app: "App", req: "Request") -> "Response":
     to = req.query.get("to", "")[:40]
     if to and gs is not None and (g := gs.get(to)) is not None:
         return _redirect(f"/groups/{g.id}?add=1#add")
-    return _wizard(app, req, 0, Draft(install_mode=groups.clean_mode(req.query.get("mode"))))
+    return _wizard(app, req, 0, Draft(install_mode=groups.clean_mode(req.query.get("mode"), MODE_DEFAULT)))
 
 
 def _check(d: Draft, step: int) -> list[str]:
@@ -1043,7 +1061,7 @@ def connect_done(app: "App", req: "Request") -> "Response":
     members = [u for u in ureg.visible() if u.group == g.id and u.name in wanted]
     ctx = clientviews.Ctx.load()
     dist = distviews.card_for(gs, g.id, "/connect/done?" + urllib.parse.urlencode({"group": g.id, "u": req.query.get("u", "")}),
-                              req.session.csrf if req.session else "") if g.install_mode == "admin" else None
+                              req.session.csrf if req.session else "") if g.any_admin else None
     ready = card(f"Группа «{g.name}» готова: {len(members)} чел.", _summary(g),
                  extra=t("a", "Настроить", href=f"/groups/{g.id}#settings", class_="btn small", data_swap=True))
     head = [page_head(TITLE), _stepper(3, False, final=True), ready]
@@ -1073,12 +1091,12 @@ def connect_done(app: "App", req: "Request") -> "Response":
                 t("p", clientviews.SEND_WARN, class_="hint"),
                 t("p", clientviews.NO_KEYS, class_="hint") if rows else None,
                 t("div", rows, class_="urows") if rows else None, clientviews.hints(ctx)[1:] if rows and ctx else None)
-    example = next((u.label for u in members if u.name != users.OWNER), members[0].label)
-    body = [*head, hand, _texts_card(g, ctx, example) if ctx and g.clients else None, dist]
+    who = next((u for u in members if u.name != users.OWNER), members[0])
+    body = [*head, hand, _texts_card(g, ctx, who.label, who.name) if ctx and g.clients else None, dist]
     return app.render(req, TITLE, body, active="/groups")
 
 
-def _texts_card(g: groups.Group, ctx: clientviews.Ctx, example: str) -> Markup | None:
+def _texts_card(g: groups.Group, ctx: clientviews.Ctx, example: str, login: str = "") -> Markup | None:
     """«Инструкция» группы: свёрнута, только для чтения, с именем первого человека (шаблон «{имя}» здесь не показывается:
     его правят на странице группы). Править её — на странице группы."""
     items = []
@@ -1086,7 +1104,7 @@ def _texts_card(g: groups.Group, ctx: clientviews.Ctx, example: str) -> Markup |
         text = ctx.text(g, plat)
         if text:
             items.append(t("div", t("h4", title, class_="plat-title"),
-                           clientviews.text_block(clientviews.fill_name(text, example), f"msg-g-{plat}", None, primary=False),
+                           clientviews.text_block(clientviews.fill_name(text, example, login), f"msg-g-{plat}", None, primary=False),
                            class_="conn-plat"))
     if not items:
         return None
@@ -1314,7 +1332,7 @@ def group_page(app: "App", req: "Request", gid: str, d: Draft | None = None, err
     except allowlist.AllowlistError as e:
         return app.error(req, 500, "Список «через VPN» не читается", str(e))
     normalize_clients(d, managed, fill=False)
-    dist_card = distviews.card_for(gs, g.id, f"/groups/{g.id}", csrf) if g.install_mode == "admin" else None
+    dist_card = distviews.card_for(gs, g.id, f"/groups/{g.id}", csrf) if g.any_admin else None
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="action", value="save"),
              t("input", type="hidden", name="devs", value="1"),
              t("button", "Сохранить настройки", type="submit", hidden=True, tabindex="-1"),   # Enter в названии сохраняет, а не «Пересчитать»
@@ -1443,10 +1461,14 @@ def group_members(app: "App", req: "Request", gid: str) -> "Response":
     app.invalidate_links()
     flash_report(req, rep, _renamed(plan))
     fresh = [n for n in rep.created + rep.moved if n != users.OWNER]
-    if fresh:   # раздать только новым, а не искать их среди всей группы
-        req.session.flash("info", f"Раздать новым ({len(fresh)}): карточки, ZIP или сообщение",
-                          [("карточки новым", "/handoff?" + urllib.parse.urlencode({"u": ",".join(fresh)}))]
-                          + ([("страница", f"/users/{fresh[0]}")] if len(fresh) == 1 else []))
+    if fresh:   # раздать только новым, а не искать их среди всей группы; главное — сообщение, бумага — вторым
+        cards = ("карточки", "/handoff?" + urllib.parse.urlencode({"u": ",".join(fresh)}))
+        if len(fresh) == 1:
+            req.session.flash("info", "Раздать: сообщение с его ссылками — на его странице («Скопировать сообщение», ZIP)",
+                              [("сообщение", f"/users/{fresh[0]}"), cards])
+        else:
+            req.session.flash("info", f"Раздать новым ({len(fresh)}): ZIP с папкой на каждого (сообщение и файлы) — "
+                                      "на «Карточках»; сообщение каждого — на его странице", [cards])
     return _redirect(f"/groups/{g.id}")
 
 
