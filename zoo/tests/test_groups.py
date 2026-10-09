@@ -255,7 +255,9 @@ class ClientsFillTest(GroupsBase):
         gs = groups.ensure()
         main = gs.get("main")
         self.assertEqual(sorted(main.clients), sorted(groups.MAIN_DEVICES))
-        self.assertEqual(main.clients["ios"], ["amneziawg", "incy"], "людям, которые ставят сами, — приложения App Store РФ")
+        self.assertEqual(main.clients["ios"], ["incy"], "как в рекомендованном варианте мастера (D59)")
+        self.assertEqual(main.protocols, ["*"], "«Основная» следует за включёнными протоколами")
+        self.assertNotIn("hiddify", {a for ids in main.clients.values() for a in ids}, "Hiddify не берёт VLESS и AmneziaWG")
         self.assertEqual(self.groups_json()["groups"][0]["clients"], main.clients)
         self.assertEqual(self.groups_json().get("clients_filled"), 1)
         # дальше пустой набор — осознанный выбор администратора: заново не подбирается
@@ -571,10 +573,11 @@ class ModelTest(GroupsBase):
         only_awg = [o["client"]["id"] for o in groups.client_options(cat, "android", ["amneziawg"])]
         self.assertEqual(only_awg[0], "amneziawg")
         self.assertIn("wgtunnel", only_awg)
-        self.assertEqual(groups.client_options(cat, "macos", ["vless-reality"]), [])
+        self.assertEqual([o["client"]["id"] for o in groups.client_options(cat, "macos", ["vless-reality"])], ["v2rayn"],
+                         "на Mac — v2rayN, VPN только в Brave (D59)")
         defaults = groups.default_clients(cat, ["vless-reality"])
         self.assertEqual(defaults["android"], ["happ"])
-        self.assertNotIn("macos", defaults)
+        self.assertEqual(defaults["macos"], ["v2rayn"])
 
     def test_ios_default_covers_everything_with_two_apps(self):
         cat = clients.load()
@@ -613,7 +616,7 @@ class ModelTest(GroupsBase):
         self.assertEqual(win, ["v2rayn", "amneziavpn"])
         # один протокол — одно приложение; протокол без клиента на платформе — набор без него
         self.assertEqual(groups.suggest_clients(cat, "android", ["amneziawg"]), ["amneziawg"])
-        self.assertEqual(groups.suggest_clients(cat, "macos", ["vless-reality", "amneziawg"]), ["amneziavpn"])
+        self.assertEqual(groups.suggest_clients(cat, "macos", ["vless-reality", "amneziawg"]), ["amneziavpn", "v2rayn"])
         self.assertEqual(groups.coverage(cat, "macos", ["vless-reality", "amneziawg"], ["amneziavpn"]),
                          (["amneziawg"], ["vless-reality"]))
         self.assertEqual(groups.suggest_clients(cat, "android", []), [])
@@ -628,9 +631,8 @@ class ModelTest(GroupsBase):
         self.assertEqual(groups.apps_line(cat, got), "Happ — Android · v2rayN — Windows")
         every = groups.default_clients(cat, ["hysteria2"])
         self.assertEqual(every, {"android": ["happ"], "ios": ["happ"], "windows": ["v2rayn"],
-                                 "macos": ["hysteria"], "linux": ["hysteria"]})
-        self.assertEqual(groups.apps_line(cat, every),
-                         "Happ — Android, iPhone · v2rayN — Windows · hysteria (консоль) — macOS, Linux")
+                                 "macos": ["v2rayn"], "linux": ["v2rayn"]})
+        self.assertEqual(groups.apps_line(cat, every), "Happ — Android, iPhone · v2rayN — Windows, macOS, Linux")
         # Salamander и TUIC: общий Hiddify только там, где иначе протокол не покрыть
         self.assertEqual(groups.suggest_set(cat, ["android", "windows"], ["hysteria2", "hysteria2-obfs"], "admin"),
                          {"android": ["v2rayng"], "windows": ["v2rayn"]})
@@ -674,7 +676,8 @@ class ModelTest(GroupsBase):
     def test_legacy_sets_when_nothing_can_be_shared_better(self):
         cat = clients.load()
         self.assertEqual(groups.default_clients(cat, ["vless-reality"]),
-                         {"android": ["happ"], "ios": ["incy"], "windows": ["v2rayn"], "linux": ["v2rayn"]})
+                         {"android": ["happ"], "ios": ["incy"], "windows": ["v2rayn"], "macos": ["v2rayn"],
+                          "linux": ["v2rayn"]})
         self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["android"], ["happ"])
         self.assertEqual(groups.default_clients(cat, ["vless-reality", "hysteria2"])["windows"], ["v2rayn"])
         self.assertEqual(groups.suggest_set(cat, ["android"], []), {})
@@ -1418,14 +1421,15 @@ class ClientSetsTest(unittest.TestCase):
         b = groups.client_sets(cat, "macos", ["tuic"], "admin", prefer={"karing"})
         self.assertEqual((a[0]["ids"], b[0]["ids"]), (["hiddify"], ["karing"]))
         # с оговоркой (Hiddify: Hysteria2 без проверки сертификата) идёт после приложения без неё
-        self.assertEqual(groups.client_sets(cat, "macos", ["hysteria2"], "admin")[0]["ids"], ["hysteria"])
+        self.assertEqual(groups.client_sets(cat, "macos", ["hysteria2"], "admin")[0]["ids"], ["v2rayn"])
         self.assertEqual({tuple(x["ids"]) for x in a}, {tuple(x["ids"]) for x in b})
 
     def test_no_set_for_empty_or_unsupported(self):
         cat = clients.load()
         self.assertEqual(groups.client_sets(cat, "android", []), [])
-        self.assertEqual(groups.client_sets(cat, "macos", ["vless-reality"]), [])
-        self.assertEqual(groups.client_sets(cat, "macos", ["vless-reality", "amneziawg"])[0]["missing"], ["vless-reality"])
+        self.assertEqual(groups.client_sets(cat, "ios", ["hysteria2-obfs"], "self", max_apps=1)[0]["ids"], ["hiddify"])
+        self.assertEqual(groups.client_sets(cat, "macos", ["vless-reality", "amneziawg"], max_apps=1)[0]["missing"],
+                         ["amneziawg"], "одним приложением на Mac — v2rayN без AmneziaWG")
 
     def test_default_never_exceeds_two_apps(self):
         cat = clients.load()
@@ -1475,7 +1479,8 @@ class ClientSetsTest(unittest.TestCase):
                 self.assertNotIn("hiddify", {a for ids in p["plan"].values() for a in ids}, "Hiddify ведёт через VPN всё")
                 self.assertNotIn("amneziavpn", p["plan"]["windows"], "AmneziaVPN на Windows — весь компьютер")
                 self.assertNotIn("ss2022", p["protocols"], "SS-2022 терял данные в полевом тесте")
-            self.assertEqual(groups.recommended_preset(list(pr.values())), "simple", mode)
+            self.assertEqual((simple["udp_only"], rel["udp_only"]), (["android"], []), "у «Просто» Android только на UDP")
+            self.assertEqual(groups.recommended_preset(list(pr.values())), "reliable", mode)
         self.assertEqual(groups.via_line(cat, simple["plan"]),
                          "Через VPN: Android, Windows — только приложения из списка · iPhone — всё, кроме российских сайтов")
         self.assertEqual(groups.via_line(cat, {"windows": ["amneziavpn"]}), "Через VPN: Windows — всё устройство, вместе с банками")

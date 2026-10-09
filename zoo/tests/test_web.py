@@ -808,8 +808,8 @@ class ProtoChipTest(AppTestBase):
 
     def test_group_without_new_protocol_is_not_warned(self):
         _, body = self.c.get("/users")
-        self.assertIn('<span class="chip">2/2</span>', body)
-        self.assertIn('<span class="chip warn" title="2/3">нет: TUIC</span>', body, "owner в «Основной»: ждёт все три")
+        self.assertIn('<span class="chip">2 из 2</span>', body)
+        self.assertIn('<span class="chip warn" title="2 из 3">нет: TUIC</span>', body, "owner в «Основной»: ждёт все три")
 
     def test_all_protocols_group_and_no_group_expect_everything(self):
         from zoolib import users
@@ -832,7 +832,7 @@ class ProtoChipTest(AppTestBase):
         _, body = self.c.get("/users")
         m = re.search(r'<span class="chip warn" title="([^"]*)">нет: TUIC, VLESS Vision</span>', body)
         self.assertIsNotNone(m)
-        self.assertIn("1/3", m.group(1))
+        self.assertIn("1 из 3", m.group(1))
         self.assertIn("свой набор", m.group(1))
 
     def test_expected_set_unit(self):
@@ -846,9 +846,9 @@ class ProtoChipTest(AppTestBase):
         self.assertEqual(userviews._expected_protocols(mk(group=""), managed, gs), managed)
         self.assertEqual(userviews._expected_protocols(mk(group="nope"), managed, gs), managed)
         self.assertEqual(userviews._expected_protocols(mk(group="x", custom=True), managed, gs), managed)
-        self.assertEqual(str(userviews._proto_chip(mk(group="x"), managed, gs)), '<span class="chip">1/1</span>')
+        self.assertEqual(str(userviews._proto_chip(mk(group="x"), managed, gs)), '<span class="chip">1 из 1</span>')
         self.assertEqual(str(userviews._proto_chip(mk(group="all", protocols=[]), managed, gs)),
-                         '<span class="chip warn" title="0/3; нет в: a, b, c">нет: a, b…</span>')
+                         '<span class="chip warn" title="0 из 3; нет в: a, b, c">нет: a, b…</span>')
 
 
 @needs_bash
@@ -1368,8 +1368,9 @@ class ConnectPageTest(AppTestBase):
         self.assertLess(main.index("Подключить"), main.index("Все ссылки и QR"))
         self.assertLess(main.index("Все ссылки и QR"), main.index("Профиль"))
         self.assertLess(main.index("Подключить"), main.index(">Трафик<"))
-        self.assertLessEqual(len(body.encode("utf-8")), 32 * 1024,
-                             "страница с 6 протоколами и 5 платформами должна быть лёгкой (30 КБ + «Если у него не работает»)")
+        self.assertLessEqual(len(body.encode("utf-8")), 40 * 1024,
+                             "страница с 6 протоколами и 5 платформами должна быть лёгкой (30 КБ + «Если у человека не "
+                             "работает» + Mac и Linux с шагами Brave, D59)")
         self.assertNotIn("<svg", body.split("Профиль")[0], "QR — отдельные картинки по требованию")
         self.assertIn('data-src="/users/masha/qr/', body)
         self.assertNotIn("нужен Xray-клиент", body)
@@ -1484,7 +1485,7 @@ class ConnectPageTest(AppTestBase):
 
     def test_list_has_chips_no_open_button(self):
         resp, body = self.c.get("/users")
-        self.assertIn("6/6", body)
+        self.assertIn("6 из 6", body)
         self.assertNotIn("Открыть", body)
         self.assertNotIn(">статус<", body)
         self.assertIn("Проверить учётки", body)

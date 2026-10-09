@@ -170,7 +170,8 @@ def _help(data: dict[str, Any]) -> Markup:
     """«?» у таблицы источников: виды событий (нажать — справка), чего мы не видим, свои адреса."""
     return join(
         t("p", t("strong", "Что значат виды событий"), " — нажмите на вид"),
-        t("div", [_kind_badge(k) for k in journal.KIND_HELP], class_="chips"),
+        t("div", [_kind_badge(k) for k in journal.KIND_HELP
+                  if data.get("reality_tracked") or k != "reality-probe"], class_="chips"),
         t("p", t("strong", "Чего мы не видим")),
         t("ul", [t("li", t("strong", b["what"] + ": "), b["why"]) for b in data["blind"]]),
         t("p", "ufw пишет блокировки не чаще 3 в минуту на весь сервер, поэтому число попыток по портам — "
@@ -188,7 +189,7 @@ def _chip(label: str, href: str, on: bool) -> Markup:
              aria_pressed="true" if on else None)
 
 
-def _toolbar(st: dict[str, Any]) -> Markup:
+def _toolbar(st: dict[str, Any], tracked: bool = True) -> Markup:
     """Поле поиска (GET-форма: без JS — обычный переход) и чипы сервисов и видов."""
     hidden = [t("input", type="hidden", name=k, value=v) for k, v in (
         ("period", st["period"]), ("svc", st["svc"]), ("kind", st["kind"]),
@@ -201,7 +202,8 @@ def _toolbar(st: dict[str, Any]) -> Markup:
              hidden, t("button", "Найти", type="submit", class_="btn small"), reset,
              method="get", action="/journal", class_="search", data_get=True)
     svc_chips = [_chip(journal.SERVICE_TITLES[sv], _url(st, svc="" if st["svc"] == sv else sv, kind="", after=""),
-                       st["svc"] == sv) for sv in journal.SERVICES]
+                       st["svc"] == sv) for sv in journal.SERVICES
+                 if tracked or sv != "xray" or st["svc"] == sv]   # REALITY не отслеживается — и фильтра по нему нет
     kinds = [k for k, v in journal.KINDS.items() if v[0] == st["svc"]] if st["svc"] else         ([st["kind"]] if st["kind"] else [])  # виды — после выбора сервиса: иначе чипов больше, чем текста на странице
     kind_chips = [_chip(journal.KINDS[k][1], _url(st, kind="" if st["kind"] == k else k, after=""), st["kind"] == k)
                   for k in kinds]
@@ -247,7 +249,7 @@ def _sources(st: dict[str, Any], res: dict[str, Any], data: dict[str, Any]) -> M
     bad = res["query"].bad
     notice = t("p", "Не понял: " + ", ".join(bad) + f". Примеры: {SEARCH_HINT}.", class_="hint") if bad else None
     start = t("p", t("a", "← с начала", href=_url(st, after=""), data_swap=True), class_="more") if st["after"] else None
-    return card("Источники", _toolbar(st), notice, _controls(st), start,
+    return card("Источники", _toolbar(st, data.get("reality_tracked", False)), notice, _controls(st), start,
                 t("div", _ips_table(res["rows"], st), _more(st, res["next"]), data_more_box=True),
                 help=_help(data))
 

@@ -1,6 +1,6 @@
 {
   "_doc": "Каталог клиентских приложений (docs/PLAN-builder.md). no_unify — список платформ, где клиента не берут ради «одного приложения на всех устройствах» (только если без него протокол не покрыть): на Android AmneziaVPN (баг после Doze, приложения не из .conf) и INCY (приложения только из подписки, которой у нас нет). Статусы протоколов: ok — заявлено поддерживаемым (по коду и документации), warn — работает с оговоркой, no — не работает, unk — не проверено; нет записи — не заявлено. device=false — на устройстве не проверялось. checked=false у ссылки — адреса нет в исследованиях, собран по id пакета. short у статуса — короткая оговорка для списка «Оговорки» в мастере; warn_on — платформы, где «ok» пока с оговоркой. Пустой import — клиент ссылки и QR не принимает, в подбор не входит. Тексты import — с {key} («ссылку «VLESS XHTTP»»): главный способ — ссылка или файл из сообщения, QR — только с другого экрана (other_screen) и на бумажной карточке; one_on — какое из двух приложений держать включённым. via — что идёт через VPN на платформе (ключ справочника via: apps — только приложения из списка, ru-direct — всё, кроме российского, all — всё устройство); setup — шаги настройки после импорта, по порядку; asset — какой файл брать из релиза GitHub. Верхние brave, rules, check, report — общие шаги инструкции; guide — порядок вариантов в docs/USER-GUIDE.md (zoo docs --user-guide); presets — готовые варианты мастера. Источники: research/2026-10-04/clients-and-allowlist_04-10-26.md, research/2026-10-05/field-test-vps_05-10-26.md, research/2026-10-07/hiddify-compat_07-10-26.md (прогон ядер на стенде), docs/REFERENCE.md.",
-  "updated": "2026-10-08",
+  "updated": "2026-10-09",
   "platforms": {
     "android": "Android",
     "ios": "iPhone",
@@ -239,6 +239,7 @@
       "repo": "2dust/v2rayN",
       "platforms": {
         "windows": [{"kind": "github", "url": "https://github.com/2dust/v2rayN/releases", "checked": true}],
+        "macos": [{"kind": "github", "url": "https://github.com/2dust/v2rayN/releases", "checked": true}],
         "linux": [{"kind": "github", "url": "https://github.com/2dust/v2rayN/releases", "checked": true}]
       },
       "protocols": {
@@ -253,7 +254,9 @@
         "link": "Скопируйте {key} из сообщения. В «v2rayN»: «Серверы» → «Импорт ссылок общего доступа из буфера обмена»."
       },
       "per_app": "rules",
-      "asset": {"windows": "архив «.zip» с «windows-64»; распакуйте его и запустите v2rayN.exe"},
+      "asset": {"windows": "архив «.zip» с «windows-64»; распакуйте его и запустите v2rayN.exe",
+                "macos": "файл с «macos»: «arm64» — для Mac на Apple M1 и новее, «64» — для Mac на Intel",
+                "linux": "файл с «linux-64»: «.deb» для Ubuntu и Debian"},
       "extra": [
         {
           "proto": "allowlist",
@@ -261,14 +264,20 @@
           "text": "В «v2rayN»: «Настройки» → «Настройки маршрутизации» → «Добавить набор правил» → «Импорт правил из файла», файл v2rayn-routing.json, на вопрос «Добавить правила?» — «Нет». Сохраните и нажмите «Установить как активное правило»."
         }
       ],
-      "via": {"windows": "apps", "linux": "all"},
+      "via": {"windows": "apps", "macos": "brave", "linux": "brave"},
       "setup": {
         "windows": ["В «v2rayN»: «Настройки» → «Параметры» → «Настройки режима TUN» → выключите «Устаревшая защита TUN».",
                     "В «v2rayN»: меню → «Перезапустить от имени администратора», затем внизу окна включите «Включить TUN».",
-                    "В «v2rayN»: внизу окна «Системный прокси» → «Очистить системный прокси»."]
+                    "В «v2rayN»: внизу окна «Системный прокси» → «Очистить системный прокси»."],
+        "macos": ["В «v2rayN» не включайте TUN и «Системный прокси»: VPN нужен только браузеру Brave. Порт прокси виден внизу окна, по умолчанию 10808.",
+                  "Полностью закройте Brave и запустите его из «Терминала»: open -na \"Brave Browser\" --args --proxy-server=\"socks5://127.0.0.1:10808\"",
+                  "Через VPN идёт только этот Brave. Выключен v2rayN — Brave не откроет сайты, а не пойдёт напрямую. Остальные программы работают без VPN."],
+        "linux": ["В «v2rayN» не включайте TUN и «Системный прокси»: VPN нужен только браузеру Brave. Порт прокси виден внизу окна, по умолчанию 10808.",
+                  "Полностью закройте Brave и запустите его из терминала: brave-browser --proxy-server=\"socks5://127.0.0.1:10808\"",
+                  "Через VPN идёт только этот Brave. Выключен v2rayN — Brave не откроет сайты, а не пойдёт напрямую. Остальные программы работают без VPN."]
       },
       "verified": {"date": "2026-10-04", "version": "7.25.4", "device": false, "how": "исходники"},
-      "notes": "Для Windows: распаковать архив, TUN включать от имени администратора. Версия 7.25 или новее."
+      "notes": "Для Windows: распаковать архив, TUN включать от имени администратора. Версия 7.25 или новее. На macOS и Linux — без TUN: прокси только для Brave (правила по программам там не проверены); прокси на 127.0.0.1 видят все программы компьютера."
     },
     {
       "id": "singbox",
@@ -379,6 +388,9 @@
       "import": {
         "link": "Запустите: hysteria client -c config.yaml (в конфиге — {key} из сообщения)."
       },
+      "asset": {"windows": "файл «hysteria-windows-amd64.exe»",
+                "macos": "файл «hysteria-darwin-arm64» (Mac на Apple M1 и новее) или «hysteria-darwin-amd64» (Intel)",
+                "linux": "файл «hysteria-linux-amd64»"},
       "no_unify": ["windows"],
       "per_app": "no",
       "verified": {"date": "2026-10-05", "version": "2.12.3", "device": false, "how": "стенд"},
@@ -408,13 +420,15 @@
       "hysteria2-obfs": "v2rayn"
     },
     "macos": {
+      "vless-reality": "v2rayn",
+      "vless-xhttp": "v2rayn",
       "amneziawg": "amneziavpn"
     },
     "linux": {
       "vless-reality": "v2rayn",
       "vless-xhttp": "v2rayn",
-      "hysteria2": "hysteria",
-      "hysteria2-obfs": "hysteria",
+      "hysteria2": "v2rayn",
+      "hysteria2-obfs": "v2rayn",
       "amneziawg": "amneziavpn"
     }
   },
@@ -422,17 +436,20 @@
     "android": ["amneziawg", "vless-reality", "hysteria2", "hysteria2-obfs", "vless-xhttp"],
     "ios": ["vless-reality", "vless-xhttp", "amneziawg"],
     "windows": ["vless-xhttp", "vless-reality", "hysteria2", "hysteria2-obfs"],
-    "macos": ["amneziawg"],
-    "linux": ["vless-reality", "hysteria2", "hysteria2-obfs", "amneziawg"]
+    "macos": ["vless-xhttp", "vless-reality", "amneziawg"],
+    "linux": ["vless-xhttp", "vless-reality", "hysteria2", "hysteria2-obfs", "amneziawg"]
   },
   "via": {
     "apps": "только приложения из списка",
     "ru-direct": "всё, кроме российских сайтов",
+    "brave": "только браузер Brave",
     "all": "всё устройство, вместе с банками"
   },
   "brave": {
     "android": "Установите браузер «Brave» из Google Play, не из RuStore. Браузером по умолчанию его не делайте.",
-    "windows": "Установите браузер «Brave» с brave.com. Браузером по умолчанию его не делайте."
+    "windows": "Установите браузер «Brave» с brave.com. Браузером по умолчанию его не делайте.",
+    "macos": "Установите браузер «Brave» с brave.com. Браузером по умолчанию его не делайте.",
+    "linux": "Установите браузер «Brave» с brave.com. Браузером по умолчанию его не делайте."
   },
   "rules": {
     "android": "В настройках Android не включайте «Блокировать соединения без VPN»: приложения вне списка останутся без интернета."
@@ -442,9 +459,12 @@
     "apps": "Проверьте: «{app}» загружает новое — значит, VPN работает.",
     "device": "Проверьте: откройте instagram.com — он должен открыться."
   },
-  "other_screen": "Открываете сообщение на другом экране — ",
+  "other_screen": "Или, если сообщение открыто на другом экране: ",
+  "one_way": "Один способ из двух, не оба: иначе подключения задвоятся.",
+  "both": "Добавьте каждый ключ по очереди. Включайте {first}; {rest} — запасной, если {first} не подключается.",
+  "both_guide": "Ключей может быть два (например, «VLESS XHTTP» и «VLESS Vision»): добавьте оба по очереди, второй — запасной.",
   "one_on": "Включённым держите одно приложение — {first}. Не подключается — выключите его и включите {rest}: два VPN сразу не работают.",
-  "report": "Не работает — напишите администратору: телефон или компьютер, Wi-Fi или мобильный интернет (какой оператор), приложение и снимок экрана с ошибкой.",
+  "report": "Не работает — напишите администратору: телефон или компьютер, Wi-Fi или мобильный интернет (какой оператор), приложение и снимок экрана с ошибкой. Медленно — пришлите скорость на speedtest.net с VPN и без.",
   "guide": {
     "android": {"apps": ["amneziawg", "wgtunnel", "happ", "v2rayng"],
                 "note": "Варианты 1 и 2 — без ручной настройки: список приложений уже внутри файла (и QR). Варианты 3 и 4 — если сеть режет UDP и они не подключаются.",
@@ -456,12 +476,18 @@
             "note": "Выбрать отдельные приложения для VPN на iPhone нельзя: Apple это не разрешает. Делим по сайтам: российские идут напрямую, остальное — через VPN."},
     "windows": {"apps": ["v2rayn", "amneziavpn"],
                 "note": "v2rayN пускает через VPN только программы из списка; для этого нужны все шаги ниже.",
-                "tips": ["Программа из списка не идёт через VPN — сверьте имя её процесса в Диспетчере задач (вкладка «Подробности») с тем, что в файле правил: регистр букв важен. Сообщите администратору точное имя."]}
+                "tips": ["Программа из списка не идёт через VPN — сверьте имя её процесса в Диспетчере задач (вкладка «Подробности») с тем, что в файле правил: регистр букв важен. Сообщите администратору точное имя."]},
+    "macos": {"apps": ["v2rayn"],
+              "note": "Правила по программам на Mac мы не настраиваем (на Mac их никто не проверял): через VPN идёт только браузер Brave, остальное напрямую. На компьютере не проверено.",
+              "tips": ["Прокси на 127.0.0.1 видят все программы этого компьютера. Российских программ для Mac, которые так ищут VPN, мы не знаем."]},
+    "linux": {"apps": ["v2rayn"],
+              "note": "Как на Mac: через VPN идёт только браузер Brave, остальное напрямую. На компьютере не проверено.",
+              "tips": ["Прокси на 127.0.0.1 видят все программы этого компьютера."]}
   },
   "presets": [
     {"id": "simple", "protocols": ["amneziawg", "vless-xhttp", "vless-reality"],
-     "plan": {"android": ["amneziawg"], "ios": ["incy"], "windows": ["v2rayn"]}},
+     "plan": {"android": ["amneziawg"], "ios": ["incy"], "windows": ["v2rayn"], "macos": ["v2rayn"], "linux": ["v2rayn"]}},
     {"id": "reliable", "protocols": ["amneziawg", "vless-xhttp", "vless-reality"],
-     "plan": {"android": ["amneziawg", "happ"], "ios": ["incy"], "windows": ["v2rayn"]}}
+     "plan": {"android": ["amneziawg", "happ"], "ios": ["incy"], "windows": ["v2rayn"], "macos": ["v2rayn"], "linux": ["v2rayn"]}}
   ]
 }

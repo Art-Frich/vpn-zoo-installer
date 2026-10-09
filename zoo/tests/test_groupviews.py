@@ -155,8 +155,10 @@ class WizardTest(GroupWebBase):
         for gone in ("с сервера", "Мбит/с", "джиттер", "у клиентов", "мало данных"):
             self.assertNotIn(gone, text)
         self.assertNotIn('class="chip">UDP<', body, "UDP/TCP — во фразе назначения, не отдельным чипом")
-        for line in ("Быстрый, основной (UDP)", "Запасной", "Если режут UDP, запасной"):
+        for line in ("UDP · быстрый на плохих сетях", "TCP · похож на обычный HTTPS"):
             self.assertIn(line, text)
+        for gone in ("основной", "Запасной"):
+            self.assertNotIn(gone, text, "роль протокола решает группа, а не список протоколов")
         # лежащий на сервере протокол не предвыбирается; остальные — да
         self.assertNotRegex(body, r'name="proto" value="amneziawg" checked')
         self.assertRegex(body, r'name="proto" value="hysteria2" checked')
@@ -184,7 +186,7 @@ class WizardTest(GroupWebBase):
             self.assertIn(msg, body)
             self.assertIn("<h3>Протоколы</h3>", body)
         # название группы проверяется там, где его спрашивают, — на шаге «Люди»
-        for name, msg in (("Основная", "уже есть"), ("", "название"), ("x" * 41, "длиннее")):
+        for name, msg in (("Основная", "уже есть"), ("", "назовите группу"), ("x" * 41, "длиннее")):
             resp, body = self.create_group(name=name, users_new="masha")
             self.assertEqual(resp.status, 422, name)
             self.assertIn(msg, body)
@@ -302,8 +304,8 @@ class WizardTest(GroupWebBase):
     def test_step2_shows_one_row_and_set_only_for_device_without_apps(self):
         _, body = self.wiz(1, name="Семья", proto=["vless-reality", "amneziawg"], devs="1", dev=["macos"],
                            clients_for="")
-        self.assertEqual(self.checked(body, "macos"), ["amneziavpn"])
-        self.assertIn("нет VLESS Vision", self.heads(body)["macOS"])
+        self.assertEqual(self.checked(body, "macos"), ["amneziavpn", "v2rayn"], "на Mac VLESS — v2rayN с Brave (D59)")
+        self.assertIn("все протоколы", self.heads(body)["macOS"])
     def test_set_is_saved_and_handed_off_as_sections(self):
         resp, body = self.create_group(proto=["hysteria2", "vless-reality", "amneziawg"],
                                        client__android=["happ", "amneziawg"], users_new="masha")
@@ -372,7 +374,8 @@ class WizardTest(GroupWebBase):
         self.assertEqual(flag, ("нет в App Store РФ", ["INCY"]))
         self.assertNotIn("файл", flag[0])
         _, body = self.c.get("/connect/new?mode=self")
-        self.assertIn("Приложения из магазина и один QR. Где магазина нет — предупредим.", body)
+        self.assertIn("Приложения — из магазинов (v2rayN — с GitHub), ключи и файлы — в сообщении каждому.", body)
+        self.assertIn("Офису: ИТ само ставит программы", body)
     def test_wizard_device_chips_add_and_remove_devices(self):
         _, body = self.wiz(1, name="Офис", proto=["hysteria2", "vless-reality"])
         self.assertEqual(body.count('name="devs" value="1"'), 1, "шаг 2 сам говорит, что чипы устройств в форме")
@@ -424,8 +427,8 @@ class WizardTest(GroupWebBase):
         self.assertIn("<label for=\"name\">Название группы</label>", body)
         self.assertNotIn('name="existing" value="owner"', body, "owner в «уже существующих» не предлагается")
         self.assertIn("Через VPN: общий список", body)
-        self.assertNotIn('name="allow_mode" value="own"', body, "список «через VPN» правится в группе, не в мастере")
-        self.assertNotIn('name="android" value="com.brave.browser"', body)
+        self.assertIn('name="allow_mode" value="own"', body, "список «через VPN» — до раздачи, а не после (D59)")
+        self.assertRegex(body, r'<details class="more"><summary>Через VPN — общий список или свой для группы</summary>')
         self.assertIn("Проверить список →", body)
         self.assertNotIn("Создать группу</button>", body)
         self.assertRegex(body, r'type="hidden" name="set:android" value="happ"')
@@ -462,7 +465,8 @@ class WizardTest(GroupWebBase):
         self.assertLess(body.index("Раздать доступы"), body.index("Карточки (печать, ZIP, CSV)"))
         self.assertLess(body.index("Карточки (печать, ZIP, CSV)"), body.index("<summary>Инструкция</summary>"))
         self.assertEqual(body.count("<summary>Инструкция</summary>"), 1)
-        self.assertRegex(body, r'<summary>Инструкция</summary>.*<pre id="msg-g-android" class="msg-pre">\{имя\}, VPN на Android')
+        self.assertRegex(body, r'<summary>Инструкция</summary>.*<pre id="msg-g-android" class="msg-pre">masha, VPN на Android')
+        self.assertNotIn("{имя}", body, "сырой шаблон не показывается: имя первого человека")
         self.assertIn('href="/groups/g1#text"', body)
         self.assertEqual(len(re.findall(r'<details name="conn-user" class="urow">', body)), 3)
         for n in ("masha", "kolya", "owner"):
@@ -950,7 +954,8 @@ class GroupsPagesTest(GroupWebBase):
         for n in ("masha", "kolya"):
             self.assertEqual(self.msg(self.c.get(f"/users/{n}")[1]), f"{n}, ставь Happ.\nПотом QR.")
         _, done = self.c.get("/connect/done?group=g1&u=masha")
-        self.assertIn("{имя}, ставь Happ.", html.unescape(done), "на шаге раздачи инструкция группы показана один раз, с «{имя}»")
+        self.assertIn("masha, ставь Happ.", html.unescape(done), "на шаге раздачи инструкция — с именем первого, не «{имя}»")
+        self.assertNotIn("{имя}", html.unescape(done))
         self.assertNotIn("<textarea", done.split("Инструкция")[-1].split("</details>")[0], "править можно только на странице группы")
         resp, _ = self.post("/groups/g1/message", {"platform": ["android"], "text": ["{name} тоже годится"]})
         self.assertEqual(self.groups_json()[1]["messages"]["android"]["text"], "{name} тоже годится")
@@ -1137,13 +1142,13 @@ class StartStepTest(GroupWebBase):
             self.assertIn(f"<strong>{name}</strong>", body)
         self.assertEqual(len(re.findall(r'name="go" value="(?:simple|reliable|custom)"', body)), 3)
         self.assertEqual(len(re.findall(r'class="btn primary">Выбрать</button>', body)), 1, "один primary — у варианта без оговорок")
-        self.assertRegex(body, r'<strong>Просто</strong><span class="chip info">рекомендуем</span>')
-        self.assertRegex(body, r'name="go" value="simple" class="btn primary"')
-        self.assertRegex(body, r'name="go" value="reliable" class="btn"')
+        self.assertRegex(body, r'<strong>Надёжно</strong><span class="chip info">рекомендуем</span>')
+        self.assertRegex(body, r'name="go" value="reliable" class="btn primary"')
+        self.assertRegex(body, r'name="go" value="simple" class="btn"')
         simple, reliable = (re.search(rf'<strong>{n}</strong>(.*?)name="go" value="', body, re.S).group(1)
                             for n in ("Просто", "Надёжно"))
-        self.assertNotIn("с оговорками", simple, "«рекомендуем» и «с оговорками» на одном варианте не живут")
-        self.assertNotIn("рекомендуем", reliable)
+        self.assertNotIn("с оговорками", reliable, "«рекомендуем» и «с оговорками» на одном варианте не живут")
+        self.assertNotIn("рекомендуем", simple)
         self.assertIn("Happ — Android", reliable, "«Надёжно» — Happ на Android, если режут UDP")
         text = text_of(body)
         self.assertIn("AmneziaWG — Android · INCY — iPhone · v2rayN — Windows", text, "приложения — одной строкой одного вида")
@@ -1156,7 +1161,8 @@ class StartStepTest(GroupWebBase):
         self.assertNotIn("style=", body)
         self.assertNotIn("Далее", body, "у экрана выбора своих кнопок «Далее» нет: выбор — кнопки вариантов")
         self.assertNotIn("! ", re.sub(r"<[^>]+>", "", body))
-        self.assertIn("Приложения из магазина и один QR. Где магазина нет — предупредим.", text)
+        self.assertIn(groupviews.MODE_HINTS["self"], text)
+        self.assertIn(groupviews.MODE_PICK, text, "как выбрать «Кто ставит» офису — одной строкой")
 
     def test_start_screen_why_line_comes_from_client_probes(self):
         facts = {"hysteria2": {"n": 10, "ok": 9, "top": 2, "score": 160.0, "ctx": 2, "down": 65.4, "latency": 76.0},
@@ -1197,13 +1203,14 @@ class StartStepTest(GroupWebBase):
         self.assertNotIn("Оговорки", body, "ни у одного приложения набора оговорок нет")
         self.assertNotIn("ставится только из App Store", body, "ИТ-заметка про iPhone — только в режиме «ставит ИТ»")
         self.assertIn('type="hidden" name="preset" value="simple"', body)
-        # название группы — на шаге «Люди», по умолчанию «Группа N»
+        # название группы — на шаге «Люди», без подстановки: «Группа N» потом не отличить
         self.assertNotIn('id="name"', body)
         resp, body = self.wiz(2, mode="self", proto="vless-reality", clients_for="vless-reality|self", devs="1",
                               dev=["android", "ios", "windows"], set__android="happ", set__ios="incy",
                               set__windows="v2rayn", preset="simple")
         self.assertIn("<h3>Люди</h3>", body)
-        self.assertRegex(body, r'<input type="text" name="name" id="name" value="Группа 2"', )
+        self.assertRegex(body, r'<input type="text" name="name" id="name" value="" required maxlength="40" '
+                               r'autocomplete="off" placeholder="например, Бухгалтерия">')
         resp, _ = self.wiz(3, go="create", mode="self", name="Офис", proto="vless-reality", devs="1",
                            dev=["android", "windows"], set__android="happ", set__windows="v2rayn",
                            users_new="masha\nkolya", allow_mode="common", confirm="1")
@@ -1336,7 +1343,7 @@ class StartStepTest(GroupWebBase):
         self.create_group()
         _, body = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "devs": ["1"],
                                            "dev": ["android", "macos"], "go": ["refresh"], "set:android": ["happ"]})
-        self.assertEqual(self.checked(body, "macos"), ["amneziavpn"], "добавленному устройству — подбор")
+        self.assertEqual(self.checked(body, "macos"), ["amneziavpn", "v2rayn"], "добавленному устройству — подбор")
         self.assertEqual(self.checked(body, "android"), ["happ"], "остальное не тронуто")
 
 
@@ -1374,10 +1381,10 @@ class DesignRulesTest(GroupWebBase):
                            set__windows="v2rayn")
         line = re.search(r'<p class="hint">(Через VPN[^<]*)', body)
         self.assertTrue(line, "одна строка вместо таблицы")
-        self.assertEqual(line.group(1), "Через VPN: общий список (Brave, Telegram) · Android 2 · Windows 2 · "
-                                        "изменить — в настройках группы после создания",
-                         "платформы с заглавной, числа видны сразу (не в подсказке); группы ещё нет — ссылаться некуда")
-        self.assertNotIn("<table", body)
+        self.assertEqual(line.group(1), "Через VPN: общий список (Brave, Telegram) · Android 2 · Windows 2",
+                         "платформы с заглавной, числа видны сразу (не в подсказке)")
+        self.assertIn('name="allow_mode" value="own"', body, "свой список — здесь же, до раздачи (D59)")
+        self.assertNotIn("<table", body.split("<summary>Через VPN —")[0], "таблица приложений — только в свёрнутом выборе")
         # Hiddify на Windows списка не умеет: через VPN идёт всё
         _, body = self.wiz(2, name="X", proto=["hysteria2"], devs="1", dev=["windows"], set__windows="hiddify")
         self.assertIn("В «Hiddify» через VPN идёт всё.", body)
@@ -1583,9 +1590,11 @@ class LeftoversTest(GroupWebBase):
         _, body = self.c.get("/connect/new")
         simple, reliable = (re.search(rf'<strong>{n}</strong>(.*?)name="go" value="', body, re.S).group(1)
                             for n in ("Просто", "Надёжно"))
-        self.assertIn("рекомендуем", simple)
-        self.assertNotIn("с оговорками", simple)
-        self.assertNotIn("рекомендуем", reliable)
+        self.assertIn("рекомендуем", reliable, "советуется вариант, где Android не только на UDP")
+        self.assertNotIn("с оговорками", reliable)
+        self.assertNotIn("рекомендуем", simple)
+        self.assertIn("с оговорками", simple)
+        self.assertIn("Android — только UDP", text_of(body))
         self.assertIn("VLESS XHTTP", simple)
         self.assertNotIn("Hysteria2", simple)
         self.assertIn("VLESS XHTTP", reliable)
@@ -1595,8 +1604,9 @@ class LeftoversTest(GroupWebBase):
         _, body = self.c.get("/connect/new?mode=admin")
         text = text_of(body)
         simple = text[text.index("Просто"):text.index("Надёжно")]
+        reliable = text[text.index("Надёжно"):text.index("Свой набор")]
         self.assertIn("AmneziaWG — Android · INCY — iPhone · v2rayN — Windows", simple)
-        self.assertIn("рекомендуем", simple)
+        self.assertIn("рекомендуем", reliable, "у «Просто» Android только на UDP (D59)")
         self.assertNotIn("Hiddify", text, "Hiddify ведёт через VPN всё устройство — в готовых вариантах его нет")
         self.assertEqual(text.count("Через VPN: Android, Windows — только приложения из списка · iPhone — всё, кроме "
                                     "российских сайтов"), 1, "у обоих вариантов одинаково — одна строка")

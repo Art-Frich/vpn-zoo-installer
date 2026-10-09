@@ -173,6 +173,7 @@ class Card:
     errors: dict[str, str] = field(default_factory=dict)
     blocks: list[Block] = field(default_factory=list)
     pending: bool = False   # ссылки не успели собрать
+    no_apps_for: list[str] = field(default_factory=list)   # устройства человека, для которых у группы нет приложений
 
     @property
     def title(self) -> str:
@@ -181,7 +182,7 @@ class Card:
 
 
 SENT_RE = re.compile(r",? (?:который|которую) я пришлю")
-FOLDER_WORDS = (("Открываете сообщение", "Открываете папку"), ("из сообщения", "из этой папки"))
+FOLDER_WORDS = (("сообщение открыто на другом экране", "папка открыта на другом экране"), ("из сообщения", "из этой папки"))
 LINK_IN_FOLDER = re.compile(r"(ссылк[уи](?: «[^»]*»(?:, | и )?)*) из сообщения")   # ссылка — в этом же файле, ниже
 PAPER_REST = "{apps} — настройка в сообщении: ссылку и файлы с бумаги не перенести."
 IN_MESSAGE = "в сообщении"
@@ -287,6 +288,9 @@ def build_cards(app: "App", names: list[str], budget: float) -> list[Card]:
             card_.links, card_.errors = res
             if ctx is not None:
                 card_.blocks = build_blocks(ctx, u, card_.group, card_.links)
+                if not card_.blocks:
+                    devs = groups.devices_of(u, card_.group) or []
+                    card_.no_apps_for = [ctx.cat.platforms.get(d, d) for d in devs]
         cards.append(card_)
     return cards
 
@@ -331,9 +335,12 @@ def _card_html(c: Card, st: Status) -> Markup:
         body = t("p", clientviews.no_apps(c.group))
     elif c.blocks:
         body = [_block_html(b, u.name) for b in c.blocks]
+    elif c.links and c.no_apps_for:   # ключи есть, а для его устройств у группы нет приложений
+        body = t("p", t("span", "Для " + ", ".join(c.no_apps_for) + " у группы нет приложений. ", class_="muted"),
+                 t("a", "Настроить →", href=f"/groups/{c.group.id}#settings", data_swap=True) if c.group else None)
     else:
-        body = alert_list([("warn", "Ссылок нет: " + ("; ".join(f"{k or 'модуль'}: {v}" for k, v in c.errors.items())
-                                                       or "у пользователя нет протоколов"))])
+        body = alert_list([("warn", "Ключей нет: " + ("; ".join(f"{k or 'модуль'}: {v}" for k, v in c.errors.items())
+                                                       or "человек не заведён ни в одном протоколе группы"))])
     return t("article", head, body, class_="hcard", data_name=u.name)
 
 
@@ -496,7 +503,9 @@ def build_zip(app: "App", cards: list[Card], skipped: list[str], budget: float =
                 left.append(c.user.name)
                 continue
             if c.pending or not c.blocks:
-                problems.append(f"{c.user.name}: ссылок нет" + (" (не успели собрать)" if c.pending else ""))
+                problems.append(f"{c.user.name}: " + ("ссылки не успели собрать" if c.pending else
+                                                      f"для {', '.join(c.no_apps_for)} у группы нет приложений"
+                                                      if c.links and c.no_apps_for else "ключей нет"))
                 continue
             name = c.user.name
             qr_files: dict[Any, str] = {}

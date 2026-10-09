@@ -712,14 +712,18 @@ class PackTest(unittest.TestCase):
         self.assertIn("\n2) Установите «Happ»", msg)
         self.assertIn("\n3) Установите «AmneziaWG»", msg)
         # сообщение открыто на этом же телефоне: ссылка из буфера, файл; QR — только «на другом экране»
+        # QR с другого экрана — в том же шаге, как другой способ: два шага подряд человек сделал бы оба (D59)
         self.assertIn("\n4) Скопируйте ссылки «Hysteria2» и «VLESS Vision» из сообщения. В «Happ» нажмите «+» → "
-                      "«Вставить из буфера».", msg)
-        self.assertIn("\n5) Открываете сообщение на другом экране — в «Happ» нажмите «+» → «Сканировать QR» и наведите "
-                      "камеру на QR «Hysteria2» и «VLESS Vision».", msg)
+                      "«Вставить из буфера». Или, если сообщение открыто на другом экране: в «Happ» нажмите «+» → "
+                      "«Сканировать QR» и наведите камеру на QR «Hysteria2» и «VLESS Vision». Один способ из двух, не оба",
+                      msg)
+        self.assertIn("\n5) Добавьте каждый ключ по очереди. Включайте «Hysteria2»; «VLESS Vision» — запасной", msg,
+                      "два ключа в одном приложении — какой включать")
         self.assertIn("В «Happ»: экран «Inbounds» → режим авторизации «auto»", msg, "служебный вход Happ — под паролем")
         self.assertIn("В «Happ» включите «РФ напрямую»", msg)
         self.assertRegex(msg, r"\n\d\) Сохраните файл «AmneziaWG» из сообщения\. В «AmneziaWG» нажмите «\+» → «Импорт из файла»")
-        self.assertRegex(msg, r"\n\d+\) Открываете сообщение на другом экране — в «AmneziaWG» нажмите «\+» → «Сканировать QR»")
+        self.assertRegex(msg, r"\n\d+\) Сохраните файл «AmneziaWG».*Или, если сообщение открыто на другом экране: "
+                              r"в «AmneziaWG» нажмите «\+» → «Сканировать QR»")
         self.assertNotIn("этом же телефоне", msg)
         self.assertLess(msg.index("Установите «AmneziaWG»"), msg.index("В «Happ» нажмите"))
         self.assertLess(msg.index("В «Happ» включите"), msg.index("В «AmneziaWG» нажмите"), "шаги приложения — подряд")
@@ -806,9 +810,9 @@ class PackTest(unittest.TestCase):
                                        "только приложения из списка, остальное напрямую.\n1) Скопируйте ссылку"), msg)
         for gone in ("Установите", "releases", "Assets", "play.google.com"):
             self.assertNotIn(gone, msg)
-        self.assertEqual(msg.count("\n"), 12, "строка «через VPN», импорт и QR и три настройки Happ, импорт и QR AWG, "
-                                              "какое держать включённым, правило Android, проверка и что прислать")
-        self.assertTrue(msg.endswith(f"10) {CHECK['brave']}\n11) {catalog().raw['report']}"))
+        self.assertEqual(msg.count("\n"), 10, "строка «через VPN», импорт (с QR) и три настройки Happ, импорт (с QR) "
+                                              "AWG, какое держать включённым, правило Android, проверка и что прислать")
+        self.assertTrue(msg.endswith(f"8) {CHECK['brave']}\n9) {catalog().raw['report']}"))
         one = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "ios", [VLESS], [],
                                      {"ios": ["incy"]}, ["vless-reality"], False, None, None, True)
         self.assertTrue(one.message.startswith("{name}, VPN уже установлен. Включите его в «INCY»."))
@@ -842,7 +846,7 @@ class PackTest(unittest.TestCase):
         p = self.pack("windows", [VLESS, RULES])
         self.assertIsNone(s.paper, "ссылку и файл правил с бумаги не перенести")
         self.assertEqual((p.steps(paper=True), p.paper_rest), ([], ["v2rayN"]))
-        self.assertNotIn("Открываете сообщение на другом экране", steps, "компьютер QR не сканирует")
+        self.assertNotIn("сообщение открыто на другом экране", steps, "компьютер QR не сканирует")
         bare = self.pack("windows", [VLESS]).sections[0]
         self.assertEqual(bare.extras, [], "без файла правил — шага нет")
         self.assertEqual(bare.via, "all", "без файла правил через VPN идёт всё")
@@ -853,7 +857,13 @@ class PackTest(unittest.TestCase):
         self.assertEqual(p.sections[0].client["id"], "incy")
         self.assertEqual(p.sections[0].check, CHECK["device"])
         self.assertIsNone(self.pack("ios", [link("tuic", "tuic://x")]), "для TUIC на iPhone клиента не выбрано")
-        self.assertIsNone(self.pack("macos", [VLESS]), "на macOS для VLESS проверенного клиента нет")
+        mac = self.pack("macos", [VLESS])
+        self.assertEqual((mac.sections[0].client["id"], mac.sections[0].via), ("v2rayn", "brave"),
+                         "на Mac — v2rayN, через VPN только Brave (D59)")
+        self.assertEqual(mac.via, "Через VPN — только браузер Brave.")
+        self.assertEqual(mac.sections[0].check, CHECK["brave"])
+        self.assertTrue(any("Brave" in x for x in mac.before), "Brave ставится: VPN только в нём")
+        self.assertIn('open -na "Brave Browser"', " ".join(mac.sections[0].steps))
         self.assertIsNone(self.pack("android", []))
 
     def test_amneziavpn_takes_vpn_key_not_conf_qr(self):
@@ -886,8 +896,9 @@ class PackTest(unittest.TestCase):
         one = self.pack("android", [VLESS]).message
         self.assertIn("\n2) Установите «Happ»", one)
         self.assertNotIn("Happ (", one, "названий протоколов перед шагами нет")
-        self.assertIn("\n3) Скопируйте ссылку из сообщения. В «Happ» нажмите «+» → «Вставить из буфера».", one)
-        self.assertIn("\n4) Открываете сообщение на другом экране — в «Happ» нажмите «+» → «Сканировать QR»", one)
+        self.assertIn("\n3) Скопируйте ссылку из сообщения. В «Happ» нажмите «+» → «Вставить из буфера». Или, если "
+                      "сообщение открыто на другом экране: в «Happ» нажмите «+» → «Сканировать QR»", one)
+        self.assertIn(catalog().raw["one_way"], one)
         self.assertTrue(one.endswith(catalog().raw["report"]), "в конце — что прислать администратору")
 
 
@@ -1019,7 +1030,8 @@ class HandoffPageTest(AppTestBase):
 
     def test_page_stays_light(self):
         _, body = self.c.get("/users/masha")
-        self.assertLessEqual(len(body.encode("utf-8")), 32 * 1024, "30 КБ + блок «Если у него не работает» (D58)")
+        self.assertLessEqual(len(body.encode("utf-8")), 40 * 1024, "30 КБ + «Если у человека не работает» (D58) + Mac и "
+                                                                    "Linux с шагами Brave (D59)")
 
 
 if __name__ == "__main__":

@@ -1251,6 +1251,23 @@ def last_run_ts() -> int | None:
         con.close()
 
 
+def key_rejects(now: float | None = None) -> int:
+    """Отказы Hysteria2 «неверный ключ» за сутки (с внешних адресов и своих): чей ключ, не видно — это подсказка
+    «у кого-то старый ключ», а не обвинение человека."""
+    con = _con()
+    if con is None:
+        return 0
+    since, _, _, res = traffic.window("24h", now)
+    try:
+        row = con.execute("SELECT SUM(n) FROM hits WHERE res = ? AND ts + 0 >= ? AND kind = 'hy2-auth'",
+                          (res, since)).fetchone()
+    except sqlite3.Error:
+        return 0
+    finally:
+        con.close()
+    return int(row[0] or 0) if row else 0
+
+
 def alerts(now: float | None = None) -> list[tuple[str, str]]:
     """Тревоги для обзора: всплеск внешних попыток за последний час против обычного за неделю."""
     now = time.time() if now is None else now

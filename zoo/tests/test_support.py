@@ -73,9 +73,13 @@ class SilentTest(unittest.TestCase):
 class TipsTest(unittest.TestCase):
     def test_contact_tip(self):
         now = 1_800_000_000
-        c = Contacts(True, {"masha": (now - 60, "xray"), "kolya": (now - 30 * DAY, "xray")})
+        c = Contacts(True, {"masha": (now - 60, "xray"), "kolya": (now - 30 * DAY, "xray"),
+                            "olya": (now - 2 * DAY, "hysteria2")})
         self.assertEqual(support.contact_tip(U("masha"), c, now)[0], "ok")
         self.assertIn("дольше 7 дней", support.contact_tip(U("kolya"), c, now)[1])
+        kind, text = support.contact_tip(U("olya"), c, now)
+        self.assertEqual(kind, "warn", "два дня тишины при жалобе «сейчас не работает» — не «доходит»")
+        self.assertIn("Последний раз — 2 д 0 ч назад: сейчас до сервера не доходит", text)
         kind, text = support.contact_tip(U("petya"), c, now)
         self.assertEqual(kind, "warn")
         self.assertIn("Ни разу", text)
@@ -90,57 +94,64 @@ class TipsTest(unittest.TestCase):
         self.assertEqual(support.via_title("hysteria2-obfs"), "Hysteria2 + Salamander")
 
     def test_only_udp_suggests_tcp_his_app_takes(self):
-        happ = App("Android", "Happ", [("hysteria2", "ok")], "apps", {"vless-xhttp", "hysteria2"})
-        kind, text = support.transport_tip(["hysteria2"], [happ], ["vless-reality", "vless-xhttp", "hysteria2"])
-        self.assertEqual(kind, "warn")
-        self.assertIn("только UDP (Hysteria2)", text)
-        self.assertIn("Добавьте группе VLESS XHTTP (TCP)", text, "VLESS Vision Happ не берёт по каталогу этого теста")
-        none = App("Android", "X", [("hysteria2", "ok")], "apps", {"hysteria2"})
-        self.assertIn("смените приложение", support.transport_tip(["hysteria2"], [none], ["vless-xhttp", "hysteria2"])[1])
+        happ = App("Android", "Happ", [("hysteria2", "ok")], "apps", {"vless-xhttp", "hysteria2"}, "android")
+        (kind, text, fix), = support.transport_tips([happ], ["hysteria2"], ["vless-reality", "vless-xhttp", "hysteria2"])
+        self.assertEqual((kind, fix), ("warn", True))
+        self.assertIn("Android: только UDP (Hysteria2)", text)
+        self.assertIn("Добавьте группе VLESS XHTTP: «Happ» его берёт.", text, "VLESS Vision Happ не берёт по каталогу теста")
 
-    def test_both_transports_say_where(self):
-        happ = App("Android", "Happ", [("vless-xhttp", "ok"), ("hysteria2", "ok")], "apps")
-        awg = App("Android", "AmneziaWG", [("amneziawg", "ok")], "apps")
-        kind, text = support.transport_tip(["vless-xhttp", "hysteria2", "amneziawg"], [happ, awg], [])
-        self.assertEqual(kind, "info")
-        self.assertIn("TCP: VLESS XHTTP в «Happ»", text)
-        self.assertIn("UDP: Hysteria2, AmneziaWG", text)
+    def test_tcp_only_is_not_an_alarm_and_names_the_udp_the_app_lacks(self):
+        """Случай из обхода: у группы есть AmneziaWG, но v2rayN его не берёт — зачем ещё UDP, сказано прямо."""
+        v2 = App("Windows", "v2rayN", [("vless-reality", "ok")], "apps", {"vless-reality", "hysteria2"}, "windows")
+        (kind, text, _), = support.transport_tips([v2], ["vless-reality", "amneziawg"],
+                                                  ["vless-reality", "amneziawg", "hysteria2"])
+        self.assertEqual(kind, "info", "только TCP у iPhone и Windows — так задумано, не тревога")
+        self.assertIn("AmneziaWG у группы есть, но «v2rayN» его не берёт — добавьте группе Hysteria2", text)
 
-    def test_protocols_his_apps_do_not_take_are_ignored(self):
-        hid = App("Windows", "Hiddify", [("hysteria2", "warn")], "all", {"hysteria2", "ss2022"})
-        _, text = support.transport_tip(["vless-reality", "hysteria2"], [hid], ["vless-reality", "hysteria2", "ss2022"])
-        self.assertIn("только UDP", text, "VLESS Vision Hiddify не берёт — на него не надеяться")
-        self.assertIn("Shadowsocks (TCP)", text)
+    def test_both_transports_per_device(self):
+        happ = App("Android", "Happ", [("vless-xhttp", "ok")], "apps", plat="android")
+        awg = App("Android", "AmneziaWG", [("amneziawg", "ok")], "apps", plat="android")
+        incy = App("iPhone", "INCY", [("vless-xhttp", "ok")], "ru-direct", plat="ios")
+        tips = support.transport_tips([awg, happ, incy], ["vless-xhttp", "amneziawg"], [], clients.load())
+        self.assertEqual([k for k, _, _ in tips], ["info", "info"])
+        self.assertIn("Android: не подключается — пусть включит TCP (VLESS XHTTP) в «Happ»", tips[0][1])
+        self.assertTrue(tips[1][1].startswith("iPhone: только TCP (VLESS XHTTP) — обычно хватает."))
 
-    def test_app_tips_unverified_and_full_tunnel_merged(self):
-        found = [App("Android", "Happ", [("hysteria2", "unk")], "apps"),
-                 App("iPhone", "Hiddify", [("ss2022", "ok")], "all"),
-                 App("Windows", "Hiddify", [("ss2022", "ok")], "all"),
-                 App("Windows", "v2rayN", [], "apps")]
-        tips = support.app_tips(found)
-        texts = [t for _, t in tips]
+    def test_app_tips_unverified_and_full_tunnel_name_the_replacement(self):
+        cat = clients.load()
+        found = [App("Android", "Happ", [("hysteria2", "unk")], "apps", plat="android"),
+                 App("Windows", "AmneziaVPN", [("amneziawg", "ok")], "all", plat="windows"),
+                 App("Windows", "X", [], "apps", plat="windows")]
+        tips = support.app_tips(found, cat, ["amneziawg", "vless-reality"])
+        texts = [t for _, t, _ in tips]
         self.assertIn("«Happ» (Android) с Hysteria2 не проверено: не работает — дайте другое приложение.", texts)
-        self.assertIn("«v2rayN» (Windows) не берёт ни один его протокол: смените приложение или протоколы группы.", texts)
-        slow = [t for t in texts if t.startswith("Медленно")]
-        self.assertEqual(slow, ["Медленно в «Hiddify» (iPhone, Windows): через VPN идёт всё устройство — "
-                                "дайте приложение, где идёт не всё."], "одно приложение без замены — одна строка")
-        found.append(App("iPhone", "INCY", [("vless-xhttp", "ok")], "ru-direct"))
-        self.assertIn("Медленно в «Hiddify» (iPhone): через VPN идёт всё устройство — пусть включит «INCY».",
-                      [t for _, t in support.app_tips(found)])
+        self.assertIn("«X» (Windows) не берёт ни один его протокол: смените приложение или протоколы группы.", texts)
+        self.assertIn("Медленно в «AmneziaVPN» (Windows): через VPN идёт всё устройство — смените Windows в группе "
+                      "на «v2rayN».", texts)
+        found.append(App("Windows", "v2rayN", [("vless-reality", "ok")], "apps", plat="windows"))
+        self.assertIn("Медленно в «AmneziaVPN» (Windows): через VPN идёт всё устройство — пусть включит «v2rayN».",
+                      [t for _, t, _ in support.app_tips(found, cat, ["amneziawg", "vless-reality"])])
+
+    def test_server_tip_first(self):
+        g = groups.Group("g2", "Бухгалтерия", protocols=["hysteria2"], clients={"android": ["happ"]})
+        u = U("masha", group="g2")
+        now = 1_800_000_000
+        c = Contacts(True, {"masha": (now - 2 * DAY, "hysteria2")})
+        tips = support.checklist(u, g, c, clients.load(), ["vless-xhttp", "hysteria2"], {}, now, broken={"hysteria2"})
+        self.assertEqual(tips[0][0], "bad")
+        self.assertIn("На сервере не работает Hysteria2 — другого у человека нет", tips[0][1])
+        self.assertNotEqual(tips[1][0], "ok")
 
     def test_checklist_for_happ_hysteria_group(self):
         """Случай из обхода: у группы один Hysteria2, у человека Happ на Android — UDP и непроверенная связка."""
         cat = clients.load()
         g = groups.Group("g2", "Группа 2", protocols=["hysteria2"], clients={"android": ["happ"]})
         u = U("masha", group="g2")
-        happ_hy = cat.status(cat.client("happ"), "hysteria2", "android")
         tips = support.checklist(u, g, Contacts(True, {}), cat, ["vless-reality", "vless-xhttp", "hysteria2"], {})
-        kinds = [k for k, _ in tips]
-        self.assertEqual(kinds[0], "warn", "ни разу не подключалась")
-        self.assertTrue(any("только UDP (Hysteria2)" in t for _, t in tips))
-        self.assertTrue(any("Добавьте группе VLESS Vision (TCP)" in t or "Добавьте группе VLESS XHTTP (TCP)" in t
-                            for _, t in tips))
-        self.assertEqual(any("не проверено" in t for _, t in tips), happ_hy == "unk")
+        self.assertEqual(tips[0][0], "warn", "ни разу не подключалась")
+        self.assertTrue(any("Android: только UDP (Hysteria2)" in t for _, t, _ in tips))
+        self.assertTrue(any("Добавьте группе VLESS Vision: «Happ» его берёт." in t
+                            or "Добавьте группе VLESS XHTTP: «Happ» его берёт." in t for _, t, _ in tips))
 
 
 @needs_bash
@@ -162,11 +173,14 @@ class PagesTest(AppTestBase):
         self.c.login()
 
     def test_person_page_says_when_and_how(self):
-        _, body = self.c.get("/users/masha")
+        from unittest import mock
+        from zoolib.web import userviews
+        with mock.patch.object(userviews, "_broken", return_value=set()):   # стенд теста не поднимает сервисы
+            _, body = self.c.get("/users/masha")
         text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body))
         self.assertIn("подключался 10 мин назад · Hysteria2", text)
-        self.assertIn('<details class="card more trouble"><summary>Если у него не работает</summary>', body)
-        self.assertIn("До сервера доходит", text)
+        self.assertIn('<summary>Если у человека не работает</summary>', body)
+        self.assertIn("до сервера доходит", text)
         _, body = self.c.get("/users/petya")
         self.assertIn("подключался ни разу", re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)))
         self.assertIn('href="/handoff?u=petya"', body, "ни разу — переслать сообщение")

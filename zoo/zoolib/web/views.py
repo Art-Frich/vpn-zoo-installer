@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import probe as probe_mod
-from .. import journal, manifests, paths, status, storage, support, system, traffic, upgrade, users
+from .. import groups, journal, manifests, paths, status, storage, support, system, traffic, upgrade, users
 from ..config import config_set
 from ..output import human_bytes, human_duration
 from . import charts, logs, probeviews, protoviews
@@ -200,6 +200,8 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
                                   title=pkgs or None)))
         else:
             out.append(("warn", t("span", "Нужна перезагрузка сервера", title=pkgs or None)))
+    if lost := stranded_alert(st):
+        out.append(lost)
     if traffic.last_run() is None:
         out.append(("warn", "Трафик ещё не собирался: первое снятие — в течение 5 минут после установки"))
     out += protoviews.alerts()
@@ -209,6 +211,19 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
 
 
 PEOPLE_SHOWN = 5
+
+
+def stranded_alert(st: dict[str, Any]) -> tuple[Any, ...] | None:
+    """Кого задевает сбой протокола: группы, где у людей не осталось ни одного работающего протокола."""
+    try:
+        lost = support.stranded(st["protocols"], users.list_users(), groups.Groups.load())
+    except (users.UserError, groups.GroupError, OSError, ValueError):
+        return None
+    if not lost:
+        return None
+    parts = [x for i, (name, (gid, n)) in enumerate(lost.items())
+             for x in ((", " if i else ""), t("a", f"{name} ({n} чел.)", href=f"/groups/{gid}") if gid else f"{name} ({n} чел.)")]
+    return ("bad", t("span", "Без VPN остались: ", *parts, " — у них других протоколов нет."))
 
 
 def _names(us: list[Any]) -> Markup:
@@ -642,7 +657,8 @@ def _available_cell(c: dict[str, Any]) -> Markup:
 
 
 def _version_status(c: dict[str, Any]) -> str:
-    return "—" if c["outdated"] is None else ("устарел" if c["outdated"] else "актуален")
+    """Сверка установленного с закреплённым в репозитории (не со свежим релизом: он — в «доступно»)."""
+    return "—" if c["outdated"] is None else ("не как закреплено" if c["outdated"] else "как закреплено")
 
 
 def _versions_spec() -> tbl.Spec:
@@ -652,7 +668,8 @@ def _versions_spec() -> tbl.Spec:
             tbl.Col("avail", "доступно", cell=lambda r: _available_cell(r["c"]), value=lambda r: r["c"].get("label", ""),
                     secondary=True),
             tbl.Col("status", "", cell=lambda r: badge("—", "muted") if r["c"]["outdated"] is None else
-                    (badge("устарел", "warn") if r["c"]["outdated"] else badge("актуален", "ok")), chip=True)]
+                    badge(_version_status(r["c"]), "warn" if r["c"]["outdated"] else "ok"), chip=True,
+                    hint="установлен ли закреплённый в репозитории выпуск; свежий релиз — в «доступно»")]
     return tbl.Spec(path="/settings", cols=cols, sort="name", id_key="name", prefix="v_", paged=False, export=False,
                     empty="нет данных", name="versions")
 
@@ -673,7 +690,7 @@ def _versions_card(app: "App", req: "Request", cfg: Any) -> Markup:
         vtbl = tbl.render(vspec, vst, tbl.memory_page(vspec, vst, ver_rows, vopts))
         hint = t("p", UPSTREAM_HINT, class_="hint") if any(c.get("newer") for c in comps.values()) else None
         if comps and not plan and all(c["outdated"] is False for c in comps.values()):
-            return card("Версии", badge("✓ всё актуально", "ok"),
+            return card("Версии", badge("✓ установлено как закреплено", "ok"),
                         t("details", t("summary", "компоненты"), vtbl, class_="more"), hint, help=help_)
         return card("Версии", vtbl, t("p", "План: " + " → ".join(plan), class_="hint") if plan else None, hint,
                     help=help_)
