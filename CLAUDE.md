@@ -1,19 +1,21 @@
 # vpn-zoo-installer — карта для Claude
 
-Bash-инсталлер «зоопарка» VPN-протоколов на одном VPS (Ubuntu 22.04/24.04) для небольшого частного круга пользователей в РФ + инструмент `zoo` (Python 3.10+ stdlib: CLI, веб-админка на 127.0.0.1, пробник, коллектор трафика). Если ТСПУ режет один протокол, остаются другие: VLESS+REALITY (443/tcp), VLESS XHTTP+REALITY, Shadowsocks-2022, Hysteria2 (443/udp), AmneziaWG 2.0; по флагам TUIC v5, Hysteria2+Salamander, WARP. Владелец — Art-Frich, MIT.
+Bash-инсталлер «зоопарка» VPN-протоколов на одном VPS (Ubuntu 22.04/24.04) для небольшого частного круга пользователей в РФ + инструмент `zoo` (Python 3.10+ stdlib: CLI, веб-админка на 127.0.0.1, пробник, коллектор трафика). Если ТСПУ режет один протокол, остаются другие. По умолчанию (D37): VLESS+REALITY (443/tcp), VLESS XHTTP+REALITY, Hysteria2 (443/udp) и Hysteria2+Salamander, TUIC v5, AmneziaWG 2.0; по флагам: Shadowsocks-2022 (`ENABLE_SS=1`), WARP (`ENABLE_WARP=1`). Владелец — Art-Frich, MIT.
 
 ## Где правда (читать перед изменениями)
 
 | Файл | Что |
 |---|---|
 | `docs/ARCHITECTURE.md` | контракт разработки: фазы, ключи config.env и их фазы-владельцы, манифест, пользователи, zoo, пробник, стенд, правила кода |
-| `docs/DECISIONS.md` | решения D1–D46 с «почему» и «как поменять». Новое решение без владельца → новая строка D47… |
+| `docs/DECISIONS.md` | решения D1–D61 с «почему» и «как поменять». Новое решение → следующий свободный номер по концу таблицы |
 | `docs/RISK-REDUCTION.md` | детект VPN, утечки IP, MAX/банки, пошаговые настройки клиентов, §7 поправки к исследованиям |
 | `docs/USER-GUIDE.md` | инструкция для пользователей VPN (по-русски, простым языком): allowlist, клиенты по платформам, Brave, банки/MAX. Разделы по платформам генерируются из `zoo/data/clients.json` (`zoo docs --user-guide`, тест `test_userguide`) — править каталог, не файл |
 | `docs/PROBE-SURFACE.md` | что видит активный сканер снаружи (порты, баннеры, неотличимость REALITY) |
 | `research/README.md` | индекс исследований по датам; срезы не переписываются, поправки — в RISK-REDUCTION §7 |
 | `scripts/versions.env` | закреплённые версии и sha256 всего скачиваемого (D1). Только присваивания |
-| `README.md` | пользовательская документация (русский): установка, zoo, флаги, ограничения, FAQ |
+| `README.md` | коротко: установка, вход в админку, таблица «задача → где подробно» (ссылки в REFERENCE) |
+| `docs/REFERENCE.md` | справочник для администратора: протоколы, установка, zoo и админка, параметры, ограничения, FAQ |
+| `docs/BACKLOG.md`, `docs/PLAN-admin.md`, `docs/PLAN-builder.md` | рабочий бэклог и технические планы админки (планы выполнены, правда — DECISIONS и код) |
 | `docker/README.md` | стенд: ключи test.sh, контракт `ZOO_TEST_ENV=docker`, отчёты, тесты |
 | `history/README.md` | история проб в репо: модель приватности (анонимный jsonl без IP, сырые отчёты под age), формат, расшифровка |
 
@@ -21,7 +23,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 
 ## Архитектура
 
-**Фазы** (`scripts/NN-*.sh`, порядок — массив `PHASES` в `install.sh`; state в `/var/lib/vpn-setup/state`: done/failed/disabled):
+**Фазы** (`scripts/NN-*.sh`, порядок — массив `PHASES` в `install.sh`; state в `/var/lib/vpn-setup/state`: done/failed/disabled, у 02 ещё rebooting):
 
 | Фаза | Что |
 |---|---|
@@ -50,14 +52,15 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 - Приложения через VPN (D31): `/etc/vpn-setup/allowlist.json` (пишет только `zoolib/allowlist.py`, `zoo allow`), пресет `scripts/allowlist-default.json`, bash читает `zoo_allowlist` (lib.sh). Из него — `clients/<имя>/amneziawg-android.conf` (`IncludedApplications`, общий `.conf` без ключа) и `v2rayn-routing.json`.
 - Серверные файлы: `/etc/vpn-setup/config.env` (0600, секреты), `clients/<имя>/`, `/var/lib/vpn-zoo/`, `/var/log/vpn-zoo/install-*.log` и `/var/backups/vpn-setup/` (содержат ключи, ротация D29).
 
-**zoo** (`zoo/zoo` → `zoo/zoolib/`): `cli.py` (argparse), `config.py`, `manifests.py`, `users.py`, `people.py` (список людей «имя; заметка» → id, D50), `allowlist.py` (zoo allow), `protolib.py` (мост в bash), `xui.py`, `traffic.py` (SQLite), `logread.py` + `logctl.py` (страница «Логи»: просмотр назад, поиск, чистка логов установки и journald по заявке `zoo logs run`, D46), `storage.py` (объём данных, бюджет `ZOO_DATA_LIMIT`, чистка; `zoo storage`), `journal.py` (журнал атак «Кто нас щупал», SQLite; `zoo journal`) + `geoip.py` (страна по geoip.dat Xray), `status.py`, `upgrade.py` (`zoo upgrade/smoke`), `clients.py` (каталог клиентов `zoo/data/clients.json` — единственный источник шагов для людей (D55), версии из GitHub: `zoo clients`, суточный `zoo-clients.timer`), `userguide.py` (`zoo docs --user-guide`), `probe/` (`engine.py`, `clients.py`, `verdicts.py`, `report.py`; метрики и история — `metrics.py`, `context.py`, `history.py` (SQLite), `rank.py`, `export.py` (анонимный jsonl + age); `zoo history`, `zoo probe --rank`; `live.py` — лёгкие замеры раз в 10 мин для карточек, `zoo live`, D41), `protoctl.py` (вкл/выкл протокола заявкой из админки, `zoo job`, D42), `web/` (сервер, auth, CSRF/CSP, views; `protoviews.py` — карточки протоколов; `handoffviews.py` — карточки для раздачи, ZIP и статус «подключился», D50; `table.py` — общий компонент таблиц: поиск, чипы, сортировка, keyset «показать ещё», выгрузка, D44). Юниты — `zoo/systemd/`. Тесты — `zoo/tests/` (unittest) + `zoo/tests/web_smoke.sh`.
+**zoo** (`zoo/zoo` → `zoo/zoolib/`): `cli.py` (argparse), `config.py`, `manifests.py`, `users.py`, `people.py` (список людей «имя; заметка» → id, D50), `allowlist.py` (zoo allow), `protolib.py` (мост в bash), `xui.py`, `traffic.py` (SQLite), `logread.py` + `logctl.py` (страница «Логи»: просмотр назад, поиск, чистка логов установки и journald по заявке `zoo logs run`, D46), `storage.py` (объём данных, бюджет `ZOO_DATA_LIMIT`, чистка; `zoo storage`), `journal.py` (журнал атак «Кто нас щупал», SQLite; `zoo journal`) + `geoip.py` (страна по geoip.dat Xray), `status.py`, `upgrade.py` (`zoo upgrade/smoke`), `clients.py` (каталог клиентов `zoo/data/clients.json` — единственный источник шагов для людей (D55), версии из GitHub: `zoo clients`, суточный `zoo-clients.timer` + заявки `zoo-clients.path`; он же качает дистрибутивы, `--fetch-dist`), `dist.py` (дистрибутивы для групп «ставит ИТ», D52), `resend.py` («Кому переслать», D57/D61), `support.py` («не работает/медленно», D58), `userguide.py` (`zoo docs --user-guide`), `probe/` (`engine.py`, `clients.py`, `verdicts.py`, `report.py`; метрики и история — `metrics.py`, `context.py`, `history.py` (SQLite), `rank.py`, `export.py` (анонимный jsonl + age); `zoo history`, `zoo probe --rank`; `live.py` — лёгкие замеры раз в 10 мин для карточек, `zoo live`, D41), `protoctl.py` (вкл/выкл протокола заявкой из админки, `zoo job`, D42), `web/` (сервер, auth, CSRF/CSP, views; `protoviews.py` — карточки протоколов; `handoffviews.py` — карточки для раздачи, ZIP и статус «подключился», D50; `table.py` — общий компонент таблиц: поиск, чипы, сортировка, keyset «показать ещё», выгрузка, D44); страницы по пунктам меню (`views.NAV`): Пользователи → `userviews`, Группы и мастер `/connect/new` → `groupviews`, Через VPN → `allowviews`, Приложения → `clientviews`, Проверка → `probeviews`, Атаки → `journalviews`, Логи → `logviews`; вне меню `/resend` → `resendviews`, `/dist/…` → `distviews`). Юниты — `zoo/systemd/`, включаемые фазой 09 — список `zoo/systemd/enable.list`. Тесты — `zoo/tests/` (unittest) + `zoo/tests/web_smoke.sh`.
 
-**Стенд** (`docker/`): `server.Dockerfile` (Ubuntu + systemd PID 1), `run-server.sh` (up/sync/install/shell/exec/down), `test.sh` (e2e), `tests/<id>.sh` (трафик настоящими клиентами, links, routing, security, collector, journal, live, history, ssh-harden), `probe/` (образ `zoo-probe`, ожидаемые вердикты — `expect.py`), `censor/` (эмулятор ТСПУ: clean, drop-udp, ip-block, freeze-16k, rst-tls), `lint.sh` (shellcheck). Отчёты — `docker/out/<ts>/` (в .gitignore, внутри секреты стенда).
+**Стенд** (`docker/`): `server.Dockerfile` (Ubuntu + systemd PID 1), `run-server.sh` (up/sync/install/shell/exec/down), `test.sh` (e2e), `tests/<id>.sh` (трафик настоящими клиентами, links, routing, security, allowlist, collector, journal, live, history, ssh-harden; тест web — `zoo/tests/web_smoke.sh`), `probe/` (образ `zoo-probe`, ожидаемые вердикты — `expect.py`), `censor/` (эмулятор ТСПУ: clean, drop-udp, ip-block, freeze-16k, rst-tls; port-block — только явно), `lint.sh` (shellcheck). Отчёты — `docker/out/<ts>/` (в .gitignore, внутри секреты стенда).
 
 ## Как проверять
 
 ```bash
-# юнит-тесты zoo (на Windows — python, на Linux — python3), ~30 с
+# юнит-тесты zoo (на Windows — python, на Linux — python3): замер 09.10.2026, 1232 теста —
+# ~5 мин на Windows, ~80 с в контейнере zoo-test-server:24.04 (Python 3.12)
 cd zoo && python -m unittest discover -s tests -t .
 
 # shellcheck всех .sh в Docker (образ закреплён по digest), ~10 с
@@ -73,18 +76,16 @@ bash docker/test.sh --mode full --tests allowlist,amneziawg --distro 24.04 --nam
 # полный e2e как у пользователя + все тесты + матрица цензора, ≈11.5 мин — только перед релизом
 bash docker/test.sh --mode full --tests all --distro 24.04 --name e2e24 --keep
 bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
-# с флагами: --env ENABLE_TUIC=1 --env ENABLE_HY2_OBFS=1 --env HY2_HOP=1 --env ENABLE_WARP=1
+# с флагами: --env ENABLE_SS=1 --env HY2_HOP=1 --env ENABLE_WARP=1
 # одна фаза/отладка: docker/run-server.sh up dev; sync dev; install dev -- --phase 05-hysteria2; shell dev
 # отдельный тест против живого контейнера: bash docker/tests/hysteria2.sh zoo-e2e24
 ```
 
 - Итог — `docker/out/<ts>/summary.md` (+ `phases/*.log`, `tests/*.log`, `diag.txt`). Код 0 = все PASS.
-- Windows/Git Bash: ручные `docker`-команды только с `MSYS_NO_PATHCONV=1` (скрипты стенда ставят его сами); пути для `-v` — `$(pwd -W)`.
-- Долгий прогон — в фоне и с `--keep`; на Git Bash он иногда обрывается без `summary.md`, тогда дотестировать руками `docker/tests/<тест>.sh zoo-NAME`.
-- **Не править `docker/*.sh` во время прогона** — bash читает скрипт по ходу, test.sh упадёт. Чтобы править репо параллельно с прогоном, гонять из замороженной копии: `git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - | tar -C /tmp/zoo-frozen -xf -`, затем `cd /tmp/zoo-frozen && bash docker/test.sh …`.
+- Подводные камни стенда (Git Bash и `MSYS_NO_PATHCONV=1`, правка `docker/*.sh` во время прогона, обрыв долгого прогона, `--modes git` и `NOEXEC`) — [docker/README.md](docker/README.md).
+- Править репо параллельно с прогоном — из замороженной копии: `git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - | tar -C /tmp/zoo-frozen -xf -`, затем `cd /tmp/zoo-frozen && bash docker/test.sh …`.
 - Тесты не привязывать к пресетам и умолчаниям владельца (например, к составу `allowlist-default.json`): unit-тесты подкладывают свой пресет (`zoo/tests/helpers.py`), docker-тесты сверяют с файлом пресета на сервере и дальше идут от известной базы.
 - Параллельные прогоны — только с разными `--name`. Уборка: `docker/run-server.sh down NAME` или `down --all`.
-- `--modes git` (по умолчанию) берёт права из индекса git: новый .sh без `git add --chmod=+x` даст `NOEXEC`.
 
 ## Правила кода и репозитория
 
@@ -93,8 +94,8 @@ bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
 - Всё скачиваемое — только через `versions.env` + `download_verified` (sha256). Никаких `latest`, `curl | bash`, незакреплённых образов.
 - API 3x-ui — только через `scripts/lib/xui.sh`. Тела запросов брать из `/panel/api/openapi.json` закреплённой версии.
 - Перед перезаписью чужого конфига — бэкап; чужая установка — отказ без `--force`.
-- Новый параметр: `CONFIG_ENV_KEYS_RE` в lib.sh, фаза-владелец в `phase_owns_key`, таблица ARCHITECTURE §3, README «Параметры».
-- Новый протокол: фаза + `lib/proto-<id>.sh` по контракту + манифест с `probe` + `docker/tests/<id>.sh` + при особом поведении под цензором — `docker/probe/expect.py` + README/ARCHITECTURE.
+- Новый параметр: `CONFIG_ENV_KEYS_RE` в lib.sh, фаза-владелец в `phase_owns_key`, таблица ARCHITECTURE §3, docs/REFERENCE.md «Параметры».
+- Новый протокол: фаза + `lib/proto-<id>.sh` по контракту + манифест с `probe` + `docker/tests/<id>.sh` + при особом поведении под цензором — `docker/probe/expect.py` + docs/REFERENCE.md/ARCHITECTURE.
 - LF везде (`.gitattributes`: `* text=auto eol=lf`). Новый скрипт: `git add --chmod=+x файл.sh` (Windows не хранит +x).
 - Комментарии — по-русски и редко, только «почему». Весь вывод для пользователя и документация — по-русски, коротко, без канцелярита.
 - Не публиковать адрес сервера и ссылки; в `docker/out/` и `probe/` — ключи, не коммитить.
@@ -125,7 +126,8 @@ bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
 - Docker-стенд (systemd, 22.04/24.04, настоящие клиенты, эмулятор ТСПУ) + **реальный VPS** (Финляндия, Ubuntu 24.04, ядро 6.8): установка из main, AmneziaWG модулем ядра (DKMS), все 7 протоколов работают на сервере; пробник с ПК владельца через домашнего провайдера РФ — 6 из 7 (SS-2022 нет). Отчёт: `research/2026-10-05/field-test-vps_05-10-26.md`.
 - Не проверено: мобильная сеть; телефоны и клиентские приложения; 22.04 на реальном VPS и цикл HWE→reboot; arm64; хостер без hairpin; `SSH_HARDEN` на облачных образах с чужими drop-in и файрволом хостера.
 - Открыто (находка 7): часть новых TCP-соединений туннелей (VLESS, сильнее SS-2022) теряет данные после рукопожатия — на двух разных путях; обычный HTTPS на тот же порт не страдает. Причина не установлена (DPI у хостера / крупный первый пакет / сеть Docker Desktop). Из-за этого у VLESS-Reality в пробнике пустая «задержка p50».
-- Клиентские приложения (Happ, v2rayN/NG, Hiddify, AmneziaVPN, mihomo…) — ссылки проверены разбором ядрами, не импортом на устройстве.
+- Hiddify (hiddify-core 4.1.0, sing-box 1.13.1): по прогону ядра на стенде 07.10.2026 не работают VLESS-REALITY, XHTTP, AmneziaWG; пин Hysteria2 не проверяет (`research/2026-10-07/hiddify-compat_07-10-26.md`, статусы — `zoo/data/clients.json`).
+- Остальные клиентские приложения (Happ, v2rayN/NG, AmneziaVPN, mihomo…) — ссылки проверены разбором ядрами, не импортом на устройстве.
 - Не прогонялись: `XHTTP_PLACEMENT=fallback`, `AWG_PROFILE=v3`, смена `PANEL_*`, `ENABLE_ZOO=0`, `SUB_PUBLIC=1` (фазы подписки нет).
 - Allowlist (D31) сделан по `research/2026-10-04/clients-and-allowlist_04-10-26.md`, но на телефоне не проверен: импорт `IncludedApplications` в AmneziaWG/WG Tunnel, поведение при неустановленном пакете (по коду AOSP пакет пропускается, туннель поднимается), правила `process` в v2rayN на Windows (и с выключенной Legacy Protect). Открыто: публичная подписка (заголовки INCY), свой Android-клиент (`own-android-client_04-10-26.md`) — решения за владельцем.
 
