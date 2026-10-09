@@ -1482,8 +1482,10 @@ class ClientSetsTest(unittest.TestCase):
             self.assertEqual((simple["udp_only"], rel["udp_only"]), (["android"], []), "у «Просто» Android только на UDP")
             self.assertEqual(groups.recommended_preset(list(pr.values())), "reliable", mode)
         self.assertEqual(groups.via_line(cat, simple["plan"]),
-                         "Через VPN: Android, Windows — только приложения из списка · iPhone — всё, кроме российских сайтов")
-        self.assertEqual(groups.via_line(cat, {"windows": ["amneziavpn"]}), "Через VPN: Windows — всё устройство, вместе с банками")
+                         "Через VPN: Android, Windows — только приложения из списка · iPhone — всё, кроме российских сайтов, "
+                         "список не действует")
+        self.assertEqual(groups.via_line(cat, {"windows": ["amneziavpn"]}), "Через VPN: Windows — всё устройство, вместе с банками, "
+                                                                               "список не действует")
 
     def test_preset_keeps_what_the_server_has(self):
         cat = clients.load()

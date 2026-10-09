@@ -321,7 +321,8 @@ class CardsPageTest(Base):
 
     def test_status_connected_by_traffic(self):
         _, body = self.c.get("/handoff?group=g1")
-        self.assertIn("подключения по трафику не видны", body, "нет данных — не врём «ещё нет»")
+        self.assertIn("кто подключился — видно через 5 минут после первого сбора трафика", body,
+                      "нет данных — не врём «ещё нет» и говорим, когда станет видно")
         self.assertNotIn(">ещё нет<", body)
         self.seed_traffic("masha")
         _, body = self.c.get("/handoff?group=g1")
@@ -462,14 +463,14 @@ class ExportTest(Base):
         self.assertEqual(resp.status, 303)
         _, z = self.zip_of("", group="g2")
         names = z.namelist()
-        self.assertIn("lena/amneziawg.conf", names)
-        self.assertEqual(z.read("lena/amneziawg.conf").decode("utf-8").strip(), "[Interface]")
+        self.assertIn("lena/lena-amneziawg.conf", names)
+        self.assertEqual(z.read("lena/lena-amneziawg.conf").decode("utf-8").strip(), "[Interface]")
         self.assertTrue([n for n in names if n.startswith("lena/qr-") and n.endswith(".png")])
-        self.assertNotIn("секрет", z.read("lena/amneziawg.conf").decode("utf-8"))
+        self.assertNotIn("секрет", z.read("lena/lena-amneziawg.conf").decode("utf-8"))
         self.assertNotIn("amneziawg.key", " ".join(names), "ключевые файлы модулей не выдаются")
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
-        self.assertIn("lena/amneziawg.conf", [r[3] for r in rows])
-        self.assertIn("файл: amneziawg.conf", z.read("lena/instruction.txt").decode("utf-8"))
+        self.assertIn("lena/lena-amneziawg.conf", [r[3] for r in rows])
+        self.assertIn("файл: lena-amneziawg.conf", z.read("lena/instruction.txt").decode("utf-8"))
 
     def test_v2rayn_rules_file_goes_into_zip(self):
         resp, _ = self.create_group(name="Надёжно", proto=["vless-reality"], client__windows="v2rayn",
@@ -478,18 +479,18 @@ class ExportTest(Base):
         rules = paths.clients_dir() / "ivan" / "v2rayn-routing.json"
         self.assertTrue(rules.is_file())
         _, z = self.zip_of("", group="g2")
-        self.assertIn("ivan/v2rayn-routing.json", z.namelist())
-        self.assertEqual(z.read("ivan/v2rayn-routing.json"), rules.read_bytes())
+        self.assertIn("ivan/ivan-v2rayn-routing.json", z.namelist())
+        self.assertEqual(z.read("ivan/ivan-v2rayn-routing.json"), rules.read_bytes())
         text = z.read("ivan/instruction.txt").decode("utf-8")
-        self.assertIn("файл: v2rayn-routing.json", text)
+        self.assertIn("файл: ivan-v2rayn-routing.json", text)
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
         self.assertTrue(set(r[3] for r in rows[1:] if not r[3].startswith(("vless://", "hysteria2://")))
                         <= set(z.namelist()), "строки CSV с файлами указывают только на то, что в архиве")
         rules.unlink()
         _, z = self.zip_of("", group="g2")
-        self.assertNotIn("ivan/v2rayn-routing.json", z.namelist())
+        self.assertNotIn("ivan/ivan-v2rayn-routing.json", z.namelist())
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
-        self.assertNotIn("ivan/v2rayn-routing.json", [r[3] for r in rows])
+        self.assertNotIn("ivan/ivan-v2rayn-routing.json", [r[3] for r in rows])
 
     def test_per_app_step_uses_group_list(self):
         resp, _ = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"],
@@ -637,8 +638,8 @@ class DevicesTest(Base):
         sergey = z.read("sergey/instruction.txt").decode("utf-8")
         self.assertIn("Windows: «v2rayN»", sergey)
         self.assertNotIn("Android", sergey)
-        self.assertIn("sergey/v2rayn-routing.json", z.namelist())
-        self.assertNotIn("ivan/v2rayn-routing.json", z.namelist(), "у Ивана нет Windows — файла правил нет")
+        self.assertIn("sergey/sergey-v2rayn-routing.json", z.namelist())
+        self.assertNotIn("ivan/ivan-v2rayn-routing.json", z.namelist(), "у Ивана нет Windows — файла правил нет")
         _, page = self.c.get("/users/ivan")
         self.assertIn('data-pp="android"', page)
         self.assertNotIn('data-pp="windows"', page)

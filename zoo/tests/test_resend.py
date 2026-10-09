@@ -28,6 +28,9 @@ class ResendTest(GroupWebBase):
     def user(self, name):
         return users.list_users().require(name)
 
+    def msg_of(self, page, plat):
+        return html.unescape(re.search(rf'<pre id="msg-{plat}"[^>]*>(.*?)</pre>', page, re.S).group(1))
+
     def calls(self, start):
         return [c.split()[:2] for c in self.env.calls()[start:] if c.split()[1] in ("user_add", "user_del")]
 
@@ -54,7 +57,9 @@ class ResendTest(GroupWebBase):
         self.assertIn("Смените «устройства» в «Профиле»", page, "новый телефон другой — куда идти")
         msg = html.unescape(re.search(r'<pre id="msg-android"[^>]*>(.*?)</pre>', page, re.S).group(1))
         self.assertTrue(msg.startswith("Иван Петров, VPN на Android: что сделать\nЭто новые ключи взамен старых. "
-                                       "В «AmneziaWG», «v2rayN» сначала удалите старые подключения"), msg[:200])
+                                       "В «AmneziaWG» сначала удалите старые подключения"), msg[:200])
+        self.assertIn("В «v2rayN» сначала удалите старые подключения", self.msg_of(page, "windows"),
+                      "в каждом сообщении — только приложения этого устройства (четвёртый обход)")
         resp, _ = self.c.post("/handoff/export", {"u": IVAN, "fmt": "zip"})
         text = zipfile.ZipFile(io.BytesIO(resp.body)).read(f"{IVAN}/instruction.txt").decode("utf-8")
         self.assertIn("Это новые ключи взамен старых", text, "и в ZIP этого человека")
@@ -115,14 +120,14 @@ class ResendTest(GroupWebBase):
         self.assertEqual(self.user(IVAN).resend, ["apps:android"])
         self.assertEqual(self.user(OLGA).resend, [], "на iPhone список не действует — пересылать нечего")
         _, page = self.c.get("/resend")
-        self.assertIn("<h3>Android · «AmneziaWG»: новый файл или QR (старый туннель в «AmneziaWG» удалить, новый файл "
+        self.assertIn("<h3>Android: «AmneziaWG» — новый файл или QR (старый туннель в «AmneziaWG» удалить, новый файл "
                       "импортировать)</h3>", page)
         self.assertNotIn(f'value="{OLGA}"', page)
         self.c.post("/apps", {"action": "save"}, multi={"action": ["save"], "android": base.android + ["com.whatsapp"],
                                                         "windows": base.windows + ["Discord.exe"]})
         self.assertEqual(self.user(IVAN).resend, ["apps:android", "apps:windows"])
         _, page = self.c.get("/resend")
-        self.assertIn("<h3>Windows · «v2rayN»: новый файл правил (в «v2rayN» старый набор правил удалить, новый "
+        self.assertIn("<h3>Windows: «v2rayN» — новый файл правил (в «v2rayN» старый набор правил удалить, новый "
                       "импортировать и сделать активным)</h3>", page)
         resp, _ = self.c.post("/resend", {}, multi={"names": [IVAN, IVAN]})
         self.assertEqual(header(resp, "Location"), ["/resend"])

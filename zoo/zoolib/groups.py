@@ -51,7 +51,9 @@ NOTE_MAX = people.NOTE_MAX
 CLIENTS_MAX = 5       # клиентов на платформу
 MESSAGE_MAX = 3000    # знаков в тексте инструкции платформы
 KEEP: Any = object()  # «не менять» для update (None у allowlist значит «общий список»)
-INSTALL_MODES = ("self", "admin")   # кто ставит приложения: люди сами по инструкции / ИТ-администратор
+# кто ставит приложения: люди сами по инструкции / ИТ-администратор / телефоны — сами, компьютеры — ИТ (D61)
+INSTALL_MODES = ("self", "admin", "mixed")
+PHONES = ("android", "ios")
 MAIN_DEVICES = ("android", "ios", "windows")
 SHAKY = ("ss2022",)   # в полевом тесте терял данные (D37): в готовые варианты не берётся
 MAX_APPS = 2          # приложений на устройство в наборе по умолчанию
@@ -94,8 +96,15 @@ def clean_message(text: Any) -> str:
     return "\n".join(line.rstrip() for line in s.split("\n")).strip()
 
 
-def clean_mode(v: Any) -> str:
-    return v if v in INSTALL_MODES else "self"
+def clean_mode(v: Any, default: str = "self") -> str:
+    return v if v in INSTALL_MODES else default
+
+
+def mode_for(mode: str, plat: str) -> str:
+    """Кто ставит на устройстве: «mixed» — телефоны люди ставят сами (личные), компьютеры — ИТ (рабочие)."""
+    if mode == "mixed":
+        return "self" if plat in PHONES else "admin"
+    return mode if mode in INSTALL_MODES else "self"
 
 
 def _norm_protocols(ids: list[str]) -> list[str]:
@@ -116,7 +125,7 @@ class Group:
     allowlist: dict[str, list[str]] | None = None
     messages: dict[str, str] = field(default_factory=dict)
     msg_sigs: dict[str, str] = field(default_factory=dict)   # подпись набора клиентов на момент сохранения текста
-    install_mode: str = "self"   # «self» — люди ставят сами по инструкции, «admin» — приложения ставит ИТ
+    install_mode: str = "self"   # «self» — люди ставят сами, «admin» — приложения ставит ИТ, «mixed» — телефоны сами, компьютеры ИТ
     extra: list[str] = field(default_factory=list)   # устройства с приложениями, но не по умолчанию (Mac у одного человека)
 
     def __post_init__(self) -> None:
@@ -160,6 +169,15 @@ class Group:
     @property
     def all_protocols(self) -> bool:
         return ALL in self.protocols
+
+    def mode(self, plat: str) -> str:
+        """Кто ставит приложения на этом устройстве: «self» или «admin»."""
+        return mode_for(self.install_mode, plat)
+
+    @property
+    def any_admin(self) -> bool:
+        """Хоть на одном устройстве группы приложения ставит ИТ (нужны «Дистрибутивы» и памятка)."""
+        return any(self.mode(p) == "admin" for p in (self.app_devices or MAIN_DEVICES))
 
     def resolve(self, managed: list[str], variants: dict[str, str] | None = None) -> list[str]:
         """Модули, где участник получает учётки: протоколы группы среди включённых; вариант (hysteria2-obfs)
@@ -474,7 +492,7 @@ def has_store_link(client: dict[str, Any], plat: str) -> bool:
 def _store_bound(plat: str, mode: str) -> bool:
     """Магазин решает, что можно поставить: людям, которые ставят сами, и на iPhone (мимо App Store не
     поставить даже админу). Админ на Android и компьютерах берёт APK и установщики с GitHub."""
-    return mode == "self" or plat == "ios"
+    return mode_for(mode, plat) == "self" or plat == "ios"
 
 
 def _platform_pool(cat: clientcat.Catalog, plat: str, protocols: list[str],
@@ -487,7 +505,7 @@ def _platform_pool(cat: clientcat.Catalog, plat: str, protocols: list[str],
         return None
     target = _covered(opts)
     base = opts
-    if mode == "self":   # люди ставят сами с российским Apple ID: есть замена из РФ-магазина — иностранные не предлагаем
+    if mode_for(mode, plat) == "self":   # люди ставят сами с российским Apple ID: есть замена из РФ-магазина — иностранные не предлагаем
         ru = [o for o in opts if not o["no_ru_store"]]
         if ru:
             base, target = ru, _covered(ru)
@@ -727,7 +745,7 @@ def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
     devices = list(devices)
     easy = easy_protocols(cat)
     cands = [p for p in by_priority(available) if p in cat.protocols and not cat.protocols[p].get("pseudo")
-             and p not in SHAKY and (mode == "admin" or p in easy)]
+             and p not in SHAKY and (not any(mode_for(mode, ph) == "self" for ph in PHONES if ph in devices) or p in easy)]
 
     def make(pid: str, protos: list[str], plan: dict[str, list[str]] | None = None) -> dict[str, Any]:
         plan = suggest_set(cat, devices, protos, mode) if plan is None else plan
@@ -775,14 +793,16 @@ def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
 
 def via_line(cat: clientcat.Catalog, chosen: dict[str, list[str]]) -> str:
     """Что идёт через VPN у главного (первого) приложения каждого устройства: «Через VPN: Android, Windows — только
-    приложения из списка · iPhone — всё, кроме российских сайтов». Не описано ни у кого — пусто."""
+    приложения из списка · iPhone — всё, кроме российских сайтов, список не действует · macOS — только браузер Brave,
+    список не действует». Не описано ни у кого — пусто."""
     where: dict[str, list[str]] = {}
     for plat in cat.platforms:
         ids = chosen.get(plat) or []
         c = cat.client(ids[0]) if ids else None
         mode = cat.via(c, plat) if c else ""
         if mode:
-            where.setdefault(cat.raw["via"][mode], []).append(cat.platforms[plat])
+            text = cat.raw["via"][mode] + ("" if mode == "apps" else ", список не действует")
+            where.setdefault(text, []).append(cat.platforms[plat])
     return "Через VPN: " + " · ".join(f"{', '.join(v)} — {text}" for text, v in where.items()) if where else ""
 
 
@@ -1066,9 +1086,10 @@ def create(name: str, protocols: list[str], clients: dict[str, Any] | None = Non
 
 def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str],
             before_protos: dict[str, list[str]], before_allow: dict[str, Any], protocols: bool,
-            full: list[str] | tuple[str, ...] = ()) -> None:
+            kinds: dict[str, list[str]] | None = None) -> None:
     """Применить настройки групп к участникам names один раз (под блокировкой, реестры сохранены). Кому что переслать —
-    отметкой в реестре: сменились протоколы (или full — другая группа) — сообщение целиком, список — по приложениям."""
+    отметкой в реестре: kinds — что поменялось на его устройствах (resend.view_kinds; считает вызывающий: только он
+    знает, какой набор был до правки), список — по приложениям."""
     managed, _ = users.managed_protocols()
     variants = users.variant_modules()
     if protocols:
@@ -1102,14 +1123,14 @@ def _settle(rep: GroupReport, gs: Groups, ureg: users.Registry, names: list[str]
     from . import resend
     protos_now = {n: set(ureg.require(n).protocols) for n in names}
     rep.needs_qr = [n for n in names if protos_now[n] != set(before_protos[n]) or n in changed]
-    _mark(rep, ureg, [n for n in names if n in full or protos_now[n] != set(before_protos[n])],
-          resend.list_changes({n: before_allow.get(n, {}) for n in changed}, {n: after.get(n, {}) for n in changed}), gs)
+    _mark(rep, ureg, [], resend.list_changes({n: before_allow.get(n, {}) for n in changed},
+                                             {n: after.get(n, {}) for n in changed}), gs, kinds)
 
 
 def _mark(rep: GroupReport, ureg: users.Registry, full: list[str], lists: dict[str, set[str]] | None = None,
-          gs: Groups | None = None) -> None:
+          gs: Groups | None = None, kinds: dict[str, list[str]] | None = None) -> None:
     from . import resend
-    if marked := resend.mark(ureg, full, lists, gs):
+    if marked := resend.mark(ureg, full, lists, gs, kinds):
         ureg.save()
         rep.resend += [n for n in marked if n not in rep.resend]
 
@@ -1133,21 +1154,38 @@ def member_view(cat: clientcat.Catalog, clients: dict[str, list[str]], devices: 
     return out
 
 
-def _touched(names: list[str], ureg: users.Registry, old: Group, new: Group, sel: list[str]) -> list[str]:
-    """Участники, у которых на их устройствах сменились приложения или ключи: правка Windows не задевает тех, у кого
-    только телефон. Каталог не читается — все."""
+def view_of(cat: clientcat.Catalog, u: users.User, g: Group, sel: list[str]) -> dict[str, Any]:
+    """member_view человека в группе g: его устройства, протоколы, которые он видит (свой набор и owner — все)."""
+    sees_all = u.custom or u.name == users.OWNER
+    return member_view(cat, g.clients, devices_of(u, g) or [], sel if sees_all else g.offered(sel))
+
+
+def _touched(names: list[str], ureg: users.Registry, old: Group, new: Group, sel: list[str]) -> dict[str, list[str]]:
+    """{участник: что поменялось на его устройствах} — только у кого на его устройствах сменились приложения или ключи:
+    правка Windows не задевает тех, у кого только телефон; ещё один ключ — «добавьте», а не «удалите всё». Каталог не
+    читается — все, сообщение целиком."""
+    from . import resend
     try:
         cat = clientcat.load()
     except clientcat.ClientsError:
-        return list(names)
-    out = []
+        return {n: ["all"] for n in names}
+    out = {}
     for n in names:
         u = ureg.require(n)
-        sees_all = u.custom or n == users.OWNER
-        views = [member_view(cat, x.clients, devices_of(u, x) or [], sel if sees_all else x.offered(sel)) for x in (old, new)]
-        if views[0] != views[1]:
-            out.append(n)
+        if kinds := resend.view_kinds(view_of(cat, u, old, sel), view_of(cat, u, new, sel)):
+            out[n] = kinds
     return out
+
+
+def preview_change(g: Group, members: list[users.User], sel: list[str], add: Any = (),
+                   clients: dict[str, list[str]] | None = None) -> dict[str, list[str]]:
+    """Кому и что пришлось бы переслать, если группе добавить протоколы add и/или задать наборы приложений clients
+    ({устройство: приложения}) — тем же сравнением, что update(): подсказки «не работает» называют число людей,
+    которое потом покажет «Кому переслать»."""
+    new = Group(g.id, g.name, list(g.protocols) if g.all_protocols or not add else [*g.protocols, *add],
+                {**{p: list(v) for p, v in g.clients.items()}, **(clients or {})}, extra=list(g.extra))
+    reg = users.Registry(paths.users_file(), list(members))
+    return _touched([u.name for u in members], reg, g, new, sel)
 
 
 def _snapshot(ureg: users.Registry, names: list[str]) -> tuple[dict[str, list[str]], dict[str, Any]]:
@@ -1197,8 +1235,8 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
             _settle(rep, gs, ureg, names, before[0], before[1], protos_changed)
             if offer_changed:   # учётки те же, но набор ссылок (Salamander) другой
                 rep.needs_qr += [n for n in names if n not in rep.needs_qr and n not in rep.skipped]
-        if names and (offer_changed or clients_changed):   # другие ссылки или приложения на его устройствах — сообщение целиком
-            _mark(rep, ureg, _touched(names, ureg, old, g, sel), gs=gs)
+        if names and (offer_changed or clients_changed):   # другие ключи или приложения на его устройствах
+            _mark(rep, ureg, [], gs=gs, kinds=_touched(names, ureg, old, g, sel))
         return rep
 
 
@@ -1235,7 +1273,7 @@ def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group, keep_
     """Перевод в группу под блокировкой: реестры сохраняются, настройки группы применяются один раз.
     keep_custom — «свой набор протоколов» остаётся (меняется только группа); иначе набор возвращается к группе."""
     before = _snapshot(ureg, names)
-    other = [n for n in names if ureg.require(n).group != g.id]   # другая группа — другие приложения и инструкция
+    kinds = _move_kinds(gs, ureg, names, g)   # другая группа — другие приложения и инструкция: что именно, по устройствам
     for n in names:
         u = ureg.require(n)
         u.group = g.id
@@ -1245,8 +1283,32 @@ def _move_in(gs: Groups, ureg: users.Registry, names: list[str], g: Group, keep_
     refresh_mirror(gs, ureg)
     rep = GroupReport(g, "готово")
     rep.moved = list(names)
-    _settle(rep, gs, ureg, names, before[0], before[1], True, full=other)
+    _settle(rep, gs, ureg, names, before[0], before[1], True, kinds)
     return rep
+
+
+def _move_kinds(gs: Groups, ureg: users.Registry, names: list[str], g: Group) -> dict[str, list[str]]:
+    """Что поменяется на устройствах у переводимых в g (до перевода: старая группа ещё известна). Без старой группы или
+    каталога — сообщение целиком."""
+    from . import resend
+    try:
+        cat: clientcat.Catalog | None = clientcat.load()
+    except clientcat.ClientsError:
+        cat = None
+    sel = users.selectable_protocols()
+    out: dict[str, list[str]] = {}
+    for n in names:
+        u = ureg.require(n)
+        if u.group == g.id:
+            continue
+        old = gs.get(u.group)
+        if cat is None or old is None:
+            out[n] = ["all"]
+            continue
+        after = users.User(u.name, protocols=list(u.protocols), group=g.id, devices=list(u.devices))
+        if kinds := resend.view_kinds(view_of(cat, u, old, sel), view_of(cat, after, g, sel)):
+            out[n] = kinds
+    return out
 
 
 def move_many(names: list[str], ref: str) -> GroupReport:

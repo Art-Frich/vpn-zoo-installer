@@ -29,6 +29,7 @@ class GuideError(Exception):
 
 def _neutral(step: str) -> str:
     """Шаги каталога написаны для сообщения («ссылку из сообщения»); в общем документе — «из сообщения администратора»."""
+    step = step.replace("{login}-", "ваше-имя-")   # файл правил приходит под именем человека: «ivan-v2rayn-routing.json»
     return SENT_RE.sub(" от администратора", step.replace("из сообщения", "из сообщения администратора"))
 
 
@@ -103,7 +104,7 @@ def platforms(cat: clients.Catalog) -> str:
 
 
 def report(cat: clients.Catalog) -> str:
-    return cat.raw["report"] + "\n"
+    return cat.report("guide") + "\n"
 
 
 BLOCKS = {"platforms": platforms, "report": report}

@@ -34,6 +34,20 @@ def contacts() -> Contacts:
     return Contacts(bool(last) or traffic.last_run() is not None, last)
 
 
+class Fix(str):
+    """Правка группы, которую советует подсказка: сама строка — устройство (счётчик людей с ним), add — протоколы
+    добавить группе, switch — новый набор приложений устройства, give — приложение добавить устройству. По ним
+    страница человека считает, кому придёт что переслать, тем же сравнением, что «Кому переслать»."""
+    add: tuple[str, ...] = ()
+    switch: tuple[str, ...] = ()
+    give: str = ""
+
+    def __new__(cls, plat: str, add: Any = (), switch: Any = (), give: str = "") -> "Fix":
+        obj = super().__new__(cls, plat)
+        obj.add, obj.switch, obj.give = tuple(add), tuple(switch), give
+        return obj
+
+
 def _either(titles: list[str]) -> str:
     return titles[0] if len(titles) == 1 else ", ".join(titles[:-1]) + " или " + titles[-1]
 
@@ -117,20 +131,20 @@ def _working(a: App) -> list[str]:
     return [p for p, s in a.protos if s in ("ok", "warn")]
 
 
-def _candidate(cat: clientcat.Catalog | None, plat: str, protos: list[str]) -> tuple[str, str] | None:
-    """(протокол, приложение) — каким приложением каталога на устройстве взять один из протоколов: рекомендованное
-    каталогом, иначе первое, которое его берёт и принимает ссылки."""
+def _candidate(cat: clientcat.Catalog | None, plat: str, protos: list[str]) -> tuple[str, str, str] | None:
+    """(протокол, приложение, его id) — каким приложением каталога на устройстве взять один из протоколов:
+    рекомендованное каталогом, иначе первое, которое его берёт и принимает ссылки."""
     if cat is None:
         return None
     for p in protos:
         c = cat.recommended(plat, p)
         if c is not None and c.get("import") and cat.status(c, p, plat) in ("ok", "warn"):
-            return p, c["name"]
+            return p, c["name"], c["id"]
     for p in protos:
         c = next((c for c in cat.clients if plat in c["platforms"] and c.get("import")
                   and cat.status(c, p, plat) == "ok"), None)
         if c is not None:
-            return p, c["name"]
+            return p, c["name"], c["id"]
     return None
 
 
@@ -141,10 +155,10 @@ def _dead(broken: set[str] | frozenset[str], variants: dict[str, str] | None = N
 
 
 def _other_kind(cat: clientcat.Catalog | None, plat: str, title: str, mine: list[App], need: str, offered: list[str],
-                selectable: list[str], dead: Any = lambda p: False) -> str:
+                selectable: list[str], dead: Any = lambda p: False) -> tuple[str, Fix | str]:
     """Как дать устройству протокол другого вида (need — «udp» или «tcp»): добавить группе протокол, который его
     приложение уже берёт; или приложение для протокола, который у группы уже есть; или и то и другое. Не работающие
-    сейчас на сервере протоколы не советуются."""
+    сейчас на сервере протоколы не советуются. (текст, правка группы — Fix; советовать нечего — пусто)."""
     have = [p for p in offered if groups.TRANSPORT.get(p) == need and not dead(p)]
     names = ", ".join(f"«{a.name}»" for a in mine)
     lead = f"{_titles(have)} у группы есть, но {names} {'его' if len(have) == 1 else 'их'} не берёт — " if have else ""
@@ -153,13 +167,15 @@ def _other_kind(cat: clientcat.Catalog | None, plat: str, title: str, mine: list
     for p in add:
         a = next((a for a in mine if p in a.can), None)
         if a is not None:
-            return lead + f"добавьте группе {manifests.proto_title(p)}: «{a.name}» его берёт."
+            return lead + f"добавьте группе {manifests.proto_title(p)}: «{a.name}» его берёт.", Fix(plat, add=[p])
     if (got := _candidate(cat, plat, have)) is not None:
         proto = manifests.proto_title(got[0])
-        return lead + f"дайте на {title} «{got[1]}»" + ("." if proto == got[1] else f" ({proto}).")
+        return (lead + f"дайте на {title} «{got[1]}»" + ("." if proto == got[1] else f" ({proto})."),
+                Fix(plat, give=got[2]))
     if (got := _candidate(cat, plat, add)) is not None:
-        return lead + f"добавьте группе {manifests.proto_title(got[0])} и на {title} «{got[1]}»."
-    return lead + f"другого приложения для {title} с {need.upper()} нет."
+        return (lead + f"добавьте группе {manifests.proto_title(got[0])} и на {title} «{got[1]}».",
+                Fix(plat, add=[got[0]], give=got[2]))
+    return lead + f"другого приложения для {title} с {need.upper()} нет.", ""
 
 
 def _upper(s: str) -> str:
@@ -177,7 +193,8 @@ def transport_tips(found: list[App], offered: list[str], selectable: list[str],
         by_plat.setdefault(a.plat or a.platform, []).append(a)
     for plat, mine in by_plat.items():
         title = mine[0].platform
-        took = groups.by_priority(p for a in mine for p in _working(a))
+        # упавший на сервере протокол запасным не предлагается: о нём — строка «На сервере не работает»
+        took = groups.by_priority(p for a in mine for p in _working(a) if not dead(p))
         udp = [p for p in took if groups.TRANSPORT.get(p) == "udp"]
         tcp = [p for p in took if groups.TRANSPORT.get(p) == "tcp"]
         if udp and tcp:
@@ -185,24 +202,33 @@ def transport_tips(found: list[App], offered: list[str], selectable: list[str],
             out.append(("info", f"{title}: не подключается — пусть включит TCP ({_titles(tcp)})"
                         + (f" в «{where}»" if where else "") + f"; где режут TCP — наоборот, UDP ({_titles(udp)}).", ""))
         elif udp:
+            text, fix = _other_kind(cat, plat, title, mine, "tcp", offered, selectable, dead)
             out.append(("warn", f"{title}: только UDP ({_titles(udp)}) — где режут UDP (мобильный интернет, офисный "
-                                "Wi-Fi), не подключится. " + _upper(_other_kind(cat, plat, title, mine, "tcp", offered,
-                                                                               selectable, dead)), plat))
+                                "Wi-Fi), не подключится. " + _upper(text), fix))
         elif tcp:
-            out.append(("info", f"{title}: только TCP ({_titles(tcp)}) — обычно хватает. Если режут и его: "
-                        + _other_kind(cat, plat, title, mine, "udp", offered, selectable, dead), plat))
+            text, fix = _other_kind(cat, plat, title, mine, "udp", offered, selectable, dead)
+            out.append(("info", f"{title}: только TCP ({_titles(tcp)}) — обычно хватает. Если режут и его: " + text, fix))
     return out
 
 
 def _switch(cat: clientcat.Catalog, plat: str, title: str, offered: list[str] | tuple[str, ...],
-            selectable: list[str] | tuple[str, ...], dead: Any) -> str:
+            selectable: list[str] | tuple[str, ...], dead: Any) -> tuple[str, Fix | str]:
     """«смените Windows в группе на «v2rayN» (ему достанется VLESS XHTTP)»: приложение каталога, где через VPN идёт не всё,
-    и какой работающий протокол ему достанется; рабочего у группы нет — какой протокол добавить. Нет такого — пусто."""
+    и какой работающий протокол ему достанется; достанется только UDP — сразу и какой TCP добавить группе (одна правка,
+    одна пересылка, а не вторая тревога «только UDP»); рабочего у группы нет — какой протокол добавить. Нет — пусто."""
     cands = [c for c in cat.clients if plat in c["platforms"] and c.get("import") and cat.via(c, plat) not in ("all", "")]
     for c in cands:
         gets = [p for p in offered if cat.status(c, p, plat) == "ok" and not dead(p)]
-        if gets:
-            return f"смените {title} в группе на «{c['name']}» (ему достанется {_titles(gets[:1])})."
+        if not gets:
+            continue
+        if not any(groups.TRANSPORT.get(p) == "tcp" for p in gets):
+            tcp = [p for p in groups.by_priority(selectable) if p not in offered and groups.TRANSPORT.get(p) == "tcp"
+                   and cat.status(c, p, plat) == "ok" and not dead(p)]
+            if tcp:
+                return (f"смените {title} в группе на «{c['name']}» и добавьте группе {_titles(tcp[:1])} — одна правка и "
+                        f"одна пересылка (с одним {_titles(gets[:1])} у него было бы только UDP).",
+                        Fix(plat, add=tcp[:1], switch=[c["id"]]))
+        return f"смените {title} в группе на «{c['name']}» (ему достанется {_titles(gets[:1])}).", Fix(plat, switch=[c["id"]])
     for c in cands:
         add = [p for p in groups.by_priority(selectable) if p not in offered and cat.status(c, p, plat) == "ok"
                and not dead(p)]
@@ -210,8 +236,9 @@ def _switch(cat: clientcat.Catalog, plat: str, title: str, offered: list[str] | 
             gets = [p for p in offered if cat.status(c, p, plat) in ("ok", "warn")]
             why = (f" (сейчас ему достанется только {_titles(gets)} — {'он не работает' if len(gets) == 1 else 'они не работают'})"
                    if gets and all(dead(p) for p in gets) else "")
-            return f"смените {title} в группе на «{c['name']}» и добавьте группе {_titles(add[:1])}{why}."
-    return ""
+            return (f"смените {title} в группе на «{c['name']}» и добавьте группе {_titles(add[:1])}{why}.",
+                    Fix(plat, add=add[:1], switch=[c["id"]]))
+    return "", ""
 
 
 def app_tips(found: list[App], cat: clientcat.Catalog | None = None, offered: list[str] | tuple[str, ...] = (),
@@ -220,7 +247,7 @@ def app_tips(found: list[App], cat: clientcat.Catalog | None = None, offered: li
     названа: другое его приложение на том же устройстве, иначе приложение каталога и какой рабочий протокол ему
     достанется (_switch). Третье поле — устройство, если нужна правка группы."""
     out: list[tuple[str, str, str]] = []
-    slow: dict[tuple[str, str, str], list[str]] = {}   # (приложение, чем заменить, устройство правки) → устройства
+    slow: dict[tuple[str, str], tuple[list[str], Fix | str]] = {}   # (приложение, чем заменить) → устройства, правка
     for a in found:
         label = f"«{a.name}» ({a.platform})"
         if not a.protos:
@@ -231,16 +258,27 @@ def app_tips(found: list[App], cat: clientcat.Catalog | None = None, offered: li
         if a.via == "all":
             alt = next((f"пусть включит «{b.name}»." for b in found if b.platform == a.platform and b.via != "all"
                         and any(not dead(p) for p in _working(b))), "")
-            fix = ""
+            fix: Fix | str = ""
             if not alt and cat is not None:
-                alt = _switch(cat, a.plat, a.platform, offered, selectable or offered, dead)
-                fix = a.plat if alt else ""
-            slow.setdefault((a.name, alt, fix), []).append(a.platform)
-    for (name, alt, fix), plats in slow.items():
+                alt, fix = _switch(cat, a.plat, a.platform, offered, selectable or offered, dead)
+            slow.setdefault((a.name, alt), ([], fix))[0].append(a.platform)
+        elif a.via == "apps" and cat is not None and _rules_app(cat, a):
+            out.append(("info", f"«{a.name}» ({a.platform}): медленно только приложения из его списка «Через VPN» — по "
+                                f"подсказке «Медленно» ниже; медленно всё подряд — проверьте, что в «{a.name}» активен наш "
+                                "набор правил (шаг импорта файла правил), иначе через VPN может идти весь компьютер; "
+                                "правила активны — дело не в VPN.", ""))
+    for (name, alt), (plats, fix) in slow.items():
         where = ", ".join(plats)
         out.append(("info", f"Медленно в «{name}» ({where}): через VPN идёт всё устройство — "
                     + (alt or "приложения, где идёт не всё, для этого устройства нет."), fix))
     return out
+
+
+def _rules_app(cat: clientcat.Catalog, a: App) -> bool:
+    """Список «через VPN» в приложении — из нашего файла правил (v2rayN на Windows): если правило не активно, через VPN
+    идёт всё."""
+    c = cat.client(a.cid) if a.cid else next((c for c in cat.clients if c["name"] == a.name), None)
+    return bool(c and c.get("per_app") == "rules" and any(ex["platform"] == a.plat for ex in c.get("extra", [])))
 
 
 def speed_tip(found: list[App], offered: list[str] | tuple[str, ...], selectable: list[str] | tuple[str, ...],
@@ -264,9 +302,9 @@ def speed_tip(found: list[App], offered: list[str] | tuple[str, ...], selectable
             if add:
                 alts.append(f"добавьте группе {_titles(add[:1])} («{a.name}» его берёт)")
                 break
-    first = "; ".join(alts) or "дайте группе другой протокол"
-    return (f"Медленно: с VPN намного медленнее, чем без, — {first}. Медленно у всех — «Обзор»: нагрузка процессора "
-            "и канал сервера.")
+    first = "; ".join(alts) or "другого протокола, который берут его приложения, на сервере нет"
+    return (f"Медленно: с VPN намного медленнее, чем без, — {first}. Медленно у всех — «Обзор»: нагрузка процессора; "
+            "«Проверка» → «Самопроверка с сервера»: сколько тянет туннель на самом сервере.")
 
 
 def server_tip(found: list[App], mine: list[str], broken: set[str],
@@ -349,6 +387,48 @@ def usable(cat: clientcat.Catalog | None, u: users.User, g: groups.Group | None,
     found = apps(cat, u, g, mine)
     took = {p for a in found for p in _working(a)}
     return [p for p in mine if p in took] if found else mine
+
+
+@dataclass
+class Fallback:
+    group: str          # название группы
+    gid: str
+    device: str         # «Android»
+    app: str            # запасное приложение, которое надо включить
+    people: list[users.User] = field(default_factory=list)
+
+
+def fallbacks(protocols: list[dict[str, Any]], reg: users.Registry, gs: groups.Groups) -> list[Fallback]:
+    """Кому при сбое протокола писать «включите запасное»: у основного (первого) приложения устройства все протоколы
+    сейчас не работают на сервере, а у запасного на том же устройстве рабочий есть (AmneziaWG упал — Android с
+    «Надёжно» живёт на Happ, но сам человек об этом не узнает). По группе и устройству."""
+    broken = {p["id"] for p in protocols if p.get("enabled") and not p.get("ok")}
+    if not broken:
+        return []
+    selectable = users.selectable_protocols()
+    variants = users.variant_modules()
+    dead = _dead(broken, variants)
+    try:
+        cat = clientcat.load()
+    except clientcat.ClientsError:
+        return []
+    out: dict[tuple[str, str, str], Fallback] = {}
+    for u in reg.visible():
+        g = gs.get(u.group)
+        if not u.enabled or u.name == users.OWNER or g is None:
+            continue
+        by_plat: dict[str, list[App]] = {}
+        for a in apps(cat, u, g, offered_to(u, g, selectable, variants)):
+            by_plat.setdefault(a.plat, []).append(a)
+        for mine in by_plat.values():
+            main = mine[0]
+            if not _working(main) or not all(dead(p) for p in _working(main)):
+                continue
+            alt = next((b for b in mine[1:] if any(not dead(p) for p in _working(b))), None)
+            if alt is not None:
+                key = (g.id, main.platform, alt.name)
+                out.setdefault(key, Fallback(g.name, g.id, main.platform, alt.name)).people.append(u)
+    return list(out.values())
 
 
 def stranded(protocols: list[dict[str, Any]], reg: users.Registry, gs: groups.Groups) -> dict[str, tuple[str, int]]:

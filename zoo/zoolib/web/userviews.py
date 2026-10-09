@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import sqlite3
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +11,6 @@ from typing import TYPE_CHECKING, Any, Callable
 from .. import allowlist, clients, groups, manifests, paths, people, protolib, qr, resend, support, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
-from ..probe import rank
 from . import charts, clientviews
 from . import table as tbl
 from .html import Markup, badge, card, csrf_input, join, kv, post_button, t, table
@@ -131,7 +129,49 @@ def _disable_confirm(label: str) -> str:
 
 def _rekey_confirm(label: str) -> str:
     return (f"Новые ключи для «{label}»? Старые ссылки, QR и файлы перестанут работать сразу, на всех его устройствах — "
-            "и телефон, и компьютер придётся настроить заново по новому сообщению.")
+            "и телефон, и компьютер придётся настроить заново по новому сообщению. Потерял одно устройство — кнопка "
+            "«Потерял …» в блоке «Не работает или медленно»: ключи сменятся только у него.")
+
+
+def user_lost(app: "App", req: "Request", name: str) -> "Response":
+    """«Потерял телефон»: новые ключи только в протоколах этого устройства (другие его устройства с теми же ключами —
+    тоже в «Кому переслать», остальные не трогаются); в сообщении для нового устройства — «поставьте заново»."""
+    s = req.session
+    dev = req.form.get("dev", "")[:16]
+    reg = users.list_users()
+    u = reg.get(name)
+    try:
+        cat = clients.load()
+        if u is None or u.system or name == users.OWNER:
+            raise users.UserError(f"{name}: у этого пользователя ключи так не меняются")
+        g = _group_of(u)
+        if dev not in (groups.devices_of(u, g) or []):
+            raise users.UserError("такого устройства у человека нет: обновите страницу")
+        plan = resend.lost_plan(cat, u, g, dev)
+        rep = users.rekey(name, only=plan.mods, lost=dev)
+    except (users.UserError, LockTimeout, clients.ClientsError) as e:
+        s.flash("bad", str(e))
+        return _redirect(f"/users/{name}")
+    except protolib.ProtoError as e:
+        s.flash("bad", f"{e} {e.short()}")
+        return _redirect(f"/users/{name}")
+    app.invalidate("status")
+    app.invalidate_links(name)
+    title = cat.platforms.get(dev, dev)
+    if rep.ok:
+        others = "; ".join(f"{cat.platforms.get(p, p)} ({', '.join(names)})" for p, names in plan.others.items())
+        s.flash("ok", f"{u.label}: новые ключи для {title} выданы ({_mods(plan.mods)}), старые не работают. Сообщение для "
+                      f"{title} — «настройка нового устройства»"
+                      + (f"; {others} — тот же ключ: туда тоже новое сообщение" if others else
+                         "; другие его устройства не тронуты") + ". Новый телефон другой (Android ↔ iPhone)? Смените "
+                      "«устройства» в «Профиле».", [("кому переслать", "/resend")])
+    else:
+        s.flash("bad", f"{u.label}: {rep.message}")
+    return _redirect(f"/users/{name}")
+
+
+def _mods(mods: list[str]) -> str:
+    return ", ".join(manifests.proto_title(m) for m in mods)
 
 
 def user_rekey(app: "App", req: "Request", name: str) -> "Response":
@@ -192,11 +232,29 @@ def _broken(app: "App") -> set[str]:
         return set()
 
 
+def _fix_count(fix: Any, g: groups.Group, mem: list[users.User], cat: clients.Catalog | None) -> tuple[int, str, bool]:
+    """Сколько людей получат что переслать после правки подсказки, у кого (устройства) и только ли «ещё один ключ»: тем
+    же сравнением, что потом покажет «Кому переслать» (groups.preview_change). Правка без подробностей — по устройству."""
+    plat = str(fix)
+    if not isinstance(fix, support.Fix) or not (fix.add or fix.switch or fix.give) or cat is None:
+        n = sum(1 for u in mem if plat in (groups.devices_of(u, g) or []))
+        return n, cat.platforms.get(plat, plat) if cat else plat, False
+    sets = None
+    if fix.switch:
+        sets = {plat: list(fix.switch)}
+    elif fix.give:
+        sets = {plat: [*g.clients.get(plat, []), fix.give]}
+    kinds = groups.preview_change(g, mem, users.selectable_protocols(), fix.add, sets)
+    devs = list(dict.fromkeys(k.split(":")[1] for ks in kinds.values() for k in ks if ":" in k))
+    add_only = bool(kinds) and all(k.startswith("add:") for ks in kinds.values() for k in ks)
+    return len(kinds), ", ".join(cat.platforms.get(d, d) for d in devs), add_only
+
+
 def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts,
-                 app: "App | None" = None) -> tuple[Markup | None, bool]:
-    """«Если у человека не работает»: работают ли его протоколы на сервере, доходит ли он, что поменять по его
-    устройствам (UDP/TCP, другое приложение — со ссылкой на настройки группы и сколько человек получат новое
-    сообщение), что спросить. Есть предупреждение — блок раскрыт (второе значение: страница ставит его наверх)."""
+                 app: "App | None" = None, csrf: str = "") -> tuple[Markup | None, bool]:
+    """«Не работает или медленно»: работают ли его протоколы на сервере, доходит ли он, что поменять по его
+    устройствам (UDP/TCP, другое приложение — со ссылкой на настройки группы и сколько человек получат что переслать —
+    столько же покажет «Кому переслать»), что спросить, потерял устройство. Есть предупреждение — блок раскрыт."""
     if user.system:
         return None, False
     try:
@@ -212,21 +270,24 @@ def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts,
         except (groups.GroupError, users.UserError):
             mem = []
     devices = groups.devices_of(user, g) or []
-    names = [cat.platforms.get(d, d) for d in devices] if cat else devices
     items: list[tuple[Any, ...]] = []
     if not user.devices and g is not None and len(g.devices) > 1:
         items.append(("info", "Устройства не отмечены — подсказки по всем устройствам группы. Отметьте его устройства "
                               "в «Профиле»: подсказки станут точнее."))
     said = False   # «касается всей группы» — один раз, у остальных правок только ссылка
+    counts: set[str] = set()
     for kind, text, fix in tips:
         if fix and g is not None:
-            n = sum(1 for u in mem if fix in (groups.devices_of(u, g) or []))
-            dev = cat.platforms.get(fix, fix) if cat else fix
+            n, _, add_only = _fix_count(fix, g, mem, cat)
+            what = (f"ещё один ключ получат {n} чел., старые подключения у них работают" if add_only
+                    else f"новое сообщение получат {n} чел")
+            # у другой правки другое число — в подсказке ссылки; то же число второй раз не повторяем
             link = t("a", "Настройки группы", href=f"/groups/{g.id}#settings",
-                     title=f"новое сообщение получат {n} чел. с {dev}")
-            tail = "" if said else (f" Правка — на всю группу «{g.name}»: новое сообщение получат те, у кого {dev} "
-                                    f"({n} чел.). Нужно только ему — переведите его в отдельную группу.")
+                     title=None if not said or what in counts else f"после этой правки: {what}")
+            tail = "" if said else (f" Правка — на всю группу «{g.name}»: {what}. Нужно только ему — переведите его в "
+                                    "отдельную группу.")
             said = True
+            counts.add(what)
             items.append((kind, text + tail, link))
         elif text.startswith("Ни разу") and user.enabled:
             items.append((kind, text, t("a", "Сообщение", href=f"/handoff?u={user.name}")))
@@ -240,29 +301,54 @@ def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts,
     if rejects and any(p.startswith("hysteria2") for p in user.protocols):
         items.append(("info", f"Hysteria2 отказал по неверному ключу {rejects} раз за сутки (чей ключ, не видно): если "
                               "это он, у него старый ключ — перешлите сообщение.", t("a", "Атаки", href="/journal")))
-    if user.name != users.OWNER:
-        items.append(("info", lost_text(devices, names)))
+    if user.name != users.OWNER and cat is not None and devices:
+        items.append(lost_item(cat, user, g, devices, csrf))
     items += [("info", "Спросите: Wi-Fi или мобильный и какой оператор, приложение, снимок ошибки, с какого времени; "
-                       "если медленно — скорость на speedtest.net с VPN и без."),
+                       "если медленно — скорость на speedtest.net в Brave с включённым VPN и в обычном браузере (через "
+                       "VPN идёт весь телефон или компьютер — с VPN и без)."),
               ("info", "Режет ли сеть у человека — пробник: Docker на компьютере в той же сети (на телефон не ставится).",
                t("a", "Проверка", href="/probe"))]
     alarm = any(it[0] in ("warn", "bad") for it in items)
-    return t("details", t("summary", "Если у человека не работает"), alert_list(items), class_="card more trouble",
+    return t("details", t("summary", "Не работает или медленно"), alert_list(items), class_="card more trouble",
              open=alarm or None), alarm
 
 
-PHONES = ("android", "ios")
+PHONES = groups.PHONES
 
 
-def lost_text(devices: list[str], names: list[str]) -> str:
-    """«Потерял …» по его устройствам: что отключат «Новые ключи» и что настроить заново."""
-    phone = any(d in PHONES for d in devices)
-    comp = any(d not in PHONES for d in devices)
+def lost_text(cat: clients.Catalog, plans: list[resend.LostPlan]) -> str:
+    """«Потерял телефон или компьютер — новые ключи только для него»: по каждому его устройству — какие ключи сменятся и
+    какие другие устройства с теми же ключами придётся настроить заново; где общий ключ — «Отключить» до встречи."""
+    devs = [p.plat for p in plans]
+    phone = any(d in PHONES for d in devs)
+    comp = any(d not in PHONES for d in devs)
     what = "телефон или компьютер" if phone and comp else "телефон" if phone else "компьютер" if comp else "устройство"
-    if len(devices) > 1:
-        return (f"Потерял {what} — «Новые ключи»: старые перестанут работать на всех его устройствах "
-                f"({', '.join(names)}); оставшиеся настроить заново по новому сообщению.")
-    return f"Потерял {what} — «Новые ключи»: старый ключ перестанет работать; новый — в новом сообщении."
+    parts = []
+    for p in plans:
+        title = cat.platforms.get(p.plat, p.plat)
+        line = f"{title}: сменятся {_mods(p.mods)}"
+        if p.others:
+            line += "; " + ", ".join(f"{cat.platforms.get(o, o)} («{'», «'.join(n)}»)" for o, n in p.others.items()) + \
+                " — тот же ключ, настроить заново"
+        elif len(devs) > 1:
+            line += ", остальное не тронем"
+        parts.append(line)
+    shared = any(p.others for p in plans)
+    return (f"Потерял {what} — новые ключи только для него (кнопка ниже), в сообщении для нового — «поставьте "
+            f"заново». " + ". ".join(parts) + "."
+            + (" До встречи можно «Отключить»: VPN закроется на всех его устройствах, ключи прежние." if shared else ""))
+
+
+def lost_item(cat: clients.Catalog, user: users.User, g: groups.Group | None, devices: list[str],
+              csrf: str) -> tuple[Any, ...]:
+    plans = [resend.lost_plan(cat, user, g, d) for d in devices if d in cat.platforms]
+    buttons = [post_button(f"/users/{user.name}/lost", f"Потерял {cat.platforms.get(p.plat, p.plat)}", csrf, "btn small",
+                           {"dev": p.plat},
+                           confirm=f"Новые ключи для {cat.platforms.get(p.plat, p.plat)} «{user.label}»? Сменятся: "
+                                   f"{_mods(p.mods)}." + (" Тот же ключ на: " + ", ".join(cat.platforms.get(o, o) for o in p.others)
+                                                         + " — их тоже настроить заново." if p.others else ""))
+               for p in plans] if csrf else []
+    return ("info", lost_text(cat, plans), t("span", buttons, class_="actions") if buttons else None)
 
 
 def _created_local(created: str) -> str:
@@ -788,9 +874,8 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     ctx = clientviews.Ctx.load()
     shown: dict[str, str] = {}
     devices = groups.devices_of(user, grp)
-    update = resend.update_line(ctx.cat if ctx else None, user, grp)
     connect = clientviews.connect_card(links, name, ctx, grp, label=user.label, shown=shown, devices=devices,
-                                       csrf=csrf, update=update)
+                                       csrf=csrf, who=user)
     where = used_where(links, ctx, grp, devices, name) if ctx is not None and grp is not None and grp.clients else None
     if where:   # только ключи и файлы его устройств: чужой файл «Windows» у человека с одним телефоном путает
         base = show
@@ -804,11 +889,11 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
                  t("p", clientviews.SEND_WARN, class_="hint") if connect is None else None,
                  class_="card more", open=connect is None or None) if tiles else None
     sub = " · ".join(x for x in ((name if user.display else ""), user.note) if x)
-    trouble, alarm = trouble_card(user, grp, seen, app)
+    trouble, _ = trouble_card(user, grp, seen, app, csrf)
+    # «не работает или медленно» — всегда над сообщениями (свёрнут, если тревог нет): жалоба — частая причина зайти
     body = [page_head(user.label, sub or None, actions, top=False), resend_alert(user, grp, csrf), err_list,
-            trouble if alarm else None, connect, advanced,
+            trouble, connect, advanced,
             None if connect or advanced else card("Подключить", t("p", "Ключей нет.", class_="muted")),
-            None if alarm else trouble,
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
 
@@ -927,8 +1012,9 @@ def used_where(links: list[protolib.Link], ctx: clientviews.Ctx, g: groups.Group
     for plat, title in ctx.cat.platforms.items():
         if devices is not None and plat not in devices:
             continue
-        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, clientviews.store_first(g),
-                                      ctx.al, ctx.apps_for(plat, g, name), bool(g and g.install_mode == "admin"))
+        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
+                                      clientviews.store_first(g, plat), ctx.al, ctx.apps_for(plat, g, name),
+                                      clientviews.admin_on(g, plat))
         for sec in (pack.sections if pack else ()):
             for it in [*sec.items, *sec.extras]:
                 if title not in out.setdefault(it.proto, []):
@@ -960,33 +1046,27 @@ def link_filter(user: users.User, g: groups.Group | None) -> Callable[[protolib.
 def _quick_pick(links: list[protolib.Link], ctx: clientviews.Ctx, g: groups.Group | None,
                 show: Callable[[protolib.Link], bool],
                 devices: list[str] | None = None) -> tuple[int, protolib.Link, str] | None:
-    """Лучший QR среди приложений набора группы: (номер ссылки, ссылка, подпись). Телефон раньше компьютера, протокол —
-    лучший по замерам с устройств, иначе по порядку раздачи (PRIORITY). Ссылку берёт то приложение, которое её
-    открывает (клиент и платформа выбраны набором группы), чужая под подписью приложения не окажется."""
-    top: list[str] = []
-    try:
-        for c in rank.load("30d"):
-            top += [p["proto"] for p in c["top"]]
-    except (sqlite3.Error, OSError, ValueError):
-        pass
-    order_p = [*top, *groups.PRIORITY]
+    """QR основного приложения устройства — того, что первым в его сообщении (AmneziaWG, а не запасной Happ): (номер
+    ссылки, ссылка, подпись). Телефон раньше компьютера; у основного QR нет — запасное, с пометкой «запасное». Ссылку
+    берёт то приложение, которое её открывает (клиент и платформа выбраны набором группы)."""
     prefer, order = clientviews.group_prefs(g)
     best: tuple[tuple[int, int], int, protolib.Link, str] | None = None
     for plat, title in ctx.cat.platforms.items():
         if devices is not None and plat not in devices:   # «Быстрый старт Android» человеку с одним iPhone не нужен
             continue
-        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order, clientviews.store_first(g),
-                                      ctx.al, None, bool(g and g.install_mode == "admin"))
-        for sec in (pack.sections if pack else ()):
+        pack = clientviews.build_pack(ctx.cat, ctx.cache, plat, links, ctx.mans, prefer, order,
+                                      clientviews.store_first(g, plat), ctx.al, None, clientviews.admin_on(g, plat))
+        for n, sec in enumerate(pack.sections if pack else ()):
             if "qr" not in sec.client.get("import", {}):
                 continue
             for it in sec.items:
                 i = clientviews.pick_link(it.proto, sec.client, plat, links, "qr")
                 if i is None or not show(links[i]):
                     continue
-                key = ({"android": 0, "ios": 1}.get(plat, 2), order_p.index(it.proto) if it.proto in order_p else 99)
+                key = ({"android": 0, "ios": 1}.get(plat, 2), n)
                 if best is None or key < best[0]:
-                    best = (key, i, links[i], qr_caption(sec.client, title))
+                    best = (key, i, links[i], qr_caption(sec.client, title) + (" (запасное)" if n else ""))
+                break
     return best[1:] if best else None
 
 
@@ -1040,7 +1120,7 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
     # протоколы — в порядке раздачи (PRIORITY), файл правил v2rayN — не протокол: отдельной строкой «Файлы»
     order = [*groups.by_priority(p for p in by_proto if p != allowlist.V2RAYN_PROTO),
              *([allowlist.V2RAYN_PROTO] if allowlist.V2RAYN_PROTO in by_proto else [])]
-    rules_text = clientviews.rules_text(cat) if cat and not has_connect else ""
+    rules_text = clientviews.rules_text(cat, name) if cat and not has_connect else ""
     sections: dict[bool, list[Markup]] = {True: [], False: []}
     dialogs = []
     for n, pid in enumerate(order):
