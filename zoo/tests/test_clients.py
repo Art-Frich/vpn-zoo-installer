@@ -1019,7 +1019,7 @@ class HandoffPageTest(AppTestBase):
 
     def test_page_stays_light(self):
         _, body = self.c.get("/users/masha")
-        self.assertLessEqual(len(body.encode("utf-8")), 30 * 1024)
+        self.assertLessEqual(len(body.encode("utf-8")), 32 * 1024, "30 КБ + блок «Если у него не работает» (D58)")
 
 
 if __name__ == "__main__":

@@ -1328,13 +1328,15 @@ class ProtocolUsersTest(GroupsBase):
     def test_wizard_group_counts_owner_masha_and_new_users(self):
         self.wizard()
         by = self.collect()
-        five = ("vless-reality", "hysteria2", "hysteria2-obfs", "amneziawg")
+        five = ("vless-reality", "hysteria2", "amneziawg")
         self.assertEqual({p: by[p]["users"] for p in five}, dict.fromkeys(five, 5), "служебный zoo-probe не считается")
         self.assertEqual((by["tuic"]["users"], by["vless-xhttp"]["users"]), (2, 2), "только owner и masha")
         self.assertEqual(by["tuic"]["user_names"], ["owner", "masha"])
-        self.assertEqual(by["tuic"]["lacking"], [["vasy", "нет в группе «Группа 2»"],
-                                                 ["vasy2", "нет в группе «Группа 2»"], ["vasy3", "нет в группе «Группа 2»"]])
+        lacking = [[n, "у группы «Группа 2» его нет"] for n in ("vasy", "vasy2", "vasy3")]
+        self.assertEqual(by["tuic"]["lacking"], lacking)
         self.assertEqual(by["tuic"]["users_off"], 0)
+        # Salamander делит учётку с Hysteria2, но у «Группы 2» его нет: как на страницах людей, считаются owner и masha
+        self.assertEqual((by["hysteria2-obfs"]["users"], by["hysteria2-obfs"]["lacking"]), (2, lacking))
 
     def test_custom_and_unsynced_users_are_named_with_reason(self):
         users.bootstrap()

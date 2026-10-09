@@ -214,7 +214,8 @@ class GatherTest(unittest.TestCase):
                     {"id": 9, "port": 41000, "up": 7, "down": 8}]
         with mock.patch("zoolib.traffic.XuiClient.clients", return_value=clients), \
                 mock.patch("zoolib.traffic.XuiClient.inbounds", return_value=inbounds), \
-                mock.patch("zoolib.traffic.hysteria_stats", return_value={"masha": {"tx": 3, "rx": 4}}) as hs, \
+                mock.patch("zoolib.traffic.hysteria_stats", side_effect=lambda port, secret, path="/traffic":
+                           {"masha": {"tx": 3, "rx": 4}} if path == "/traffic" else {"kolya": 1, "petya": 0}) as hs, \
                 mock.patch("zoolib.traffic._unit_epoch", return_value="123@x"), \
                 mock.patch("zoolib.traffic._host_sample", return_value=None):
             g = traffic.gather(config.load())
@@ -227,7 +228,13 @@ class GatherTest(unittest.TestCase):
         self.assertNotIn(("xray", "ghost"), got)
         self.assertEqual(g.sum_protos, {"hysteria2"})
         self.assertEqual(g.errors, {})
-        hs.assert_called_once_with(25000, "s" * 20)
+        self.assertEqual([(c.args, c.kwargs.get("path", "/traffic")) for c in hs.call_args_list],
+                         [((25000, "s" * 20), "/traffic"), ((25000, "s" * 20), "/online")])
+        hy = {s.user: s for s in g.samples if s.proto == "hysteria2"}
+        self.assertEqual((hy["kolya"].up, hy["kolya"].down), (0, 0), "в сети без трафика — серия с нулями")
+        self.assertAlmostEqual(hy["kolya"].seen, time.time(), delta=60)
+        self.assertIsNone(hy["masha"].seen, "не в сети: отметку даст только приращение трафика")
+        self.assertNotIn("petya", hy, "0 устройств — не в сети")
         seen = {s.user: s.seen for s in g.samples if s.proto == "xray"}
         self.assertEqual(seen["owner"], 1_700_000_000)
 
@@ -249,7 +256,7 @@ class GatherTest(unittest.TestCase):
 
     def gather_obfs(self):
         stats = {25000: {"masha": {"tx": 3, "rx": 4}}, 25001: {"masha": {"tx": 5, "rx": 6}}}
-        with mock.patch("zoolib.traffic.XuiClient.clients", return_value=[]),                 mock.patch("zoolib.traffic.XuiClient.inbounds", return_value=[]),                 mock.patch("zoolib.traffic.hysteria_stats", side_effect=lambda port, secret: stats[port]),                 mock.patch("zoolib.traffic._unit_epoch", return_value="1@x"),                 mock.patch("zoolib.traffic._host_sample", return_value=None):
+        with mock.patch("zoolib.traffic.XuiClient.clients", return_value=[]),                 mock.patch("zoolib.traffic.XuiClient.inbounds", return_value=[]),                 mock.patch("zoolib.traffic.hysteria_stats", side_effect=lambda port, secret, path="/traffic": stats[port] if path == "/traffic" else {}),                 mock.patch("zoolib.traffic._unit_epoch", return_value="1@x"),                 mock.patch("zoolib.traffic._host_sample", return_value=None):
             return traffic.gather(config.load())
 
     def test_obfs_instance_has_own_series(self):

@@ -18,7 +18,7 @@ from .. import probe as probe_mod
 from ..probe import history, rank
 from . import charts
 from . import table as tbl
-from .html import Markup, badge, card, empty, kv, post_button, t, table
+from .html import Markup, badge, card, empty, join, kv, post_button, t, table
 
 if TYPE_CHECKING:
     from .app import App, Request, Response
@@ -121,11 +121,14 @@ def best_card(ranking: list[dict[str, Any]], period: str, servers: list[Server] 
                      "сравнима только внутри блока. Задержка и скорость — медианы по удачным прогонам, в скобках "
                      "разброс: от 25 % до 75 % замеров (от 3 замеров). Места — от 3 прогонов в блоке и от 3 замеров "
                      "у протокола, по оценке: один замер — шум, а не рейтинг."),
-              t("p", "Пробы на устройство: ", t("code", "zoo-probe --tag mobile-mts --device pixel7"),
+              t("p", "Пробник — Docker на компьютере в сети человека (на телефон не ставится; мобильный интернет — "
+                     "через раздачу с телефона): ", t("code", "zoo-probe --tag mobile-mts --device pixel7"),
                 "; отчёт ", t("code", "probe/probe-report.json"), " вставьте в форму ниже или отправьте командой ",
                 t("code", "scripts/history.sh push"), "."))
     if not ranking:
-        body: list[Any] = [empty("Нет клиентских проб", t("code", "zoo-probe --tag mobile-mts --device pixel7"))]
+        body: list[Any] = [empty("Нет клиентских проб",
+                                 join("Docker на компьютере в сети человека: ",
+                                      t("code", "zoo-probe --tag mobile-mts --device pixel7")))]
     else:
         body = []
         anywhere = {p["proto"] for c in ranking for p in c["protocols"]}
