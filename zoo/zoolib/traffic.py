@@ -19,6 +19,11 @@
 Сброс счётчика (рестарт сервиса, сброс в панели, новый peer) распознаётся по уменьшению
 значения или смене «эпохи» источника (PID сервиса, ifindex, boot_id): приращением тогда
 считается текущее значение. Первое снятие нового протокола только запоминает базу.
+
+Счётчики Xray читаются из 3x-ui, а не из stats API самого Xray: панель раз в ~10 с забирает
+статистику Xray со сбросом и копит её в client_traffics/inbounds, поэтому прямой опрос Xray
+давал бы почти ноль. Отставание отчёта — до 5 минут (период таймера); `zoo traffic` от root
+поэтому сам снимает счётчики, если последнее снятие старше FRESH_AFTER.
 """
 
 from __future__ import annotations
@@ -65,6 +70,7 @@ HOST = "host"     # интерфейс сервера
 SPECIAL_TITLES = {XRAY: "Xray (общий счётчик)", HOST: "сервер"}
 
 STALE_AFTER = 20 * 60  # коллектор молчит дольше — предупреждение в status/web
+FRESH_AFTER = 60       # `zoo traffic` от root снимает счётчики сам, если снятие старше
 
 
 def db_path() -> Path:
@@ -496,11 +502,11 @@ def load_counters(con: sqlite3.Connection) -> dict[tuple[str, str], Counter]:
             for r in con.execute("SELECT * FROM counters")}
 
 
-def collect(cfg: Config, now: int | None = None) -> dict[str, Any]:
+def collect(cfg: Config, now: int | None = None, lock_timeout: float = 60) -> dict[str, Any]:
     """Снять счётчики и записать приращения. {series, up, down, errors, duration}."""
     started = time.monotonic()
     lock = paths.state_dir() / "collector.lock"
-    with file_lock(lock, timeout=60):
+    with file_lock(lock, timeout=lock_timeout):
         g = gather(cfg)
         now = int(time.time()) if now is None else now
         con = connect()
@@ -527,6 +533,23 @@ def collect(cfg: Config, now: int | None = None) -> dict[str, Any]:
     return {"ts": now, "series": len(g.samples), "up": up, "down": down,
             "resets": [f"{d.proto}/{d.user or '*'}" for d in deltas if d.reset],
             "errors": g.errors, "duration": dur}
+
+
+def refresh_if_stale(cfg: Config) -> bool:
+    """Снять счётчики перед отчётом, если последнее снятие старше FRESH_AFTER. Только от root
+    (токен 3x-ui и секрет Hysteria — в /etc/vpn-setup) и только после первого снятия таймером:
+    иначе пользователь, подключившийся пару минут назад, до следующего тика выглядел бы нулём."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() != 0:
+        return False
+    run = last_run()
+    if run is None or run["age"] < FRESH_AFTER:
+        return False
+    try:
+        collect(cfg, lock_timeout=5)
+    except (LockTimeout, OSError, sqlite3.Error):
+        return False
+    return True
 
 
 # ---------- отчёты ----------
@@ -821,6 +844,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument("--proto", help="только этот протокол")
     p.add_argument("--collect", action="store_true", help="снять счётчики (запускает zoo-collector.timer)")
     p.add_argument("--all", action="store_true", help=f"со служебным пользователем пробника ({users.PROBE_USER})")
+    p.add_argument("--no-collect", action="store_true",
+                   help=f"не снимать счётчики перед отчётом (по умолчанию root снимает, если снятие старше {FRESH_AFTER} с)")
 
 
 def _fmt_ts(ts: int) -> str:
@@ -842,6 +867,8 @@ def cmd_traffic(args: argparse.Namespace, cfg: Config) -> int:
                   f"{output.human_bytes(res['down'])} за {res['duration']} с" + (f"; ошибки: {errs}" if errs else ""))
         # ошибка одного источника не валит таймер: остальные серии записаны
         return 0
+    if not getattr(args, "no_collect", False):
+        refresh_if_stale(cfg)
     try:
         data = report(cfg, args.user, args.period, args.proto, args.by, include_hidden=args.all)
     except ValueError as e:
@@ -868,4 +895,7 @@ def cmd_traffic(args: argparse.Namespace, cfg: Config) -> int:
     run = data["last_run"]
     if run and run["stale"]:
         output.warn(f"последнее снятие {output.human_duration(run['age'])} назад — проверь zoo-collector.timer")
+    elif run:
+        print(output.color(f"данные на {datetime.fromtimestamp(run['ts']).strftime('%H:%M:%S')} "
+                           "(счётчики снимаются раз в 5 минут)", "dim"))
     return 0

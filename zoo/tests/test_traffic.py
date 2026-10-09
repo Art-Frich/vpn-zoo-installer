@@ -325,5 +325,81 @@ class CollectTest(unittest.TestCase):
         return int(time.time()) - sec
 
 
+class XuiSeriesTest(unittest.TestCase):
+    """Сквозь collect: накопительные счётчики клиентов 3x-ui (clients/list → traffic) по снятиям.
+    Числа lisya — с живого стенда (client_traffics в x-ui.db, TUIC)."""
+
+    def setUp(self):
+        self.env = ZooEnv().__enter__()
+        self.env.add_manifest("vless-reality", xui_inbound_id=1)
+        self.env.add_manifest("tuic", xui_inbound_id=4, layer="udp", port=30925)
+        self.env.write_config({"SERVER_IP": "10.0.0.1", "PANEL_PORT": "1", "PANEL_PATH": "p",
+                               "XUI_API_TOKEN": "t" * 20})
+        self.t0 = int(time.time()) - 3 * 300
+
+    def tearDown(self):
+        self.env.__exit__(None, None, None)
+
+    def snap(self, i, clients, inbounds=None):
+        cl = [{"email": e, "inboundIds": [1, 4], "traffic": {"email": e, "up": up, "down": down}}
+              for e, (up, down) in clients.items()]
+        ib = inbounds or [{"id": 1, "port": 443, "up": 0, "down": 0}, {"id": 4, "port": 30925, "up": 0, "down": 0}]
+        with mock.patch("zoolib.traffic.XuiClient.clients", return_value=cl), \
+                mock.patch("zoolib.traffic.XuiClient.inbounds", return_value=ib), \
+                mock.patch("zoolib.traffic._host_sample", return_value=None):
+            return traffic.collect(config.load(), now=self.t0 + i * 300)
+
+    def test_cumulative_new_client_reset_and_probe(self):
+        r = self.snap(0, {"owner": (100, 1000), "zoo-probe": (10, 100)})
+        self.assertEqual((r["up"], r["down"]), (0, 0), "первое снятие — только база")
+        r = self.snap(1, {"owner": (150, 1600), "zoo-probe": (20, 300), "lisya": (242060, 5091573)})
+        self.assertEqual(r["errors"], {})
+        r = self.snap(2, {"owner": (5, 7), "zoo-probe": (20, 300), "lisya": (242100, 5091633)})
+        self.assertEqual(r["resets"], ["xray/owner"], "сброс в панели — уменьшение счётчика")
+        rows = {x["key"]: (x["up"], x["down"]) for x in traffic.report(period="24h", by="user")["rows"]}
+        self.assertEqual(rows, {"lisya": (242100, 5091633), "owner": (55, 607)},
+                         "новый клиент — с нуля, после сброса — текущее значение, zoo-probe скрыт")
+        hidden = {x["key"]: (x["up"], x["down"])
+                  for x in traffic.report(period="24h", by="user", include_hidden=True)["rows"]}
+        self.assertEqual(hidden["zoo-probe"], (10, 200))
+        mine = traffic.report(user="lisya", period="24h")["rows"]
+        self.assertEqual([x["key"] for x in mine], [traffic.XRAY], "Xray-протоколы у пользователя — одна строка")
+
+    def test_report_refreshes_stale_snapshot_as_root(self):
+        self.snap(0, {"lisya": (0, 0)})
+        cfg = config.load()
+        with mock.patch("zoolib.traffic.os.geteuid", create=True, return_value=0), \
+                mock.patch("zoolib.traffic.collect") as col:
+            self.assertTrue(traffic.refresh_if_stale(cfg), "снятие 15 минут назад — снять заново")
+            col.assert_called_once()
+        with mock.patch("zoolib.traffic.os.geteuid", create=True, return_value=1000), \
+                mock.patch("zoolib.traffic.collect") as col:
+            self.assertFalse(traffic.refresh_if_stale(cfg), "не root — нет токена 3x-ui")
+            col.assert_not_called()
+        with mock.patch("zoolib.traffic.os.geteuid", create=True, return_value=0), \
+                mock.patch("zoolib.traffic.last_run", return_value={"ts": 0, "age": 5}), \
+                mock.patch("zoolib.traffic.collect") as col:
+            self.assertFalse(traffic.refresh_if_stale(cfg), "снятие свежее")
+            col.assert_not_called()
+        # через CLI: lisya подключилась после снятия таймером — отчёт её уже видит
+        from zoolib import cli
+        out = io.StringIO()
+        with mock.patch("zoolib.traffic.os.geteuid", create=True, return_value=0), \
+                mock.patch("zoolib.traffic.XuiClient.clients",
+                           return_value=[{"email": "lisya", "traffic": {"up": 242060, "down": 5091573}}]), \
+                mock.patch("zoolib.traffic.XuiClient.inbounds", return_value=[]), \
+                mock.patch("zoolib.traffic._host_sample", return_value=None), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["traffic", "--json"]), 0)
+        rows = {x["key"]: x["total"] for x in json.loads(out.getvalue())["rows"]}
+        self.assertEqual(rows, {"lisya": 242060 + 5091573})
+        out = io.StringIO()
+        with mock.patch("zoolib.traffic.os.geteuid", create=True, return_value=0), \
+                mock.patch("zoolib.traffic.collect") as col, contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["traffic", "--no-collect"]), 0)
+            col.assert_not_called()
+        self.assertIn("данные на", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

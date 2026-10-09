@@ -402,6 +402,16 @@ def _traffic_users_spec(period: str, mx: int) -> tbl.Spec:
                     href=lambda r: f"/users/{r['key']}?period={period}", name=f"traffic-users-{period}")
 
 
+def _snapshot_chip() -> Any:
+    """Когда сняты счётчики: трафик последних минут (до 5) появится со следующим снятием."""
+    run = traffic.last_run()
+    if not run:
+        return None
+    return t("span", f"на {datetime.fromtimestamp(run['ts']).strftime('%H:%M')}", class_="chip",
+             title="Счётчики снимаются раз в 5 минут: трафик того, кто подключился только что, "
+                   "появится со следующим снятием.")
+
+
 def _traffic_body(period: str, st: tbl.State | None = None) -> list[Any] | None:
     """Страница без форм и без данных сессии, поэтому её можно держать в кэше. None — данных нет."""
     rep_u = traffic.report(period=period, by="user")
@@ -442,8 +452,8 @@ def _traffic_body(period: str, st: tbl.State | None = None) -> list[Any] | None:
     return [tiles,
             t("div", card("По протоколам", chart_block(ts_p, "Трафик по протоколам")),
               card("По пользователям", chart_block(ts_u, "Трафик по пользователям")), class_="cols"),
-            t("div", card("Пользователи", users_tbl), card("Протоколы", proto_tbl, extra=t("div", chips, class_="chips")),
-              class_="cols"),
+            t("div", card("Пользователи", users_tbl, extra=_snapshot_chip()),
+              card("Протоколы", proto_tbl, extra=t("div", chips, class_="chips")), class_="cols"),
             card("Сервер целиком", chart_block(host_ts, "Трафик интерфейса сервера", wide=True),
                  extra=t("span", "×2", class_="chip", title="Всё, что прошло через сетевой интерфейс сервера: "
                          "трафик клиентов учитывается дважды (от клиента и в интернет), плюс обновления и "

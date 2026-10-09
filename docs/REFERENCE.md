@@ -277,7 +277,7 @@ ssh -N -L 7070:127.0.0.1:7070 root@СЕРВЕР
 | `zoo allow list [--catalog] [--user ИМЯ]` | какие приложения идут через VPN; `--catalog` — известные приложения с ключами |
 | `zoo allow add\|del ПРИЛОЖЕНИЕ... [--user ИМЯ] [--android\|--windows]` | добавить или убрать (ключ каталога, пакет Android или `name.exe`); файлы пересобираются |
 | `zoo allow reset [--user ИМЯ]` / `zoo allow apply` | общий список — к пресету, пользователь — к общему / пересобрать файлы всех |
-| `zoo traffic [ИМЯ] [--period 1h\|24h\|7d\|30d\|90d] [--by protocol] [--all]` | трафик; `--collect` — снять счётчики сейчас |
+| `zoo traffic [ИМЯ] [--period 1h\|24h\|7d\|30d\|90d] [--by protocol] [--all] [--no-collect]` | трафик; от root перед отчётом сам снимает счётчики, если последнее снятие старше минуты (`--no-collect` — не снимать); `--collect` — только снять |
 | `zoo journal [--period 24h\|7d\|30d\|90d] [--all] [--top N]` | журнал атак: кто и чем пробовал сервер снаружи (ниже); `--collect` — разобрать журнал сейчас |
 | `zoo storage [--enforce] [--clear РАЗДЕЛ] [--limit 2G]` | объём данных: разделы, бюджет, чистка по лимиту ([ниже](#объём-данных-и-чистка)) |
 | `zoo logs list` / `clean --older N\|--keep N` / `vacuum --time T\|--size S` | журналы установки и journald: список, чистка `install-*.log`, `journalctl --vacuum-*` |
@@ -296,7 +296,7 @@ ssh -N -L 7070:127.0.0.1:7070 root@СЕРВЕР
 | `zoo version [--all]` | версия zoo; `--all` — версии компонентов и пины |
 | `zoo web [--info] [--link] [--new-token]` | веб-админка (как сервис её держит `zoo-web.service`) |
 
-Трафик снимает `zoo-collector.timer` каждые 5 минут (3x-ui API, trafficStats Hysteria, `awg show`), история — в SQLite. Счётчики Xray 3x-ui обновляет примерно раз в 10 секунд: `zoo traffic --collect` сразу после подключения может ещё не увидеть трафик VLESS/XHTTP/SS-2022/TUIC.
+Трафик снимает `zoo-collector.timer` каждые 5 минут (3x-ui API, trafficStats Hysteria, `awg show`), история — в SQLite. Счётчики Xray 3x-ui обновляет примерно раз в 10 секунд: `zoo traffic --collect` сразу после подключения может ещё не увидеть трафик VLESS/XHTTP/SS-2022/TUIC. Трафик Xray берётся из счётчиков 3x-ui (`client_traffics`), а не из stats API самого Xray: панель забирает его статистику со сбросом, прямой опрос дал бы почти ноль. Админка показывает данные на момент последнего снятия (чип «на ЧЧ:ММ» у таблицы пользователей): подключившийся пару минут назад появится со следующим снятием.
 
 ## Журнал атак «Кто нас щупал»
 
