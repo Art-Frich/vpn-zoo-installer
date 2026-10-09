@@ -377,6 +377,7 @@ textarea { font-family: var(--mono); font-size: .85rem; min-height: 160px; resiz
 .plat-title { font-size: .95rem; margin: 0 0 10px; font-weight: 600; }
 .conn-plat + .conn-plat { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
 .conn-plat > * + * { margin-top: 14px; }
+.conn-plat > .msg + .msg { margin-top: 26px; }   /* сообщения по порядку (1. Инструкция, 2. Ключи …) */
 .conn, .conn-plat, .keys { min-width: 0; }
 .app, .msg, .key { grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .app { display: grid; gap: 10px; }

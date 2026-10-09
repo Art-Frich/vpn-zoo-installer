@@ -1093,7 +1093,6 @@ def connect_done(app: "App", req: "Request") -> "Response":
                 t("div", t("a", "Карточки (печать, ZIP, CSV)", href=link, class_="btn primary", data_swap=True),
                   t("span", st.counter, class_="chip ok") if st.known and st.on else None, class_="actions"),
                 t("p", clientviews.SEND_WARN, class_="hint"),
-                t("p", clientviews.NO_KEYS, class_="hint") if rows else None,
                 t("div", rows, class_="urows") if rows else None, clientviews.hints(ctx)[1:] if rows and ctx else None)
     who = next((u for u in members if u.name != users.OWNER), members[0])
     body = [*head, hand, _texts_card(g, ctx, who.label, who.name) if ctx and g.clients else None, dist]

@@ -34,8 +34,10 @@ NAME_TOKEN_RU = "{имя}"    # так — показывается и ввод�
 LOGIN_TOKEN = "{login}"    # логин: файлы человека называются «логин-файл» (ivan-v2rayn-routing.json)
 LOGIN_TOKEN_RU = "{логин}"
 MISMATCH = "инструкция группы не подходит этому человеку — показана его собственная"
-NO_KEYS = ("В сообщении — инструкция и ссылки этого человека: «Скопировать сообщение» и отправьте; файл (если он есть) "
-           "приложите к сообщению — «Скачать файл» или ZIP.")
+# что отправить человеку — строка над блоком устройства: одно сообщение или несколько по порядку (Section.own_msg)
+SEND_ONE = "Скопируйте сообщение и отправьте."
+SEND_SEQ = "Отправьте по порядку: инструкцию, затем ключи каждого приложения отдельным сообщением."
+SEND_FILE = "Файл приложите к сообщению — «Скачать файл»."
 STALE = "набор приложений изменился — проверьте инструкцию"
 NO_APPS = "Приложения не выбраны"
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -790,11 +792,11 @@ def _key_id(uid: str, plat: str, sec: Section, n: int) -> str:
 
 
 def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.Catalog, uid: str,
-              admin: bool = False) -> Markup:
+              admin: bool = False, title: str = "") -> Markup:
     """Приложение набора: название, версия, магазины и ключи человека. Приложения ставит ИТ — магазинов нет, а на
-    iPhone — «нужен иностранный Apple ID»."""
+    iPhone — «нужен иностранный Apple ID». title — заголовок вместо названия (шаг «2. Ключи для «Hiddify»»)."""
     note = foreign_note(cat, sec.client, plat, admin)
-    head = t("div", t("strong", sec.client["name"]),
+    head = t("div", t("strong", title or sec.client["name"]),
              t("span", sec.version, class_="mono muted") if sec.version else None,
              t("span", note, class_="chip warn") if note else None,
              None if admin else t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
@@ -803,12 +805,13 @@ def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.
 
 
 def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, keys: bool = False,
-               primary: bool = True) -> Markup:
+               primary: bool = True, num: int = 0) -> Markup:
     """Инструкция только для чтения: <pre>, «Скопировать» и «Изменить для группы →» (править её можно только на
     странице группы). keys — в тексте уже ссылки человека: копируется сообщение целиком. primary — главная ли это
-    кнопка экрана (на «Раздаче» главная одна — «Карточки»)."""
+    кнопка экрана (на «Раздаче» главная одна — «Карточки»). num — номер сообщения, когда их несколько (send_steps)."""
+    what = "Сообщение" if keys else "Инструкция"
     return t("div",
-             t("span", "Сообщение" if keys else "Инструкция", class_="label"),
+             t("strong", f"{num}. {what}") if num else t("span", what, class_="label"),
              t("pre", text, id=mid, class_="msg-pre"),
              t("div",
                t("button", "Скопировать сообщение" if keys else "Скопировать", type="button",
@@ -846,10 +849,12 @@ def split_keys(pack: Pack, keys: list[list[Key]]) -> tuple[list[list[Key]], list
     return main, [(s, ks) for s, ks in zip(pack.sections, keys) if s.own_msg]
 
 
-def keys_block(text: str, mid: str, app: str) -> Markup:
-    """Отдельное сообщение с ключами одного приложения: его копируют и отправляют целиком."""
-    return t("div", t("span", f"Отдельное сообщение для «{app}»", class_="label"), t("pre", text, id=mid, class_="msg-pre"),
-             t("div", t("button", "Скопировать", type="button", class_="btn", data_copy=mid), class_="actions"),
+def keys_step(app: Markup, text: str, mid: str, primary: bool) -> Markup:
+    """Шаг «2. Ключи для «Hiddify»»: QR и ссылки приложения (app — _app_html с этим заголовком) и сообщение с его
+    ключами — его копируют и отправляют целиком."""
+    return t("div", app, t("pre", text, id=mid, class_="msg-pre"),
+             t("div", t("button", "Скопировать", type="button", class_="btn primary" if primary else "btn", data_copy=mid),
+               class_="actions"),
              class_="msg")
 
 
@@ -934,15 +939,27 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
                 for n, k in enumerate(ks):
                     if k.uri:
                         shown.setdefault(k.uri, _key_id(uid, plat, s, n))
-        msg: Any = [text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary)]
-        msg += [keys_block(kt, f"msg-{uid}{plat}-{s.client['id']}", s.client["name"]) for s, ks in own_keys
-                if (kt := keys_text([ks], name, app=s.client["name"]))]
+        steps = [(s, ks, kt) for s, ks in own_keys if (kt := keys_text([ks], name, app=s.client["name"]))]
+        attach = SEND_FILE if any(k.file and FILE_NAME_RE.fullmatch(k.file) for ks in keys for k in ks) else ""
         if who is not None and resend.lists_only(who, plat):
             # сменился только список «через VPN»: шаги установки и импорт ключей дали бы дубли подключений; полная
             # инструкция — в ZIP и на «Карточках»
-            msg = text_block(lists_text(ctx.cat, pack, keys, label, name), f"msg-{uid}{plat}", None, keys=True,
-                             primary=primary)
-        panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))
+            ltext = lists_text(ctx.cat, pack, keys, label, name)
+            body: Any = [apps, text_block(ltext, f"msg-{uid}{plat}", None, keys=True, primary=primary)]
+            send = [SEND_ONE, attach if "во вложении" in ltext else ""]
+        elif steps:
+            # ключи двух приложений — разными сообщениями: шаги по порядку, у каждого приложения его QR рядом с его
+            # сообщением
+            body = [[a for a, s in zip(apps, pack.sections) if not s.own_msg],
+                    text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary, num=1)]
+            body += [keys_step(_app_html(s, ks, plat, name, ctx.cat, uid, admin, f"{n}. Ключи для «{s.client['name']}»"),
+                               kt, f"msg-{uid}{plat}-{s.client['id']}", primary) for n, (s, ks, kt) in enumerate(steps, 2)]
+            send = [SEND_SEQ, attach]
+        else:
+            body = [apps, text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary)]
+            send = [SEND_ONE, attach]
+        panels.append(t("section", t("h4", title, class_="plat-title"), t("p", " ".join(x for x in send if x), class_="hint"),
+                        body, class_="conn-plat", data_pp=plat))
         plats.append((plat, title))
     if not panels:
         return None
@@ -979,7 +996,7 @@ def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: grou
     if panel is None:
         return card("Подключить", t("p", no_devices(ctx.cat, devices, g))) if devices and links else None
     return card("Подключить", t("p", "Приложения и инструкция — общие для группы." if g else "Приложения — по протоколам.",
-                                " " + NO_KEYS, class_="hint"),
+                                class_="hint"),
                 panel, hints(ctx), extra=zip_button(name, csrf) if csrf else None)
 
 

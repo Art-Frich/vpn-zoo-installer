@@ -9,7 +9,7 @@ from unittest import mock
 from tests.test_groupviews import GroupWebBase, text_of
 from tests.test_web import Client, header
 from zoolib import paths, protolib, qr, traffic, users
-from zoolib.web import handoffviews, userviews
+from zoolib.web import clientviews, handoffviews, userviews
 
 PNG = bytes([0x89]) + b"PNG fake "
 OFFICE = ["Иванов Иван", "Петрова Анна", "Сидоров Пётр", "Смирнова Ольга"]
@@ -711,8 +711,35 @@ class KeysPerAppTest(Base):
         self.assertNotIn("#hysteria2-", hid)
         self.assertNotIn("#tuic-", msgs["msg-android-v2rayng"])
         self.assertIn("#vless-reality-lisya", msgs["msg-android-v2rayng"])
-        self.assertIn("Отдельное сообщение для «Hiddify»", body)
         self.assertIn('data-copy="msg-android-hiddify"', body)
+        self.assertNotIn("Отдельное сообщение", body)
+        from tests.test_no_duplicates import violations
+        self.assertEqual(violations(body), [])
+
+    def test_user_page_is_a_numbered_send_sequence(self):
+        """Три сообщения — по порядку: «1. Инструкция», затем у каждого приложения его QR и ссылки рядом с его
+        сообщением и своей «Скопировать»; строка над ними говорит, что отправить и в каком порядке."""
+        _, body = self.c.get("/users/lisya")
+        android = body[body.index('data-pp="android"'):body.index("</section>", body.index('data-pp="android"'))]
+        self.assertIn(clientviews.SEND_SEQ, android)
+        self.assertNotIn(clientviews.SEND_ONE, android)
+        self.assertNotIn("Скопировать сообщение", body.split(">Подключить<")[1].split("Все ссылки и QR")[0])
+        order = [android.index(x) for x in ("<strong>1. Инструкция</strong>", 'id="msg-android"',
+                                            "<strong>2. Ключи для «v2rayNG»</strong>", 'id="k-android-v2rayng-0"',
+                                            'id="msg-android-v2rayng"', 'data-copy="msg-android-v2rayng"',
+                                            "<strong>3. Ключи для «Hiddify»</strong>", 'id="k-android-hiddify-0"',
+                                            'id="msg-android-hiddify"', 'data-copy="msg-android-hiddify"')]
+        self.assertEqual(order, sorted(order), "QR приложения — в его шаге, перед его сообщением")
+        self.assertEqual(android.count("<strong>v2rayNG</strong>") + android.count("<strong>Hiddify</strong>"), 0,
+                         "название приложения — в заголовке шага, отдельным заголовком не повторяется")
+        self.assertIn('data-copy="k-android-hiddify-0">Копировать</button>', android, "ссылка ключа — как была")
+        self.assertNotIn("«Скопировать сообщение» и отправьте", body, "старая строка про одно сообщение")
+
+    def test_group_done_page_is_a_send_sequence_too(self):
+        g = self.groups_json()[-1]["id"]
+        _, body = self.c.get(f"/connect/done?group={g}&u=lisya")
+        self.assertIn(clientviews.SEND_SEQ, body)
+        self.assertIn("<strong>3. Ключи для «Hiddify»</strong>", body)
         from tests.test_no_duplicates import violations
         self.assertEqual(violations(body), [])
 
