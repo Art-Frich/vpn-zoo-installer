@@ -286,7 +286,7 @@ def runs_card(app: "App", req: "Request", con: Any, since: int | None, period: s
     page = tbl.sql_page(con, spec, st, "reports r", where, args, RUN_EXTRA, opts) if con else tbl.Page([], 0, 0, None)
     return card("История прогонов", tbl.render(spec, st, page), id_=HISTORY_ANCHOR,
                 help=t("p", "Прогоны сервера и присланные клиентские отчёты хранятся в ", t("code", str(history.db_path())),
-                       "; выгрузка в репозиторий — ", t("code", "zoo history export"), " (README, «История проб»). "
+                       "; выгрузка в репозиторий — ", t("code", "zoo history export"), " (справочник, «История проб и рейтинг»). "
                        "Нажмите на строку: все протоколы прогона, там же удаление. Выгрузка — всё по текущим "
                        f"фильтрам (до {tbl.EXPORT_MAX} строк)."))
 

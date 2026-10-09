@@ -531,8 +531,8 @@ def probe_page(app: "App", req: "Request", compare_rows: list[dict[str, Any]] | 
                  help=verdict_legend(last["results"]) if last else None)
     cmp_help = t("p", "Сравнивается с самопроверкой и записывается в историю. Отчёт клиентского пробника — файл ",
                  t("code", "probe/probe-report.json"),
-                 " после запуска контейнера zoo-probe на машине пользователя (README, «Блокирует ли ваш "
-                 "провайдер»). Пакет для пробника: ", t("code", str(paths.probe_export_file())),
+                 " после запуска контейнера zoo-probe на машине пользователя (README, «Блокирует ли мой "
+                 "провайдер?»). Пакет для пробника: ", t("code", str(paths.probe_export_file())),
                  " (его создаёт самопроверка; в нём ключи — передавайте по scp и удалите после).")
     cmp_body: list[Any] = [
         t("form", csrf_input(csrf),

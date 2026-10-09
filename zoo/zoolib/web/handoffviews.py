@@ -27,6 +27,7 @@ from .views import alert_list, page_head
 if TYPE_CHECKING:
     from .app import App, Request, Response
 
+TITLE = "Карточки для раздачи"
 HANDOFF_MAX = 200
 PAGE_BUDGET = 60.0      # секунд на сбор ссылок для страницы; не успевшие — «обновите»
 EXPORT_BUDGET = 150.0   # то же для архива: не вошедшие перечисляются в README
@@ -352,20 +353,20 @@ def cards_page(app: "App", req: "Request") -> "Response":
     try:
         sel = select(req.query.get("group", ""), req.query.get("u", ""), req.query.get("only", ""))
     except LookupError as e:
-        return app.error(req, 404, "Карточки для раздачи", str(e))
+        return app.error(req, 404, TITLE, str(e))
     except (groups.GroupError, users.UserError) as e:
-        return app.error(req, 422, "Карточки для раздачи", str(e))
+        return app.error(req, 422, TITLE, str(e))
     per = req.query.get("per", "3") if req.query.get("per") in PER_SHEET else "3"
     st = connection(sel.names)
     back = (t("a", f"← {sel.group.name}", href=f"/groups/{sel.group.id}", class_="btn small", data_swap=True)
             if sel.group else t("a", "← Пользователи", href="/users", class_="btn small", data_swap=True))
-    parts: list[Any] = [page_head("Карточки для раздачи", sel.group.name if sel.group else "выбранные", back, top=False)]
+    parts: list[Any] = [page_head(TITLE, sel.group.name if sel.group else "выбранные", back, top=False)]
     if sel.notes:
         parts.append(alert_list([("warn", n) for n in sel.notes]))
     if not sel.names:
         parts.append(alert_list([("warn", "Раздавать некому" + (": все уже подключились" if sel.only_pending else "")
                                           + ".")]))
-        return app.render(req, "Карточки для раздачи", parts, active="/groups")
+        return app.render(req, TITLE, parts, active="/groups")
     cards = build_cards(app, sel.names, PAGE_BUDGET)
     pending = sum(c.pending for c in cards)
     sheet = t("div", "На листе A4: ",
@@ -386,7 +387,7 @@ def cards_page(app: "App", req: "Request") -> "Response":
                    t("p", f"{pending} карточек ещё собираются — обновите страницу.", class_="hint") if pending else None,
                    cls="noprint"),
               t("div", [_card_html(c, st) for c in cards], class_=f"hcards per-{per}")]
-    return app.render(req, "Карточки для раздачи", t("div", parts, class_="handoff", data_expanded=True),
+    return app.render(req, TITLE, t("div", parts, class_="handoff", data_expanded=True),
                       active="/groups")
 
 
