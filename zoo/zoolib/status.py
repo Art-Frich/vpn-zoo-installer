@@ -13,7 +13,7 @@ from typing import Any
 
 from . import __version__, groups, manifests, output, paths, protolib, system, traffic
 from .config import Config
-from .users import OWNER, Registry, UserError, users_module
+from .users import OWNER, Registry, UserError, users_module, variant_modules
 from .xui import XuiClient, XuiError
 
 # ufw проверяется через `ufw status` (system.ufw_active), а не по юниту
@@ -42,23 +42,33 @@ def _manifest_certs(m: manifests.Manifest) -> list[str]:
 
 
 def protocol_users(reg: Registry | None, m: manifests.Manifest, libs: set[str],
-                   groups_by_id: dict[str, Any] | None = None) -> dict[str, Any]:
+                   groups_by_id: dict[str, Any] | None = None, variants: dict[str, str] | None = None) -> dict[str, Any]:
     """Кто сидит на протоколе по реестру: включённые обычные пользователи с ним в списке, отдельно отключённые
-    и те, у кого его нет (с причиной). Служебные (zoo-probe) не считаются, трафик не смотрится."""
+    и те, у кого его нет (с причиной). Служебные (zoo-probe) не считаются, трафик не смотрится.
+    Hysteria2 и Salamander делят учётку (variants — users.variant_modules()): человек считается только на том,
+    что выбрано в его группе, — как и ссылки на его странице (userviews.link_filter)."""
     if reg is None:
         return {"users": None, "users_off": 0, "user_names": [], "off_names": [], "lacking": []}
-    ids = {m.id, users_module(m, libs)}
+    mod = users_module(m, libs)
+    ids = {m.id, mod}
+    family = set(variants or {}) | set((variants or {}).values())
     have, off, lacking = [], [], []
     for u in reg.visible():
-        if ids & set(u.protocols):
+        g = (groups_by_id or {}).get(u.group)
+        if g is None or g.all_protocols:
+            in_group = True
+        elif m.id in family:
+            in_group = m.id in g.protocols
+        else:
+            in_group = bool(ids & set(g.protocols)) or any(x.startswith(mod + "-") for x in g.protocols)
+        sees = in_group or u.custom or u.name == OWNER
+        if ids & set(u.protocols) and sees:
             (have if u.enabled else off).append(u.name)
         elif u.enabled:
-            g = (groups_by_id or {}).get(u.group)
             if u.custom and u.name != OWNER:
                 why = "свой набор протоколов"
-            elif g is not None and not g.all_protocols and not (
-                    ids & set(g.protocols) or any(x.startswith(users_module(m, libs) + "-") for x in g.protocols)):
-                why = f"нет в группе «{g.name}»"
+            elif not in_group and g is not None:
+                why = f"у группы «{g.name}» его нет"
             else:
                 why = "не заведён (zoo user sync)"
             lacking.append([u.name, why])
@@ -107,6 +117,10 @@ def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
         groups_by_id = {g.id: g for g in groups.Groups.load().groups} if reg else {}
     except (UserError, OSError, ValueError):
         groups_by_id = {}
+    try:
+        variants = variant_modules(libs)
+    except (UserError, OSError, ValueError):
+        variants = {}
     for m in good:
         svc = {u: states.get(_unit(u), {}).get("active", "unknown") for u in m.services}
         listening = {p: (p, m.port) in listen for p in m.protos}
@@ -127,7 +141,7 @@ def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
         protocols.append({
             "id": m.id, "name": m.name, "short": m.short, "port": m.port, "layer": m.layer, "engine": m.engine,
             "services": svc, "enabled": m.enabled, "listening": listening, "ok": ok,
-            **protocol_users(reg, m, libs, groups_by_id),
+            **protocol_users(reg, m, libs, groups_by_id, variants),
         })
 
     for u in BASE_UNITS:

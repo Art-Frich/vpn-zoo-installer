@@ -935,8 +935,26 @@ class OverviewMetricsTest(AppTestBase):
         seed_live("vless-reality", now, nbytes=200 * 1024 ** 2)
         _, body = self.c.get("/")
         self.assertIn("↓1000 МБ ↑90 МБ", re.sub(r"<[^>]+>", "", body))   # 1200 МБ в счётчике минус 200 МБ, скачанных замерами
-        self.assertIn('>≈1.1 ГБ<', body, "крупная цифра — тот же трафик без замеров, у Xray приблизительный")
+        self.assertIn('>≈1.1 ГБ <span class="chip">служебный</span><', body,
+                      "крупная цифра — тот же трафик без замеров, у Xray приблизительный; у людей ноль — «служебный»")
+        self.assertIn("«служебный» — у людей сегодня ноль", body, "чип объяснён в подписи над карточками")
         self.assertIn("≈↓1000", re.sub(r"<[^>]+>", "", body))
+
+    def test_people_traffic_drops_service_chip(self):
+        users.bootstrap()
+        now = int(time.time())
+        con = traffic.connect()
+        with con:
+            samples = [traffic.Sample("vless-reality", "", 0, 5 * 1024 ** 2), traffic.Sample(traffic.XRAY, "owner", 0, 4 * 1024 ** 2)]
+            deltas, new = traffic.compute_deltas({}, samples, now, known={"vless-reality", traffic.XRAY})
+            traffic.store(con, deltas, new, now)
+            con.execute("INSERT INTO runs VALUES (?, 1, 1, 0, 0, 0.1, '{}')", (traffic.align(now, traffic.RES_1D) + 1,))
+        con.close()
+        self.assertEqual(traffic.today_people(), {traffic.XRAY: 4 * 1024 ** 2})
+        _, body = self.c.get("/")
+        self.assertIn(">≈5.0 МБ<", body)
+        self.assertNotIn(">служебный<", body)
+        self.assertNotIn("«служебный»", body)
 
     def test_users_line_names_who_has_the_protocol(self):
         from tests.test_web import FAKE_SLOW

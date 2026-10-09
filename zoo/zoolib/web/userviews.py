@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from .. import allowlist, clients, groups, manifests, paths, people, protolib, qr, resend, traffic, users
+from .. import allowlist, clients, groups, manifests, paths, people, protolib, qr, resend, support, traffic, users
 from ..fsutil import LockTimeout
 from ..output import human_bytes
 from ..probe import rank
@@ -175,6 +175,33 @@ def resend_alert(user: users.User, g: groups.Group | None, csrf: str) -> Markup 
                                      {"names": user.name, "back": f"/users/{user.name}"})])])
 
 
+def contact_text(c: support.Contacts, user: users.User) -> str:
+    """«12 мин назад · Hysteria2», «ни разу» или «—» (сбор трафика ещё не шёл)."""
+    seen = c.of(user.name)
+    if seen is None:
+        return "ни разу" if c.known else "—"
+    return f"{ago(seen[0])} · {support.via_title(seen[1], user)}"
+
+
+def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts) -> Markup | None:
+    """«Если у него не работает»: доходит ли до сервера, что попробовать (UDP/TCP, другое приложение), что спросить."""
+    if user.system:
+        return None
+    try:
+        cat: clients.Catalog | None = clients.load()
+    except clients.ClientsError:
+        cat = None
+    tips = support.checklist(user, g, c, cat, users.selectable_protocols(), users.variant_modules())
+    items: list[tuple[Any, ...]] = [tips[0] + ((t("a", "Сообщение", href=f"/handoff?u={user.name}"),)
+                                              if c.known and c.of(user.name) is None and user.enabled else ()),
+                                    *tips[1:]]
+    if user.name != users.OWNER:
+        items.append(("info", "Потерял телефон — «Новые ключи»."))
+    items += [("info", "Спросите: Wi-Fi или мобильный и какой оператор, приложение, снимок ошибки, с какого времени."),
+              ("info", "Режет ли его сеть — пробник с компьютера в той же сети.", t("a", "Проверка", href="/probe"))]
+    return t("details", t("summary", "Если у него не работает"), alert_list(items), class_="card more trouble")
+
+
 def _created_local(created: str) -> str:
     """Дата создания из реестра (UTC, ISO) — в местном времени."""
     try:
@@ -233,9 +260,11 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
         tbl.Col("bar", "", cell=lambda r: charts.bar(r["day"], mx), secondary=True, export=False),
         tbl.Col("month", "30 дней", cell=lambda r: human_bytes(r["month"]), value=lambda r: r["month"], num=True,
                 sort=True, secondary=True),
-        tbl.Col("seen", "активность", cell=lambda r: t("span", ago(r["seen"]), class_="nowrap"),
-                value=lambda r: fmt_time(r["seen"]) if r["seen"] else "", num=True, left=True, sort=True,
-                first_desc=True, secondary=True),
+        tbl.Col("seen", "подключался",
+                cell=lambda r: t("span", ago(r["seen"]) if r["seen"] else r["never"], class_="nowrap",
+                                 title=r["via"] or None),
+                value=lambda r: datetime.fromtimestamp(r["seen"]).strftime("%Y-%m-%d %H:%M") if r["seen"] else "",
+                sort=True, first_desc=True, secondary=True),
         tbl.Col("act", "", cell=toggle, export=False),
     ]
     return tbl.Spec(path="/users", cols=cols, sort="name", id_key="name", paged=False, empty="пользователей нет",
@@ -247,10 +276,16 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
 def _user_rows(shown: list[users.User], gs: groups.Groups) -> list[dict[str, Any]]:
     day = {r["key"]: r["total"] for r in traffic.report(period="24h", by="user")["rows"]}
     month = {r["key"]: r["total"] for r in traffic.report(period="30d", by="user")["rows"]}
-    seen = traffic.last_seen()
-    return [{"name": u.name, "user": u, "access": "включён" if u.enabled else "отключён", "day": day.get(u.name, 0),
-             "month": month.get(u.name, 0), "seen": seen.get(u.name),
-             "group": g.name if (g := gs.get(u.group)) else ""} for u in shown]
+    c = support.contacts()
+    xui = support.xui_protocols()
+    out = []
+    for u in shown:
+        seen = c.of(u.name)
+        out.append({"name": u.name, "user": u, "access": "включён" if u.enabled else "отключён",
+                    "day": day.get(u.name, 0), "month": month.get(u.name, 0), "seen": seen[0] if seen else None,
+                    "via": support.via_title(seen[1], u, xui) if seen else "", "never": "ни разу" if c.known else "—",
+                    "group": g.name if (g := gs.get(u.group)) else ""})
+    return out
 
 
 def users_list(app: "App", req: "Request") -> "Response":
@@ -611,7 +646,7 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
         return app.error(req, 404, "Нет пользователя", f"Пользователя «{name}» нет в реестре.")
     csrf = req.session.csrf if req.session else ""
     period = get_period(req, "7d")
-    seen = traffic.last_seen().get(name)
+    seen = support.contacts()
 
     toggle = post_button(f"/users/{name}/{'disable' if user.enabled else 'enable'}",
                          "Отключить" if user.enabled else "Включить", csrf, "btn",
@@ -637,7 +672,7 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
         *([("имя", user.display)] if user.display else []),
         ("заметка", user.note or "—"),
         ("создан", _created_local(user.created)),
-        ("активность", ago(seen)),
+        ("подключался", contact_text(seen, user)),
     ]))
 
     rep = traffic.report(user=name, period=period, by="protocol")
@@ -671,6 +706,7 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     sub = " · ".join(x for x in ((name if user.display else ""), user.note) if x)
     body = [page_head(user.label, sub or None, actions, top=False), resend_alert(user, grp, csrf), err_list, connect, advanced,
             None if connect or advanced else card("Подключить", t("p", "Ссылок нет.", class_="muted")),
+            trouble_card(user, grp, seen),
             t("div", info, tr_card, class_="cols")]
     return app.render(req, name, body, active="/users")
 

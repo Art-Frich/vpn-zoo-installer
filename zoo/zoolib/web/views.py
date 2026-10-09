@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import probe as probe_mod
-from .. import journal, manifests, paths, status, storage, system, traffic, upgrade
+from .. import journal, manifests, paths, status, storage, support, system, traffic, upgrade, users
 from ..config import config_set
 from ..output import human_bytes, human_duration
 from . import charts, logs, probeviews, protoviews
@@ -208,6 +208,32 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
     return out
 
 
+PEOPLE_SHOWN = 5
+
+
+def _names(us: list[Any]) -> Markup:
+    shown = [t("a", u.label, href=f"/users/{u.name}") for u in us[:PEOPLE_SHOWN]]
+    rest = len(us) - PEOPLE_SHOWN
+    return join(*[x for i, a in enumerate(shown) for x in ((", " if i else ""), a)],
+                f" и ещё {rest}" if rest > 0 else "")
+
+
+def people_alerts() -> list[tuple[Any, ...]]:
+    """Кто ни разу не подключался и кто пропал (D58): на этих людей жалоба вероятнее всего."""
+    try:
+        never, gone = support.silent(users.list_users(), support.contacts())
+    except (users.UserError, OSError, ValueError):
+        return []
+    by_seen = t("a", "по дате подключения", href="/users?sort=seen")
+    out: list[tuple[Any, ...]] = []
+    if never:
+        out.append(("info", t("span", f"Ни разу не подключались: {len(never)} — ", _names(never)), by_seen))
+    if gone:
+        out.append(("warn", t("span", f"Не подключались дольше {support.STALE_DAYS} дней: {len(gone)} — ", _names(gone)),
+                    None if never else by_seen))
+    return out
+
+
 def overview(app: "App", req: "Request") -> "Response":
     csrf = req.session.csrf if req.session else ""
     pctx = protoviews.context()
@@ -243,11 +269,17 @@ def overview(app: "App", req: "Request") -> "Response":
                     f"Xray {st['xray'].get('state') or '—'}" if st["xray"] else ""),
               class_="tiles")
 
+    people_bytes = traffic.today_people()
+    any_service = False
     cards, off = [], []
     for i, p in enumerate(st["protocols"]):
         if not p["enabled"]:
             off.append(p)
             continue
+        # у людей за сегодня по протоколу ни байта (у Xray — по общему счётчику), а у протокола трафик есть: это замеры
+        mine = people_bytes.get(traffic.XRAY if p["id"] in pctx.approx else p["id"], 0)
+        service = t("span", "служебный", class_="chip") if protoviews.today_bytes(pctx, p["id"]) and not mine else None
+        any_service = any_service or service is not None
         # короткое имя — в заголовок, полное — в title (на 380 px длинные имена переносились)
         about = f"{p['id']} · {p['engine'] or '—'}"
         problems = [t("span", f"{u}: {s}", class_="chip bad") for u, s in p["services"].items() if s != "active"]
@@ -258,7 +290,7 @@ def overview(app: "App", req: "Request") -> "Response":
             protoviews.metrics_row(p, pctx, csrf),
             t("div",
               t("div", t("div", protoviews.approx(pctx, p["id"]) + human_bytes(protoviews.today_bytes(pctx, p["id"])),
-                         class_="num-big"),
+                         " " if service else None, service, class_="num-big"),
                 users_line(p)),
               charts.sparkline(spark.get(p["id"], []), charts.series_class(i)),
               class_="row"),
@@ -295,10 +327,14 @@ def overview(app: "App", req: "Request") -> "Response":
               title="Группа: протоколы, приложения, люди и что им отправить")
     from . import resendviews
     waiting = resendviews.waiting()
-    body = [page_head("Обзор", None, [start, None if alerts else badge("✓ всё в порядке", "ok")]),
+    people = people_alerts()
+    body = [page_head("Обзор", None, [start, None if alerts else t("span", "✓ сервер работает", class_="badge ok",
+                                                                      title="Сервисы, порты и сертификаты — проверка на "
+                                                                            "самом сервере. Блокировки у операторов "
+                                                                            "людей она не видит")]),
             alert_list(alerts) if alerts else None,
-            alert_list([("warn", resendviews.link(waiting))]) if waiting else None,
-            tiles, t("h2", "Протоколы"), protoviews.caption(pctx), protos,
+            alert_list(([("warn", resendviews.link(waiting))] if waiting else []) + people) if waiting or people else None,
+            tiles, t("h2", "Протоколы"), protoviews.caption(pctx, any_service), protos,
             protoviews.off_block(off, pctx, csrf),
             t("div", users_card, sys_card, class_="cols")]
     return app.render(req, "Обзор", body, active="/")
@@ -447,7 +483,8 @@ def results_table(results: list[dict[str, Any]]) -> Markup:
                        t("span", f"порт {rtt:.0f} мс", class_="sub") if rtt is not None else None),
                      "—" if r.get("speed_mbps") is None else f"{r['speed_mbps']:.1f} Мбит/с",
                      r.get("egress_ip") or "—", t("span", why, class_="small")])
-    return table(["протокол", "итог", ("задержка", "время до первого байта через туннель; ниже — TCP-соединение "
+    return table(["протокол", "итог", ("задержка", "с сервера на себя: первый запрос через туннель вместе с "
+                                        "рукопожатием, поэтому выше, чем на «Обзоре»; ниже — TCP-соединение "
                                         "с портом сервера (RTT), если протокол по TCP"),
                   ("скорость", "самопроверка, 5 МБ через туннель: сколько тянет сервер, а не скорость у людей"),
                   "IP выхода", "причина"], rows,

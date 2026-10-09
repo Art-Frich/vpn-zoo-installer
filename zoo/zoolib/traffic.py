@@ -246,9 +246,9 @@ def _hy_secret(cfg: Config) -> str:
     return ""
 
 
-def hysteria_stats(port: int, secret: str, timeout: float = 5.0) -> dict[str, dict[str, int]]:
-    """GET /traffic trafficStats API Hysteria: {user: {tx, rx}} (tx — от клиента)."""
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/traffic", headers={"Authorization": secret})
+def hysteria_stats(port: int, secret: str, timeout: float = 5.0, path: str = "/traffic") -> dict[str, Any]:
+    """trafficStats API Hysteria: /traffic → {user: {tx, rx}} (tx — от клиента); /online → {user: число устройств}."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", headers={"Authorization": secret})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(req, timeout=timeout) as resp:
         data = json.loads(resp.read() or b"{}")
@@ -291,10 +291,19 @@ def _from_hysteria(cfg: Config, protos: list[manifests.Manifest], g: Gathered) -
         except (OSError, ValueError, urllib.error.URLError) as e:
             g.errors[m.id] = f"trafficStats 127.0.0.1:{port}: {getattr(e, 'reason', e)}"
             continue
+        # «в сети сейчас» — отметка подключения и без трафика за 5 минут; сбой /online трафик не отменяет
+        try:
+            online = {str(u) for u, n in hysteria_stats(int(port), secret, path="/online").items() if _int(n)}
+        except (OSError, ValueError, urllib.error.URLError):
+            online = set()
+        now = int(time.time())
         epoch = _unit_epoch(m.services[0]) if m.services else ""
         for user, v in stats.items():
             if isinstance(v, dict):
-                g.samples.append(Sample(m.id, str(user), _int(v.get("tx")), _int(v.get("rx")), epoch=epoch))
+                g.samples.append(Sample(m.id, str(user), _int(v.get("tx")), _int(v.get("rx")), epoch=epoch,
+                                        seen=now if str(user) in online else None))
+        for user in online - {str(u) for u in stats}:
+            g.samples.append(Sample(m.id, user, 0, 0, epoch=epoch, seen=now))
         g.sum_protos.add(m.id)
         g.polled.add(m.id)
 
@@ -746,6 +755,41 @@ def last_seen() -> dict[str, int]:
     finally:
         con.close()
     return {r["user"]: int(r["seen"]) for r in rows}
+
+
+def last_contact() -> dict[str, tuple[int, str]]:
+    """{пользователь: (unix-время, протокол)} — последнее подключение и через что: отметка Xray (lastOnline 3x-ui,
+    протокол — «xray»: Xray-протоколы клиента не различаются), «в сети» или трафик Hysteria, рукопожатие AmneziaWG."""
+    con = _con()
+    if con is None:
+        return {}
+    try:
+        hidden, names = _hidden_sql(False)
+        rows = con.execute("SELECT proto, user, seen FROM counters WHERE user != '' AND seen IS NOT NULL AND proto != ? "
+                           + (f"AND {hidden} " if hidden else "") + "ORDER BY seen", [HOST, *names]).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        con.close()
+    return {r["user"]: (int(r["seen"]), r["proto"]) for r in rows}
+
+
+def today_people(now: float | None = None) -> dict[str, int]:
+    """Трафик людей (без служебных) за текущие сутки по протоколам: {протокол | «xray»: байты}."""
+    now = time.time() if now is None else now
+    con = _con()
+    if con is None:
+        return {}
+    hidden, names = _hidden_sql(False)
+    try:
+        rows = con.execute("SELECT proto, SUM(up + down) AS t FROM traffic WHERE res = ? AND ts = ? AND user != '' "
+                           "AND proto != ? " + (f"AND {hidden} " if hidden else "") + "GROUP BY proto",
+                           [RES_1D, align(now, RES_1D), HOST, *names]).fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        con.close()
+    return {r["proto"]: int(r["t"] or 0) for r in rows}
 
 
 def last_run() -> dict[str, Any] | None:

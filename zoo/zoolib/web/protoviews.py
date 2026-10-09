@@ -16,7 +16,7 @@ from .. import manifests, probe as probe_mod, protoctl, traffic
 from ..output import human_bytes
 from ..probe import live, verdicts
 from . import logs
-from .html import Markup, badge, card, kv, post_button, t
+from .html import Markup, badge, card, join, kv, post_button, t
 
 if TYPE_CHECKING:
     from .app import App, Request, Response
@@ -123,12 +123,20 @@ def metrics(proto: str, ctx: Ctx) -> Markup:
     return t("span", t("span", class_=f"dot {dot}"), t("span", chunks), class_="mline", title=title)
 
 
-def caption(ctx: Ctx) -> Markup:
-    """Одна строка над карточками: что значат цифры (трафик за сегодня без служебных замеров; «≈» у Xray) и свежесть."""
-    what = [" · трафик за сегодня, без служебных замеров"]
+# та же формулировка — в подсказке столбца «задержка» самопроверки (views.results_table): цифры не спорят
+LATENCY_WHERE = "задержка — с сервера на себя, медиана малых запросов"
+
+
+def caption(ctx: Ctx, service: bool = False) -> Markup:
+    """Одна строка над карточками: что значат цифры (задержка — замер сервера на себя, не у людей; трафик за сегодня без
+    служебных замеров; «≈» у Xray; «служебный» — у людей на протоколе сегодня ноль) и свежесть."""
+    parts = ["трафик за сегодня, без служебных замеров"]
     if ctx.approx:
-        what.append("«≈» — у Xray-протоколов служебный трафик делится по долям замеров")
-    what = " · ".join(what)
+        parts.append("«≈» — у Xray-протоколов служебный трафик делится по долям замеров")
+    if service:
+        parts.append("«служебный» — у людей сегодня ноль: это замеры и чужие подключения")
+    what = join(f" · {LATENCY_WHERE}; с устройств людей — на ", t("a", "«Проверке»", href="/probe"),
+                " · " + " · ".join(parts))
     if ctx.live:
         last = max(d["ts"] for d in ctx.live.values())
         stale = ctx.now - last > 3 * 600

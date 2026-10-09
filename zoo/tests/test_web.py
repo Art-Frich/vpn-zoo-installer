@@ -1365,7 +1365,8 @@ class ConnectPageTest(AppTestBase):
         self.assertLess(main.index("Подключить"), main.index("Все ссылки и QR"))
         self.assertLess(main.index("Все ссылки и QR"), main.index("Профиль"))
         self.assertLess(main.index("Подключить"), main.index(">Трафик<"))
-        self.assertLessEqual(len(body.encode("utf-8")), 30 * 1024, "страница с 6 протоколами и 5 платформами должна быть лёгкой")
+        self.assertLessEqual(len(body.encode("utf-8")), 32 * 1024,
+                             "страница с 6 протоколами и 5 платформами должна быть лёгкой (30 КБ + «Если у него не работает»)")
         self.assertNotIn("<svg", body.split("Профиль")[0], "QR — отдельные картинки по требованию")
         self.assertIn('data-src="/users/masha/qr/', body)
         self.assertNotIn("нужен Xray-клиент", body)
@@ -1643,7 +1644,7 @@ class QuietPagesTest(AppTestBase):
         with mock.patch("zoolib.status.collect_slow", return_value=HEALTHY):
             self.c.login()
             _, body = self.c.get("/")
-        self.assertIn("✓ всё в порядке", body)
+        self.assertIn("✓ сервер работает", body)
 
     def test_overview_service_traffic_and_short_names(self):
         from zoolib import users

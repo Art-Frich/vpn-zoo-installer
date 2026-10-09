@@ -177,8 +177,11 @@ class NoDuplicatesTest(GroupWebBase):
             seed_live(pid, now, rtt=rtt, age=240)
         con = traffic.connect()
         with con:
+            # отметки подключений: masha — только что, kolya пропал (10 дней), остальные — ни разу
+            seen = {("hysteria2", "masha"): traffic.Counter(50, 450, "", int(now), int(now) - 300),
+                    ("xray", "kolya"): traffic.Counter(0, 0, "", int(now), int(now) - 10 * 86400)}
             traffic.store(con, [traffic.Delta("xray", "owner", 1000, 9000), traffic.Delta("xray", "masha", 100, 900),
-                                traffic.Delta("hysteria2", "masha", 50, 450)], {}, int(now))
+                                traffic.Delta("hysteria2", "masha", 50, 450)], seen, int(now))
         con.close()
         jnow = int(now)
         con = journal.connect()
