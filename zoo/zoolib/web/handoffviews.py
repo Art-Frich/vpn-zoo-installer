@@ -34,7 +34,6 @@ EXPORT_BUDGET = 150.0   # то же для архива: не вошедшие �
 WORKERS = 4
 ZIP_MAX = 60 * 1024 * 1024
 CONNECTED_DAYS = 30
-PER_SHEET = ("2", "3")
 NOTE_WARN = ("Файлы содержат ключи доступа: не отправляйте их через MAX и VK — лично, на бумаге или мессенджером "
              "со сквозным шифрованием.")
 FORMULA = ("=", "+", "-", "@", "\t", "\r")
@@ -314,8 +313,6 @@ def _key_html(k: CardKey, name: str) -> Markup:
                        alt=f"QR: {k.title}"))
     parts.append(t("div", k.title, t("span", " — " + IN_MESSAGE, class_="muted") if k.qr is None else None,
                    class_="key-name"))
-    if k.uri:   # на бумаге ссылку не скопировать: только на экране, целиком
-        parts.append(t("code", k.uri, class_="hlink noprint"))
     if k.file and clientviews.FILE_NAME_RE.fullmatch(k.file):
         parts.append(t("a", "Скачать файл", href=f"/users/{name}/file/{k.file}", class_="btn small noprint"))
     return t("div", parts, class_="hkey")
@@ -377,7 +374,6 @@ def cards_page(app: "App", req: "Request") -> "Response":
         return app.error(req, 404, TITLE, str(e))
     except (groups.GroupError, users.UserError) as e:
         return app.error(req, 422, TITLE, str(e))
-    per = req.query.get("per", "3") if req.query.get("per") in PER_SHEET else "3"
     st = connection(sel.names)
     back = (t("a", f"← {sel.group.name}", href=f"/groups/{sel.group.id}", class_="btn small", data_swap=True)
             if sel.group else t("a", "← Пользователи", href="/users", class_="btn small", data_swap=True))
@@ -390,24 +386,21 @@ def cards_page(app: "App", req: "Request") -> "Response":
         return app.render(req, TITLE, parts, active="/groups")
     cards = build_cards(app, sel.names, PAGE_BUDGET)
     pending = sum(c.pending for c in cards)
-    sheet = t("div", "На листе A4: ",
-              [[t("a", n, href=_url(sel, per=n), class_="btn small" + (" primary" if n == per else ""), data_swap=True), " "]
-               for n in PER_SHEET], class_="hper noprint")
     bar = t("div",
             t("span", st.counter, class_="chip" + (" ok" if st.known and st.on else ""),
               title="Подключился — за 30 дней был трафик"),
             t("button", "Печать", type="button", class_="btn primary", data_print=True, hidden=True),
             _post_form("/handoff/export", csrf, sel, "zip", "Скачать ZIP", "btn"),
             _post_form("/handoff/export", csrf, sel, "csv", "CSV: имя → ссылка", "btn"),
-            t("a", "Только кто ещё не подключился", href=_url(sel, only="pending", per=per), class_="btn small",
+            t("a", "Только кто ещё не подключился", href=_url(sel, only="pending"), class_="btn small",
               data_swap=True) if st.known and not sel.only_pending and len(st.on) < st.total else None,
             class_="actions noprint")
-    parts += [card(f"Карточек: {len(cards)}", bar, sheet,
+    parts += [card(f"Карточек: {len(cards)}", bar,
                    t("p", "На бумаге — только QR для телефона. Ссылки и файлы — в сообщении: ZIP (папка на человека с "
                           "instruction.txt) или CSV для рассылки. ", NOTE_WARN, class_="hint"),
                    t("p", f"{pending} карточек ещё собираются — обновите страницу.", class_="hint") if pending else None,
                    cls="noprint"),
-              t("div", [_card_html(c, st) for c in cards], class_=f"hcards per-{per}")]
+              t("div", [_card_html(c, st) for c in cards], class_="hcards")]
     return app.render(req, TITLE, t("div", parts, class_="handoff", data_expanded=True),
                       active="/groups")
 
