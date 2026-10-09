@@ -435,7 +435,7 @@ def reset(user: str | None = None, apply_now: bool = True) -> Change:
         if user is None:
             d = defaults()
             al.android, al.windows = d["android"], d["windows"]
-            ch.message = "сброшен на пресет по умолчанию"
+            ch.message = "сброшен на список по умолчанию"
         elif al.users.pop(user, None) is not None:
             ch.message = "сброшен на список группы" if al.from_group(user) else "сброшен на общий список"
         else:

@@ -209,13 +209,15 @@ class DisplayNameTest(Base):
         _, body = self.c.get("/handoff?group=g1")
         card = body[body.index('data-name="ivan-petrov"'):]
         card = card[:card.index("</article>")]
-        self.assertIn('<header class="hhead"><strong>Иван Петров</strong><span class="hnote">ivan-petrov</span>'
-                      '<span class="hnote">бухгалтерия</span>', card)
+        self.assertIn('<header class="hhead"><strong>Иван Петров</strong><span class="hnote noprint">ivan-petrov</span>'
+                      '<span class="hnote noprint">бухгалтерия</span>', card, "логин и заметка — на экране, не на бумаге")
         self.assertNotIn("Иван Петров · ", body)
         self.assertIn('<strong>masha</strong>', body, "без имени из списка — логин")
         _, z = self.zip_of("", group="g1")
         text = z.read("ivan-petrov/instruction.txt").decode("utf-8")
-        self.assertTrue(text.startswith("Иван Петров (ivan-petrov) — бухгалтерия\nГруппа: Семья\n"), text[:90])
+        self.assertTrue(text.startswith("Иван Петров\n\n"), text[:90])
+        for admin_only in ("(ivan-petrov)", "бухгалтерия", "Группа:"):
+            self.assertNotIn(admin_only, text, "файл получает сам человек: служебного там нет")
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
         self.assertEqual({r[0] for r in rows[1:]}, {"Иван Петров", "masha"})
         self.assertIn("ivan-petrov/qr-vless-vision.png", z.namelist(), "папка — по логину")
@@ -421,7 +423,8 @@ class ExportTest(Base):
         info = z.getinfo("masha/instruction.txt")
         self.assertEqual(info.external_attr >> 16, 0o600)
         text = z.read("masha/instruction.txt").decode("utf-8")
-        self.assertTrue(text.startswith("masha — сестра\nГруппа: Семья\n"), text[:80])
+        self.assertTrue(text.startswith("masha\n\n"), text[:80])
+        self.assertNotIn("сестра", text, "заметка администратора — не человеку")
         self.assertIn("Установите «Happ»", text)
         self.assertIn("ссылка: vless://masha@10.0.0.1:443", text)
         self.assertIn("QR: qr-", text)
@@ -646,7 +649,8 @@ class DevicesTest(Base):
         self.assertEqual(resp.status, 200)
         text = text_of(body)
         self.assertIn("Android, macOS", text)
-        self.assertIn("нет приложений для macOS", text)
+        self.assertIn("macOS → v2rayN (галочка ниже)", text, "чип не спорит с галочкой «Дать группе приложение» ниже")
+        self.assertNotIn("нет приложений для macOS", text)
         self.assertIn("как у группы", text)
 
     def test_person_page_edits_devices(self):

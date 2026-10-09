@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .. import allowlist, clients, groups, manifests, protolib, qr, users
-from .html import Markup, card, post_button, t, table
+from .html import Markup, card, csrf_input, post_button, t, table
 from .views import ago, alert_list, page_head
 
 if TYPE_CHECKING:
@@ -32,7 +32,8 @@ FOREIGN_WHY = {"нет в App Store РФ": "нужен Apple ID другой с�
 NAME_TOKEN = "{name}"      # так подстановка имени хранится в группе
 NAME_TOKEN_RU = "{имя}"    # так — показывается и вводится в редакторе; принимаются оба
 MISMATCH = "инструкция группы не подходит этому человеку — показана его собственная"
-NO_KEYS = "Ключей в инструкции нет: QR и ссылки у каждого свои."
+NO_KEYS = ("В сообщении — инструкция и ссылки этого человека: «Скопировать сообщение» и отправьте; файл (если он есть) "
+           "приложите к сообщению — «Скачать файл» или ZIP.")
 STALE = "набор приложений изменился — проверьте инструкцию"
 NO_APPS = "Приложения не выбраны"
 FILE_NAME_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
@@ -350,24 +351,36 @@ class Pack:
     after: list[str] = field(default_factory=list)    # общие шаги перед проверкой (настройки Android)
     report: str = ""  # что прислать администратору, если не работает
     one_on: str = ""  # шаблон «держите включённым одно приложение» ({first}, {rest}) — когда приложений два и больше
+    fallback: str = ""  # заголовок шагов запасного приложения ({first}, {rest})
 
-    def steps(self, paper: bool = False) -> list[str]:
-        """Шаги без заголовка: Brave и установка (если люди ставят сами), импорт и настройка каждого приложения, какое
-        держать включённым (их два), проверка, что прислать. paper — для бумажной карточки: только приложения, ключ
-        которых переносится QR-кодом (остальные — в сообщении, paper_rest); таких нет — пусто."""
+    def parts(self, paper: bool = False) -> tuple[list[str], str, list[str]]:
+        """(главные шаги, заголовок запасного, шаги запасного). Главное — Brave и установка первого приложения (если люди
+        ставят сами), его импорт и настройка, проверка; второе приложение устройства — запасное: отдельным блоком после
+        проверки («если не подключается»), чтобы 33 человека не проходили лишние шаги. Что прислать — последним. paper —
+        для бумажной карточки: только приложения, ключ которых переносится QR-кодом (остальные — в сообщении,
+        paper_rest); таких нет — пусто."""
         secs = [s for s in self.sections if s.paper is not None] if paper else self.sections
         if not secs:
-            return []
-        out = [] if self.admin else [*self.before, *(s.install for s in secs)]
-        for s in secs:
-            out += (s.paper or []) if paper else s.steps
-        if len(secs) > 1 and self.one_on:
+            return [], "", []
+        main, rest = secs[0], secs[1:]
+        out = [] if self.admin else [*self.before, main.install]
+        out += ((main.paper or []) if paper else main.steps) + [*self.after, main.check]
+        head, more = "", []
+        if rest:
             names = [f"«{s.client['name']}»" for s in secs]
-            out.append(self.one_on.replace("{first}", names[0]).replace("{rest}", " или ".join(names[1:])))
-        out += [*self.after, secs[0].check]
+            head = (self.fallback or "{rest}:").replace("{first}", names[0]).replace("{rest}", " или ".join(names[1:]))
+            for s in rest:
+                more += ([] if self.admin else [s.install]) + ((s.paper or []) if paper else s.steps)
+            if self.one_on:
+                more.append(self.one_on.replace("{first}", names[0]).replace("{rest}", " или ".join(names[1:])))
         if self.report:
-            out.append(self.report)
-        return out
+            (more if rest else out).append(self.report)
+        return out, head, more
+
+    def steps(self, paper: bool = False) -> list[str]:
+        """Все шаги подряд (главные и запасного, без заголовка)."""
+        main, _, more = self.parts(paper)
+        return main + more
 
     @property
     def paper_rest(self) -> list[str]:
@@ -378,8 +391,9 @@ class Pack:
     def message(self) -> str:
         """Инструкция платформы одним списком (steps). Первая строка начинается с {name}: имя подставляет тот, кто
         показывает текст человеку; вторая — что идёт через VPN. Протоколов в тексте нет; только если приложений на
-        устройстве два, ключи названы, как подписаны у человека («ссылку «VLESS XHTTP»»): какой ключ в какое."""
-        steps = self.steps()
+        устройстве два, ключи названы, как подписаны у человека («ссылку «VLESS XHTTP»»): какой ключ в какое. Запасное
+        приложение — после проверки, под своим заголовком; нумерация сквозная."""
+        main, fb_head, more = self.parts()
         if self.admin:
             names = f"«{self.sections[0].client['name']}»"   # второе приложение — запасное (шаг one_on)
             abroad = " и ".join(f"«{s.client['name']}»" for s in self.sections if s.foreign)
@@ -387,7 +401,10 @@ class Pack:
                     else f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}.")
         else:
             head = f"{NAME_TOKEN}, VPN на {self.platform_title}: что сделать"
-        return "\n".join([head, *([self.via] if self.via else []), *[f"{i}) {x}" for i, x in enumerate(steps, 1)]])
+        lines = [head, *([self.via] if self.via else []), *[f"{i}) {x}" for i, x in enumerate(main, 1)]]
+        if fb_head:
+            lines += ["", fb_head, *[f"{i}) {x}" for i, x in enumerate(more, len(main) + 1)]]
+        return "\n".join(lines)
 
 
 def _usable(proto: str, client_id: str, link: protolib.Link) -> bool:
@@ -548,7 +565,9 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         ver = f" (версия {sec.version})" if sec.version else ""
         sec.foreign = cat.no_ru_store(c, platform)
         foreign = f" {FOREIGN_STORE}" if sec.foreign else ""
-        sec.install = f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform, c)}{foreign}"
+        note = cat.install_note(c, platform)
+        sec.install = (f"Установите «{c['name']}»{ver}: {_install_target(sec.links[0], platform, c)}{foreign}"
+                       + (f" {note}" if note else ""))
         imports: dict[str, list[str]] = {}
         for i in items:
             imports.setdefault(i.method, []).append(i.tile)
@@ -559,10 +578,10 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         # QR с другого экрана — телефонам, у которых главный способ не QR
         alt = tiles if qr_ok and platform not in DESKTOP and "qr" not in imports else None
         named = len(plan) > 1   # два приложения на устройстве: ключи называются, как подписаны у человека
-        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named, not said)
+        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named, not said, admin)
         said = said or alt is not None
         if qr_ok and not sec.extras:
-            sec.paper = cat.steps(c, platform, [("qr", tiles)], names, lambda p: p in have, named=named)
+            sec.paper = cat.steps(c, platform, [("qr", tiles)], names, lambda p: p in have, named=named, admin=admin)
         sec.via = cat.via(c, platform)
         if sec.via == "apps" and c.get("per_app") == "rules" and not sec.extras:
             sec.via = "all"   # список — файлом правил, а его у человека нет: через VPN идёт всё
@@ -571,7 +590,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     modes = [s.via for s in sections]
     lists = "apps" in modes
     pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0], names),
-                report=cat.raw["report"], one_on=cat.raw["one_on"])
+                report=cat.raw["report"], one_on=cat.raw["one_on"], fallback=cat.raw["fallback"])
     if ((brave and lists) or "brave" in modes) and platform in cat.raw.get("brave", {}):   # brave — VPN только в нём
         pack.before.append(cat.raw["brave"][platform])
     if lists and platform in cat.raw.get("rules", {}):
@@ -727,32 +746,60 @@ def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.
                                     for n, k in enumerate(keys)], class_="keys"), class_="app")
 
 
-def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, links: bool = False,
+def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, keys: bool = False,
                primary: bool = True) -> Markup:
     """Инструкция только для чтения: <pre>, «Скопировать» и «Изменить для группы →» (править её можно только на
-    странице группы). links — предложить дописать ссылки человека в копируемый текст (нужен JS). primary — главная
-    ли это кнопка экрана (на «Раздаче» главная одна — «Карточки»)."""
+    странице группы). keys — в тексте уже ссылки человека: копируется сообщение целиком. primary — главная ли это
+    кнопка экрана (на «Раздаче» главная одна — «Карточки»)."""
     return t("div",
-             t("span", "Инструкция", class_="label"),
+             t("span", "Сообщение" if keys else "Инструкция", class_="label"),
              t("pre", text, id=mid, class_="msg-pre"),
              t("div",
-               t("button", "Скопировать", type="button", class_="btn primary" if primary else "btn", data_copy=mid,
-                 title="Копируется текст выше, без ключей"),
-               t("label", t("input", type="checkbox", data_addlinks=mid), " добавить ссылки в текст",
-                 class_="chk", data_links=True, hidden=True) if links else None,
+               t("button", "Скопировать сообщение" if keys else "Скопировать", type="button",
+                 class_="btn primary" if primary else "btn", data_copy=mid,
+                 title="Копируется весь текст выше, с его ссылками" if keys else "Копируется текст выше, без ключей"),
                t("a", "Изменить для группы →", href=f"/groups/{g.id}#text", class_="small", data_swap=True) if g else None,
                class_="actions"),
              extra, class_="msg")
 
 
+KEYS_HEAD = "Ключи — только для вас, никому не пересылайте:"
+
+
+def keys_text(keys: list[list[Key]], name: str) -> str:
+    """Ключи человека в конец сообщения: ссылки целиком, файлы — названием (их прикладывают к сообщению)."""
+    lines: list[str] = []
+    for ks in keys:
+        for k in ks:
+            if k.uri:
+                line = f"{k.title}: {k.uri}"
+            elif k.file and FILE_NAME_RE.fullmatch(k.file):
+                line = f"{k.title}: файл {name}-{k.file} — во вложении"
+            else:
+                continue
+            if line not in lines:
+                lines.append(line)
+    return "\n".join([KEYS_HEAD, *lines]) if lines else ""
+
+
+def with_update(text: str, line: str) -> str:
+    """Сообщение взамен старого: строка «удалите старые подключения» сразу после обращения."""
+    if not line:
+        return text
+    head, _, rest = text.partition("\n")
+    return f"{head}\n{line}" + (f"\n{rest}" if rest else "")
+
+
 def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Group | None,
                   uid: str = "", label: str | None = None, primary: bool = True,
-                  shown: dict[str, str] | None = None, devices: list[str] | None = None) -> Markup | None:
-    """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека, инструкция
-    группы с его именем (label; нет — логин) только для чтения. Без JS видны все платформы подряд; с JS список
-    оставляет одну. uid — приставка id полей, если на странице несколько блоков. shown — сюда кладутся {ссылка: id поля
-    на странице}: «Все ссылки и QR» копируют из этих полей, а не показывают те же ссылки второй раз. devices —
-    устройства человека (groups.devices_of); None — все, для которых есть приложения."""
+                  shown: dict[str, str] | None = None, devices: list[str] | None = None,
+                  update: str = "") -> Markup | None:
+    """Платформа (список) → приложения набора с версией и ссылкой, QR/ссылка/файл этого человека и сообщение: инструкция
+    группы с его именем (label; нет — логин) и его ссылками в конце — копируется одной кнопкой. Без JS видны все
+    платформы подряд; с JS список оставляет одну. uid — приставка id полей, если на странице несколько блоков. shown —
+    сюда кладутся {ссылка: id поля на странице}: «Все ссылки и QR» копируют из этих полей, а не показывают те же ссылки
+    второй раз. devices — устройства человека (groups.devices_of); None — все, для которых есть приложения. update —
+    строка «удалите старые подключения» (сообщение взамен старого: новые ключи, другой набор)."""
     if not links:
         return None
     label = label or name
@@ -771,8 +818,10 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
         group_text = ctx.text(g, plat) if g else None
         own = bool(g and group_text and pack_sig(pack) != ctx.group_sig(g, plat))
         # у человека свои протоколы или другие приложения, чем в наборе группы: инструкция группы про другое
-        text = fill_name((None if own else group_text) or pack.message, label)
         keys = [_keys(s, plat, links) for s in pack.sections]
+        text = with_update(fill_name((None if own else group_text) or pack.message, label), update)
+        if ktext := keys_text(keys, name):
+            text = f"{text}\n\n{ktext}"
         apps = [_app_html(s, k, plat, name, ctx.cat, uid, admin) for s, k in zip(pack.sections, keys)]
         if own:
             gpack = ctx.group_pack(g, plat)
@@ -784,7 +833,7 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
                 for n, k in enumerate(ks):
                     if k.uri:
                         shown.setdefault(k.uri, _key_id(uid, plat, s, n))
-        msg = text_block(text, f"msg-{uid}{plat}", g, links=any(k.uri for ks in keys for k in ks), primary=primary)
+        msg = text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary)
         panels.append(t("section", t("h4", title, class_="plat-title"), apps, msg, class_="conn-plat", data_pp=plat))
         plats.append((plat, title))
     if not panels:
@@ -813,14 +862,24 @@ def no_devices(cat: clients.Catalog, devices: list[str], g: "groups.Group | None
 
 def connect_card(links: list[protolib.Link], name: str, ctx: Ctx | None, g: groups.Group | None,
                  uid: str = "", label: str | None = None, shown: dict[str, str] | None = None,
-                 devices: list[str] | None = None) -> Markup | None:
+                 devices: list[str] | None = None, csrf: str = "", update: str = "") -> Markup | None:
     if ctx is None:
         return None
     if g is not None and not g.clients:
         return card("Подключить", t("p", no_apps(g)))
-    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown, devices=devices)
+    panel = connect_panel(links, name, ctx, g, uid, label, shown=shown, devices=devices, update=update)
     if panel is None:
         return card("Подключить", t("p", no_devices(ctx.cat, devices, g))) if devices and links else None
     return card("Подключить", t("p", "Приложения и инструкция — общие для группы." if g else "Приложения — по протоколам.",
                                 " " + NO_KEYS, class_="hint"),
-                panel, hints(ctx))
+                panel, hints(ctx), extra=zip_button(name, csrf) if csrf else None)
+
+
+def zip_button(name: str, csrf: str, label: str = "ZIP этого человека", hint: bool = True) -> Markup:
+    """Архив одного человека (инструкция, ссылки, файлы, QR) — тот же, что у «Карточек для раздачи». hint — подсказка
+    (на странице одна: вторая кнопка — без неё)."""
+    return t("form", csrf_input(csrf), t("input", type="hidden", name="u", value=name),
+             t("input", type="hidden", name="fmt", value="zip"),
+             t("button", label, type="submit", class_="btn small",
+               title="Папка с инструкцией, ссылками, файлами и QR — переслать целиком" if hint else None),
+             method="post", action="/handoff/export", class_="inline")

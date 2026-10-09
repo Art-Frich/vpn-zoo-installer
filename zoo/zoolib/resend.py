@@ -21,7 +21,11 @@ EFFECT_LIST = {FILE: "список из нашего файла", RULES: "спи
                MANUAL: "приложения отмечает сам человек", NONE: "список не действует"}
 EFFECT_SEND = {FILE: "новый файл или QR", RULES: "новый файл правил", MANUAL: "написать, что отметить",
                NONE: "ничего"}
-KIND_TEXT = {"keys": "новые ключи — сообщение целиком", "all": "другой набор — сообщение целиком"}
+# что сказать человеку вместе с новым файлом: иначе импорт добавит второе подключение рядом со старым
+EFFECT_DROP = {FILE: "старый туннель в «{app}» удалить, новый файл импортировать",
+               RULES: "в «{app}» старый набор правил удалить, новый импортировать и сделать активным"}
+KIND_TEXT = {"keys": "новые ключи — сообщение целиком (старые подключения удалить)",
+             "all": "другой набор — сообщение целиком (старые подключения удалить)"}
 
 
 def effect(cat: clientcat.Catalog, client: dict[str, Any], platform: str) -> str:
@@ -101,8 +105,20 @@ def describe(cat: clientcat.Catalog | None, user: users.User, g: groups.Group | 
     if cat is None:
         return ["список «через VPN» изменился"]
     out = [f"{cat.platforms.get(i.platform, i.platform)} · «{i.client['name']}»: {EFFECT_SEND[i.effect]}"
+           + (f" ({EFFECT_DROP[i.effect].replace('{app}', i.client['name'])})" if i.effect in EFFECT_DROP else "")
            for i in apps_of(cat, user, g, plats) if i.effect != NONE]
     return out or ["список «через VPN» изменился"]
+
+
+def update_line(cat: clientcat.Catalog | None, user: users.User, g: groups.Group | None) -> str:
+    """Первая строка сообщения взамен старого (новые ключи, другой набор): в каких приложениях удалить старые
+    подключения. Отметки «сообщение целиком» нет — пусто."""
+    full = next((k for k in users.RESEND_FULL if k in user.resend), None)
+    if full is None or cat is None:
+        return ""
+    names = list(dict.fromkeys(f"«{i.client['name']}»" for i in apps_of(cat, user, g)))
+    apps = ", ".join(names) if names else "приложении VPN"
+    return cat.raw["update"][full].replace("{apps}", apps)
 
 
 def pending(reg: users.Registry) -> list[users.User]:

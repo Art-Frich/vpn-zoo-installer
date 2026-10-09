@@ -706,34 +706,33 @@ class PackTest(unittest.TestCase):
                          [("happ", ["hysteria2", "vless-reality"]), ("amneziawg", ["amneziawg"])])
         self.assertEqual(p.sections[0].tiles, "Hysteria2, VLESS Vision")
         msg = p.message
-        # одним списком: сначала установка всех приложений, потом импорт каждого; каждый шаг начинается с приложения
+        # главное приложение целиком, запасное — после проверки, отдельным блоком (D60); шаг начинается с приложения
         self.assertTrue(msg.startswith("{name}, VPN на Android: что сделать\nЧерез VPN — только приложения из списка, "
                                        "остальное напрямую.\n1) Установите браузер «Brave»"), msg)
         self.assertIn("\n2) Установите «Happ»", msg)
-        self.assertIn("\n3) Установите «AmneziaWG»", msg)
+        self.assertIn("\n\nЕсли «Happ» не подключается — запасное приложение «AmneziaWG»:\n9) Установите «AmneziaWG»", msg)
         # сообщение открыто на этом же телефоне: ссылка из буфера, файл; QR — только «на другом экране»
-        # QR с другого экрана — в том же шаге, как другой способ: два шага подряд человек сделал бы оба (D59)
-        self.assertIn("\n4) Скопируйте ссылки «Hysteria2» и «VLESS Vision» из сообщения. В «Happ» нажмите «+» → "
+        # QR с другого экрана — в том же шаге, как другой способ: два шага подряд человек сделал бы оба (D59);
+        # какой ключ включать — тоже в нём: отдельным шагом читалось как повтор импорта (D60)
+        self.assertIn("\n3) Скопируйте ссылки «Hysteria2» и «VLESS Vision» из сообщения. В «Happ» нажмите «+» → "
                       "«Вставить из буфера». Или, если сообщение открыто на другом экране: в «Happ» нажмите «+» → "
                       "«Сканировать QR» и наведите камеру на QR «Hysteria2» и «VLESS Vision». Один способ из двух, не оба",
                       msg)
-        self.assertIn("\n5) Добавьте каждый ключ по очереди. Включайте «Hysteria2»; «VLESS Vision» — запасной", msg,
-                      "два ключа в одном приложении — какой включать")
+        self.assertIn("не оба: иначе подключения задвоятся. Ключи добавляйте по одному. Включайте «Hysteria2»; "
+                      "«VLESS Vision» — запасной", msg, "два ключа в одном приложении — какой включать")
         self.assertIn("В «Happ»: экран «Inbounds» → режим авторизации «auto»", msg, "служебный вход Happ — под паролем")
         self.assertIn("В «Happ» включите «РФ напрямую»", msg)
-        self.assertRegex(msg, r"\n\d\) Сохраните файл «AmneziaWG» из сообщения\. В «AmneziaWG» нажмите «\+» → «Импорт из файла»")
+        self.assertRegex(msg, r"\n\d+\) Сохраните файл «AmneziaWG» из сообщения\. В «AmneziaWG» нажмите «\+» → «Импорт из файла»")
         self.assertRegex(msg, r"\n\d+\) Сохраните файл «AmneziaWG».*Или, если сообщение открыто на другом экране: "
                               r"в «AmneziaWG» нажмите «\+» → «Сканировать QR»")
         self.assertNotIn("этом же телефоне", msg)
-        self.assertLess(msg.index("Установите «AmneziaWG»"), msg.index("В «Happ» нажмите"))
         self.assertLess(msg.index("В «Happ» включите"), msg.index("В «AmneziaWG» нажмите"), "шаги приложения — подряд")
         self.assertEqual(msg.count("Проверьте:"), 1, "проверка одна, одной фразой")
+        self.assertIn(f"\n7) {catalog().raw['rules']['android']}\n8) {CHECK['brave']}\n\n", msg)
         # два приложения: какое держать включённым (Android держит один VPN)
         self.assertIn("Включённым держите одно приложение — «Happ». Не подключается — выключите его и включите «AmneziaWG»",
                       msg)
-        n = len(msg.splitlines()) - 2
-        self.assertEqual(msg.splitlines()[-3:], [f"{n - 2}) {catalog().raw['rules']['android']}",
-                                                 f"{n - 1}) {CHECK['brave']}", f"{n}) {catalog().raw['report']}"])
+        self.assertTrue(msg.endswith(f"\n12) {catalog().raw['report']}"), msg)
         for gone in ("REALITY", "2ip", "vless://"):
             self.assertNotIn(gone, msg)
         # с одним приложением ключи не называются: протоколов в тексте нет
@@ -810,9 +809,12 @@ class PackTest(unittest.TestCase):
                                        "только приложения из списка, остальное напрямую.\n1) Скопируйте ссылку"), msg)
         for gone in ("Установите", "releases", "Assets", "play.google.com"):
             self.assertNotIn(gone, msg)
-        self.assertEqual(msg.count("\n"), 10, "строка «через VPN», импорт (с QR) и три настройки Happ, импорт (с QR) "
-                                              "AWG, какое держать включённым, правило Android, проверка и что прислать")
-        self.assertTrue(msg.endswith(f"8) {CHECK['brave']}\n9) {catalog().raw['report']}"))
+        self.assertEqual(msg.count("\n"), 12, "строка «через VPN», импорт (с QR) и три настройки Happ, правило Android, "
+                                              "проверка; пустая строка и заголовок запасного, импорт (с QR) AWG, какое "
+                                              "держать включённым и что прислать")
+        self.assertIn(f"6) {CHECK['brave']}\n\nЕсли «Happ» не подключается — запасное приложение «AmneziaWG»:\n7) ", msg,
+                      "запасное — после проверки, отдельным блоком, нумерация сквозная")
+        self.assertTrue(msg.endswith(f"9) {catalog().raw['report']}"))
         one = clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, "ios", [VLESS], [],
                                      {"ios": ["incy"]}, ["vless-reality"], False, None, None, True)
         self.assertTrue(one.message.startswith("{name}, VPN уже установлен. Включите его в «INCY»."))
@@ -891,8 +893,8 @@ class PackTest(unittest.TestCase):
                                              "Через VPN — только приложения из списка, остальное напрямую.\n"
                                              "1) Установите браузер «Brave»"), p.message)
         self.assertIn("\n2) Установите «AmneziaWG»", p.message)
-        self.assertIn("\n4) Сохраните файл «AmneziaWG» из сообщения. В «AmneziaWG» нажмите «+»", p.message,
-                      "два приложения — установка, затем шаги с названием")
+        self.assertIn("\n3) Сохраните файл «AmneziaWG» из сообщения. В «AmneziaWG» нажмите «+»", p.message,
+                      "два приложения — установка главного, его шаги с названием; запасное — блоком ниже")
         one = self.pack("android", [VLESS]).message
         self.assertIn("\n2) Установите «Happ»", one)
         self.assertNotIn("Happ (", one, "названий протоколов перед шагами нет")
@@ -965,20 +967,22 @@ class HandoffPageTest(AppTestBase):
         self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+\?p=[0-9a-f]{8}" loading="lazy"')
         self.assertRegex(android, r'<input type="text" id="k-android-happ-0" value="vless://masha@')
         self.assertIn('data-copy="k-android-happ-0">Копировать</button>', android)
-        # текст — один на группу, с именем человека; ключей в нём нет
+        # текст — инструкция с именем человека, его ссылки — в конце: копируется одной кнопкой
         msg = self.msg(body)
         self.assertTrue(msg.startswith("masha, VPN на Android: что сделать\nЧерез VPN — только "), msg)
         self.assertIn("\n1) Установите браузер «Brave»", msg)
         self.assertNotIn("{name}", body)
-        self.assertNotIn("vless://", msg)
-        self.assertIn(">Скопировать</button>", body)
+        instr, _, keys = msg.partition("\n\nКлючи — только для вас")
+        self.assertNotIn("vless://", instr)
+        self.assertIn("vless://masha@", keys)
+        self.assertIn(">Скопировать сообщение</button>", body)
         self.assertIn('data-copy="msg-android"', body)
         self.assertIn("Приложения — по протоколам.", body, "человек без группы: рекомендованные каталога")
         self.assertNotIn("Изменить для группы", body)
         self.assertNotIn("<textarea", main.split(">Подключить<")[1].split("Все ссылки и QR")[0], "инструкция — только для чтения")
         self.assertNotIn("можно править", body)
-        self.assertRegex(body, r'<label class="chk" data-links hidden><input type="checkbox" data-addlinks="msg-android">')
-        self.assertNotIn("Скопировать сообщение", body)
+        self.assertNotIn("data-addlinks", body, "ссылки уже в тексте: галочка не нужна")
+        self.assertIn('action="/handoff/export"', body, "ZIP этого человека")
         self.assertNotIn("плитках выше", body)
         self.assertNotIn("Другие платформы", body)
         self.assertIn("не отправляйте через MAX и VK", body)
@@ -1011,7 +1015,8 @@ class HandoffPageTest(AppTestBase):
     def test_group_text_with_name_is_what_user_gets(self):
         groups.set_message("main", "android", "Привет, {name}!\nСтавь Happ, дальше по QR.")
         _, body = self.c.get("/users/masha")
-        self.assertEqual(self.msg(body), "Привет, masha!\nСтавь Happ, дальше по QR.")
+        self.assertTrue(self.msg(body).startswith("Привет, masha!\nСтавь Happ, дальше по QR.\n\nКлючи — только для вас"),
+                        self.msg(body))
         self.assertTrue(self.msg(body, "windows").startswith("masha, VPN на Windows"), "остальные — по умолчанию")
         self.assertIn('href="/groups/main#text"', body)
 

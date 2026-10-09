@@ -317,7 +317,7 @@ class WizardTest(GroupWebBase):
         msg = self.msg(page)
         self.assertIn("1) Установите браузер «Brave»", msg)
         self.assertIn("2) Установите «Happ»", msg)
-        self.assertIn("3) Установите «AmneziaWG»", msg)
+        self.assertIn("\n\nЕсли «Happ» не подключается — запасное приложение «AmneziaWG»:\n9) Установите «AmneziaWG»", msg)
         self.assertIn("В «Happ» нажмите «+» → «Вставить из буфера»", msg)
         self.assertIn("Включённым держите одно приложение — «Happ».", msg, "два приложения: какое включать")
         self.assertNotIn("Happ (", msg, "названий протоколов в инструкции нет")
@@ -327,7 +327,7 @@ class WizardTest(GroupWebBase):
         self.assertRegex(android, r'<img class="qr" src="/users/masha/qr/\d+\?p=[0-9a-f]{8}"')
         self.assertNotIn('data-pp="windows"', page, "для Windows приложения не выбраны")
         _, done = self.c.get("/connect/done?group=g1&u=masha")
-        self.assertIn("3) Установите «AmneziaWG»", done)
+        self.assertIn("9) Установите «AmneziaWG»", done)
         # страница группы: набор виден радиокнопкой, выключить устройство — платформа не нужна
         _, gp = self.c.get("/groups/g1")
         self.assertEqual(self.checked(gp, "android"), ["happ", "amneziawg"])
@@ -361,9 +361,10 @@ class WizardTest(GroupWebBase):
     def test_self_mode_is_honest_about_github_on_computers(self):
         cat = clients.load()
         self.assertEqual(groupviews._set_flag(cat, "windows", ["v2rayn"], "self"), ("не из магазина", ["v2rayN"]))
-        self.assertEqual(groupviews._set_flag(cat, "linux", ["v2rayn"], "self"), ("в магазине нет", ["v2rayN"]))
-        self.assertIn("ставится файлом", " ".join(groupviews._flag_legend([("не из магазина", ["v2rayN"])])))
-        self.assertIn("установщик с GitHub", " ".join(groupviews._flag_legend([("в магазине нет", ["v2rayN"])])))
+        self.assertEqual(groupviews._set_flag(cat, "linux", ["v2rayn"], "self"), ("не из магазина", ["v2rayN"]),
+                         "одна метка на «не из магазина» и «в магазине нет»: смысл один")
+        self.assertEqual(groupviews._flag_legend([("не из магазина", ["v2rayN"]), ("не из магазина", ["AmneziaVPN"])]),
+                         ["v2rayN, AmneziaVPN — не из магазина: ставится файлом с GitHub: в инструкции сказано, какой"])
         self.assertIsNone(groupviews._set_flag(cat, "windows", ["v2rayn"], "admin"))
         self.assertIsNone(groupviews._set_flag(cat, "windows", ["hiddify"], "self"), "Hiddify есть в Microsoft Store")
         self.assertEqual(groupviews._set_flag(cat, "ios", ["amneziavpn"], "self"), ("нет в App Store РФ", ["AmneziaVPN"]))
@@ -911,7 +912,7 @@ class GroupsPagesTest(GroupWebBase):
     def test_handoff_follows_group_client_and_primary_protocol(self):
         # группа выбрала Happ для Android и поставила VLESS первым: пакет — Happ, не рекомендуемый для AWG клиент
         _, body = self.c.get("/users/masha")
-        msg = self.msg(body)
+        msg = self.msg(body).partition("Ключи — только для вас")[0]   # ссылки человека в конце текста — с названиями
         self.assertIn("Установите «Happ»", msg)
         self.assertNotIn("AmneziaWG", msg)
         self.assertNotIn("Hysteria2", msg)
@@ -952,7 +953,7 @@ class GroupsPagesTest(GroupWebBase):
         self.assertIn("Вернуть по умолчанию", page)
         self.assertIn("{имя}, ставь Happ.", html.unescape(page))
         for n in ("masha", "kolya"):
-            self.assertEqual(self.msg(self.c.get(f"/users/{n}")[1]), f"{n}, ставь Happ.\nПотом QR.")
+            self.assertTrue(self.msg(self.c.get(f"/users/{n}")[1]).startswith(f"{n}, ставь Happ.\nПотом QR.\n\nКлючи"))
         _, done = self.c.get("/connect/done?group=g1&u=masha")
         self.assertIn("masha, ставь Happ.", html.unescape(done), "на шаге раздачи инструкция — с именем первого, не «{имя}»")
         self.assertNotIn("{имя}", html.unescape(done))
@@ -1343,7 +1344,8 @@ class StartStepTest(GroupWebBase):
         self.create_group()
         _, body = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"], "devs": ["1"],
                                            "dev": ["android", "macos"], "go": ["refresh"], "set:android": ["happ"]})
-        self.assertEqual(self.checked(body, "macos"), ["amneziavpn", "v2rayn"], "добавленному устройству — подбор")
+        self.assertEqual(self.checked(body, "macos"), ["v2rayn"], "добавленному устройству — как в варианте: v2rayN, "
+                                                                   "AmneziaVPN (весь компьютер) — только через «сменить»")
         self.assertEqual(self.checked(body, "android"), ["happ"], "остальное не тронуто")
 
 
@@ -1366,7 +1368,7 @@ class DesignRulesTest(GroupWebBase):
     def test_js_marks_the_page_and_adds_links_to_a_read_only_instruction(self):
         from zoolib.web import assets
         self.assertIn("document.documentElement.classList.add('js')", assets.JS)
-        self.assertIn("ta.tagName !== 'PRE'", assets.JS, "инструкция — <pre>: ссылки дописываются в textContent")
+        self.assertNotIn("data-addlinks", assets.JS, "ссылки человека — в тексте сообщения с сервера, без галочки")
         self.assertIn("el.form.querySelector('button[data-refresh]')", assets.JS, "смена radio отправляет форму сама")
 
     def test_refresh_button_is_in_the_dom_and_named_for_no_js(self):
@@ -1447,9 +1449,9 @@ class LeftoversTest(GroupWebBase):
         self.assertNotIn("v2rayN", quick)
         groups.update("main", clients={"windows": ["v2rayn"]})
         _, body = self.c.get("/users/masha")
-        quick = self.quick(body)
-        self.assertNotIn('<img class="qr"', quick, "нет приложения с QR — картинки нет")
-        self.assertIn("Скопировать всё", quick)
+        self.assertNotIn('<div class="quick">', body, "нет приложения с QR — пустого «Быстрого старта» нет")
+        adv = body[body.index("<summary>Все ссылки и QR</summary>"):]
+        self.assertIn("Скопировать всё", adv[:adv.index('<div class="ptiles"')])
 
     def test_quick_start_without_apps_says_so_and_links_to_settings(self):
         groups.update("main", clients={})

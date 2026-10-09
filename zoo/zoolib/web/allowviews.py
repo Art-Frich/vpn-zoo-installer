@@ -144,6 +144,8 @@ def _list_form(al: allowlist.Allowlist, scope: Scope, csrf: str, draft: dict[str
     head = (f"Список {scope.user}" if scope.user else
             f"Список группы «{scope.group.name}»" if scope.group else "Общий список")
     box = card(head, table(["приложение", "Android", "Windows"], rows, num=[1, 2], cls="apps"),
+               t("p", "Telegram из Google Play и APK с telegram.org — разные строки: не знаете, откуда он у людей, "
+                      "отметьте обе.", class_="hint"),
                _custom_box(pending), help=HELP)
     bar = t("div", t("span", "", class_="count", data_count=True, aria_live="polite"),
             t("button", "Сохранить", type="submit", class_="btn primary", data_save=True),
@@ -273,9 +275,9 @@ def _page(app: "App", req: "Request", scope: Scope, err: str = "", draft: dict[s
     parts.append(_list_form(al, scope, csrf, draft, merged, pending or {}))
     parts.append(effects_card(gs, scope))
     if not scope.user and not scope.group:
-        reset = post_button("/apps", "Сбросить к пресету", csrf, "btn small", {"action": "reset"},
-                            title="Общий список снова как в пресете", swap=True,
-                            confirm="Сбросить общий список к пресету?" + (
+        reset = post_button("/apps", "Сбросить к списку по умолчанию", csrf, "btn small", {"action": "reset"},
+                            title="Общий список снова как по умолчанию", swap=True,
+                            confirm="Сбросить общий список к списку по умолчанию?" + (
                                 " Свой список придётся собирать заново." if al.users else ""))
         if al.users:
             own_rows = [[t("a", n, href=Scope(user=n).url, data_swap=True), "+{} −{}".format(*_diff(al, n))]
@@ -334,10 +336,33 @@ def _unaffected(scope: Scope) -> list[str]:
     return out
 
 
+UNAFFECTED_WHY = {
+    "ios": "На iPhone приложения не выбрать (Apple не даёт): через VPN идёт всё, кроме российских сайтов. Строже нельзя — "
+           "уберите iPhone из устройств человека («Профиль»), тогда VPN у него только на других устройствах.",
+    "all": "Там приложение пускает через VPN всё устройство: дайте этому устройству в настройках группы приложение, "
+           "которое берёт список (на Windows — v2rayN).",
+}
+
+
 def flash_unaffected(req: "Request", scope: Scope) -> None:
     if lost := _unaffected(scope):
         shown = ", ".join(lost[:5]) + (f" и ещё {len(lost) - 5}" if len(lost) > 5 else "")
-        req.session.flash("info", f"Список не действует: {shown}.")
+        why = [UNAFFECTED_WHY["ios"]] if any("iPhone" in x for x in lost) else []
+        why += [UNAFFECTED_WHY["all"]] if any("всё устройство" in x for x in lost) else []
+        req.session.flash("info", f"Список не действует: {shown}. " + " ".join(why))
+
+
+TG_PLAY = allowlist.BY_KEY["telegram"].android
+TG_WEB = allowlist.BY_KEY["telegram-web"].android
+
+
+def flash_telegram(req: "Request", android: list[str]) -> None:
+    """Telegram из Google Play отмечен, а с telegram.org — нет: у кого он с сайта, тот без VPN, и узнают это только из
+    таблицы «Если не работает». Сказать сразу при сохранении."""
+    have = {x.lower() for x in android}
+    if TG_PLAY and TG_WEB and TG_PLAY.lower() in have and TG_WEB.lower() not in have:
+        req.session.flash("warn", "Telegram отмечен только из Google Play. У кого он скачан с telegram.org, через VPN "
+                                  "не пойдёт: отметьте и «Telegram (APK с telegram.org)» — лишним не будет.")
 
 
 def _finish(app: "App", req: "Request", ch: allowlist.Change, text: str, scope: Scope) -> "Response":
@@ -407,6 +432,7 @@ def _save(app: "App", req: "Request", scope: Scope) -> "Response":
     if not errors and scope.group is not None:
         done, errors = _save_group(app, req, scope, lists, titles)
         if done is not None:
+            flash_telegram(req, lists["android"])
             return done
     elif not errors:
         try:
@@ -419,6 +445,7 @@ def _save(app: "App", req: "Request", scope: Scope) -> "Response":
     if errors:
         draft = {p: [v for v in lists[p] if allowlist.valid(p, v)] for p in allowlist.PLATFORMS}
         return _page(app, req, scope, draft=draft, titles=titles, pending=pending, errors=errors, status=422)
+    flash_telegram(req, lists["android"])
     return _finish(app, req, ch, "Сохранено" if ch.added or ch.removed else "Без изменений", scope)
 
 

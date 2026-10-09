@@ -336,19 +336,14 @@ def _set_flag(cat: clients.Catalog, plat: str, ids: list[str], mode: str) -> tup
         raw = [c["name"] for c in cs if not groups.has_store_link(c, plat)]
         if raw and plat == "ios":
             return "нет в App Store РФ", raw
-        if raw and any(groups.has_store_link(c, plat) for c in cat.clients if plat in c["platforms"]):
-            return FLAG_RAW, raw
         if raw:
-            return FLAG_GITHUB, raw
+            return FLAG_RAW, raw
     return None
 
 
 FLAG_RAW = "не из магазина"
-FLAG_GITHUB = "в магазине нет"
-FLAG_EXPLAIN = {
-    FLAG_RAW: "ставится файлом: в инструкции сказано, какой",
-    FLAG_GITHUB: "установщик с GitHub: в инструкции сказано, какой файл",
-}
+# одна метка и одно объяснение: «не из магазина» и «в магазине нет» говорили одно и то же двумя строками
+FLAG_EXPLAIN = {FLAG_RAW: "ставится файлом с GitHub: в инструкции сказано, какой"}
 
 
 def _flag_legend(flags: list[tuple[str, list[str]]]) -> list[str]:
@@ -500,6 +495,10 @@ def normalize_clients(d: Draft, managed: list[str], fill: bool = True) -> None:
             continue
         ids = {o["client"]["id"] for o in opts}
         got = [] if stale else [i for i in d.clients.get(plat, []) if i in ids]
+        if not got and not stale:
+            # устройство отметили чипом после варианта: приложения — как в варианте (Mac — v2rayN, не v2rayN + AmneziaVPN),
+            # тот же итог, что у галочки «Дать группе приложение» в предпросмотре
+            got = groups.device_plan(cat, protocols, plat, d.install_mode)
         got = got or plan.get(plat, [])
         if got:
             fixed[plat] = got
@@ -626,16 +625,32 @@ def _users_block(d: Draft, group_id: str | None = None) -> Markup:
              _existing_block(d, group_id), class_="stack")
 
 
-def _preview_rows(plan: people.Plan, group_devs: list[str] | None = None) -> Markup:
+def _lack_chip(lack: list[str], plans: dict[str, list[str]]) -> Markup | None:
+    """Устройство без приложений группы: есть что дать — «macOS → v2rayN (галочка ниже)», иначе «нет приложений»."""
+    if not lack:
+        return None
+    try:
+        cat: clients.Catalog | None = clients.load()
+    except clients.ClientsError:
+        cat = None
+    offer = [f"{people.device_titles([d])} → {clientviews.app_names(cat, plans[d])} (галочка ниже)"
+             for d in lack if cat is not None and plans.get(d)]
+    none = [d for d in lack if not (cat is not None and plans.get(d))]
+    return t("span", "; ".join(offer + ([f"у группы нет приложений для {people.device_titles(none)}"] if none else [])),
+             class_="chip info" if not none else "chip warn")
+
+
+def _preview_rows(plan: people.Plan, group_devs: list[str] | None = None,
+                  plans: dict[str, list[str]] | None = None) -> Markup:
     """Предпросмотр: № · Имя · Логин · Заметка · Устройства; чипы только у проблемных строк (совпавшее имя, ошибка,
-    устройство без приложений группы)."""
+    устройство без приложений группы — с тем, что ему дадут галочкой ниже, plans)."""
     rows, cls = [], []
     for r in plan.rows:
         lack = [d for d in r.devices if group_devs is not None and d not in group_devs]
         chips = [t("span", f"{r.clash}: добавлен номер", class_="chip warn", title="такое имя уже есть: добавлен номер")
                  if r.clash else None,
-                 t("span", f"у группы нет приложений для {people.device_titles(lack)}", class_="chip warn") if lack else None,
-                 t("span", "не понял: " + ", ".join(r.unknown), class_="chip warn") if r.unknown else None,
+                 _lack_chip(lack, plans or {}),
+                 t("span", people.unknown_text(r.unknown), class_="chip warn") if r.unknown else None,
                  t("span", r.hint, class_="chip warn") if r.hint else None,
                  t("span", r.problem, class_="chip bad") if r.problem else None]
         devs = people.device_titles(r.devices) if r.devices else t("span", "как у группы", class_="muted")
@@ -692,8 +707,8 @@ def _preview(app: "App", req: "Request", d: Draft, plan: people.Plan) -> "Respon
     have = [p for p, ids in d.clients.items() if ids]
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="step", value="3"),
              t("input", type="hidden", name="confirm", value="1"), _hidden(d, 4),
-             _preview_rows(plan, have),
-             _lacking_block(groups.lacking_plans(have, d.protocols, _wanted_devices(plan), d.install_mode)),
+             _preview_rows(plan, have, lack := groups.lacking_plans(have, d.protocols, _wanted_devices(plan), d.install_mode)),
+             _lacking_block(lack),
              t("div", t("button", _count_label("Создать группу", len(plan.rows), len(d.existing), "и"), type="submit", name="go",
                         value="create", class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
@@ -872,12 +887,12 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
 
 def _group_pick(gs: groups.Groups) -> Markup | None:
     """«В существующую группу»: только когда в какой-то группе уже есть люди (первый запуск — сразу новая группа).
-    Выбрана — форма «Добавить людей списком» на странице группы. Заранее выбрана самая большая."""
+    Выбрана — форма «Добавить людей списком» на странице группы. Заранее не выбрана никакая: иначе бухгалтер легко
+    уходит в самую большую группу, а видно её только в заголовке предпросмотра."""
     ureg = users.list_users()
     count = {g.id: sum(1 for u in groups.members_of(gs, ureg, g.id) if u.name != users.OWNER) for g in gs.groups}
     if not any(count.values()):
         return None
-    best = max(gs.groups, key=lambda g: count[g.id])
     owner = {g.id for g in gs.groups if any(u.name == users.OWNER for u in groups.members_of(gs, ureg, g.id))}
 
     def label(g: groups.Group) -> str:   # owner — ключи самого админа, в счёт людей не идёт, но и «0 чел.» — неправда
@@ -885,8 +900,9 @@ def _group_pick(gs: groups.Groups) -> Markup | None:
         return f"{g.name} · " + (f"{n} чел." if n else "только ваши ключи (owner)" if g.id in owner else "пусто")
 
     return card("В существующую группу",
-                t("form", t("select", [t("option", label(g), value=g.id, selected=g is best)
-                                       for g in gs.groups], name="to", aria_label="Группа"),
+                t("form", t("select", [t("option", "— выберите группу —", value="", selected=True, disabled=True),
+                                       *[t("option", label(g), value=g.id) for g in gs.groups]],
+                            name="to", aria_label="Группа", required=True),
                   t("button", "Добавить людей →", type="submit", class_="btn primary"),
                   method="get", action="/connect/new", class_="actions"))
 
@@ -1440,8 +1456,9 @@ def _members_preview(app: "App", req: "Request", g: groups.Group, plan: people.P
     form = t("form", csrf_input(csrf), t("input", type="hidden", name="users_new", value=text),
              t("input", type="hidden", name="confirm", value="1"),
              [t("input", type="hidden", name="existing", value=n) for n in existing],
-             _preview_rows(plan, g.app_devices),
-             _lacking_block(groups.lacking_plans(g.app_devices, g.protocols, _wanted_devices(plan), g.install_mode)),
+             _preview_rows(plan, g.app_devices,
+                           lack := groups.lacking_plans(g.app_devices, g.protocols, _wanted_devices(plan), g.install_mode)),
+             _lacking_block(lack),
              t("div", t("button", _count_label("Добавить", len(plan.rows), len(existing)), type="submit",
                         class_="btn primary"),
                t("button", "← Изменить список", type="submit", name="go", value="edit", class_="btn", formnovalidate=True),
