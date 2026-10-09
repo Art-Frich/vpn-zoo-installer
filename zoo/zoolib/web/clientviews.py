@@ -248,7 +248,9 @@ def _broken_line(cat: clients.Catalog, protos: list[str]) -> str:
     names = proto_names(cat)
     by: dict[tuple[str, ...], list[str]] = {}
     for c in cat.clients:
-        bad = tuple(names.get(p, p) for p in protos if c["protocols"].get(p, {}).get("s") == "no")
+        # MTProxy умеет только Telegram — это не «не работает» у остальных
+        bad = tuple(names.get(p, p) for p in protos if c["protocols"].get(p, {}).get("s") == "no"
+                    and p not in manifests.APP_PROXIES)
         if bad:
             by.setdefault(bad, []).append(c["name"])
     return "Не работает: " + " · ".join(f"{', '.join(bad)} — {', '.join(apps)}" for bad, apps in by.items()) if by else ""
@@ -376,6 +378,11 @@ class Section:
         return self.items[0].proto
 
     @property
+    def builtin(self) -> bool:
+        """Встроенный прокси приложения (Telegram): ставить нечего, это не VPN."""
+        return bool(self.client.get("builtin"))
+
+    @property
     def method(self) -> str:
         return self.items[0].method
 
@@ -401,18 +408,27 @@ class Pack:
     one_on: str = ""  # шаблон «держите включённым одно приложение» ({first}, {rest}) — когда приложений два и больше
     fallback: str = ""  # заголовок шагов запасного приложения ({first}, {rest})
 
+    @property
+    def telegram_only(self) -> bool:
+        """На устройстве только встроенный прокси Telegram, VPN-приложений нет."""
+        return all(s.builtin for s in self.sections)
+
     def parts(self, paper: bool = False) -> tuple[list[str], str, list[str]]:
         """(главные шаги, заголовок запасного, шаги запасного). Главное — Brave и установка первого приложения (если люди
         ставят сами), его импорт и настройка, проверка; второе приложение устройства — запасное: отдельным блоком после
         проверки («если не подключается»), чтобы 33 человека не проходили лишние шаги. Что прислать — последним. paper —
         для бумажной карточки: только приложения, ключ которых переносится QR-кодом (остальные — в сообщении,
-        paper_rest); таких нет — пусто."""
+        paper_rest); таких нет — пусто. Прокси Telegram (builtin) — не запасной VPN: его шаги и проверка идут в главных,
+        после VPN, без установки."""
         secs = [s for s in self.sections if s.paper is not None] if paper else self.sections
+        tg = [s for s in secs if s.builtin]
+        secs = [s for s in secs if not s.builtin]
+        tg_steps = [x for s in tg for x in [*((s.paper or []) if paper else s.steps), s.check]]
         if not secs:
-            return [], "", []
+            return tg_steps + ([self.report] if tg and self.report else []), "", []
         main, rest = secs[0], secs[1:]
         out = [] if self.admin else [*self.before, main.install]
-        out += ((main.paper or []) if paper else main.steps) + [*self.after, main.check]
+        out += ((main.paper or []) if paper else main.steps) + [*self.after, main.check] + tg_steps
         head, more = "", []
         if rest:
             names = [f"«{s.client['name']}»" for s in secs]
@@ -442,9 +458,11 @@ class Pack:
         устройстве два, ключи названы, как подписаны у человека («ссылку «VLESS XHTTP»»): какой ключ в какое. Запасное
         приложение — после проверки, под своим заголовком; нумерация сквозная."""
         main, fb_head, more = self.parts()
-        if self.admin:
+        if self.telegram_only:
+            head = f"{NAME_TOKEN}, прокси для Telegram на {self.platform_title}: что сделать"
+        elif self.admin:
             names = f"«{self.sections[0].client['name']}»"   # второе приложение — запасное (шаг one_on)
-            abroad = " и ".join(f"«{s.client['name']}»" for s in self.sections if s.foreign)
+            abroad = " и ".join(f"«{s.client['name']}»" for s in self.sections if s.foreign and not s.builtin)
             head = (f"{NAME_TOKEN}. Установите {abroad} с иностранного Apple ID. Включите VPN в {names}." if abroad
                     else f"{NAME_TOKEN}, VPN уже установлен. Включите его в {names}.")
         else:
@@ -619,7 +637,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         target = _install_target(sec.links[0], platform, c)
         if target != sec.links[0]["url"] and (foreign or note):   # «…скачайте файл с «macos»…» — точка перед следующей фразой
             target = target.rstrip(".") + "."
-        sec.install = f"Установите «{c['name']}»{ver}: {target}{foreign}" + (f" {note}" if note else "")
+        sec.install = "" if cat.builtin(c) else f"Установите «{c['name']}»{ver}: {target}{foreign}" + (f" {note}" if note else "")
         imports: dict[str, list[str]] = {}
         for i in items:
             imports.setdefault(i.method, []).append(i.tile)
@@ -634,18 +652,21 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named, not said, admin,
                               sec.own_msg)
         said = said or alt is not None
-        if qr_ok and not sec.extras:
+        # QR прокси Telegram открывает камера телефона: на компьютер с бумаги его не перенести
+        if qr_ok and not sec.extras and not (cat.builtin(c) and platform in DESKTOP):
             sec.paper = cat.steps(c, platform, [("qr", tiles)], names, lambda p: p in have, named=named, admin=admin)
         sec.via = cat.via(c, platform)
         if sec.via == "apps" and c.get("per_app") == "rules" and not sec.extras:
             sec.via = "all"   # список — файлом правил, а его у человека нет: через VPN идёт всё
-        sec.check = cat.check(sec.via, brave, titles[0] if titles else "")
+        sec.check = c["check"] if cat.builtin(c) else cat.check(sec.via, brave, titles[0] if titles else "")
         sections.append(sec)
-    modes = [s.via for s in sections]
+    sections.sort(key=lambda s: s.builtin)   # прокси Telegram — после VPN-приложений, не первым
+    modes = [s.via for s in sections if not s.builtin]
     lists = "apps" in modes
-    # «медленно»: замер в Brave, если VPN только в нём; иначе с VPN и без; Brave в списке нет — спросить, что медленно
-    speed = "brave" if (lists and brave) or "brave" in modes else ("apps" if lists else "device")
-    pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0], names),
+    # «медленно»: замер в Brave, если VPN только в нём; иначе с VPN и без; Brave в списке нет — спросить, что медленно;
+    # только Telegram — что именно медленно
+    speed = "brave" if (lists and brave) or "brave" in modes else ("apps" if lists or not modes else "device")
+    pack = Pack(platform, cat.platforms[platform], sections, names, admin, via_line(cat, modes[0] if modes else "", names),
                 report=cat.report(speed), one_on=cat.raw["one_on"], fallback=cat.raw["fallback"])
     if ((brave and lists) or "brave" in modes) and platform in cat.raw.get("brave", {}):   # brave — VPN только в нём
         pack.before.append(cat.raw["brave"][platform])
@@ -799,7 +820,8 @@ def _app_html(sec: Section, keys: list[Key], plat: str, name: str, cat: clients.
     head = t("div", t("strong", title or sec.client["name"]),
              t("span", sec.version, class_="mono muted") if sec.version else None,
              t("span", note, class_="chip warn") if note else None,
-             None if admin else t("div", _link_anchors(sec.links, presorted=True), class_="chips"), class_="app-head")
+             None if admin or sec.builtin else t("div", _link_anchors(sec.links, presorted=True), class_="chips"),
+             class_="app-head")
     return t("div", head, t("div", [_key_html(k, name, _key_id(uid, plat, sec, n))
                                     for n, k in enumerate(keys)], class_="keys"), class_="app")
 

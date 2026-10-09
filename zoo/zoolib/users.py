@@ -375,6 +375,8 @@ def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = N
                     raise UserError(f"в группе «{grp.name}» нет включённых протоколов")
                 only = None if set(want) >= set(managed_all) else want
             groups.refresh_mirror(extra={name: grp.id})
+    if grp is None and not system and not only:   # вне групп — все включённые VPN; MTProxy выдаётся только явно (D63)
+        only = [p for p in managed_protocols()[0] if p not in manifests.APP_PROXIES] or None
     targets, skipped = managed_protocols(only)
     if not targets:
         raise UserError("нет протоколов, куда можно добавить пользователя: "
@@ -714,7 +716,10 @@ def sync_users(names: list[str] | None = None, include_custom: bool = False) -> 
                 rep.steps.append(Step(pid, "forget", True, "манифеста больше нет"))
             owner = user.name == OWNER   # владельцу — все включённые протоколы, группа и custom его не ограничивают
             grp = gs.get(user.group) if user.group and not user.custom and not owner else None
-            lacking = [p for p in (grp.resolve(targets, variants) if grp else targets) if p not in user.protocols]
+            # вне групп MTProxy получают только owner и служебный пробник: его выдают явно (D63)
+            mine = grp.resolve(targets, variants) if grp else [p for p in targets if owner or user.system
+                                                                 or p not in manifests.APP_PROXIES]
+            lacking = [p for p in mine if p not in user.protocols]
             if user.custom and not include_custom and not owner:
                 rep.skipped.update({p: "свой набор протоколов (--include-custom, чтобы добавить)" for p in lacking})
                 lacking = []

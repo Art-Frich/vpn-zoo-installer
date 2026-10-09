@@ -90,6 +90,8 @@ docker/tests/vless-reality.sh zoo-dev    # VLESS RAW+REALITY+Vision (клиен�
 docker/tests/vless-xhttp.sh zoo-dev      # VLESS XHTTP+REALITY (клиент Xray)
 docker/tests/ss2022.sh zoo-dev           # Shadowsocks-2022 (клиент Xray), + UDP (DNS)
 docker/tests/tuic.sh zoo-dev             # TUIC v5 (клиент sing-box, пин из versions.env)
+docker/tests/mtproto.sh zoo-dev          # MTProxy (ENABLE_MTPROTO=1): fronting на сайт домена, рукопожатие Fake-TLS
+                                         # с секретом (клиента Telegram нет), add/disable/enable/del по одному
 docker/tests/hysteria2.sh zoo-dev        # Hysteria2 (+ Salamander и hopping, если включены)
 docker/tests/amneziawg.sh zoo-dev        # AmneziaWG (amneziawg-go + awg с сервера)
 docker/tests/routing.sh zoo-dev          # анти-утечки: echo, RU_EGRESS, sniffing, WARP, AWG L3

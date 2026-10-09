@@ -102,7 +102,7 @@ got="$(routing_route_test domain=gosuslugi.ru)"
 [ "${got:-direct}" = "$want_ru" ] || die "gosuslugi.ru уходит в «${got:-direct}», ожидался $want_ru (RU_EGRESS=$RU_EGRESS)"
 log_ok "маршруты: echo → $want_echo, приватные → blocked, RU → $want_ru, остальное → direct"
 
-if [ "$(xui_inbound_list | jq '[.[] | select(.protocol != "wireguard" and .protocol != "tunnel") | select((.sniffing.enabled and .sniffing.routeOnly) | not)] | length')" != "0" ]; then
+if [ "$(xui_inbound_list | jq '[.[] | select(.protocol != "wireguard" and .protocol != "tunnel" and .protocol != "mtproto") | select((.sniffing.enabled and .sniffing.routeOnly) | not)] | length')" != "0" ]; then
     die "есть inbound без sniffing — правила по доменам для них не работают"
 fi
 systemctl is-active --quiet vpn-zoo-geo-update.timer || die "таймер vpn-zoo-geo-update не активен"

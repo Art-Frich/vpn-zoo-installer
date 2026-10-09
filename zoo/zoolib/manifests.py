@@ -12,15 +12,19 @@ from . import paths
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 LAYERS = ("tcp", "udp", "tcp+udp")
-PROBE_KINDS = ("xray", "hysteria", "awg", "sing-box")
+PROBE_KINDS = ("xray", "hysteria", "awg", "sing-box", "mtproto")
 # users_backend: кто хранит пользователей (xui | hysteria | awg | ...); none — протокол без
 # пользователей. Значение не проверяется строго: zoo работает через proto-<id>.sh
 LAYER_ALIASES = {"tcp,udp": "tcp+udp", "udp+tcp": "tcp+udp", "tcp/udp": "tcp+udp", "both": "tcp+udp"}
 
+# прокси одного приложения (MTProxy — только Telegram), не VPN: в «все включённые» группы, в готовые VPN-варианты
+# мастера и в «последний включённый протокол» не входят — их выбирают отдельно (D63)
+APP_PROXIES = ("mtproto",)
 
 # одно название протокола на всех экранах; подсказки (title=) с тем же названием или длинным именем манифеста не нужны
 TITLES = {"hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "vless-xhttp": "VLESS XHTTP",
-          "vless-reality": "VLESS Vision", "amneziawg": "AmneziaWG", "tuic": "TUIC", "ss2022": "Shadowsocks"}
+          "vless-reality": "VLESS Vision", "amneziawg": "AmneziaWG", "tuic": "TUIC", "ss2022": "Shadowsocks",
+          "mtproto": "MTProxy"}
 
 
 def proto_title(pid: str, fallback: str = "") -> str:

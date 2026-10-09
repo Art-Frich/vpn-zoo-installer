@@ -11,6 +11,8 @@ AmneziaWG — интерфейс awg (модуль ядра или amneziawg-go)
           основном неймспейсе, в туннель уходят только сокеты, привязанные к нему
           (SO_BINDTODEVICE + своя таблица маршрутизации), DNS — тоже через туннель.
 
+MTProxy — без процесса: рукопожатие Fake-TLS прямо из Python (MtprotoClient, handshake_only).
+
 У каждого клиента: start(), handshake(timeout) → (статус, ошибка, мс), run_jobs(jobs) →
 результаты fetch(), stop(), log_tail().
 """
@@ -33,7 +35,8 @@ from pathlib import Path
 from typing import Any
 
 from . import fetch as fetch_mod
-from .endpoints import split_hostport
+from . import mtproto
+from .endpoints import endpoint_of, split_hostport
 
 BIN_ENV = {"xray": "ZOO_XRAY_BIN", "hysteria": "ZOO_HYSTERIA_BIN", "sing-box": "ZOO_SINGBOX_BIN",
            "amneziawg-go": "ZOO_AWG_GO_BIN", "awg": "ZOO_AWG_BIN"}
@@ -572,6 +575,35 @@ class AwgTunnel:
         self.stop()
 
 
+class MtprotoClient:
+    """MTProxy: стороннего клиента нет — рукопожатие Fake-TLS с секретом пользователя (probe/mtproto.py). Запросов
+    через прокси нет: Telegram говорит с ним своим протоколом, движок после рукопожатия останавливается."""
+    handshake_only = True
+    NOTE = "проверено рукопожатие Fake-TLS с секретом; сам Telegram через прокси не проверялся"
+
+    def __init__(self, probe: dict[str, Any]) -> None:
+        self.probe = probe
+
+    def start(self, timeout: float) -> None:
+        try:
+            mtproto.parse_secret(str(self.probe.get("secret") or ""))
+        except ValueError as e:
+            raise ClientError(f"probe mtproto: {e}") from None
+
+    def handshake(self, timeout: float) -> tuple[str, str, float | None]:
+        ep = endpoint_of(self.probe)
+        return mtproto.handshake(ep.host, ep.port, str(self.probe["secret"]), timeout)
+
+    def run_jobs(self, jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        raise ClientError("MTProxy: запросов через прокси пробник не делает")
+
+    def log_tail(self, n: int = 6) -> str:
+        return ""
+
+    def stop(self) -> None:
+        pass
+
+
 def make_client(probe: dict[str, Any], workdir: Path, mode: str, stall: float = 8.0):
     kind = probe.get("kind")
     if kind == "xray":
@@ -582,4 +614,6 @@ def make_client(probe: dict[str, Any], workdir: Path, mode: str, stall: float = 
         return SingBoxClient(probe, workdir, stall)
     if kind == "awg":
         return AwgTunnel(probe, workdir, "netns" if mode == "local" else "bind", stall)
+    if kind == "mtproto":
+        return MtprotoClient(probe)
     raise ClientError(f"неизвестный probe.kind: {kind!r}")

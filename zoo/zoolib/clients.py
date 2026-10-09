@@ -137,6 +137,10 @@ class Catalog:
         идёт всё), apps (Brave в списке нет), guide (общий документ)."""
         return self.raw["report"].replace("{speed}", self.raw["speed"][speed])
 
+    def builtin(self, client: dict[str, Any]) -> bool:
+        """Встроенный прокси приложения (Telegram): ставить нечего — приложение у человека уже есть, это не VPN."""
+        return bool(client.get("builtin"))
+
     def install_note(self, client: dict[str, Any], platform: str) -> str:
         """Что делать, если система не открывает приложение после установки (Gatekeeper на Mac); нет — пусто."""
         return (client.get("install_note") or {}).get(platform, "")
@@ -262,6 +266,8 @@ def validate(raw: Any) -> None:
         need(isinstance(rights, dict) and set(rights) <= set(c["platforms"])
              and all(isinstance(v, list) and all(isinstance(s, str) and s for s in v) for v in rights.values()),
              f"{cid}: admin_setup — платформа клиента → список шагов")
+        need(not c.get("builtin") or (isinstance(c.get("check"), str) and bool(c["check"]) and not c.get("via")),
+             f"{cid}: builtin — свой шаг check, без via (это не VPN)")
         note = c.get("install_note", {})
         need(isinstance(note, dict) and set(note) <= set(c["platforms"]) and all(isinstance(v, str) and v for v in note.values()),
              f"{cid}: install_note — платформа клиента → текст")
@@ -305,7 +311,7 @@ def validate(raw: Any) -> None:
              and all(any(x["id"] == i and plat in x["platforms"] and x.get("import") for x in raw["clients"]) for i in g["apps"]),
              f"guide {plat}: нужен список apps из клиентов этой платформы, которые берут ключи")
     for pr in raw.get("presets", []):
-        need(pr.get("id") in ("simple", "reliable") and pr.get("protocols") and all(p in protos for p in pr["protocols"]),
+        need(pr.get("id") in ("simple", "reliable", "telegram") and pr.get("protocols") and all(p in protos for p in pr["protocols"]),
              f"presets: {pr.get('id')}")
         for plat, ids in pr.get("plan", {}).items():
             need(plat in plats and all(any(x["id"] == i and plat in x["platforms"] for x in raw["clients"]) for i in ids),

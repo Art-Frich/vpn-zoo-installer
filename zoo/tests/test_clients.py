@@ -79,6 +79,8 @@ class CatalogTest(unittest.TestCase):
         for pid in ("vless-reality", "vless-xhttp", "amneziawg"):
             self.assertEqual(h["protocols"][pid]["s"], "no", pid)
         for pid, st in h["protocols"].items():
+            if pid == "mtproto":   # не VPN: MTProxy берёт только Telegram (D63), на стенде нечего проверять
+                continue
             self.assertIn("07.10.2026", st["note"], pid)
             self.assertIn("hiddify-core 4.1.0", st["note"], pid)
         self.assertEqual(h["verified"]["date"], "2026-10-07")
@@ -380,7 +382,7 @@ class CatalogFactsTest(unittest.TestCase):
         self.assertEqual({p: cat.protocols[p]["title"] for p in cat.protocols if p != "allowlist"},
                          {"vless-reality": "VLESS Vision", "vless-xhttp": "VLESS XHTTP", "ss2022": "Shadowsocks",
                           "hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "amneziawg": "AmneziaWG",
-                          "tuic": "TUIC"})
+                          "tuic": "TUIC", "mtproto": "MTProxy"})
         self.assertEqual(cat.protocols["allowlist"]["title"], "Правила маршрутизации v2rayN")
         self.assertEqual(set(cat.raw["check"]), {"brave", "apps", "device"})
         for text in cat.raw["check"].values():

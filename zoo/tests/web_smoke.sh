@@ -98,7 +98,7 @@ if [ "$WITH_USERS" = 1 ]; then
     check "zoo user list видит $U" bash -c "zoo user list --json | jq -e '.users[] | select(.name == \"$U\")' >/dev/null"
     check "страница $U: плитки подключения" bash -c "[ \"\$(curl -s -b '$JAR' '$BASE/users/$U' | grep -c 'class=\"ptile ')\" -ge 1 ]"
     check "страница $U лёгкая: QR не встроен в HTML" bash -c "! curl -s -b '$JAR' '$BASE/users/$U' | grep -q '<svg'"
-    qrpath="$(curl -s -b "$JAR" "$BASE/users/$U" | grep -o 'data-src="/users/[^"]*/qr/[0-9]*"' | head -1 | sed 's/^data-src="//; s/"$//')"
+    qrpath="$(curl -s -b "$JAR" "$BASE/users/$U" | grep -o 'data-src="/users/[^"]*/qr/[0-9]*[^"]*"' | head -1 | sed 's/^data-src="//; s/"$//')"
     check "QR отдаётся по требованию как SVG ($qrpath)" bash -c "curl -s -b '$JAR' -D - -o /dev/null '$BASE$qrpath' | grep -qi '^content-type: image/svg+xml'"
     check "страница $U: правила v2rayN" bash -c "curl -s -b '$JAR' '$BASE/users/$U' | grep -q 'v2rayn-routing.json'"
     if [ -f /etc/vpn-setup/protocols.d/amneziawg.json ]; then

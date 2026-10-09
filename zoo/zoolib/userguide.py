@@ -107,7 +107,17 @@ def report(cat: clients.Catalog) -> str:
     return cat.report("guide") + "\n"
 
 
-BLOCKS = {"platforms": platforms, "report": report}
+def telegram(cat: clients.Catalog) -> str:
+    """«Только Telegram»: шаги приложения со встроенным прокси (builtin) — одни на телефоне и компьютере."""
+    c = next((x for x in cat.clients if cat.builtin(x)), None)
+    if c is None:
+        return "Прокси для Telegram в каталоге нет.\n"
+    imports, alt = _imports(c, "android")
+    steps = cat.steps(c, "android", imports, alt_qr=alt) + [c["check"]]
+    return "\n".join(f"{i}. {_neutral(x)}" for i, x in enumerate(steps, 1)) + "\n"
+
+
+BLOCKS = {"platforms": platforms, "telegram": telegram, "report": report}
 
 
 def update(text: str, cat: clients.Catalog) -> str:
