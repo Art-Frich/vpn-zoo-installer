@@ -185,6 +185,14 @@ def cmd_web(args: argparse.Namespace, cfg: Config) -> int:
         output.emit({"link": d["link"], "expires_in": 180}, args.json, lambda x: print(x["link"]))
         if not args.json:
             print(f"порт админки {d['port']}; команда входа — zoo web --info", file=sys.stderr)
+        # ssh -t -L …: туннель живёт, пока жива команда. В терминале ждём, иначе ssh закроется сразу после ссылки
+        if not args.json and sys.stdin.isatty() and sys.stdout.isatty():
+            print("Откройте ссылку в браузере. Админка работает, пока это окно открыто; закрыть — Ctrl+C.", flush=True)
+            try:
+                while sys.stdin.read(1):
+                    pass
+            except KeyboardInterrupt:
+                pass
         return 0
     if args.info:
         d = access_info(cfg)
