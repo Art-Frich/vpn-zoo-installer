@@ -22,6 +22,7 @@ from .auth import ABSOLUTE_TTL, Auth, Session, cookie, cookie_names, host_allowe
 from .html import Markup, csrf_input, t
 from .jobs import Jobs
 from .views import NAV
+from . import DEFAULT_PORT, access_info
 
 CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; "
        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
@@ -37,6 +38,7 @@ SECURITY_HEADERS = [
 MSG_MAX = 300  # ошибки на странице короткие: длинный вывод модуля — в журнал, не в браузер
 LOGIN_NONCE_RE = re.compile(r"[A-Za-z0-9_-]{16,64}")
 ONCE_RE = re.compile(r"[A-Za-z0-9._-]{1,160}")
+LINK_COMMAND = f"ssh -t -L {DEFAULT_PORT}:127.0.0.1:{DEFAULT_PORT} root@IP zoo web --link"  # config.env не прочитался
 # ответ не страница (картинка QR, скачиваемый файл) или всегда редирект: отпечаток считать незачем
 NO_STAMP = re.compile(r"GET /users/[^/]+/(?:qr|file)/[^/]+/?|POST /handoff/export/?|GET /dist/[^/]+/[^/]+/[^/]+/?|POST /dist/refresh/?|POST /live/[^/]+/?|GET /logs/(?:chunk|export)/?|POST /logs/(?:clean|vacuum)/?")
 
@@ -313,8 +315,10 @@ class App:
         try:
             cfg = self.cfg()
             who = "zoo " + (cfg.get("LABEL") or cfg.get("SERVER_IP") or "server")
+            command = access_info(cfg)["command"]
         except Exception:  # страница входа открывается и при битом config.env
             who = "zoo"
+            command = LINK_COMMAND
         form = t("form",
                  t("input", type="hidden", name="lc", value=nonce),
                  t("input", type="hidden", name="next", value=_safe_next(req.query.get("next") or req.form.get("next"))),
@@ -332,7 +336,8 @@ class App:
                           t("ul", t("li", t("span", "!", class_="ico"), msg), class_="alerts") if msg else None,
                           t("p", "Входим по ссылке…", class_="muted small") if autosubmit else None,
                           form,
-                          t("p", "Токен: ", t("code", "sudo zoo web --link"), class_="muted small"),
+                          t("p", "Новая ссылка входа — на своём компьютере:", class_="muted small"),
+                          t("code", command, class_="cmd"),
                           class_="card"), class_="login")
         resp = self.render(req, "Вход", body, bare=True, status=status)
         resp.headers.append(("Set-Cookie", cookie(login_cookie, nonce, max_age=1800, path="/login")))
@@ -354,7 +359,7 @@ class App:
             token = req.form.get("token", "")
             if once and not token:
                 time.sleep(0.5)
-                return self.login_page(app, req, "Ссылка устарела. Новая: sudo zoo web --link", 401)
+                return self.login_page(app, req, "Ссылка устарела (живёт 3 минуты): запустите команду ниже ещё раз.", 401)
             s = self.auth.login(token)
             if s is None:
                 time.sleep(0.5)  # перебор вслепую дороже

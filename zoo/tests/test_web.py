@@ -176,7 +176,7 @@ class AuthTest(unittest.TestCase):
         s = a.login(TOKEN)
         self.assertTrue(a.csrf_ok(s, s.csrf))
         self.assertFalse(a.csrf_ok(s, ""))
-        self.assertFalse(a.csrf_ok(s, s.csrf[:-1] + "x"))
+        self.assertFalse(a.csrf_ok(s, s.csrf[:-1] + ("y" if s.csrf.endswith("x") else "x")))  # токен может кончаться на x
         now[0] += auth.IDLE_TTL + 1
         self.assertIsNone(a.session(s.sid))
 
@@ -1152,7 +1152,10 @@ class LoginFormTest(AppTestBase):
         self.assertIn('autocomplete="username"', body)
         self.assertIn('value="zoo test"', body)  # метка из config.env
         self.assertIn(">Токен</label>", body)
-        self.assertIn("sudo zoo web --link", body)
+        # та же команда, что в README, с настоящими портом и адресом: --link даёт ссылку, а не токен
+        self.assertIn(web_mod.access_info(config.load())["command"], body)
+        self.assertIn("ssh -t -L 7070:127.0.0.1:7070 root@", body)
+        self.assertNotIn("sudo zoo web --link", body)
         self.assertNotIn("data-autosubmit", body)
 
     def test_lockout_message_and_threshold(self):
