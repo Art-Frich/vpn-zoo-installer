@@ -76,7 +76,12 @@ def _how(r: dict[str, Any], cat: clients.Catalog) -> str:
         how = ("скачайте " + clientviews.GITHUB_FILE.get(plat, "установщик") + " (кнопка «Скачать» или страница GitHub), "
                "передайте на устройство и откройте" + ("; разрешите установку из неизвестных источников"
                                                        if plat == "android" else ""))
-    return f"{where} — «{c['name']}»: {how}."
+    out = f"{where} — «{c['name']}»: {how}."
+    if note := cat.install_note(c, plat):
+        out += f" {note}"
+    if rights := cat.admin_setup(c, plat):   # людям в инструкцию эти шаги не попадают: прав администратора у них нет
+        out += " Затем с правами администратора: " + " ".join(rights)
+    return out
 
 
 def memo(rows: list[dict[str, Any]], cat: clients.Catalog) -> Markup | None:

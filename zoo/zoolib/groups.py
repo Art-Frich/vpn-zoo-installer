@@ -1114,6 +1114,42 @@ def _mark(rep: GroupReport, ureg: users.Registry, full: list[str], lists: dict[s
         rep.resend += [n for n in marked if n not in rep.resend]
 
 
+def member_view(cat: clientcat.Catalog, clients: dict[str, list[str]], devices: list[str],
+                protocols: list[str]) -> dict[str, tuple[tuple[str, tuple[str, ...]], ...]]:
+    """Что человек получает на каждом своём устройстве: (приложение, протоколы, которые достаются ему) по порядку набора —
+    как в инструкции (протокол берёт первое приложение, которое его умеет). Сравнение до и после правки группы говорит,
+    кому слать новое сообщение."""
+    out: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {}
+    for plat in devices:
+        taken: set[str] = set()
+        row = []
+        for cid in clients.get(plat) or []:
+            c = cat.client(cid)
+            mine = tuple(p for p in protocols if p not in taken and c is not None
+                         and cat.status(c, p, plat) in ("ok", "warn"))
+            taken.update(mine)
+            row.append((cid, mine))
+        out[plat] = tuple(row)
+    return out
+
+
+def _touched(names: list[str], ureg: users.Registry, old: Group, new: Group, sel: list[str]) -> list[str]:
+    """Участники, у которых на их устройствах сменились приложения или ключи: правка Windows не задевает тех, у кого
+    только телефон. Каталог не читается — все."""
+    try:
+        cat = clientcat.load()
+    except clientcat.ClientsError:
+        return list(names)
+    out = []
+    for n in names:
+        u = ureg.require(n)
+        sees_all = u.custom or n == users.OWNER
+        views = [member_view(cat, x.clients, devices_of(u, x) or [], sel if sees_all else x.offered(sel)) for x in (old, new)]
+        if views[0] != views[1]:
+            out.append(n)
+    return out
+
+
 def _snapshot(ureg: users.Registry, names: list[str]) -> tuple[dict[str, list[str]], dict[str, Any]]:
     return ({n: list(ureg.require(n).protocols) for n in names},
             allowlist._snapshot(allowlist.Allowlist.load()))
@@ -1150,6 +1186,7 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
         offer_changed = offered(new_protocols, sel) != offered(g.protocols, sel)
         allow_changed = new_allow != g.allowlist
         clients_changed = new_clients != g.clients
+        old = Group(g.id, g.name, list(g.protocols), {p: list(v) for p, v in g.clients.items()}, extra=list(g.extra))
         g.name, g.protocols, g.clients, g.allowlist = new_name, new_protocols, new_clients, new_allow
         if install_mode is not None:
             g.install_mode = clean_mode(install_mode)
@@ -1160,8 +1197,8 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
             _settle(rep, gs, ureg, names, before[0], before[1], protos_changed)
             if offer_changed:   # учётки те же, но набор ссылок (Salamander) другой
                 rep.needs_qr += [n for n in names if n not in rep.needs_qr and n not in rep.skipped]
-        if names and (offer_changed or clients_changed):   # другие ссылки или приложения — сообщение целиком
-            _mark(rep, ureg, [n for n in names if clients_changed or n not in rep.skipped], gs=gs)
+        if names and (offer_changed or clients_changed):   # другие ссылки или приложения на его устройствах — сообщение целиком
+            _mark(rep, ureg, _touched(names, ureg, old, g, sel), gs=gs)
         return rep
 
 

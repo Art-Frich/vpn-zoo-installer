@@ -424,7 +424,7 @@ class AllowWebTest(AppTestBase):
         _, body = self.c.get("/apps")
         self.assertIn("Свои списки пользователей", body)
         self.assertIn("+1 −0", body)
-        self.assertIn("Сбросить к пресету", body)
+        self.assertIn("Сбросить к списку по умолчанию", body)
         resp, _ = self.c.post("/apps", {"action": "reset", "user": "masha"})
         self.assertEqual(header(resp, "Location"), ["/apps?user=masha"])
         self.assertNotIn("masha", allowlist.Allowlist.load().users)

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from .. import clients, groups, paths, people, protolib, qr, traffic, users
+from .. import clients, groups, paths, people, protolib, qr, resend, traffic, users
 from ..fsutil import LockTimeout
 from . import clientviews, userviews
 from .html import Markup, card, csrf_input, t
@@ -159,10 +159,12 @@ class CardApp:
 class Block:
     platforms: list[str]
     apps: list[CardApp]
-    steps: list[str]          # для сообщения и папки ZIP: ссылки и файлы
+    steps: list[str]          # для сообщения и папки ZIP: строки инструкции с номерами
     via: str = ""   # «Через VPN — …» под названием платформы
     paper: list[str] = field(default_factory=list)   # для бумажной карточки: ключи — QR-кодом
     rest: list[str] = field(default_factory=list)    # приложения, чей ключ с бумаги не перенести — им сообщение
+    paper_head: str = ""      # заголовок запасного приложения на бумаге
+    paper_more: list[str] = field(default_factory=list)   # его шаги
 
 
 @dataclass
@@ -197,17 +199,19 @@ def words(step: str, where: str) -> str:
     return SENT_RE.sub(" " + where, step)
 
 
-def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: clientviews.Pack, name: str) -> list[str]:
-    """Шаги — строки инструкции группы (или пакета, если у человека свои протоколы), без заголовка, строки «Через VPN»
-    (она на карточке отдельно) и номеров."""
+def _steps(ctx: clientviews.Ctx, g: groups.Group | None, plat: str, pack: clientviews.Pack, name: str,
+           update: str = "") -> list[str]:
+    """Строки инструкции группы (или пакета, если у человека свои протоколы) как есть, с номерами и заголовком
+    запасного приложения, без обращения и строки «Через VPN» (она на карточке отдельно). update — строка «удалите
+    старые подключения» первой."""
     body = None
     if g is not None:
         gt = ctx.text(g, plat)
         if gt and clientviews.pack_sig(pack) == ctx.group_sig(g, plat):
             body = gt
     lines = clientviews.fill_name(body or pack.message, name).splitlines()[1:]
-    return [re.sub(r"^\d+\)\s*", "", ln).strip() for ln in lines
-            if ln.strip() and not ln.startswith(clientviews.VIA_PREFIX)]
+    return ([update] if update else []) + [ln.strip() for ln in lines
+                                           if ln.strip() and not ln.startswith(clientviews.VIA_PREFIX)]
 
 
 def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
@@ -217,6 +221,7 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
     prefer, order = clientviews.group_prefs(g)
     admin = bool(g and g.install_mode == "admin")   # ставит ИТ: человеку магазины не показываются, а iPhone — «нужен иностранный Apple ID»
     devices = groups.devices_of(user, g)
+    update = resend.update_line(ctx.cat, user, g)
     merged: dict[Any, Block] = {}
     for plat, title in ctx.cat.platforms.items():
         if devices is not None and plat not in devices:
@@ -229,16 +234,16 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
         apps = [CardApp(s.client["name"], s.version, clientviews.foreign_note(ctx.cat, s.client, plat, admin),
                         [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
                 for s, ks in zip(pack.sections, keys)]
-        steps = _steps(ctx, g, plat, pack, user.label)
-        paper = pack.steps(paper=True)
+        steps = _steps(ctx, g, plat, pack, user.label, update)
+        paper, head, more = pack.parts(paper=True)
         # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
         sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
                       tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps), pack.via,
-               tuple(paper))
+               tuple(paper), head, tuple(more))
         if sig in merged:
             merged[sig].platforms.append(title)
             continue
-        merged[sig] = Block([title], apps, steps, pack.via, paper, pack.paper_rest)
+        merged[sig] = Block([title], apps, steps, pack.via, paper, pack.paper_rest, head, more)
     return list(merged.values())
 
 
@@ -321,14 +326,18 @@ def _block_html(b: Block, name: str) -> Markup:
     return t("section", t("h4", ", ".join(b.platforms), class_="plat-title"),
              t("p", b.via, class_="hint") if b.via else None, apps,
              t("ol", [t("li", s) for s in b.paper], class_="hsteps") if b.paper else None,
+             t("p", t("strong", b.paper_head)) if b.paper_head else None,
+             t("ol", [t("li", s) for s in b.paper_more], class_="hsteps", start=str(len(b.paper) + 1))
+             if b.paper_more else None,
              t("p", PAPER_REST.replace("{apps}", ", ".join(f"«{a}»" for a in b.rest)), class_="hint") if b.rest else None,
              class_="hblock")
 
 
 def _card_html(c: Card, st: Status) -> Markup:
     u = c.user
-    head = t("header", t("strong", u.label), t("span", u.name, class_="hnote") if u.display else None,
-             t("span", u.note, class_="hnote") if u.note else None, status_chip(st, u.name), class_="hhead")
+    # логин и заметка — для администратора на экране; на бумагу, которую получит человек, не печатаются
+    head = t("header", t("strong", u.label), t("span", u.name, class_="hnote noprint") if u.display else None,
+             t("span", u.note, class_="hnote noprint") if u.note else None, status_chip(st, u.name), class_="hhead")
     if c.pending:
         body: Any = t("p", "Ссылки ещё собираются — обновите страницу.", class_="muted")
     elif c.group is not None and not c.group.clients:
@@ -437,14 +446,13 @@ def _qr_file(payload: str, base: str) -> tuple[str, bytes] | None:
 
 
 def instruction_text(c: Card, qr_files: dict[Any, str], files: dict[str, str]) -> str:
-    u = c.user
-    who = u.label + (f" ({u.name})" if u.display else "")
-    out = [who + (f" — {u.note}" if u.note else ""), ("Группа: " + c.group.name) if c.group else "", ""]
+    # файл получает сам человек: обращение по имени, без логина, заметки администратора и названия группы
+    out = [c.user.label, ""]
     for b in c.blocks:
         out.append(f"{', '.join(b.platforms)}: " + ", ".join(f"«{a.name}»" for a in b.apps))
         if b.via:
             out.append(f"  {b.via}")
-        out += [f"  {i}) {words(s, 'из этой папки')}" for i, s in enumerate(b.steps, 1)]
+        out += [f"  {words(s, 'из этой папки')}" for s in b.steps]
         out.append("")
     out.append("Ключи доступа (никому не пересылайте):")
     # один ключ на нескольких платформах — одна запись, QR-картинки собираются к ней

@@ -4,6 +4,7 @@ import re
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.helpers import ZooEnv, needs_bash
 from tests.test_traffic import S
@@ -96,7 +97,7 @@ class TipsTest(unittest.TestCase):
     def test_only_udp_suggests_tcp_his_app_takes(self):
         happ = App("Android", "Happ", [("hysteria2", "ok")], "apps", {"vless-xhttp", "hysteria2"}, "android")
         (kind, text, fix), = support.transport_tips([happ], ["hysteria2"], ["vless-reality", "vless-xhttp", "hysteria2"])
-        self.assertEqual((kind, fix), ("warn", True))
+        self.assertEqual((kind, fix), ("warn", "android"), "правка группы — по устройству: счётчик людей с Android")
         self.assertIn("Android: только UDP (Hysteria2)", text)
         self.assertIn("Добавьте группе VLESS XHTTP: «Happ» его берёт.", text, "VLESS Vision Happ не берёт по каталогу теста")
 
@@ -127,7 +128,7 @@ class TipsTest(unittest.TestCase):
         self.assertIn("«Happ» (Android) с Hysteria2 не проверено: не работает — дайте другое приложение.", texts)
         self.assertIn("«X» (Windows) не берёт ни один его протокол: смените приложение или протоколы группы.", texts)
         self.assertIn("Медленно в «AmneziaVPN» (Windows): через VPN идёт всё устройство — смените Windows в группе "
-                      "на «v2rayN».", texts)
+                      "на «v2rayN» (ему достанется VLESS Vision).", texts, "замена называет, какой протокол ей достанется")
         found.append(App("Windows", "v2rayN", [("vless-reality", "ok")], "apps", plat="windows"))
         self.assertIn("Медленно в «AmneziaVPN» (Windows): через VPN идёт всё устройство — пусть включит «v2rayN».",
                       [t for _, t, _ in support.app_tips(found, cat, ["amneziawg", "vless-reality"])])
@@ -141,6 +142,40 @@ class TipsTest(unittest.TestCase):
         self.assertEqual(tips[0][0], "bad")
         self.assertIn("На сервере не работает Hysteria2 — другого у человека нет", tips[0][1])
         self.assertNotEqual(tips[1][0], "ok")
+
+    def test_server_tip_only_suggests_what_his_app_takes(self):
+        """Третий обход (D60): у группы AmneziaWG и Hysteria2, у Дины Happ — AmneziaWG он не берёт: «другого нет»."""
+        cat = clients.load()
+        g = groups.Group("g3", "Склад", protocols=["amneziawg", "hysteria2"], clients={"android": ["happ"],
+                                                                                     "windows": ["amneziavpn"]})
+        dina = U("dina", group="g3", devices=["android"])
+        tips = support.checklist(dina, g, Contacts(True, {}), cat, ["amneziawg", "hysteria2", "vless-xhttp"], {},
+                                 broken={"hysteria2"})
+        self.assertEqual(tips[0][0], "bad")
+        self.assertIn("На сервере не работает Hysteria2 — другого у человека нет", tips[0][1])
+        self.assertNotIn("AmneziaWG", tips[0][1], "Happ его не берёт — не советовать")
+        gleb = U("gleb", group="g3", devices=["windows"])
+        tips = support.checklist(gleb, g, Contacts(True, {}), cat, ["amneziawg", "hysteria2", "vless-xhttp"], {},
+                                 broken={"hysteria2"})
+        self.assertFalse(any("На сервере не работает" in t for _, t, _ in tips),
+                         "AmneziaVPN не берёт Hysteria2: его сбой Глеба не касается")
+        slow = next(t for _, t, _ in tips if t.startswith("Медленно в «AmneziaVPN»"))
+        self.assertIn("смените Windows в группе на «v2rayN» и добавьте группе VLESS XHTTP (сейчас ему достанется только "
+                      "Hysteria2 — он не работает).", slow, "замена не ведёт на упавший протокол")
+        reg = users.Registry(Path("users.json"), [dina, gleb])
+        gs = groups.Groups(Path("groups.json"), [g])
+        with mock.patch.object(users, "selectable_protocols", return_value=["amneziawg", "hysteria2", "vless-xhttp"]), \
+                mock.patch.object(users, "variant_modules", return_value={}):
+            lost = support.stranded([{"id": "hysteria2", "enabled": True, "ok": False}], reg, gs)
+        self.assertEqual(lost, {"Склад": ("g3", 1)}, "без VPN — Дина (Happ), не Глеб (AmneziaWG)")
+
+    def test_speed_tip_names_the_backup(self):
+        happ = App("Android", "Happ", [("vless-xhttp", "ok"), ("vless-reality", "ok")], "apps", plat="android")
+        self.assertIn("Android: пусть включит запасной ключ VLESS Vision", support.speed_tip([happ], [], []))
+        v2 = App("Windows", "v2rayN", [("vless-xhttp", "ok")], "apps", {"vless-xhttp", "hysteria2"}, "windows")
+        text = support.speed_tip([v2], ["vless-xhttp"], ["vless-xhttp", "hysteria2"])
+        self.assertIn("добавьте группе Hysteria2 («v2rayN» его берёт)", text)
+        self.assertIn("Медленно у всех — «Обзор»", text)
 
     def test_checklist_for_happ_hysteria_group(self):
         """Случай из обхода: у группы один Hysteria2, у человека Happ на Android — UDP и непроверенная связка."""

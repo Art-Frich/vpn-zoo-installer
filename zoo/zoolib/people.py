@@ -36,6 +36,13 @@ DEVICE_WORDS = {
     "linux": "linux", "линукс": "linux", "ubuntu": "linux", "убунту": "linux",
 }
 FIELD_WORDS = 2   # в поле устройств слово-другое («айфон», «ноутбук асус»); длиннее — это заметка
+# слова про устройство, по которым не понять, какое оно: предпросмотр спрашивает, а не молчит
+AMBIGUOUS = {"телефон": "Android или iPhone?", "смартфон": "Android или iPhone?", "мобильный": "Android или iPhone?",
+             "сотовый": "Android или iPhone?", "phone": "Android или iPhone?", "smartphone": "Android или iPhone?",
+             "планшет": "Android или iPad?", "tablet": "Android или iPad?"}
+# названия устройств, которые бывают и фамилией или словом имени: в конце имени — только вопрос, имя не трогаем
+NAMEY = {"мак", "mac", "apple", "хонор", "honor", "pixel", "poco", "realme", "tecno", "infinix", "win"}
+DEVICES_HELP = "android, iphone, windows, mac, linux"
 
 _RU = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e", "ж": "zh", "з": "z", "и": "i",
@@ -125,10 +132,24 @@ def _device_ids(piece: str) -> list[str] | None:
     return [DEVICE_WORDS[w] for w in words]
 
 
+def _device_like(piece: str) -> bool:
+    """Поле про устройства: только названия устройств и слова вроде «телефон», по которым не понять, какое."""
+    words = _words(piece)
+    return bool(words) and all(w in DEVICE_WORDS or w in AMBIGUOUS for w in words)
+
+
+def unknown_text(words: list[str]) -> str:
+    """Чип предпросмотра: «не понял: телефон — Android или iPhone?», «не понял: кабинет 5 — устройство? android, …»."""
+    parts = [f"{w} — {AMBIGUOUS[w]}" if w in AMBIGUOUS else w for w in words]
+    tail = "" if all(w in AMBIGUOUS for w in words) else f" — устройство? {DEVICES_HELP}"
+    return "не понял: " + ", ".join(parts) + tail
+
+
 def split_devices(note: str) -> tuple[str, list[str], list[str]]:
     """Заметка → (заметка, устройства, непонятые слова). Устройства — последнее поле после «;» (без «;» — хвост через
-    запятые), с первого названия устройства; короткие слова после него, которых мы не знаем («айфон, планшет»), не
-    уходят молча в заметку, а возвращаются: предпросмотр спросит о них."""
+    запятые), с первого названия устройства или слова вроде «телефон»; короткие слова там, которых мы не знаем
+    («айфон, планшет», «смартфон»), не уходят молча в заметку, а возвращаются: предпросмотр спросит о них. Третье поле
+    («Оля; склад; хз») без единого знакомого слова остаётся в заметке, но тоже возвращается вопросом."""
     head, sep, tail = note.rpartition(";")   # есть «;» — устройства только в последнем поле, иначе — в хвосте через запятые
     if not sep:
         head, tail = "", note
@@ -137,10 +158,11 @@ def split_devices(note: str) -> tuple[str, list[str], list[str]]:
     k = len(fields)
     while k > 0 and len(_words(fields[k - 1])) <= FIELD_WORDS and fields[k - 1].strip():
         k -= 1
-    while k < len(fields) and _device_ids(fields[k]) is None:   # поле устройств начинается с узнанного устройства
+    while k < len(fields) and not _device_like(fields[k]):   # поле устройств начинается со слова про устройство
         k += 1
     if k >= len(fields):
-        return note, [], []
+        short = _words(tail)
+        return note, [], (short if sep and short and len(short) <= FIELD_WORDS else [])
     found: list[str] = []
     unknown: list[str] = []
     for f in fields[k:]:
@@ -152,6 +174,22 @@ def split_devices(note: str) -> tuple[str, list[str], list[str]]:
     rest = "".join(parts[:max(2 * k - 1, 0)]).strip(" ,")
     note = "; ".join(x for x in (head.strip(" ;,"), rest) if x)
     return note, list(dict.fromkeys(found)), list(dict.fromkeys(unknown))
+
+
+def name_devices(display: str) -> tuple[str, list[str], str]:
+    """«Анна Смирнова android» → («Анна Смирнова», ['android'], ""): названия устройств в конце имени (через пробел, без
+    «;») — устройства. Слово, которое бывает и в имени («Иван Мак»), не трогается — возвращается вопросом."""
+    words = display.split()
+    found: list[str] = []
+    while len(words) > 1:
+        w = words[-1].casefold().strip(".,!")
+        if w in NAMEY:
+            return " ".join(words), found, words[-1] if not found else ""
+        if w not in DEVICE_WORDS:
+            break
+        found.insert(0, DEVICE_WORDS[w])
+        words.pop()
+    return " ".join(words), list(dict.fromkeys(found)), ""
 
 
 def _comma_cut(raw: str, note: str) -> bool:
@@ -195,8 +233,13 @@ def build(text: str, taken: set[str] | frozenset[str] = frozenset()) -> Plan:
     for n, raw in enumerate(lines, 1):
         display, note = split_line(raw)
         note, devices, unknown = split_devices(note)
-        row = Row(n, raw.strip(), display, note[:NOTE_MAX], devices=devices, unknown=unknown)
-        if note and not devices and _comma_cut(raw, note):
+        display, tail, ask = (display, [], "") if devices else name_devices(display)
+        row = Row(n, raw.strip(), display, note[:NOTE_MAX], devices=devices or tail, unknown=unknown)
+        if tail:
+            row.hint = f"«{device_titles(tail)}» из конца имени — устройство, не имя"
+        elif ask:
+            row.hint = f"«{ask}» в конце имени — устройство? Тогда через «;»: «Имя; ; {ask}»"
+        elif note and not devices and _comma_cut(raw, note):
             row.hint = f"«{note}» — заметка; если это часть имени, уберите запятую"
         base = slug(display)
         if not display:

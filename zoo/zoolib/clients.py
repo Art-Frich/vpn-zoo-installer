@@ -102,9 +102,21 @@ class Catalog:
         """Что идёт через VPN у клиента на платформе: apps, ru-direct, all; не описано — пусто."""
         return (client.get("via") or {}).get(platform, "")
 
-    def setup(self, client: dict[str, Any], platform: str) -> list[str]:
-        """Шаги настройки после импорта (маршрутизация, TUN, служебный вход)."""
-        return list((client.get("setup") or {}).get(platform, []))
+    def admin_setup(self, client: dict[str, Any], platform: str) -> list[str]:
+        """Шаги настройки, которым нужны права администратора компьютера (TUN в v2rayN)."""
+        return list((client.get("admin_setup") or {}).get(platform, []))
+
+    def setup(self, client: dict[str, Any], platform: str, admin: bool = False) -> list[str]:
+        """Шаги настройки после импорта (маршрутизация, TUN, служебный вход). admin — приложения ставит ИТ: шаги с правами
+        администратора делает он (памятка у дистрибутивов), человеку их нет; иначе первый из них — с предупреждением."""
+        rights = [] if admin else self.admin_setup(client, platform)
+        if rights:
+            rights[0] = self.raw["admin_rights"] + rights[0]
+        return rights + list((client.get("setup") or {}).get(platform, []))
+
+    def install_note(self, client: dict[str, Any], platform: str) -> str:
+        """Что делать, если система не открывает приложение после установки (Gatekeeper на Mac); нет — пусто."""
+        return (client.get("install_note") or {}).get(platform, "")
 
     def import_step(self, client: dict[str, Any], method: str, titles: list[str] | tuple[str, ...] = (),
                     other: bool = False, named: bool = True) -> str:
@@ -121,12 +133,13 @@ class Catalog:
 
     def steps(self, client: dict[str, Any], platform: str, imports: list[tuple[str, list[str]]], apps: str = "",
               extras: Callable[[str], bool] = lambda proto: True, alt_qr: list[str] | None = None,
-              named: bool = True, one_way: bool = True) -> list[str]:
+              named: bool = True, one_way: bool = True, admin: bool = False) -> list[str]:
         """Шаги одного приложения после установки: импорт ключа ([(способ, названия ключей)]) и в том же шаге — QR с
         другого экрана как другой способ (alt_qr — названия; None — не предлагать), файлы-дополнения (extras — какие
         протоколы-файлы есть у человека), выбор приложений «через VPN» (apps — их названия), настройка. named —
         называть ключи (на устройстве два приложения: какой ключ в какое); ключей у приложения несколько — названы
-        всегда, и шаг «какой включать». one_way — сказать «один способ из двух» (у второго приложения не повторяется)."""
+        всегда, и в том же шаге — какой включать (отдельным шагом он читался как повтор импорта). one_way — сказать
+        «один способ из двух» (у второго приложения не повторяется). admin — ставит ИТ: шагов с правами администратора нет."""
         keys = list(dict.fromkeys(x for _, ts in imports for x in ts))
         named = named or len(keys) > 1
         out = [self.import_step(client, m, ts, named=named) for m, ts in imports]
@@ -136,12 +149,12 @@ class Catalog:
                 out[-1] = f"{out[-1]} {alt}" + (f" {self.raw['one_way']}" if one_way else "")
             else:
                 out.append(alt)
-        if len(keys) > 1:
-            out.append(self.both_step(keys))
+        if len(keys) > 1 and out:
+            out[-1] = f"{out[-1]} {self.both_step(keys)}"
         out += [ex["text"] for ex in client.get("extra", []) if ex["platform"] == platform and extras(ex["proto"])]
         if step := self.per_app_steps(client, platform):
             out.append(f"Приложения через VPN в «{client['name']}»: " + step.replace("{apps}", apps or "нужные приложения"))
-        return out + self.setup(client, platform)
+        return out + self.setup(client, platform, admin)
 
     def check(self, via: str, brave: bool, first_app: str = "") -> str:
         """Шаг проверки: в Brave (он в списке), в первом приложении списка или на любом сайте (через VPN идёт всё)."""
@@ -214,6 +227,13 @@ def validate(raw: Any) -> None:
              f"{cid}: setup — платформа клиента → список шагов")
         asset = c.get("asset", {})
         need(isinstance(asset, dict) and set(asset) <= set(c["platforms"]), f"{cid}: asset")
+        rights = c.get("admin_setup", {})
+        need(isinstance(rights, dict) and set(rights) <= set(c["platforms"])
+             and all(isinstance(v, list) and all(isinstance(s, str) and s for s in v) for v in rights.values()),
+             f"{cid}: admin_setup — платформа клиента → список шагов")
+        note = c.get("install_note", {})
+        need(isinstance(note, dict) and set(note) <= set(c["platforms"]) and all(isinstance(v, str) and v for v in note.values()),
+             f"{cid}: install_note — платформа клиента → текст")
     for plat, by_proto in raw["recommended"].items():
         need(plat in plats, f"recommended: платформа {plat}")
         for pid, cid in by_proto.items():
@@ -231,6 +251,11 @@ def validate(raw: Any) -> None:
          "both: нужны {first} и {rest}")
     need(isinstance(raw.get("one_on"), str) and "{first}" in raw["one_on"] and "{rest}" in raw["one_on"],
          "one_on: нужны {first} и {rest}")
+    need(isinstance(raw.get("fallback"), str) and "{first}" in raw["fallback"] and "{rest}" in raw["fallback"],
+         "fallback: нужны {first} и {rest}")
+    need(isinstance(raw.get("admin_rights"), str) and bool(raw["admin_rights"]), "admin_rights: нужны права администратора")
+    need(isinstance(raw.get("update"), dict) and set(raw["update"]) == {"keys", "all"}
+         and all("{apps}" in v for v in raw["update"].values()), "update: keys и all с {apps}")
     for key in ("brave", "rules"):
         need(isinstance(raw.get(key, {}), dict) and set(raw.get(key, {})) <= set(plats), f"{key}: платформа → текст")
     need(all(c.get("per_app") in raw.get("per_app", {}) for c in raw["clients"]), "per_app клиента не из справочника")

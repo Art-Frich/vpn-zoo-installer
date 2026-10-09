@@ -56,9 +56,26 @@ class BuildTest(unittest.TestCase):
         self.assertEqual(rows, [("Иван", "директор", ["ios", "windows"], []), ("Оля", "", ["android"], []),
                                 ("Анна", "", ["ios"], ["планшет"]), ("Петров", "Иван", [], []),
                                 ("Дима", "", ["macos"], []), ("Павел", "", ["linux"], []),
-                                ("Маша", "Android; склад", [], [])])
+                                ("Маша", "Android; склад", [], ["склад"])])
+        self.assertIn("не понял: склад — устройство?", people.unknown_text(plan.rows[6].unknown),
+                      "третье поле без единого устройства — вопрос, а не молча «как у группы»")
         self.assertIn("уберите запятую", plan.rows[3].hint, "«Петров, Иван» из Excel — подсказка в предпросмотре")
         self.assertFalse(plan.rows[0].hint)
+
+    def test_phone_words_and_device_at_the_end_of_the_name(self):
+        """Третий обход (D60): «телефон» и «смартфон» — вопрос, не молча «как у группы»; устройство через пробел в конце
+        имени — устройство, а не часть логина; слово, которое бывает фамилией, — только вопрос."""
+        plan = people.build("Оля; склад; планшет\nКоля; склад; телефон\nИван; смартфон, ноутбук\n"
+                            "Анна Смирнова android\nБорис Котов windows\nИван Мак")
+        rows = [(r.display, r.name, r.note, r.devices, r.unknown) for r in plan.rows]
+        self.assertEqual(rows, [("Оля", "olya", "склад", [], ["планшет"]), ("Коля", "kolya", "склад", [], ["телефон"]),
+                                ("Иван", "ivan", "", ["windows"], ["смартфон"]),
+                                ("Анна Смирнова", "anna-smirnova", "", ["android"], []),
+                                ("Борис Котов", "boris-kotov", "", ["windows"], []),
+                                ("Иван Мак", "ivan-mak", "", [], [])])
+        self.assertEqual(people.unknown_text(["телефон"]), "не понял: телефон — Android или iPhone?")
+        self.assertIn("устройство, не имя", plan.rows[3].hint)
+        self.assertIn("«Мак» в конце имени — устройство?", plan.rows[5].hint)
 
     def test_devices_column(self):
         plan = people.build("Иван Петров; бухгалтерия; android,windows\nСергей; iPhone + Windows\n"

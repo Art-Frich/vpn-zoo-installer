@@ -37,14 +37,12 @@ def flash_report(req: "Request", rep: users.OpReport) -> None:
     s = req.session
     if s is None:
         return
-    if rep.ok:
-        done = [st.proto_id for st in rep.steps if st.ok and st.action not in ("rollback", "forget")]
-        s.flash("ok", f"{rep.user}: {rep.message}" + (f" ({', '.join(done)})" if done else ""))
-    else:
-        s.flash("bad", f"{rep.user}: {rep.message}")
+    u = users.list_users().get(rep.user)
+    who = u.label if u else rep.user   # к человеку — по имени; id протоколов — только в ошибках, где они нужны для починки
+    s.flash("ok" if rep.ok else "bad", f"{who}: {rep.message}")
     for st in rep.steps:
         if not st.ok:
-            s.flash("bad", f"{st.proto_id}: {st.error}")
+            s.flash("bad", f"{manifests.proto_title(st.proto_id)}: {st.error}")
     if rep.rolled_back:
         s.flash("warn", "Изменения в остальных протоколах откатены.")
 
@@ -126,14 +124,14 @@ def user_devices(app: "App", req: "Request", name: str) -> "Response":
     return _redirect(f"/users/{name}")
 
 
-def _disable_confirm(name: str) -> str:
-    return (f"Отключить {name}? Подключиться он не сможет. «Включить» вернёт доступ с теми же ключами — "
+def _disable_confirm(label: str) -> str:
+    return (f"Отключить «{label}»? Подключиться он не сможет. «Включить» вернёт доступ с теми же ключами — "
             "если телефон потерян, выдайте новые ключи.")
 
 
-def _rekey_confirm(name: str) -> str:
-    return (f"Выдать {name} новые ключи? Старые ссылки, QR и файлы перестанут работать сразу, на всех его устройствах. "
-            "Новые нужно будет отправить ему заново.")
+def _rekey_confirm(label: str) -> str:
+    return (f"Новые ключи для «{label}»? Старые ссылки, QR и файлы перестанут работать сразу, на всех его устройствах — "
+            "и телефон, и компьютер придётся настроить заново по новому сообщению.")
 
 
 def user_rekey(app: "App", req: "Request", name: str) -> "Response":
@@ -152,7 +150,8 @@ def user_rekey(app: "App", req: "Request", name: str) -> "Response":
     u = users.list_users().get(name)
     label = u.label if u else name
     if rep.ok:
-        s.flash("ok", f"{label}: новые ключи выданы, старые не работают. Отправьте новое сообщение",
+        s.flash("ok", f"{label}: новые ключи выданы, старые не работают. Отправьте новое сообщение — в нём сказано "
+                      "удалить старые подключения. Новый телефон другой (Android ↔ iPhone)? Смените «устройства» в «Профиле».",
                 [("карточка", "/handoff?" + urllib.parse.urlencode({"u": name}))])
     else:
         s.flash("bad", f"{label}: {rep.message}")
@@ -170,7 +169,8 @@ def resend_alert(user: users.User, g: groups.Group | None, csrf: str) -> Markup 
     except clients.ClientsError:
         cat = None
     return alert_list([("warn", "Переслать: " + "; ".join(resend.describe(cat, user, g)),
-                        [t("a", "Карточка", href="/handoff?" + urllib.parse.urlencode({"u": user.name}), class_="btn small"),
+                        [clientviews.zip_button(user.name, csrf, "ZIP", hint=False),
+                         t("a", "Карточка", href="/handoff?" + urllib.parse.urlencode({"u": user.name}), class_="btn small"),
                          post_button("/resend", "Отправлено", csrf, "btn small",
                                      {"names": user.name, "back": f"/users/{user.name}"})])])
 
@@ -205,19 +205,30 @@ def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts,
         cat = None
     tips = support.checklist(user, g, c, cat, users.selectable_protocols(), users.variant_modules(),
                              broken=_broken(app) if app is not None else set())
-    n = 0
+    mem: list[users.User] = []
     if g is not None:
         try:
-            n = sum(1 for u in groups.members_of(groups.Groups.load(), users.list_users(), g.id) if u.name != users.OWNER)
+            mem = [u for u in groups.members_of(groups.Groups.load(), users.list_users(), g.id) if u.name != users.OWNER]
         except (groups.GroupError, users.UserError):
-            n = 0
-    settings = (t("a", "Настройки группы", href=f"/groups/{g.id}#settings", title=f"новое сообщение получат {n} чел.")
-                if g is not None else None)
+            mem = []
+    devices = groups.devices_of(user, g) or []
+    names = [cat.platforms.get(d, d) for d in devices] if cat else devices
     items: list[tuple[Any, ...]] = []
+    if not user.devices and g is not None and len(g.devices) > 1:
+        items.append(("info", "Устройства не отмечены — подсказки по всем устройствам группы. Отметьте его устройства "
+                              "в «Профиле»: подсказки станут точнее."))
+    said = False   # «касается всей группы» — один раз, у остальных правок только ссылка
     for kind, text, fix in tips:
-        if fix and settings is not None:
-            items.append((kind, f"{text} Касается всей группы «{g.name}»: новое сообщение получат {n} чел.", settings))
-        elif not items and kind != "ok" and c.known and c.of(user.name) is None and user.enabled:
+        if fix and g is not None:
+            n = sum(1 for u in mem if fix in (groups.devices_of(u, g) or []))
+            dev = cat.platforms.get(fix, fix) if cat else fix
+            link = t("a", "Настройки группы", href=f"/groups/{g.id}#settings",
+                     title=f"новое сообщение получат {n} чел. с {dev}")
+            tail = "" if said else (f" Правка — на всю группу «{g.name}»: новое сообщение получат те, у кого {dev} "
+                                    f"({n} чел.). Нужно только ему — переведите его в отдельную группу.")
+            said = True
+            items.append((kind, text + tail, link))
+        elif text.startswith("Ни разу") and user.enabled:
             items.append((kind, text, t("a", "Сообщение", href=f"/handoff?u={user.name}")))
         else:
             items.append((kind, text))
@@ -230,14 +241,28 @@ def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts,
         items.append(("info", f"Hysteria2 отказал по неверному ключу {rejects} раз за сутки (чей ключ, не видно): если "
                               "это он, у него старый ключ — перешлите сообщение.", t("a", "Атаки", href="/journal")))
     if user.name != users.OWNER:
-        items.append(("info", "Потерял телефон — «Новые ключи»: отключатся все его устройства, включая компьютер."))
+        items.append(("info", lost_text(devices, names)))
     items += [("info", "Спросите: Wi-Fi или мобильный и какой оператор, приложение, снимок ошибки, с какого времени; "
                        "если медленно — скорость на speedtest.net с VPN и без."),
-              ("info", "Режет ли его сеть — пробник: Docker на компьютере в той же сети (на телефон не ставится).",
+              ("info", "Режет ли сеть у человека — пробник: Docker на компьютере в той же сети (на телефон не ставится).",
                t("a", "Проверка", href="/probe"))]
     alarm = any(it[0] in ("warn", "bad") for it in items)
     return t("details", t("summary", "Если у человека не работает"), alert_list(items), class_="card more trouble",
              open=alarm or None), alarm
+
+
+PHONES = ("android", "ios")
+
+
+def lost_text(devices: list[str], names: list[str]) -> str:
+    """«Потерял …» по его устройствам: что отключат «Новые ключи» и что настроить заново."""
+    phone = any(d in PHONES for d in devices)
+    comp = any(d not in PHONES for d in devices)
+    what = "телефон или компьютер" if phone and comp else "телефон" if phone else "компьютер" if comp else "устройство"
+    if len(devices) > 1:
+        return (f"Потерял {what} — «Новые ключи»: старые перестанут работать на всех его устройствах "
+                f"({', '.join(names)}); оставшиеся настроить заново по новому сообщению.")
+    return f"Потерял {what} — «Новые ключи»: старый ключ перестанет работать; новый — в новом сообщении."
 
 
 def _created_local(created: str) -> str:
@@ -283,7 +308,7 @@ def _users_spec(csrf: str, managed: list[str], mx: int, gs: groups.Groups) -> tb
         u = r["user"]
         return post_button(f"/users/{u.name}/{'disable' if u.enabled else 'enable'}",
                            "Отключить" if u.enabled else "Включить", csrf, "btn small", {"back": "/users"},
-                           confirm=_disable_confirm(u.name) if u.enabled else None)
+                           confirm=_disable_confirm(u.label) if u.enabled else None)
 
     cols = [
         tbl.Col("name", "пользователь", cell=name_cell, value=lambda r: r["user"].label,
@@ -375,6 +400,7 @@ def users_list(app: "App", req: "Request") -> "Response":
                        title="Протоколы и приложения — как у группы"), class_="field")
                    if gs.groups else None,
                    t("button", "Добавить", type="submit", class_="btn primary"), class_="form-row"),
+                 _add_devices(),
                  t("div", t("span", "Протоколы:", class_="label"), t("div", protos, class_="checks"),
                    t("div", "Отмечены протоколы группы; другой набор станет «своим», и группа его не тронет.",
                      class_="hint"), class_="field")
@@ -403,6 +429,17 @@ def users_list(app: "App", req: "Request") -> "Response":
     if notes:
         parts.append(t("div", notes, class_="chips"))
     return app.render(req, "Пользователи", parts, active="/users")
+
+
+def _add_devices() -> Markup | None:
+    """«Устройства» в форме добавления: без них человек получил бы инструкции для всех устройств группы."""
+    try:
+        cat = clients.load()
+    except clients.ClientsError:
+        return None
+    return t("div", t("span", "Устройства:", class_="label"), t("input", type="hidden", name="devs", value="1"),
+             device_boxes(cat, list(cat.platforms), []),
+             t("div", "Какие у человека: инструкции и ключи будут только для них.", class_="hint"), class_="field")
 
 
 def bulk_bar(csrf: str, gs: groups.Groups) -> Markup:
@@ -469,11 +506,24 @@ def user_add(app: "App", req: "Request") -> "Response":
     if chosen and not picked:
         req.session.flash("bad", "Не выбран ни один протокол")
         return _redirect("/users")
+    devs = [d[:16] for d in req.multi.get("dev", [])][:8]
+    if req.form.get("devs") == "1" and not devs:
+        req.session.flash("bad", "Отметьте устройства человека: инструкции и ключи будут только для них")
+        return _redirect("/users")
     rep = _user_op(req, users.add_user, name, note=note, only=only, group=group,
                    display=display if display != name else "")
     app.invalidate("status")
     app.invalidate_links(name)
-    return _redirect(f"/users/{name}" if rep and rep.ok else "/users")
+    if not (rep and rep.ok):
+        return _redirect("/users")
+    if devs:
+        try:
+            groups.set_devices([name], devs)
+        except (users.UserError, LockTimeout, clients.ClientsError) as e:
+            req.session.flash("bad", str(e))
+    req.session.flash("info", "Раздать: сообщение с его ссылками — ниже, карточка и ZIP — по ссылке",
+                      [("карточка", "/handoff?" + urllib.parse.urlencode({"u": name}))])
+    return _redirect(f"/users/{name}")
 
 
 def users_sync(app: "App", req: "Request") -> "Response":
@@ -551,8 +601,9 @@ def _bulk_confirm(req: "Request", app: "App", op: str, names: list[str], skipped
              [t("input", type="hidden", name="names", value=n) for n in names],
              t("button", button, type="submit", class_="btn danger-solid"),
              method="post", action="/users/bulk", class_="inline", data_swap=True)
+    reg = users.list_users()
     body = card(f"{head}: {len(names)}?", t("p", text),
-                t("div", [t("span", n, class_="chip") for n in names], class_="chips"),
+                t("div", [t("span", u.label if (u := reg.get(n)) else n, class_="chip") for n in names], class_="chips"),
                 t("p", "Пропущены: " + "; ".join(skipped), class_="hint") if skipped else None,
                 t("div", form, t("a", "Отмена", href="/users", class_="btn", data_swap=True), class_="actions"),
                 cls="danger-zone")
@@ -690,9 +741,9 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
 
     toggle = post_button(f"/users/{name}/{'disable' if user.enabled else 'enable'}",
                          "Отключить" if user.enabled else "Включить", csrf, "btn",
-                         confirm=_disable_confirm(name) if user.enabled else None)
+                         confirm=_disable_confirm(user.label) if user.enabled else None)
     rekey = None if name == users.OWNER else post_button(f"/users/{name}/rekey", "Новые ключи", csrf, "btn",
-                                                         confirm=_rekey_confirm(name))
+                                                         confirm=_rekey_confirm(user.label))
     actions = t("div", rekey, toggle, t("a", "Удалить…", href=f"/users/{name}/delete", class_="btn danger"),
                 class_="actions")
     if user.system:
@@ -737,14 +788,17 @@ def user_page(app: "App", req: "Request", name: str) -> "Response":
     ctx = clientviews.Ctx.load()
     shown: dict[str, str] = {}
     devices = groups.devices_of(user, grp)
-    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label, shown=shown, devices=devices)
+    update = resend.update_line(ctx.cat if ctx else None, user, grp)
+    connect = clientviews.connect_card(links, name, ctx, grp, label=user.label, shown=shown, devices=devices,
+                                       csrf=csrf, update=update)
     where = used_where(links, ctx, grp, devices, name) if ctx is not None and grp is not None and grp.clients else None
     if where:   # только ключи и файлы его устройств: чужой файл «Windows» у человека с одним телефоном путает
         base = show
         split = any(Path(ln.uri).name.endswith("-android.conf") for ln in links if ln.kind == "file")
         show = lambda ln: ((base is None or base(ln)) and ln.variant in where   # noqa: E731
                            and (not split or _for_devices(ln, where[ln.variant])))
-    tiles = connect_tiles(links, manifests.load_all()[0], name, show, shown, bool(connect), where)
+    tiles = connect_tiles(links, manifests.load_all()[0], name, show, shown, bool(connect), where,
+                          mine=[ctx.cat.platforms.get(d, d) for d in devices] if ctx is not None and devices else None)
     # плитки — «всё как есть» для тех, кому нужен конкретный вариант; без нового блока они остаются главными
     advanced = t("details", t("summary", "Все ссылки и QR"), quick_start(links, name, show, ctx, grp, devices), tiles,
                  t("p", clientviews.SEND_WARN, class_="hint") if connect is None else None,
@@ -810,14 +864,16 @@ def _variant_order(link: protolib.Link) -> int:
     return 2
 
 
-def _variant_label(link: protolib.Link, uri_n: int) -> tuple[str, str | None]:
-    """(текст вкладки, подсказка): как в остальных экранах — «Ссылка», «Ссылка 2», «Файл Android»; термины — в подсказку."""
+def _variant_label(link: protolib.Link, uri_n: int, devs: list[str] | None = None) -> tuple[str, str | None]:
+    """(текст вкладки, подсказка): как в остальных экранах — «Ссылка», «Ссылка 2», «Файл Android»; термины — в подсказку.
+    devs — его устройства, которым нужен этот ключ: общий файл подписан только ими (у человека с Mac — не «Windows, iPhone»)."""
     if link.kind == "file":
         fname = Path(link.uri).name
         if fname.endswith("-android.conf"):
             return "Файл Android", "список приложений Android внутри файла"
         if fname.endswith(".conf"):
-            return "Файл Windows, iPhone", "общий .conf без списка приложений"
+            others = [d for d in (devs if devs is not None else ["Windows", "iPhone"]) if d != "Android"]
+            return ("Файл " + ", ".join(others) if others else "Файл"), "общий .conf без списка приложений"
         return "Файл правил", None
     if link.uri.startswith("vpn://"):
         return "Ключ AmneziaVPN", None
@@ -951,19 +1007,23 @@ def quick_start(links: list[protolib.Link], name: str, show: Callable[[protolib.
         note = t("p", pick[2], class_="muted") if pick else None
     if pick is None and not all_uris and note is None:
         return None
-    img = (t("img", class_="qr", src=qr_url(name, pick[0], pick[1]), width=160, height=160, alt="QR",
-             title=manifests.proto_title(pick[1].variant)) if pick else None)
     copy = t("div", t("button", "Скопировать всё", type="button", class_="btn", data_copy_all=COPY_ALL,
                       title="Все ссылки по одной в строке"), class_="actions") if all_uris else None
+    if pick is None and note is None:   # без QR «Быстрый старт» — пустой заголовок: остаётся одна кнопка
+        return copy
+    img = (t("img", class_="qr", src=qr_url(name, pick[0], pick[1]), width=160, height=160, alt="QR",
+             title=manifests.proto_title(pick[1].variant)) if pick else None)
     return t("div", img, t("div", t("h3", "Быстрый старт"), note, copy), class_="quick")
 
 
 def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
                   show: Callable[[protolib.Link], bool] | None = None, shown: dict[str, str] | None = None,
-                  has_connect: bool = False, where: dict[str, str] | None = None) -> Markup | None:
+                  has_connect: bool = False, where: dict[str, str] | None = None,
+                  mine: list[str] | None = None) -> Markup | None:
     """Плитки по протоколам; клик — окно протокола: вкладки вариантов, QR, копировать/скачать.
     show — какие ссылки показывать (номера для QR остаются по полному списку); shown — ссылки, уже выведенные полями
-    в «Подключить»; has_connect — шаги импорта правил уже в инструкции там же."""
+    в «Подключить»; has_connect — шаги импорта правил уже в инструкции там же. where — {протокол: его устройства};
+    mine — названия его устройств: подписи плиток и файлов — только ими."""
     if not links:
         return None
     by_id = {m.id: m for m in mans}
@@ -987,16 +1047,19 @@ def connect_tiles(links: list[protolib.Link], mans: list[Any], name: str,
         m = by_id.get(pid)
         title = ("Правила v2rayN" if pid == allowlist.V2RAYN_PROTO else manifests.proto_title(pid))
         dlg_id = f"dlg-{n}"
+        static = [x.strip() for x in PLATFORMS.get(pid, "").split(",") if x.strip()]
+        devs = ([x.strip() for x in where[pid].split(",")] if where and where.get(pid) else
+                [x for x in static if mine is None or x in mine])
         sections[pid != allowlist.V2RAYN_PROTO].append(t(
             "button", t("span", title, class_="ptile-name"),
-            t("span", (where or {}).get(pid) or PLATFORMS.get(pid, "—"), class_="ptile-sub"),
+            t("span", ", ".join(devs) or "—", class_="ptile-sub"),
             type="button", class_=f"ptile acc{n % 8 + 1}", data_dialog=dlg_id))
         items = sorted(by_proto[pid], key=lambda it: _variant_order(it[1]))  # sorted стабилен: порядок модуля цел
         tabs_data, uri_n = [], 0
         for k, (_, link) in enumerate(items):
             if link.kind == "uri" and not link.uri.startswith("vpn://"):
                 uri_n += 1
-            tabs_data.append(_variant_label(link, uri_n))
+            tabs_data.append(_variant_label(link, uri_n, devs if (where or mine is not None) else None))
         tabs = t("div", [t("button", label, type="button", data_tab=f"{dlg_id}-v{k}", title=why,
                            class_="tab active" if k == 0 else "tab")
                          for k, (label, why) in enumerate(tabs_data)], class_="tabs", role="tablist") \

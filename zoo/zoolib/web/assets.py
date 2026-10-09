@@ -658,8 +658,7 @@ JS = r"""
   document.addEventListener('click', function (ev) {
     if (ev.target.closest && ev.target.closest('[data-print]')) window.print();
   });
-  // «Подключить»: список платформ оставляет видимой одну панель (без JS видны все подряд),
-  // галочка «добавить ссылки» дописывает их в текст сообщения (и убирает обратно)
+  // «Подключить»: список платформ оставляет видимой одну панель (без JS видны все подряд)
   function showPlat(box) {
     var sel = box.querySelector('select[data-plat]');
     if (!sel) return;
@@ -668,27 +667,14 @@ JS = r"""
   function initConn() {
     document.querySelectorAll('.conn').forEach(function (box) {
       box.setAttribute('data-js', '');
-      box.querySelectorAll('.conn-pick, label[data-links]').forEach(function (e) { e.hidden = false; });
+      box.querySelectorAll('.conn-pick').forEach(function (e) { e.hidden = false; });
       showPlat(box);
     });
   }
   document.addEventListener('change', function (ev) {
     var el = ev.target;
     if (!el.matches) return;
-    if (el.matches('select[data-plat]')) { showPlat(el.closest('.conn')); return; }
-    if (!el.matches('input[data-addlinks]')) return;
-    var ta = document.getElementById(el.getAttribute('data-addlinks')), panel = el.closest('.conn-plat');
-    if (!ta || !panel) return;
-    var lines = [];
-    panel.querySelectorAll('.key').forEach(function (k) {
-      var inp = k.querySelector('.link-uri input'), name = k.querySelector('.key-name');
-      if (inp && name) lines.push(name.textContent + ': ' + inp.value);
-    });
-    var block = '\n\n' + lines.join('\n'), field = ta.value !== undefined && ta.tagName !== 'PRE';   // инструкция — <pre>
-    var cur = field ? ta.value : ta.textContent, next;
-    if (el.checked) next = cur.indexOf(block) < 0 ? cur.replace(/\s+$/, '') + block : cur;
-    else next = cur.split(block).join('');
-    if (field) ta.value = next; else ta.textContent = next;
+    if (el.matches('select[data-plat]')) showPlat(el.closest('.conn'));
   });
   // форма «Добавить пользователя»: выбор группы отмечает её протоколы (data-protos у option)
   document.addEventListener('change', function (ev) {

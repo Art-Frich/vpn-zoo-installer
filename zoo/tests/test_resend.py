@@ -1,8 +1,11 @@
 """Ежедневные операции (D57): новые ключи, «Кому переслать», «Через VPN» по группам, добавление в существующую группу."""
 
+import html
+import io
 import json
 import re
 import unittest
+import zipfile
 
 from tests.helpers import needs_bash
 from tests.test_groupviews import GroupWebBase, text_of
@@ -32,8 +35,9 @@ class ResendTest(GroupWebBase):
 
     def test_rekey_person_then_sent(self):
         _, page = self.c.get(f"/users/{IVAN}")
-        self.assertRegex(page, r'data-confirm="Выдать ivan-petrov новые ключи\? Старые ссылки, QR и файлы перестанут '
-                               r'работать сразу[^"]*"[^>]*>.*?>Новые ключи</button>')
+        self.assertRegex(page, r'data-confirm="Новые ключи для «Иван Петров»\? Старые ссылки, QR и файлы перестанут '
+                               r'работать сразу[^"]*компьютер придётся настроить заново[^"]*"[^>]*>.*?>Новые ключи</button>')
+        self.assertIn("Отключить «Иван Петров»?", page, "в подтверждениях — имя, а не логин")
         self.assertIn("«Включить» вернёт доступ с теми же ключами", page)
         start = len(self.env.calls())
         resp, _ = self.c.post(f"/users/{IVAN}/rekey")
@@ -47,11 +51,19 @@ class ResendTest(GroupWebBase):
         self.assertIn("новые ключи выданы, старые не работают", page)
         self.assertIn("Переслать: новые ключи — сообщение целиком", page)
         self.assertIn(f'href="/handoff?u={IVAN}"', page)
+        self.assertIn("Смените «устройства» в «Профиле»", page, "новый телефон другой — куда идти")
+        msg = html.unescape(re.search(r'<pre id="msg-android"[^>]*>(.*?)</pre>', page, re.S).group(1))
+        self.assertTrue(msg.startswith("Иван Петров, VPN на Android: что сделать\nЭто новые ключи взамен старых. "
+                                       "В «AmneziaWG», «v2rayN» сначала удалите старые подключения"), msg[:200])
+        resp, _ = self.c.post("/handoff/export", {"u": IVAN, "fmt": "zip"})
+        text = zipfile.ZipFile(io.BytesIO(resp.body)).read(f"{IVAN}/instruction.txt").decode("utf-8")
+        self.assertIn("Это новые ключи взамен старых", text, "и в ZIP этого человека")
         resp, _ = self.c.post("/resend", {"names": IVAN, "back": f"/users/{IVAN}"})
         self.assertEqual(header(resp, "Location"), [f"/users/{IVAN}"])
         self.assertEqual(self.user(IVAN).resend, [])
         _, page = self.c.get(f"/users/{IVAN}")
         self.assertNotIn("Переслать:", page)
+        self.assertNotIn("Это новые ключи взамен старых", html.unescape(page), "отправили — сообщение снова обычное")
 
     def test_rekey_keeps_disabled_and_repeats_after_failure(self):
         users.set_enabled(IVAN, False)
@@ -89,7 +101,7 @@ class ResendTest(GroupWebBase):
         self.assertIn('<a href="/resend">кому переслать</a>', page)
         self.assertIn("Кому переслать: 2", page)
         _, page = self.c.get("/resend")
-        self.assertIn("<h3>новые ключи — сообщение целиком</h3>", page)
+        self.assertIn("<h3>новые ключи — сообщение целиком (старые подключения удалить)</h3>", page)
         self.assertIn(f'href="/handoff?u={IVAN}%2C{OLGA}"', page)
         _, page = self.c.get("/")
         self.assertIn("Кому переслать: 2 →", page)
@@ -103,13 +115,15 @@ class ResendTest(GroupWebBase):
         self.assertEqual(self.user(IVAN).resend, ["apps:android"])
         self.assertEqual(self.user(OLGA).resend, [], "на iPhone список не действует — пересылать нечего")
         _, page = self.c.get("/resend")
-        self.assertIn("<h3>Android · «AmneziaWG»: новый файл или QR</h3>", page)
+        self.assertIn("<h3>Android · «AmneziaWG»: новый файл или QR (старый туннель в «AmneziaWG» удалить, новый файл "
+                      "импортировать)</h3>", page)
         self.assertNotIn(f'value="{OLGA}"', page)
         self.c.post("/apps", {"action": "save"}, multi={"action": ["save"], "android": base.android + ["com.whatsapp"],
                                                         "windows": base.windows + ["Discord.exe"]})
         self.assertEqual(self.user(IVAN).resend, ["apps:android", "apps:windows"])
         _, page = self.c.get("/resend")
-        self.assertIn("<h3>Windows · «v2rayN»: новый файл правил</h3>", page)
+        self.assertIn("<h3>Windows · «v2rayN»: новый файл правил (в «v2rayN» старый набор правил удалить, новый "
+                      "импортировать и сделать активным)</h3>", page)
         resp, _ = self.c.post("/resend", {}, multi={"names": [IVAN, IVAN]})
         self.assertEqual(header(resp, "Location"), ["/resend"])
         _, page = self.c.get("/resend")
@@ -158,7 +172,9 @@ class ResendTest(GroupWebBase):
     def test_connect_asks_where_first(self):
         _, page = self.c.get("/connect/new")
         self.assertLess(page.index("В существующую группу"), page.index('class="stepper"'))
-        self.assertRegex(page, rf'<option value="{self.gid}" selected>Офис · 2 чел\.</option>')
+        self.assertRegex(page, rf'<option value="{self.gid}">Офис · 2 чел\.</option>')
+        self.assertIn('<option value="" selected disabled>— выберите группу —</option>', page,
+                      "группа заранее не выбрана: бухгалтер не уйдёт в самую большую")
         resp, _ = self.c.get(f"/connect/new?to={self.gid}")
         self.assertEqual(header(resp, "Location"), [f"/groups/{self.gid}?add=1#add"])
         _, page = self.c.get(f"/groups/{self.gid}?add=1")

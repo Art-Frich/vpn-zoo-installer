@@ -18,6 +18,7 @@ GUIDE_FILE = paths.ZOO_PKG_ROOT.parent / "docs" / "USER-GUIDE.md"
 SENT_RE = re.compile(r",? (?:который|которую) я пришлю")
 APPS_WORD = "приложения из списка администратора"
 DESKTOP = ("windows", "macos", "linux")
+BOTH = ("vless-xhttp", "vless-reality")   # основной и запасной ключ VLESS — в одном приложении
 # список у каждого свой (у кого-то только Telegram): проверка — без привязки к Brave
 GUIDE_CHECK = "Проверьте: приложение из вашего списка (например, Brave или Telegram) загружает новое — значит, VPN работает."
 
@@ -61,8 +62,12 @@ def _variant(cat: clients.Catalog, plat: str, n: int, cid: str) -> list[str]:
     out.append("")
     asset = (c.get("asset") or {}).get(plat)
     install = f"Установите «{c['name']}»" + (f": в «Assets» скачайте {asset}." if asset else ".")
+    if note := cat.install_note(c, plat):
+        install += f" {note}"
     imports, alt = _imports(c, plat)
     steps = [install] + cat.steps(c, plat, imports, APPS_WORD, alt_qr=alt)
+    if all(cat.status(c, p, plat) in ("ok", "warn") for p in BOTH):   # VLESS-приложение: ключей обычно два
+        steps[1] += " " + cat.raw["both_guide"]
     if mode == "apps" and plat in cat.raw.get("rules", {}):
         steps.append(cat.raw["rules"][plat])
     steps.append(GUIDE_CHECK if mode == "apps" else cat.check(mode, True))
@@ -90,7 +95,7 @@ def platforms(cat: clients.Catalog) -> str:
             out += _variant(cat, plat, n, cid)
         if unfit := _unfit(cat, plat):
             out += [unfit, ""]
-        tips = [cat.raw["both_guide"], *g.get("tips", [])] if cat.raw.get("both_guide") else g.get("tips", [])
+        tips = g.get("tips", [])
         if tips:
             out += ["**Полезно знать:**", "", *[f"- {x}" for x in tips], ""]
         out += ["---", ""]

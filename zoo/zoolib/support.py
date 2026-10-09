@@ -134,14 +134,22 @@ def _candidate(cat: clientcat.Catalog | None, plat: str, protos: list[str]) -> t
     return None
 
 
+def _dead(broken: set[str] | frozenset[str], variants: dict[str, str] | None = None) -> Any:
+    """Проверка «протокол сейчас не работает на сервере» (вариант — по своему модулю: Salamander — по Hysteria2)."""
+    variants = variants or {}
+    return lambda p: p in broken or variants.get(p, p) in broken
+
+
 def _other_kind(cat: clientcat.Catalog | None, plat: str, title: str, mine: list[App], need: str, offered: list[str],
-                selectable: list[str]) -> str:
+                selectable: list[str], dead: Any = lambda p: False) -> str:
     """Как дать устройству протокол другого вида (need — «udp» или «tcp»): добавить группе протокол, который его
-    приложение уже берёт; или приложение для протокола, который у группы уже есть; или и то и другое."""
-    have = [p for p in offered if groups.TRANSPORT.get(p) == need]
+    приложение уже берёт; или приложение для протокола, который у группы уже есть; или и то и другое. Не работающие
+    сейчас на сервере протоколы не советуются."""
+    have = [p for p in offered if groups.TRANSPORT.get(p) == need and not dead(p)]
     names = ", ".join(f"«{a.name}»" for a in mine)
     lead = f"{_titles(have)} у группы есть, но {names} {'его' if len(have) == 1 else 'их'} не берёт — " if have else ""
-    add = [p for p in groups.by_priority(selectable) if groups.TRANSPORT.get(p) == need and p not in offered]
+    add = [p for p in groups.by_priority(selectable) if groups.TRANSPORT.get(p) == need and p not in offered
+           and not dead(p)]
     for p in add:
         a = next((a for a in mine if p in a.can), None)
         if a is not None:
@@ -159,11 +167,11 @@ def _upper(s: str) -> str:
 
 
 def transport_tips(found: list[App], offered: list[str], selectable: list[str],
-                   cat: clientcat.Catalog | None = None) -> list[tuple[str, str, bool]]:
-    """По устройствам человека: (вид, текст, нужна ли правка группы). Протоколы — только те, что достались его
-    приложениям (как в инструкции). Только UDP — предупреждение: мобильные сети и офисный Wi-Fi режут его чаще;
-    только TCP — справка (VLESS обычно проходит), что делать, если режут и его."""
-    out: list[tuple[str, str, bool]] = []
+                   cat: clientcat.Catalog | None = None, dead: Any = lambda p: False) -> list[tuple[str, str, str]]:
+    """По устройствам человека: (вид, текст, устройство, если нужна правка группы — иначе пусто). Протоколы — только
+    те, что достались его приложениям (как в инструкции). Только UDP — предупреждение: мобильные сети и офисный Wi-Fi
+    режут его чаще; только TCP — справка (VLESS обычно проходит), что делать, если режут и его."""
+    out: list[tuple[str, str, str]] = []
     by_plat: dict[str, list[App]] = {}
     for a in found:
         by_plat.setdefault(a.plat or a.platform, []).append(a)
@@ -175,58 +183,121 @@ def transport_tips(found: list[App], offered: list[str], selectable: list[str],
         if udp and tcp:
             where = next((a.name for a in mine if any(groups.TRANSPORT.get(p) == "tcp" for p in _working(a))), "")
             out.append(("info", f"{title}: не подключается — пусть включит TCP ({_titles(tcp)})"
-                        + (f" в «{where}»" if where else "") + f"; где режут TCP — наоборот, UDP ({_titles(udp)}).", False))
+                        + (f" в «{where}»" if where else "") + f"; где режут TCP — наоборот, UDP ({_titles(udp)}).", ""))
         elif udp:
             out.append(("warn", f"{title}: только UDP ({_titles(udp)}) — где режут UDP (мобильный интернет, офисный "
                                 "Wi-Fi), не подключится. " + _upper(_other_kind(cat, plat, title, mine, "tcp", offered,
-                                                                               selectable)), True))
+                                                                               selectable, dead)), plat))
         elif tcp:
             out.append(("info", f"{title}: только TCP ({_titles(tcp)}) — обычно хватает. Если режут и его: "
-                        + _other_kind(cat, plat, title, mine, "udp", offered, selectable), True))
+                        + _other_kind(cat, plat, title, mine, "udp", offered, selectable, dead), plat))
     return out
 
 
-def app_tips(found: list[App], cat: clientcat.Catalog | None = None,
-             offered: list[str] | tuple[str, ...] = ()) -> list[tuple[str, str, bool]]:
+def _switch(cat: clientcat.Catalog, plat: str, title: str, offered: list[str] | tuple[str, ...],
+            selectable: list[str] | tuple[str, ...], dead: Any) -> str:
+    """«смените Windows в группе на «v2rayN» (ему достанется VLESS XHTTP)»: приложение каталога, где через VPN идёт не всё,
+    и какой работающий протокол ему достанется; рабочего у группы нет — какой протокол добавить. Нет такого — пусто."""
+    cands = [c for c in cat.clients if plat in c["platforms"] and c.get("import") and cat.via(c, plat) not in ("all", "")]
+    for c in cands:
+        gets = [p for p in offered if cat.status(c, p, plat) == "ok" and not dead(p)]
+        if gets:
+            return f"смените {title} в группе на «{c['name']}» (ему достанется {_titles(gets[:1])})."
+    for c in cands:
+        add = [p for p in groups.by_priority(selectable) if p not in offered and cat.status(c, p, plat) == "ok"
+               and not dead(p)]
+        if add:
+            gets = [p for p in offered if cat.status(c, p, plat) in ("ok", "warn")]
+            why = (f" (сейчас ему достанется только {_titles(gets)} — {'он не работает' if len(gets) == 1 else 'они не работают'})"
+                   if gets and all(dead(p) for p in gets) else "")
+            return f"смените {title} в группе на «{c['name']}» и добавьте группе {_titles(add[:1])}{why}."
+    return ""
+
+
+def app_tips(found: list[App], cat: clientcat.Catalog | None = None, offered: list[str] | tuple[str, ...] = (),
+             selectable: list[str] | tuple[str, ...] = (), dead: Any = lambda p: False) -> list[tuple[str, str, str]]:
     """Приложения, которые с его протоколами не возьмут, не проверены или пускают через VPN всё устройство; замена —
-    названа: другое его приложение на том же устройстве, иначе приложение каталога, которое берёт протоколы группы."""
-    out: list[tuple[str, str, bool]] = []
-    slow: dict[tuple[str, str, bool], list[str]] = {}   # (приложение, чем заменить, правка группы) → устройства
+    названа: другое его приложение на том же устройстве, иначе приложение каталога и какой рабочий протокол ему
+    достанется (_switch). Третье поле — устройство, если нужна правка группы."""
+    out: list[tuple[str, str, str]] = []
+    slow: dict[tuple[str, str, str], list[str]] = {}   # (приложение, чем заменить, устройство правки) → устройства
     for a in found:
         label = f"«{a.name}» ({a.platform})"
         if not a.protos:
-            out.append(("warn", f"{label} не берёт ни один его протокол: смените приложение или протоколы группы.", True))
+            out.append(("warn", f"{label} не берёт ни один его протокол: смените приложение или протоколы группы.", a.plat))
         elif not _working(a):
             out.append(("warn", f"{label} с {_titles([p for p, _ in a.protos])} не проверено: не работает — "
-                                "дайте другое приложение.", True))
+                                "дайте другое приложение.", a.plat))
         if a.via == "all":
-            alt = next((b.name for b in found if b.platform == a.platform and b.via != "all" and _working(b)), "")
-            fix = False
+            alt = next((f"пусть включит «{b.name}»." for b in found if b.platform == a.platform and b.via != "all"
+                        and any(not dead(p) for p in _working(b))), "")
+            fix = ""
             if not alt and cat is not None:
-                c = next((c for c in cat.clients if a.plat in c["platforms"] and c.get("import")
-                          and cat.via(c, a.plat) not in ("all", "")
-                          and any(cat.status(c, p, a.plat) == "ok" for p in offered)), None)
-                alt, fix = (c["name"], True) if c else ("", False)
+                alt = _switch(cat, a.plat, a.platform, offered, selectable or offered, dead)
+                fix = a.plat if alt else ""
             slow.setdefault((a.name, alt, fix), []).append(a.platform)
     for (name, alt, fix), plats in slow.items():
         where = ", ".join(plats)
-        tail = (f"смените {where} в группе на «{alt}»." if fix else f"пусть включит «{alt}»." if alt
-                else "приложения, где идёт не всё, для этого устройства нет.")
-        out.append(("info", f"Медленно в «{name}» ({where}): через VPN идёт всё устройство — " + tail, fix))
+        out.append(("info", f"Медленно в «{name}» ({where}): через VPN идёт всё устройство — "
+                    + (alt or "приложения, где идёт не всё, для этого устройства нет."), fix))
     return out
 
 
-def server_tip(mine: list[str], broken: set[str], variants: dict[str, str]) -> tuple[str, str] | None:
-    """Его протоколы, которые сейчас не работают на самом сервере (сервис упал, порт не слушает)."""
-    down = [p for p in mine if variants.get(p, p) in broken or p in broken]
+def speed_tip(found: list[App], offered: list[str] | tuple[str, ...], selectable: list[str] | tuple[str, ...],
+              dead: Any = lambda p: False) -> str:
+    """Что делать с цифрами speedtest: с VPN намного медленнее — запасной ключ или второе приложение его устройства,
+    иначе протокол, который его приложение берёт, а группе не дан; медленно у всех — сервер."""
+    alts: list[str] = []
+    by_plat: dict[str, list[App]] = {}
+    for a in found:
+        by_plat.setdefault(a.platform, []).append(a)
+    for title, mine in by_plat.items():
+        live = [(a, [p for p in _working(a) if not dead(p)]) for a in mine]
+        live = [(a, ps) for a, ps in live if ps]
+        if len(live) > 1:
+            alts.append(f"{title}: пусть включит «{live[1][0].name}»")
+        elif live and len(live[0][1]) > 1:
+            alts.append(f"{title}: пусть включит запасной ключ {_titles(live[0][1][1:2])}")
+    if not alts:
+        for a in found:
+            add = [p for p in groups.by_priority(selectable) if p not in offered and p in a.can and not dead(p)]
+            if add:
+                alts.append(f"добавьте группе {_titles(add[:1])} («{a.name}» его берёт)")
+                break
+    first = "; ".join(alts) or "дайте группе другой протокол"
+    return (f"Медленно: с VPN намного медленнее, чем без, — {first}. Медленно у всех — «Обзор»: нагрузка процессора "
+            "и канал сервера.")
+
+
+def server_tip(found: list[App], mine: list[str], broken: set[str],
+               variants: dict[str, str]) -> tuple[str, str] | None:
+    """Протоколы, которые его приложения правда берут (как в инструкции) и которые сейчас не работают на самом сервере
+    (сервис упал, порт не слушает). По устройствам: на каком есть другой рабочий протокол, на каком — нет."""
+    dead = _dead(broken, variants)
+    by_plat: dict[str, list[tuple[str, str]]] = {}   # устройство → (протокол, приложение)
+    for a in found:
+        by_plat.setdefault(a.platform, []).extend((p, a.name) for p in _working(a))
+    if not found:
+        by_plat = {"": [(p, "") for p in mine]}
+    down = groups.by_priority(p for ps in by_plat.values() for p, _ in ps if dead(p))
     if not down:
         return None
-    rest = [p for p in mine if p not in down]
-    if not rest:
+    alive = {plat: [(p, app) for p, app in ps if not dead(p)] for plat, ps in by_plat.items()}
+    if not any(alive.values()):
         return "bad", (f"На сервере не работает {_titles(down)} — другого у человека нет: дело не в нём. "
                        "Почините на «Обзоре» (перезапуск, журнал).")
-    return "warn", (f"На сервере не работает {_titles(down)}: пусть включит {_titles(rest)}; "
-                    "сам протокол почините на «Обзоре».")
+    parts = []
+    for plat, ps in alive.items():
+        if not any(dead(p) for p, _ in by_plat[plat]):
+            continue
+        where = f"{plat}: " if plat else ""
+        if not ps:
+            parts.append(f"{where}другого у него нет")
+            continue
+        names = list(dict.fromkeys(f"{manifests.proto_title(p)}" + (f" в «{app}»" if app and app != manifests.proto_title(p) else "")
+                                   for p, app in ps))
+        parts.append(f"{where}пусть включит {_either(names)}")
+    return "warn", f"На сервере не работает {_titles(down)}: " + "; ".join(parts) + ". Сам протокол почините на «Обзоре»."
 
 
 def contact_tip(u: users.User, c: Contacts, now: float | None = None) -> tuple[str, str]:
@@ -249,37 +320,55 @@ def contact_tip(u: users.User, c: Contacts, now: float | None = None) -> tuple[s
 
 def checklist(u: users.User, g: groups.Group | None, c: Contacts, cat: clientcat.Catalog | None,
               selectable: list[str], variants: dict[str, str], now: float | None = None,
-              broken: set[str] | None = None) -> list[tuple[str, str, bool]]:
+              broken: set[str] | None = None) -> list[tuple[str, str, str]]:
     """Пункты «Если не работает» по порядку: работают ли его протоколы на сервере, доходит ли он, UDP/TCP по
-    устройствам, приложения. [(вид, текст, нужна ли правка группы)]."""
+    устройствам, приложения, что делать с «медленно». [(вид, текст, устройство, если нужна правка группы — иначе пусто)].
+    Протоколы — те, что берут его приложения (как в инструкции), а не все протоколы группы."""
     protos = offered_to(u, g, selectable, variants)
     found = apps(cat, u, g, protos, selectable) if cat is not None else []
-    tips: list[tuple[str, str, bool]] = []
-    if st := server_tip(protos, broken or set(), variants):
-        tips.append((*st, False))
+    dead = _dead(broken or set(), variants)
+    tips: list[tuple[str, str, str]] = []
+    if st := server_tip(found, protos, broken or set(), variants):
+        tips.append((*st, ""))
     kind, text = contact_tip(u, c, now)
     if tips and kind == "ok":
         kind, text = "info", text.split(" — ")[0] + "."
-    tips.append((kind, text, False))
+    tips.append((kind, text, ""))
     offered = g.offered(selectable) if g is not None else list(selectable)
-    tips += transport_tips(found, offered, selectable, cat)
-    return tips + app_tips(found, cat, offered)
+    tips += transport_tips(found, offered, selectable, cat, dead)
+    tips += app_tips(found, cat, offered, selectable, dead)
+    if found:
+        tips.append(("info", speed_tip(found, offered, selectable, dead), ""))
+    return tips
+
+
+def usable(cat: clientcat.Catalog | None, u: users.User, g: groups.Group | None, mine: list[str]) -> list[str]:
+    """Протоколы, которые берут его приложения (как в «Все ссылки и QR»); без каталога или группы — все его."""
+    if cat is None or g is None:
+        return mine
+    found = apps(cat, u, g, mine)
+    took = {p for a in found for p in _working(a)}
+    return [p for p in mine if p in took] if found else mine
 
 
 def stranded(protocols: list[dict[str, Any]], reg: users.Registry, gs: groups.Groups) -> dict[str, tuple[str, int]]:
-    """{название группы: (id, сколько людей без VPN)}: у кого все его протоколы сейчас не работают на сервере (сводка
-    status: enabled и не ok). Для плашки на «Обзоре»: кого задевает сбой."""
+    """{название группы: (id, сколько людей без VPN)}: у кого все протоколы, которые берут его приложения, сейчас не
+    работают на сервере (сводка status: enabled и не ok). Для плашки на «Обзоре»: кого задевает сбой."""
     broken = {p["id"] for p in protocols if p.get("enabled") and not p.get("ok")}
     if not broken:
         return {}
     selectable = users.selectable_protocols()
     variants = users.variant_modules()
+    try:
+        cat: clientcat.Catalog | None = clientcat.load()
+    except clientcat.ClientsError:
+        cat = None
     out: dict[str, tuple[str, int]] = {}
     for u in reg.visible():
         if not u.enabled or u.name == users.OWNER:
             continue
         g = gs.get(u.group)
-        mine = offered_to(u, g, selectable, variants)
+        mine = usable(cat, u, g, offered_to(u, g, selectable, variants))
         if mine and all(variants.get(p, p) in broken or p in broken for p in mine):
             key = g.name if g else "без группы"
             gid, n = out.get(key, (g.id if g else "", 0))

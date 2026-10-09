@@ -71,7 +71,7 @@ class PeopleWebTest(GroupWebBase):
         text = text_of(body)
         self.assertIn("не понял: планшет", text)
         self.assertIn("уберите запятую", text)
-        self.assertIn("у группы нет приложений для macOS", text)
+        self.assertIn("macOS → v2rayN (галочка ниже)", text)
         self.assertRegex(body, r'<input type="checkbox" name="add_dev" value="macos" checked>')
         self.assertIn("Дать группе приложение для macOS: v2rayN", text)
         resp, _ = self.wiz(3, go="create", name="Офис", proto=["vless-reality", "amneziawg"], devs="1",
