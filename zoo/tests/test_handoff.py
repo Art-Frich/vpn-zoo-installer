@@ -256,16 +256,13 @@ class CardsPageTest(Base):
         self.assertIn("<li>В «Happ» нажмите «+» → «Сканировать QR» и наведите камеру на QR.</li>", body)
         self.assertNotIn("Вставить из буфера", body)
         self.assertNotIn("из сообщения", body)
-        self.assertIn('class="hlink noprint"', body)
-        self.assertIn('class="hcards per-3"', body)
+        self.assertNotIn("vless://", body, "ссылки — в сообщении и ZIP; под QR они растягивали карточку в столбик")
+        self.assertIn('class="hcards"', body)
+        self.assertNotIn("На листе", body, "переключатель 2/3 на лист меняет только печать — убран")
         self.assertIn("data-print", body)
         self.assertIn("не отправляйте их через MAX и VK", body)
         self.assertIn("data-expanded", body, "живое обновление не перерисовывает страницу при печати")
         self.assertRegex(body, r'<button type="submit" class="btn">Скачать ZIP</button>')
-        _, body2 = self.c.get("/handoff?group=g1&per=2")
-        self.assertIn('class="hcards per-2"', body2)
-        _, body3 = self.c.get("/handoff?group=g1&per=9")
-        self.assertIn('class="hcards per-3"', body3, "чужое значение отбрасывается")
 
     def test_same_app_on_several_devices_is_one_block(self):
         self.post("/groups/g1", {"name": ["Семья"], "proto": ["hysteria2"], "client:android": ["hiddify"],
@@ -286,11 +283,11 @@ class CardsPageTest(Base):
         self.assertRegex(blocks["Android"], r"Установите «Hiddify»[^<]*play\.google\.com")
         self.assertIn('src="/users/masha/qr/', blocks["Android"] + blocks["iPhone"], "на телефоне — QR")
 
-    def test_long_link_is_printed_whole(self):
+    def test_link_stays_in_message_not_on_card(self):
         uri = "hysteria2://" + "a" * 64 + "@1.2.3.4:443/?sni=x&insecure=1&pinSHA256=" + "b" * 64 + "#main"
         html_ = str(handoffviews._key_html(handoffviews.CardKey("HY2", uri=uri), "masha"))
-        self.assertIn(uri.replace("&", "&amp;"), html_, "обрезанная ссылка на печати не работает")
-        self.assertNotIn("…", html_)
+        self.assertNotIn("hysteria2://", html_, "длинная ссылка растягивала карточку: QR шли столбиком")
+        self.assertIn(handoffviews.IN_MESSAGE, html_, "ключ без QR — подпись, где его взять")
 
     def test_selection_by_names_is_checked_against_registry(self):
         users.add_user("lena", group="g1")

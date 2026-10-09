@@ -578,7 +578,6 @@ tr.row-bad td { background: var(--bad-soft); }
 .row-warn .chip.warn, .row-bad .chip.bad { border: 1px solid currentColor; }
 table.preview td, table.preview th { white-space: normal; }
 table.preview code { overflow-wrap: anywhere; }
-.hper { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--text-2); font-size: .85rem; }
 .hcards { display: grid; gap: 12px; margin-top: 14px; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); }
 .hcard { display: grid; gap: 8px; align-content: start; padding: 12px 14px; background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--radius); min-width: 0; break-inside: avoid; }
@@ -589,19 +588,16 @@ table.preview code { overflow-wrap: anywhere; }
 .hkeys { display: flex; flex-wrap: wrap; gap: 10px; }
 .hkey { display: grid; gap: 3px; justify-items: start; max-width: 100%; min-width: 0; }
 .hkey img.qr { width: 120px; height: 120px; padding: 5px; margin: 0; box-sizing: content-box; }
-.hlink { font-size: .72rem; word-break: break-all; user-select: all; }
 .hsteps { margin: 0; padding-left: 1.2em; font-size: .85rem; }
 .hsteps li { overflow-wrap: anywhere; }
 @media print {
   .top, footer, .noprint, .flash, .alerts.flash, #live { display: none !important; }
   body { background: #fff; color: #000; font-size: 10pt; }
   main { max-width: none; padding: 0; min-height: 0; }
-  .hcards { display: block; margin: 0; }
-  .hcard { break-inside: avoid; border: 1px solid #888; border-radius: 4px; padding: 3mm 4mm; margin: 0 0 4mm; background: #fff; box-shadow: none; }
-  .hcards.per-3 .hkey img.qr { width: 24mm; height: 24mm; }
-  .hcards.per-2 .hkey img.qr { width: 34mm; height: 34mm; }
+  .hcards { display: grid; grid-template-columns: 1fr 1fr; gap: 4mm; margin: 0; }
+  .hcard { break-inside: avoid; border: 1px solid #888; border-radius: 4px; padding: 3mm 4mm; margin: 0; background: #fff; box-shadow: none; }
+  .hkey img.qr { width: 26mm; height: 26mm; }
   .hkey img.qr { padding: 1mm; }
-  .hlink { font-size: 6.5pt; }
   .hsteps { font-size: 8.5pt; }
   .chip { border: 1px solid #aaa; background: #fff; color: #000; }
 }
