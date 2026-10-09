@@ -1145,6 +1145,35 @@ class AuthStoreTest(unittest.TestCase):
             self.assertFalse(store.exists())
 
 
+class LinkWaitTest(unittest.TestCase):
+    """ssh -t -L … zoo web --link: туннель жив, пока жива команда — в терминале она ждёт, в скрипте нет."""
+
+    def _run(self, tty: bool, stdin_text: str) -> tuple[int, str]:
+        with ZooEnv():
+            with mock.patch("zoolib.system.listening_sockets", return_value=[]):
+                web_mod.setup(config.load())
+            args = argparse.Namespace(new_token=False, info=False, link=True, json=False, bind="127.0.0.1", port=None)
+            fake_in = io.StringIO(stdin_text)
+            fake_in.isatty = lambda: tty  # type: ignore[method-assign]
+            out = io.StringIO()
+            out.isatty = lambda: tty  # type: ignore[method-assign]
+            with mock.patch("sys.stdin", fake_in), mock.patch("sys.stdout", out), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = web_mod.cmd_web(args, config.load())
+            return rc, out.getvalue()
+
+    def test_terminal_waits_until_input_closes(self):
+        rc, text = self._run(True, "xyz")
+        self.assertEqual(rc, 0)
+        self.assertIn("/login?once=", text)
+        self.assertIn("пока это окно открыто", text)
+
+    def test_script_returns_at_once(self):
+        rc, text = self._run(False, "")
+        self.assertEqual(rc, 0)
+        self.assertNotIn("пока это окно открыто", text)
+
+
 class LoginFormTest(AppTestBase):
     def test_form_has_username_hint_and_label(self):
         _, body = self.c.get("/login")
