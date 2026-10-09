@@ -154,6 +154,7 @@ class CardApp:
     foreign: str   # подпись про магазин («нет в App Store РФ», у ИТ — «нужен иностранный Apple ID») или пусто
     stores: list[dict[str, Any]]
     keys: list[CardKey]
+    own: bool = False   # ссылки приложения — отдельно от остальных (clientviews.Section.own_msg): в ZIP — свой файл
 
 
 @dataclass
@@ -191,9 +192,12 @@ PAPER_REST = "{apps} — настройка в сообщении: ссылку 
 IN_MESSAGE = "в сообщении"
 
 
-def words(step: str, where: str) -> str:
+def words(step: str, where: str, files: dict[str, str] | None = None) -> str:
     """Тексты написаны для сообщения («ссылку из сообщения», в старых текстах групп — «QR, который я пришлю»); в папке
-    ZIP ключ лежит рядом с инструкцией, а ссылка — в ней же, в «Ключах доступа»."""
+    ZIP ключ лежит рядом с инструкцией, а ссылка — в ней же, в «Ключах доступа». files — {приложение: файл его ссылок}:
+    «из сообщения с ключами для «Hiddify»» — «из файла keys-hiddify.txt» (key_files)."""
+    for app, fname in (files or {}).items():
+        step = step.replace(clients.KEYS_FROM.replace("{app}", app), f"файла {fname}")
     step = LINK_IN_FOLDER.sub(r"\1 ниже, из «Ключей доступа»", step)
     for a, b in FOLDER_WORDS:
         step = step.replace(a, b)
@@ -233,12 +237,12 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
         apps = [CardApp(s.client["name"], s.version, clientviews.foreign_note(ctx.cat, s.client, plat, admin),
-                        [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks])
+                        [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks], s.own_msg)
                 for s, ks in zip(pack.sections, keys)]
         steps = _steps(ctx, g, plat, pack, user.label, update, user.name)
         paper, head, more = pack.parts(paper=True)
         # сворачиваются только платформы с одинаковым всем, что видит человек: магазины и шаги у платформ свои
-        sig = (tuple((a.name, a.version, a.foreign, tuple(ln["url"] for ln in a.stores),
+        sig = (tuple((a.name, a.version, a.foreign, a.own, tuple(ln["url"] for ln in a.stores),
                       tuple((k.title, k.qr, k.uri, k.file) for k in a.keys)) for a in apps), tuple(steps), pack.via,
                tuple(paper), head, tuple(more))
         if sig in merged:
@@ -420,17 +424,18 @@ def csv_bytes(cards: list[Card], with_files: dict[str, dict[str, str]] | None = 
     имя в папке}} — только то, что в архив попало), без ссылки — пропуск."""
     buf = io.StringIO(newline="")
     w = csv.writer(buf, delimiter=";", lineterminator="\n")
-    w.writerow(["имя", "заметка", "протокол", "ссылка"])
+    w.writerow(["имя", "заметка", "протокол", "приложение", "ссылка"])
     for c in cards:
-        seen: set[tuple[str, str]] = set()
+        rows: dict[tuple[str, str], list[str]] = {}   # одна ссылка на разных устройствах — одна строка, приложения через запятую
         for b in c.blocks:
             for a in b.apps:
                 for k in a.keys:
                     put_as = (with_files or {}).get(c.user.name, {}).get(k.file or "")
                     link = k.uri or (f"{c.user.name}/{put_as}" if put_as else "")
-                    if link and (k.title, link) not in seen:
-                        seen.add((k.title, link))
-                        w.writerow([_cell(c.user.label), _cell(c.user.note), k.title, link])
+                    if link and a.name not in (who := rows.setdefault((k.title, link), [])):
+                        who.append(a.name)
+        for (title, link), who in rows.items():
+            w.writerow([_cell(c.user.label), _cell(c.user.note), title, ", ".join(who), link])
     return b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")
 
 
@@ -446,33 +451,52 @@ def _qr_file(payload: str, base: str) -> tuple[str, bytes] | None:
         return None
 
 
+def key_files(c: Card) -> dict[str, tuple[str, str]]:
+    """Ссылки приложений, которым они положены отдельно (CardApp.own): {приложение: (имя файла, текст)} — то же, что
+    отдельные сообщения на странице человека. Весь instruction.txt в Hiddify не скопируют: в нём нет ссылок VLESS."""
+    lines: dict[str, list[str]] = {}
+    for b in c.blocks:
+        for a in b.apps:
+            for k in a.keys if a.own else ():
+                if k.uri and (ln := f"{k.title}: {k.uri}") not in lines.setdefault(a.name, []):
+                    lines[a.name].append(ln)
+    return {app: (f"keys-{people.slug(app) or 'app'}.txt", "\n".join([clients.KEYS_FOR.replace("{app}", app), *ls]) + "\n")
+            for app, ls in lines.items() if ls}
+
+
 def instruction_text(c: Card, qr_files: dict[Any, str], files: dict[str, str]) -> str:
     # файл получает сам человек: обращение по имени, без логина, заметки администратора и названия группы
+    own = {app: f for app, (f, _) in key_files(c).items()}
     out = [c.user.label, ""]
     for b in c.blocks:
         out.append(f"{', '.join(b.platforms)}: " + ", ".join(f"«{a.name}»" for a in b.apps))
         if b.via:
             out.append(f"  {b.via}")
-        out += [f"  {words(s, 'из этой папки')}" for s in b.steps]
+        out += [f"  {words(s, 'из этой папки', own)}" for s in b.steps]
         out.append("")
     out.append("Ключи доступа (никому не пересылайте):")
     # один ключ на нескольких платформах — одна запись, QR-картинки собираются к ней
     keys: dict[Any, list[str]] = {}
     apps: dict[Any, list[str]] = {}   # в какое приложение ключ: на устройстве их бывает два
+    apart: dict[Any, bool] = {}       # ссылка только в файлах приложений (key_files), здесь — имя файла
     for b in c.blocks:
         for a in b.apps:
             for k in a.keys:
                 qrs = keys.setdefault((k.title, k.uri, k.file), [])
                 who = apps.setdefault((k.title, k.uri, k.file), [])
-                if f"«{a.name}»" not in who:
-                    who.append(f"«{a.name}»")
+                if a.name not in who:
+                    who.append(a.name)
+                apart[(k.title, k.uri, k.file)] = apart.get((k.title, k.uri, k.file), True) and a.own
                 pic = qr_files.get((k.title, k.qr)) if k.qr is not None else None
                 if pic and pic not in qrs:
                     qrs.append(pic)
     for (title, uri, file), qrs in keys.items():
-        out.append(f"  {title} — в {', '.join(apps[(title, uri, file)])}")
+        who = apps[(title, uri, file)]
+        out.append(f"  {title} — в {', '.join(f'«{n}»' for n in who)}")
         out += [f"    QR: {q}" for q in qrs]
-        if uri:
+        if uri and apart[(title, uri, file)]:
+            out.append("    ссылка: в файле " + ", ".join(dict.fromkeys(own[n] for n in who)))
+        elif uri:
             out.append(f"    ссылка: {uri}")
         if file and file in files:
             out.append(f"    файл: {files[file]}")
@@ -550,13 +574,16 @@ def build_zip(app: "App", cards: list[Card], skipped: list[str], budget: float =
                                     files[k.file] = clientviews.file_name(name, f.name)
                                 except OSError as e:
                                     problems.append(f"{name}: {k.file}: {e}")
+            for fname, text in key_files(c).values():
+                put(f"{name}/{fname}", text.encode("utf-8"))
             put(f"{name}/instruction.txt", instruction_text(c, qr_files, files).encode("utf-8"))
             archived[name] = files
             done.append(c)
         put("index.csv", csv_bytes(done, with_files=archived))
         readme = ["Раздача VPN: " + str(len(done)) + " человек.", "", NOTE_WARN, "",
-                  "index.csv — имя;заметка;протокол;ссылка (откройте в Excel: разделитель «;»).",
-                  "В папке человека: QR-картинки, файлы ключей (.conf, правила v2rayN — где нужны) и instruction.txt.", ""]
+                  "index.csv — имя;заметка;протокол;приложение;ссылка (откройте в Excel: разделитель «;»).",
+                  "В папке человека: QR-картинки, файлы ключей (.conf, правила v2rayN — где нужны), instruction.txt и, "
+                  "если на устройстве два приложения, ссылки каждого отдельно — keys-<приложение>.txt.", ""]
         if left:
             readme += [f"Не вошли (не хватило времени, повторите): {', '.join(left)}", ""]
         if skipped:

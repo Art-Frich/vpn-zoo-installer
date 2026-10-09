@@ -938,6 +938,104 @@ class SynthLinksTest(unittest.TestCase):
         self.assertEqual([s.client["id"] for s in p.sections], ["happ", "amneziawg"])
 
 
+class KeysPerAppTest(unittest.TestCase):
+    """Два приложения на устройстве берут ссылки из буфера: у каждого — своё сообщение. «Добавить из буфера» в Hiddify
+    импортирует все ссылки текста, и общий текст отдал бы ему VLESS, который он не умеет (Xray требует X25519MLKEM768)."""
+    HY2 = link("hysteria2", "hysteria2://h@1.2.3.4:443#hy2")
+    OBFS = link("hysteria2", "hysteria2://o@1.2.3.4:443?obfs=salamander#obfs")
+    TUIC = link("tuic", "tuic://t@1.2.3.4:443#tuic")
+    XHTTP = link("vless-xhttp", "vless://x@1.2.3.4:443?type=xhttp#xhttp")
+    PROTOS = ["hysteria2", "vless-xhttp", "hysteria2-obfs", "tuic", "vless-reality"]
+
+    def pack(self, ids, plat="android", links=None, protos=None):
+        return clientviews.build_pack(catalog(), {"checked": None, "versions": {}}, plat,
+                                      links or [self.HY2, self.OBFS, self.TUIC, VLESS, self.XHTTP], [], {plat: ids},
+                                      groups.by_priority(protos or self.PROTOS), False, None, None, True)
+
+    def test_family_group_v2rayng_and_hiddify(self):
+        # группа «Дела семейные» с тестового сервера: пять протоколов, Android — v2rayNG + Hiddify, ставит ИТ
+        p = self.pack(["v2rayng", "hiddify"])
+        self.assertEqual([(s.client["id"], [i.proto for i in s.items], s.own_msg) for s in p.sections],
+                         [("v2rayng", ["hysteria2", "vless-xhttp", "hysteria2-obfs", "vless-reality"], True),
+                          ("hiddify", ["tuic"], True)])
+        msg = p.message
+        self.assertIn("Скопируйте ссылки «Hysteria2», «VLESS XHTTP», «Hysteria2 + Salamander» и «VLESS Vision» из "
+                      "сообщения с ключами для «v2rayNG». В «v2rayNG» нажмите «+»", msg)
+        self.assertIn("Скопируйте ссылку «TUIC» из сообщения с ключами для «Hiddify». В «Hiddify» нажмите «Добавить профиль»",
+                      msg)
+        links = [self.HY2, self.OBFS, self.TUIC, VLESS, self.XHTTP]
+        keys = [clientviews._keys(s, "android", links) for s in p.sections]
+        main, own = clientviews.split_keys(p, keys)
+        self.assertEqual(clientviews.keys_text(main, "lisya"), "", "в инструкции ключей нет: все — по приложениям")
+        texts = {s.client["name"]: clientviews.keys_text([ks], "lisya", app=s.client["name"]) for s, ks in own}
+        self.assertEqual(texts["Hiddify"], "Ключи для «Hiddify» — только для вас, никому не пересылайте:\n"
+                                           "TUIC: tuic://t@1.2.3.4:443#tuic")
+        self.assertNotIn("vless://", texts["Hiddify"])
+        self.assertNotIn("tuic://", texts["v2rayNG"])
+        self.assertEqual(texts["v2rayNG"].count("://"), 4)
+
+    def test_every_key_goes_to_an_app_that_takes_it(self):
+        # весь каталог: ключ в сообщении приложения — только протокола, который оно берёт (ok/warn) на этом устройстве;
+        # ссылки берут два приложения — у каждого своё сообщение
+        cat = catalog()
+        links = [self.HY2, self.OBFS, self.TUIC, VLESS, self.XHTTP, link("ss2022", "ss://s@1.2.3.4:8388#ss"), AWG_ANDROID,
+                 AWG_COMMON, AWG_KEY]
+        protos = cat.real_protocols()
+        for plat in cat.platforms:
+            ids = [c["id"] for c in cat.clients if plat in c["platforms"] and c.get("import")]
+            for a in ids:
+                for b in ids:
+                    if a == b:
+                        continue
+                    p = self.pack([a, b], plat, links, protos)
+                    if p is None:
+                        continue
+                    by_link = [s for s in p.sections if any(i.method == "link" for i in s.items)]
+                    for s in p.sections:
+                        keys = clientviews._keys(s, plat, links)
+                        for it in s.items:
+                            self.assertIn(cat.status(s.client, it.proto, plat), ("ok", "warn"), f"{plat} {a}+{b}: {it.proto}")
+                        self.assertEqual(s.own_msg, len(by_link) > 1 and s in by_link, f"{plat} {a}+{b}: {s.client['id']}")
+                        if s.own_msg:
+                            text = clientviews.keys_text([keys], "x", app=s.client["name"])
+                            for proto, uri in (("vless-reality", VLESS.uri), ("vless-xhttp", self.XHTTP.uri)):
+                                if uri in text:
+                                    self.assertIn(cat.status(s.client, proto, plat), ("ok", "warn"), f"{plat} {a}+{b}")
+
+    def test_one_app_or_one_link_app_keeps_one_message(self):
+        p = self.pack(["hiddify"], protos=["tuic", "hysteria2"])
+        self.assertFalse(p.sections[0].own_msg)
+        self.assertIn("из сообщения. В «Hiddify»", p.message)
+        # AmneziaWG берёт файл, Happ — ссылку: смешать нечего
+        p = self.pack(["happ", "amneziawg"], links=[VLESS, AWG_ANDROID], protos=["vless-reality", "amneziawg"])
+        self.assertEqual([s.own_msg for s in p.sections], [False, False])
+
+    def test_split_changes_group_text_signature(self):
+        # текст группы, сохранённый до раздельных сообщений, велит копировать «из сообщения» — пусть его проверят
+        p = self.pack(["v2rayng", "hiddify"])
+        p.sections[0].own_msg = p.sections[1].own_msg = False
+        self.assertNotEqual(clientviews.pack_sig(self.pack(["v2rayng", "hiddify"])), clientviews.pack_sig(p))
+
+    def test_group_page_says_which_key_goes_where(self):
+        cat = catalog()
+        names = clientviews.proto_names(cat)
+        self.assertEqual(clientviews.key_map(cat, "android", self.PROTOS, ["v2rayng", "hiddify"], names),
+                         "Hysteria2, VLESS XHTTP, Hysteria2 + Salamander, VLESS Vision → v2rayNG · TUIC → Hiddify")
+        self.assertEqual(clientviews.key_map(cat, "android", self.PROTOS, ["v2rayng"], names), "", "одно приложение")
+        # часть протоколов на устройстве не берёт никто: сказано прямо, а не только чипом «что берёт»
+        self.assertEqual(clientviews.lack_line(cat, "android", "Android", self.PROTOS, ["v2rayng"], names),
+                         "Нет приложения для TUIC: на Android этот ключ не выдаётся.")
+        self.assertEqual(clientviews.lack_line(cat, "android", "Android", ["amneziawg"], ["v2rayng"], names), "",
+                         "не берёт ничего — это уже чип «нет …»")
+        self.assertEqual(clientviews.lack_line(cat, "android", "Android", self.PROTOS, ["v2rayng", "hiddify"], names), "")
+
+    def test_catalog_link_import_names_the_message(self):
+        raw = copy.deepcopy(catalog().raw)
+        raw["clients"][0]["import"]["link"] = "Вставьте {key} в приложение."
+        with self.assertRaises(clients.ClientsError):
+            clients.validate(raw)
+
+
 @needs_bash
 class HandoffPageTest(AppTestBase):
     def setUp(self):

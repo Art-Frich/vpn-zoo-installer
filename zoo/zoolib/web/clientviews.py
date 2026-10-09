@@ -155,6 +155,28 @@ def coverage_label(cat: clients.Catalog, plat: str, protocols: list[str], ids: l
     return "все протоколы", "ok"
 
 
+def key_map(cat: clients.Catalog, plat: str, protocols: list[str], ids: list[str], names: dict[str, str]) -> str:
+    """«VLESS Vision → v2rayNG · TUIC → Hiddify»: какой ключ в какое приложение, когда на устройстве их два и больше
+    (то же распределение, что в сообщении человека — _assign). Одно приложение — пусто."""
+    cs = [c for c in (cat.client(i) for i in ids) if c and plat in c["platforms"]]
+    real = groups._real(cat, protocols)
+    plan = _assign(plat, synth_links(real), set(real), cs, real)
+    if len(plan) < 2:
+        return ""
+    return " · ".join(f"{', '.join(names.get(p, p) for p, _ in mine)} → {c['name']}" for c, mine in plan)
+
+
+def lack_line(cat: clients.Catalog, plat: str, title: str, protocols: list[str], ids: list[str],
+              names: dict[str, str]) -> str:
+    """Протоколы группы, которых не берёт ни одно приложение устройства, когда часть всё же берёт (чип тогда говорит,
+    что берёт, — D61): эти ключи на устройство не выдаются. Не берёт ничего — пусто: это уже чип «нет …»."""
+    done, miss = groups.coverage(cat, plat, protocols, ids)
+    if not (miss and done):
+        return ""
+    what = ", ".join(names.get(p, p) for p in miss)
+    return (f"Нет приложения для {what}: на {title} " + ("эти ключи не выдаются." if len(miss) > 1 else "этот ключ не выдаётся."))
+
+
 def caveat_items(cat: clients.Catalog, picked: dict[str, list[str]], protocols: list[str],
                  names: dict[str, str]) -> list[tuple[str, str]]:
     """Оговорки набора приложений по устройствам, каждая один раз: [(строка «Hiddify: Hysteria2 без проверки
@@ -345,6 +367,7 @@ class Section:
     foreign: bool = False   # на этой платформе приложения нет в российском магазине (iPhone: нужен иностранный Apple ID)
     via: str = ""           # что идёт через VPN: apps, ru-direct, all (справочник via каталога); пусто — не описано
     paper: list[str] | None = None   # шаги для бумажной карточки (импорт QR-кодом); None — с бумаги ключ не перенести
+    own_msg: bool = False   # ссылки приложения — отдельным сообщением (на устройстве ссылки берут два приложения)
 
     @property
     def proto(self) -> str:
@@ -576,6 +599,7 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
     plan = _plan(cat, platform, links, have, prefer, order)
     if not plan:
         return None
+    by_link = [c["id"] for c, mine in plan if any(m == "link" for _, m in mine)]
     if apps is None and al is not None and platform in allowlist.PLATFORMS:
         apps = al.common(platform)
     titles = via_vpn_names(al, platform, apps) if apps else []
@@ -604,7 +628,9 @@ def build_pack(cat: clients.Catalog, cache: dict[str, Any], platform: str, links
         # QR с другого экрана — телефонам, у которых главный способ не QR
         alt = tiles if qr_ok and platform not in DESKTOP and "qr" not in imports else None
         named = len(plan) > 1   # два приложения на устройстве: ключи называются, как подписаны у человека
-        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named, not said, admin)
+        sec.own_msg = len(by_link) > 1 and c["id"] in by_link
+        sec.steps = cat.steps(c, platform, list(imports.items()), names, lambda p: p in have, alt, named, not said, admin,
+                              sec.own_msg)
         said = said or alt is not None
         if qr_ok and not sec.extras:
             sec.paper = cat.steps(c, platform, [("qr", tiles)], names, lambda p: p in have, named=named, admin=admin)
@@ -649,6 +675,8 @@ def pack_sig(pack: "Pack | None") -> str:
     if pack is None:
         return "-"
     raw = ";".join(f"{s.client['id']}:{','.join(i.proto for i in s.items)}" for s in pack.sections) + "|" + pack.apps
+    if any(s.own_msg for s in pack.sections):   # текст группы, сохранённый до раздельных сообщений, — «проверьте»
+        raw += "|own"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -794,9 +822,10 @@ def text_block(text: str, mid: str, g: groups.Group | None, extra: Any = None, k
 KEYS_HEAD = "Ключи — только для вас, никому не пересылайте:"
 
 
-def keys_text(keys: list[list[Key]], name: str, files_only: bool = False) -> str:
+def keys_text(keys: list[list[Key]], name: str, files_only: bool = False, app: str = "") -> str:
     """Ключи человека в конец сообщения: ссылки целиком, файлы — названием (их прикладывают к сообщению). files_only —
-    только файлы (короткое сообщение о новом списке «через VPN»: ключи у него уже есть)."""
+    только файлы (короткое сообщение о новом списке «через VPN»: ключи у него уже есть). app — отдельное сообщение
+    с ключами одного приложения (Section.own_msg)."""
     lines: list[str] = []
     for ks in keys:
         for k in ks:
@@ -808,7 +837,20 @@ def keys_text(keys: list[list[Key]], name: str, files_only: bool = False) -> str
                 continue
             if line not in lines:
                 lines.append(line)
-    return "\n".join([KEYS_HEAD, *lines]) if lines else ""
+    return "\n".join([clients.KEYS_FOR.replace("{app}", app) if app else KEYS_HEAD, *lines]) if lines else ""
+
+
+def split_keys(pack: Pack, keys: list[list[Key]]) -> tuple[list[list[Key]], list[tuple[Section, list[Key]]]]:
+    """(ключи главного сообщения, [(приложение, его ключи)] — отдельные сообщения)."""
+    main = [ks for s, ks in zip(pack.sections, keys) if not s.own_msg]
+    return main, [(s, ks) for s, ks in zip(pack.sections, keys) if s.own_msg]
+
+
+def keys_block(text: str, mid: str, app: str) -> Markup:
+    """Отдельное сообщение с ключами одного приложения: его копируют и отправляют целиком."""
+    return t("div", t("span", f"Отдельное сообщение для «{app}»", class_="label"), t("pre", text, id=mid, class_="msg-pre"),
+             t("div", t("button", "Скопировать", type="button", class_="btn", data_copy=mid), class_="actions"),
+             class_="msg")
 
 
 def lists_text(cat: clients.Catalog, pack: Pack, keys: list[list[Key]], label: str, login: str) -> str:
@@ -877,8 +919,9 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
         own = bool(g and group_text and pack_sig(pack) != ctx.group_sig(g, plat))
         # у человека свои протоколы или другие приложения, чем в наборе группы: инструкция группы про другое
         keys = [_keys(s, plat, links) for s in pack.sections]
+        main_keys, own_keys = split_keys(pack, keys)
         text = with_update(fill_name((None if own else group_text) or pack.message, label, name), update)
-        if ktext := keys_text(keys, name):
+        if ktext := keys_text(main_keys, name):
             text = f"{text}\n\n{ktext}"
         apps = [_app_html(s, k, plat, name, ctx.cat, uid, admin) for s, k in zip(pack.sections, keys)]
         if own:
@@ -891,7 +934,9 @@ def connect_panel(links: list[protolib.Link], name: str, ctx: Ctx, g: groups.Gro
                 for n, k in enumerate(ks):
                     if k.uri:
                         shown.setdefault(k.uri, _key_id(uid, plat, s, n))
-        msg = text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary)
+        msg: Any = [text_block(text, f"msg-{uid}{plat}", g, keys=bool(ktext), primary=primary)]
+        msg += [keys_block(kt, f"msg-{uid}{plat}-{s.client['id']}", s.client["name"]) for s, ks in own_keys
+                if (kt := keys_text([ks], name, app=s.client["name"]))]
         if who is not None and resend.lists_only(who, plat):
             # сменился только список «через VPN»: шаги установки и импорт ключей дали бы дубли подключений; полная
             # инструкция — в ZIP и на «Карточках»

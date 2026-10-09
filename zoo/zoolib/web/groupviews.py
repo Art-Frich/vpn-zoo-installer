@@ -419,7 +419,11 @@ def _device_row(cat: clients.Catalog, plat: str, title: str, protocols: list[str
              t("span", label, class_=f"chip {kind}"),
              t("span", foreign, class_="chip warn") if foreign else None,
              t("span", "сменить", class_="dev-change"), class_="dev-head")
-    return t("div", t("details", head, t("div", radios, class_="opts"), class_="dev-d"), extra, class_="dev-row"), flags, chosen_flag
+    lack = clientviews.lack_line(cat, plat, title, protocols, ids, names)
+    keys = clientviews.key_map(cat, plat, protocols, ids, names)
+    return t("div", t("details", head, t("div", radios, class_="opts"), class_="dev-d"),
+             t("p", lack, class_="hint") if lack else None, t("p", "Ключи: " + keys, class_="hint") if keys else None,
+             extra, class_="dev-row"), flags, chosen_flag
 
 
 def _clients_block(d: Draft, managed: list[str], ios_hint: bool = True) -> Markup:

@@ -449,12 +449,13 @@ class ExportTest(Base):
         raw = z.read("index.csv")
         self.assertTrue(raw.startswith(b"\xef\xbb\xbf"), "UTF-8 с BOM: Excel читает кириллицу")
         rows = list(csv.reader(io.StringIO(raw.decode("utf-8-sig")), delimiter=";"))
-        self.assertEqual(rows[0], ["имя", "заметка", "протокол", "ссылка"])
+        self.assertEqual(rows[0], ["имя", "заметка", "протокол", "приложение", "ссылка"])
         body = {(r[0], r[2]): r for r in rows[1:]}
         key = ("masha", "VLESS Vision")
         self.assertIn(key, body)
         self.assertEqual(body[key][1], "сестра")
-        self.assertTrue(body[key][3].startswith("vless://masha@"))
+        self.assertTrue(body[key][4].startswith("vless://masha@"))
+        self.assertTrue(body[key][3], "приложение, в которое этот ключ")
         self.assertEqual(len({r[0] for r in rows[1:]}), 2)
 
     def test_conf_file_and_awg_qr(self):
@@ -469,7 +470,7 @@ class ExportTest(Base):
         self.assertNotIn("секрет", z.read("lena/lena-amneziawg.conf").decode("utf-8"))
         self.assertNotIn("amneziawg.key", " ".join(names), "ключевые файлы модулей не выдаются")
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
-        self.assertIn("lena/lena-amneziawg.conf", [r[3] for r in rows])
+        self.assertIn("lena/lena-amneziawg.conf", [r[4] for r in rows])
         self.assertIn("файл: lena-amneziawg.conf", z.read("lena/instruction.txt").decode("utf-8"))
 
     def test_v2rayn_rules_file_goes_into_zip(self):
@@ -484,13 +485,13 @@ class ExportTest(Base):
         text = z.read("ivan/instruction.txt").decode("utf-8")
         self.assertIn("файл: ivan-v2rayn-routing.json", text)
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
-        self.assertTrue(set(r[3] for r in rows[1:] if not r[3].startswith(("vless://", "hysteria2://")))
+        self.assertTrue(set(r[4] for r in rows[1:] if not r[4].startswith(("vless://", "hysteria2://")))
                         <= set(z.namelist()), "строки CSV с файлами указывают только на то, что в архиве")
         rules.unlink()
         _, z = self.zip_of("", group="g2")
         self.assertNotIn("ivan/ivan-v2rayn-routing.json", z.namelist())
         rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
-        self.assertNotIn("ivan/ivan-v2rayn-routing.json", [r[3] for r in rows])
+        self.assertNotIn("ivan/ivan-v2rayn-routing.json", [r[4] for r in rows])
 
     def test_per_app_step_uses_group_list(self):
         resp, _ = self.post("/groups/g1", {"name": ["Семья"], "proto": ["vless-reality", "amneziawg"],
@@ -546,7 +547,7 @@ class ExportTest(Base):
         notes = {r[0]: r[1] for r in rows[1:]}
         self.assertEqual(notes["evil"], "'=HYPERLINK(\"http://x\")")
         self.assertEqual(notes["plus"], "'+1 2 3")
-        self.assertEqual(rows[0], ["имя", "заметка", "протокол", "ссылка"])
+        self.assertEqual(rows[0], ["имя", "заметка", "протокол", "приложение", "ссылка"])
 
     def test_selection_export_and_validation(self):
         resp, z = self.zip_of("", u="masha,ghost,zoo-probe")
@@ -682,6 +683,59 @@ class DevicesTest(Base):
         self.assertEqual((reg["olga"]["devices"], reg["ivan"]["devices"]), (["ios"], ["ios"]))
         self.post("/groups/g1/move", {"act": ["devices"], "user": ["ivan"], "dev": []})
         self.assertNotIn("devices", self.reg()["ivan"], "ничего не отмечено — как у группы")
+
+
+class KeysPerAppTest(Base):
+    """Android с v2rayNG и Hiddify: ссылки каждого приложения отдельно — в Hiddify из буфера не попадает VLESS
+    (случай lisya на тестовом сервере: всё сообщение целиком → пять профилей в Hiddify, оба VLESS не работают)."""
+
+    def setUp(self):
+        super().setUp()
+        self.env.add_protocol("tuic", name="tuic v5", layer="udp", port=8443)
+        resp, body = self.create_group(name="Дела семейные", mode="admin", proto=["hysteria2", "tuic", "vless-reality"],
+                                       set__android="v2rayng+hiddify", users_new="lisya; android")
+        self.assertEqual(resp.status, 303, text_of(body)[:300])
+        self.assertEqual(self.groups_json()[-1]["clients"], {"android": ["v2rayng", "hiddify"]})
+
+    def test_user_page_gives_each_app_its_own_message(self):
+        _, body = self.c.get("/users/lisya")
+        android = body[body.index('data-pp="android"'):]
+        msgs = dict(re.findall(r'<pre id="(msg-android[^"]*)"[^>]*>(.*?)</pre>', android, re.S))
+        self.assertEqual(set(msgs), {"msg-android", "msg-android-v2rayng", "msg-android-hiddify"})
+        self.assertNotIn("://", msgs["msg-android"], "в инструкции ключей нет")
+        self.assertIn("из сообщения с ключами для «Hiddify»", msgs["msg-android"])
+        hid = msgs["msg-android-hiddify"]
+        self.assertTrue(hid.startswith("Ключи для «Hiddify» — только для вас"), hid)
+        self.assertIn("#tuic-lisya", hid)
+        self.assertNotIn("#vless-reality-", hid)
+        self.assertNotIn("#hysteria2-", hid)
+        self.assertNotIn("#tuic-", msgs["msg-android-v2rayng"])
+        self.assertIn("#vless-reality-lisya", msgs["msg-android-v2rayng"])
+        self.assertIn("Отдельное сообщение для «Hiddify»", body)
+        self.assertIn('data-copy="msg-android-hiddify"', body)
+        from tests.test_no_duplicates import violations
+        self.assertEqual(violations(body), [])
+
+    def test_zip_has_a_links_file_per_app_and_csv_names_the_app(self):
+        _, z = self.zip_of("", u="lisya")
+        hid = z.read("lisya/keys-hiddify.txt").decode("utf-8")
+        self.assertIn("#tuic-lisya", hid)
+        self.assertNotIn("#vless-reality-", hid)
+        self.assertIn("#vless-reality-lisya", z.read("lisya/keys-v2rayng.txt").decode("utf-8"))
+        text = z.read("lisya/instruction.txt").decode("utf-8")
+        self.assertIn("Скопируйте ссылку «TUIC» из файла keys-hiddify.txt. В «Hiddify»", text)
+        self.assertNotIn("://", text, "весь instruction.txt в Hiddify не скопировать: ссылки — по файлам приложений")
+        self.assertIn("  TUIC — в «Hiddify»\n", text)
+        self.assertIn("ссылка: в файле keys-hiddify.txt", text)
+        rows = list(csv.reader(io.StringIO(z.read("index.csv").decode("utf-8-sig")), delimiter=";"))
+        apps = {r[2]: r[3] for r in rows[1:]}
+        self.assertEqual((apps["TUIC"], apps["VLESS Vision"]), ("Hiddify", "v2rayNG"))
+
+    def test_group_page_shows_which_key_goes_where(self):
+        _, body = self.c.get(f"/groups/{self.groups_json()[-1]['id']}")
+        self.assertIn("Ключи: Hysteria2, VLESS Vision → v2rayNG · TUIC → Hiddify", text_of(body))
+        from tests.test_no_duplicates import violations
+        self.assertEqual(violations(body), [])
 
 
 if __name__ == "__main__":
