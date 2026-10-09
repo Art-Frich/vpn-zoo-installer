@@ -236,7 +236,7 @@ def build_blocks(ctx: clientviews.Ctx, user: users.User, g: groups.Group | None,
             continue
         keys = [clientviews._keys(s, plat, links) for s in pack.sections]
         apps = [CardApp(s.client["name"], s.version, clientviews.foreign_note(ctx.cat, s.client, plat, admin),
-                        [] if admin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks], s.own_msg)
+                        [] if admin or s.builtin else s.links, [CardKey(k.title, k.qr, k.qr_tag, k.uri, k.file) for k in ks], s.own_msg)
                 for s, ks in zip(pack.sections, keys)]
         steps = _steps(ctx, g, plat, pack, user.label, update, user.name)
         paper, head, more = pack.parts(paper=True)

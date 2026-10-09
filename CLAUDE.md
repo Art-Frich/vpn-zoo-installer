@@ -1,13 +1,13 @@
 # vpn-zoo-installer — карта для Claude
 
-Bash-инсталлер «зоопарка» VPN-протоколов на одном VPS (Ubuntu 22.04/24.04) для небольшого частного круга пользователей в РФ + инструмент `zoo` (Python 3.10+ stdlib: CLI, веб-админка на 127.0.0.1, пробник, коллектор трафика). Если ТСПУ режет один протокол, остаются другие. По умолчанию (D37): VLESS+REALITY (443/tcp), VLESS XHTTP+REALITY, Hysteria2 (443/udp) и Hysteria2+Salamander, TUIC v5, AmneziaWG 2.0; по флагам: Shadowsocks-2022 (`ENABLE_SS=1`), WARP (`ENABLE_WARP=1`). Владелец — Art-Frich, MIT.
+Bash-инсталлер «зоопарка» VPN-протоколов на одном VPS (Ubuntu 22.04/24.04) для небольшого частного круга пользователей в РФ + инструмент `zoo` (Python 3.10+ stdlib: CLI, веб-админка на 127.0.0.1, пробник, коллектор трафика). Если ТСПУ режет один протокол, остаются другие. По умолчанию (D37): VLESS+REALITY (443/tcp), VLESS XHTTP+REALITY, Hysteria2 (443/udp) и Hysteria2+Salamander, TUIC v5, AmneziaWG 2.0; по флагам: Shadowsocks-2022 (`ENABLE_SS=1`), WARP (`ENABLE_WARP=1`), MTProxy для Telegram (`ENABLE_MTPROTO=1`, режим «Только Telegram», D63). Владелец — Art-Frich, MIT.
 
 ## Где правда (читать перед изменениями)
 
 | Файл | Что |
 |---|---|
 | `docs/ARCHITECTURE.md` | контракт разработки: фазы, ключи config.env и их фазы-владельцы, манифест, пользователи, zoo, пробник, стенд, правила кода |
-| `docs/DECISIONS.md` | решения D1–D61 с «почему» и «как поменять». Новое решение → следующий свободный номер по концу таблицы |
+| `docs/DECISIONS.md` | решения D1–D63 с «почему» и «как поменять». Новое решение → следующий свободный номер по концу таблицы |
 | `docs/RISK-REDUCTION.md` | детект VPN, утечки IP, MAX/банки, пошаговые настройки клиентов, §7 поправки к исследованиям |
 | `docs/USER-GUIDE.md` | инструкция для пользователей VPN (по-русски, простым языком): allowlist, клиенты по платформам, Brave, банки/MAX. Разделы по платформам генерируются из `zoo/data/clients.json` (`zoo docs --user-guide`, тест `test_userguide`) — править каталог, не файл |
 | `docs/PROBE-SURFACE.md` | что видит активный сканер снаружи (порты, баннеры, неотличимость REALITY) |
@@ -32,7 +32,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 | 01b-ssh | opt-in `SSH_HARDEN=1` (D30): новый порт + только ключ, два шага, таймер отката |
 | 02-kernel | совместимость ядра с DKMS amneziawg, HWE-ядро (22.04) или `AWG_NO_HWE=1` |
 | 03-3xui | 3x-ui v-пин, панель на 127.0.0.1, API-токен |
-| 04 / 04b / 04c / 04d | VLESS REALITY / XHTTP / SS-2022 / TUIC — inbound'ы 3x-ui через API |
+| 04 / 04b / 04c / 04d / 04e | VLESS REALITY / XHTTP / SS-2022 / TUIC / MTProxy (mtg из 3x-ui) — inbound'ы 3x-ui через API |
 | 05-hysteria2 | standalone HyNetworks/hysteria, `auth.type: command` (D17), pinSHA256, Salamander, hopping |
 | 06-amneziawg | kernel (DKMS) или `amneziawg-go`, уникальные параметры обфускации |
 | 07-routing | анти-утечки: echo-сервисы → WARP/блок, RU_EGRESS, блок адресов сервера из туннеля (D25), geo-таймер |
@@ -46,7 +46,7 @@ Bash-инсталлер «зоопарка» VPN-протоколов на од�
 - `scripts/lib.sh` — лог (`log_info/ok/warn/err`, `die`), state (`state_get/set`, `is_done`), config (`config_set/get/default`, список ключей — `CONFIG_ENV_KEYS_RE`), манифесты (`manifest_write/list/get/del`), firewall (`fw_allow/fw_revoke`, реестр портов), `backup_path`, `guard_foreign_install`/`mark_owned`, `download_verified` (sha256), `rand_port` (запрещённые: 1080 3128 8080 9050 2053 54321), `is_test_docker`.
 - `scripts/lib/xui.sh` — **единственный** адаптер API 3x-ui (`xui_api`, `xui_inbound_*`, `xui_client_*`, пользователи `xui_user_attach/detach/set_enable`). Один пользователь = один клиент 3x-ui на все Xray-inbound (D18).
 - `scripts/lib/proto-<id>.sh` — модуль протокола: `proto_<id>_user_add|user_del|user_enable|user_list|links|probe|manifest_refresh|traffic|disable`. stdout — только данные, логи в stderr. Контракт описан в `zoo/zoolib/protolib.py`; zoo зовёт эти функции из копии в `/opt/vpn-zoo`.
-- Манифест `/etc/vpn-setup/protocols.d/<id>.json`: `id, layer, port, engine, service, enabled, users_backend, links[], files[], probe{kind: xray|hysteria|awg|sing-box}` (ARCHITECTURE §4). Пробник строит клиента только из `probe`.
+- Манифест `/etc/vpn-setup/protocols.d/<id>.json`: `id, layer, port, engine, service, enabled, users_backend, links[], files[], probe{kind: xray|hysteria|awg|sing-box|mtproto}` (ARCHITECTURE §4). Пробник строит клиента только из `probe`.
 - Пользователи: `/etc/vpn-setup/users.json` — источник правды; `owner` создаётся при установке; `zoo-probe` — скрытый служебный (D26).
 - Группы (D43): `/etc/vpn-setup/groups.json` (пишет `zoolib/groups.py`, `zoo group`, мастер `/connect/new` и `/groups` в админке): протоколы, клиенты по платформам, список приложений; у пользователя `group`/`custom` в users.json; список группы зеркалится в allowlist.json (`groups`/`members`), `zoo_allowlist` читает порядок свой → группа → общий.
 - Приложения через VPN (D31): `/etc/vpn-setup/allowlist.json` (пишет только `zoolib/allowlist.py`, `zoo allow`), пресет `scripts/allowlist-default.json`, bash читает `zoo_allowlist` (lib.sh). Из него — `clients/<имя>/amneziawg-android.conf` (`IncludedApplications`, общий `.conf` без ключа) и `v2rayn-routing.json`.
@@ -127,6 +127,7 @@ bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
 - Не проверено: мобильная сеть; телефоны и клиентские приложения; 22.04 на реальном VPS и цикл HWE→reboot; arm64; хостер без hairpin; `SSH_HARDEN` на облачных образах с чужими drop-in и файрволом хостера.
 - Открыто (находка 7): часть новых TCP-соединений туннелей (VLESS, сильнее SS-2022) теряет данные после рукопожатия — на двух разных путях; обычный HTTPS на тот же порт не страдает. Причина не установлена (DPI у хостера / крупный первый пакет / сеть Docker Desktop). Из-за этого у VLESS-Reality в пробнике пустая «задержка p50».
 - Hiddify (hiddify-core 4.1.0, sing-box 1.13.1): по прогону ядра на стенде 07.10.2026 не работают VLESS-REALITY, XHTTP, AmneziaWG; пин Hysteria2 не проверяет (`research/2026-10-07/hiddify-compat_07-10-26.md`, статусы — `zoo/data/clients.json`).
+- MTProxy (D63): без клиента Telegram — проверены fronting на сайт домена и рукопожатие Fake-TLS с секретом; импорт `tg://proxy` в Telegram и работа через провайдеров РФ не проверялись.
 - Остальные клиентские приложения (Happ, v2rayN/NG, AmneziaVPN, mihomo…) — ссылки проверены разбором ядрами, не импортом на устройстве.
 - Не прогонялись: `XHTTP_PLACEMENT=fallback`, `AWG_PROFILE=v3`, смена `PANEL_*`, `ENABLE_ZOO=0`, `SUB_PUBLIC=1` (фазы подписки нет).
 - Allowlist (D31) сделан по `research/2026-10-04/clients-and-allowlist_04-10-26.md`, но на телефоне не проверен: импорт `IncludedApplications` в AmneziaWG/WG Tunnel, поведение при неустановленном пакете (по коду AOSP пакет пропускается, туннель поднимается), правила `process` в v2rayN на Windows (и с выключенной Legacy Protect). Открыто: публичная подписка (заголовки INCY), свой Android-клиент (`own-android-client_04-10-26.md`) — решения за владельцем.

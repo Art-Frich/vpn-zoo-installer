@@ -239,7 +239,7 @@ config_default() {
 # ZOO_NO_REBOOT, ZOO_TEST_ENV) — разовые переключатели, в файл не попадают.
 # WARP_REREGISTER и ZOO_VLESS_REPICK — разовые, поэтому WARP_* и ZOO_* сюда не входят.
 # SSH_CONFIRM, SSH_CONFIRM_FORCE и SSH_REVERT_MIN (фаза 01b) — тоже разовые.
-CONFIG_ENV_KEYS_RE='^(SERVER_IP|LABEL|DOMAIN|ENABLE_[A-Z0-9_]+|[A-Z0-9]+_ENGINE|RU_EGRESS|SUB_PUBLIC|PANEL_2FA|PANEL_PORT|PANEL_PATH|PANEL_USER|VLESS_[A-Z_]+|XHTTP_[A-Z_]+|SS_[A-Z_]+|TUIC_[A-Z_]+|HY2_[A-Z0-9_]+|AWG_[A-Z0-9_]+|ROUTING_ECHO_EXTRA|SSH_PORTS|SSH_HARDEN|SSH_PORT|AUTO_REBOOT|AUTO_REBOOT_TIME)$'
+CONFIG_ENV_KEYS_RE='^(SERVER_IP|LABEL|DOMAIN|ENABLE_[A-Z0-9_]+|[A-Z0-9]+_ENGINE|RU_EGRESS|SUB_PUBLIC|PANEL_2FA|PANEL_PORT|PANEL_PATH|PANEL_USER|VLESS_[A-Z_]+|XHTTP_[A-Z_]+|SS_[A-Z_]+|TUIC_[A-Z_]+|MTPROTO_[A-Z_]+|HY2_[A-Z0-9_]+|AWG_[A-Z0-9_]+|ROUTING_ECHO_EXTRA|SSH_PORTS|SSH_HARDEN|SSH_PORT|AUTO_REBOOT|AUTO_REBOOT_TIME)$'
 
 # Снимок «что задано в окружении» — делать ДО config_load
 config_capture_env() {
@@ -279,6 +279,7 @@ config_init_defaults() {
     config_default ENABLE_XHTTP 1
     config_default ENABLE_SS 0
     config_default ENABLE_TUIC 1
+    config_default ENABLE_MTPROTO 0
     config_default ENABLE_HY2 1
     config_default ENABLE_HY2_OBFS 1
     config_default ENABLE_AWG 1

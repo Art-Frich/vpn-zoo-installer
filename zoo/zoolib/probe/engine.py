@@ -170,6 +170,9 @@ def measure(entry: dict[str, Any], probe: dict[str, Any], st: Settings, workdir:
         if hs in ("timeout", "rejected", "fail"):
             res["client_log"] = client.log_tail()
             return res
+        if getattr(client, "handshake_only", False):   # MTProxy: дальше Telegram, запросов через него нет
+            obs.notes.append(client.NOTE)
+            return res
 
         small = _first_ok(client, st.small_urls, connect_timeout=st.timeout, stall=st.timeout,
                           max_time=st.timeout * 1.5)
@@ -275,7 +278,7 @@ def uses_tls(probe: dict[str, Any] | None) -> bool:
         return sec in ("tls", "reality")
     if probe.get("kind") == "sing-box":
         return bool(((probe.get("outbound") or {}).get("tls") or {}).get("enabled"))
-    return probe.get("kind") == "hysteria"
+    return probe.get("kind") in ("hysteria", "mtproto")
 
 
 def run_one(entry: dict[str, Any], st: Settings, workdir: Path) -> dict[str, Any]:

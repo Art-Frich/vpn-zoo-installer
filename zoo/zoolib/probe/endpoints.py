@@ -5,6 +5,7 @@ probe.kind (ARCHITECTURE §4):
     hysteria  {client: {server: "host:port[,hop]", ...}}
     sing-box  {outbound: {server, server_port, type}}
     awg       {conf: полный клиентский .conf, endpoint: "host:port"}
+    mtproto   {server, server_port, secret}                рукопожатие Fake-TLS (probe/mtproto.py)
 """
 
 from __future__ import annotations
@@ -85,6 +86,10 @@ def endpoint_of(probe: dict[str, Any]) -> Endpoint:
     if kind == "awg":
         host, port = split_hostport(probe.get("endpoint") or conf_endpoint(probe.get("conf", "")))
         return Endpoint(host, port, "udp")
+    if kind == "mtproto":
+        if not probe.get("server") or not probe.get("server_port"):
+            raise EndpointError("в probe mtproto нет server/server_port")
+        return Endpoint(str(probe["server"]), int(probe["server_port"]), "tcp")
     raise EndpointError(f"неизвестный probe.kind: {kind!r}")
 
 
@@ -100,6 +105,8 @@ def with_host(probe: dict[str, Any], host: str) -> dict[str, Any]:
         p.pop("hop", None)
     elif kind == "sing-box":
         p["outbound"]["server"] = host
+    elif kind == "mtproto":
+        p["server"] = host
     elif kind == "awg":
         _, port = split_hostport(p.get("endpoint") or conf_endpoint(p.get("conf", "")))
         p["endpoint"] = _join(host, port)

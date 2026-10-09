@@ -927,6 +927,7 @@ PLATFORMS = {
     "amneziawg": "Android, iPhone, Windows",
     "tuic": "iPhone, Android, Windows",
     "ss2022": "iPhone, Android, Windows",
+    "mtproto": "Android, iPhone, Windows",
     allowlist.V2RAYN_PROTO: "Windows",
 }
 

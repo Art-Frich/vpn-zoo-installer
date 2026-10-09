@@ -159,6 +159,9 @@ class NoDuplicatesTest(GroupWebBase):
         self.env.add_protocol("amneziawg", name="amneziawg 3.1 (профиль 2.0 — для клиентов awg 2.0+)",
                               layer="udp", port=51820, engine="awg", probe={"kind": "awg"})
         self.env.add_protocol("vless-xhttp", name="VLESS XHTTP + REALITY", port=2443)
+        self.env.add_protocol("mtproto", name="MTProxy для Telegram (Fake-TLS)", port=24443,
+                              probe={"kind": "mtproto", "server": "1.2.3.4", "server_port": 24443, "secret": "ee" + "0" * 40},
+                              links=[{"user": "owner", "uri": "tg://proxy?server=1.2.3.4&port=24443&secret=ee" + "0" * 40}])
         users.sync_users()
         users.add_user("lena")
         resp, _ = self.create_group(name="Семья", proto=["vless-reality", "hysteria2", "amneziawg", "tuic"],
@@ -171,6 +174,10 @@ class NoDuplicatesTest(GroupWebBase):
                                     users_new="Иванов Иван\nПетрова Анна")
         self.assertEqual(resp.status, 303)
         self.gid_admin = [g for g in self.groups_json() if g["name"] == "Офис"][0]["id"]
+        resp, _ = self.create_group(name="Телеграм", proto=["mtproto"], client__android="telegram",
+                                    client__ios="telegram", client__windows="telegram", users_new="Оля")
+        self.assertEqual(resp.status, 303)
+        self.gid_tg = [g for g in self.groups_json() if g["name"] == "Телеграм"][0]["id"]
         self.name = "masha"
         now = time.time()
         for pid, rtt in (("vless-reality", 23.0), ("hysteria2", 31.0), ("amneziawg", 40.0)):
@@ -236,7 +243,9 @@ class NoDuplicatesTest(GroupWebBase):
                      "/probe", "/probe?run=1", "/journal", "/journal?period=24h", "/journal?ip=45.155.205.10",
                      "/journal?own=1", "/logs", "/logs?src=file:install-20261002-100000.log",
                      "/logs?q=%D1%81%D1%82%D1%80%D0%BE%D0%BA%D0%B0&in=all", "/settings",
-                     "/handoff?group=" + g, "/handoff?group=" + ga, "/handoff?u=masha,kolya"):
+                     "/handoff?group=" + g, "/handoff?group=" + ga, "/handoff?u=masha,kolya",
+                     "/groups/" + self.gid_tg, "/connect/done?group=" + self.gid_tg, "/handoff?group=" + self.gid_tg,
+                     "/apps?group=" + self.gid_tg):
             yield path, path
         yield from self.wizard_pages()
 

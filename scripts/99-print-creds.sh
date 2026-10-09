@@ -20,7 +20,7 @@ CRED_OUT="${VPN_CREDENTIALS_OUT:-/root/CREDENTIALS.md}"
 PROBE_EXPORT="${PROBE_EXPORT:-$VPN_ETC/probe-export.json}"
 WHO="owner"
 # Порядок вывода: основной протокол первым, запасные ниже
-ORDER="vless-reality vless-xhttp hysteria2 hysteria2-obfs amneziawg ss2022 tuic"
+ORDER="vless-reality vless-xhttp hysteria2 hysteria2-obfs amneziawg ss2022 tuic mtproto"
 
 [ -n "${SERVER_IP:-}" ] || die "SERVER_IP не задан в $CONFIG_FILE"
 if ! command -v qrencode >/dev/null; then
@@ -90,7 +90,8 @@ hysteria2|hysteria 2.12, v2rayN/v2rayNG (pinSHA256), Happ, mihomo, Throne|NekoBo
 hysteria2-obfs|hysteria, sing-box, mihomo, v2rayN/v2rayNG|клиенты без Salamander
 amneziawg|AmneziaVPN ≥5.0.1.5 (vpn:// или .conf), AmneziaWG ≥2.0, WG Tunnel ≥4.2, DefaultVPN (iOS, vpn://), mihomo ≥1.19.14|обычный WireGuard
 ss2022|v2rayN/v2rayNG, Happ, Hiddify, sing-box, mihomo (SS-2022 multi-user)|клиенты без SS-2022
-tuic|sing-box/SFA/SFI, Hiddify, Karing, NekoBox, v2rayN (ядро sing-box), mihomo|v2rayNG и клиенты на ядре Xray'
+tuic|sing-box/SFA/SFI, Hiddify, Karing, NekoBox, v2rayN (ядро sing-box), mihomo|v2rayNG и клиенты на ядре Xray
+mtproto|Telegram (Android, iPhone, Desktop): ссылка tg://proxy → «Подключить прокси»|VPN-клиенты: это не VPN, через прокси идёт только Telegram'
 
 clients_for() { awk -F'|' -v id="$1" -v col="$2" '$1 == id {print $col}' <<< "$CLIENTS"; }
 

@@ -511,14 +511,14 @@ routing_route_test() {
     xui_api_form xray/routeTest "$@" | jq -r '.obj.outboundTag // ""'
 }
 
-# Sniffing на всех inbound Xray: без него сервер не видит доменов и правила выше
+# Sniffing на всех inbound Xray (mtproto — не Xray, его обслуживает mtg): без него сервер не видит доменов и правила выше
 # не работают. routeOnly — домен только для маршрутизации, назначение не переписывается.
 # Печатает число исправленных inbound.
 routing_sniffing_fix() {
     local list id ib fixed=0 want
     want='{"enabled":true,"destOverride":["http","tls","quic"],"metadataOnly":false,"routeOnly":true}'
     list="$(xui_inbound_list)" || return 1
-    for id in $(jq -r '.[] | select(.protocol != "wireguard" and .protocol != "tunnel") | .id' <<< "$list"); do
+    for id in $(jq -r '.[] | select(.protocol != "wireguard" and .protocol != "tunnel" and .protocol != "mtproto") | .id' <<< "$list"); do
         ib="$(jq -c --argjson id "$id" '.[] | select(.id == $id)' <<< "$list")"
         if jq -e --argjson w "$want" '(.sniffing // {}) as $s
               | $s.enabled == true and $s.routeOnly == true and ($s.metadataOnly // false) == false
@@ -875,7 +875,7 @@ routing_status() {
             domain_strategy: ($t.routing.domainStrategy // "AsIs"),
             zoo_rules: [($t.routing.rules // [])[] | select((.ruleTag // "") | startswith("zoo-")) | {tag: .ruleTag, out: .outboundTag}],
             access_log: ($t.log.access // ""),
-            inbounds_without_sniffing: [$inb[] | select(.protocol != "wireguard" and .protocol != "tunnel")
+            inbounds_without_sniffing: [$inb[] | select(.protocol != "wireguard" and .protocol != "tunnel" and .protocol != "mtproto")
                 | select(((.sniffing.enabled // false) and (.sniffing.routeOnly // false)) | not) | {id, remark, port}]
         },
         hysteria: {present: ($hy_present == "1"), acl_linked: ($hy_linked == "1"), ru_egress: $hy_ru, acl_head: $hy_acl},

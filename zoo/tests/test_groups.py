@@ -1515,7 +1515,8 @@ class ClientSetsTest(unittest.TestCase):
         self.assertIn("tuic", easy, "TUIC: Hiddify из Google Play берёт QR")
         cat = no_hiddify_qr()
         easy = groups.easy_protocols(cat)
-        self.assertEqual(easy, {"hysteria2", "vless-reality", "vless-xhttp", "amneziawg", "ss2022"})
+        self.assertEqual(easy, {"hysteria2", "vless-reality", "vless-xhttp", "amneziawg", "ss2022", "mtproto"},
+                         "MTProxy: Telegram из магазина, ссылку из QR открывает камера")
         self.assertNotIn("tuic", easy, "без QR в Hiddify: ни одного приложения из магазина с QR")
         self.assertNotIn("hysteria2-obfs", easy, "Salamander: QR только у v2rayNG (APK)")
         self.assertEqual(groups.presets(cat, ["tuic", "hysteria2-obfs"], "self"), [],

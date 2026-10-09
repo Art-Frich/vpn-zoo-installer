@@ -273,7 +273,7 @@ if [ -n "$TESTS_ARG" ]; then
     mkdir -p "$OUT/tests"
     if [ "$TESTS_ARG" = "all" ]; then
         have="$(docker exec "$NAME" bash -c 'ls /etc/vpn-setup/protocols.d/ 2>/dev/null' | tr -d '\r' || true)"
-        for t in vless-reality vless-xhttp ss2022 tuic hysteria2 amneziawg; do
+        for t in vless-reality vless-xhttp ss2022 tuic mtproto hysteria2 amneziawg; do
             grep -qx "$t.json" <<< "$have" && TESTS+=("$t")
         done
         docker exec "$NAME" test -f /var/lib/vpn-zoo/geo/state.json 2>/dev/null && TESTS+=(routing)
@@ -312,7 +312,7 @@ if [ -n "$TESTS_ARG" ]; then
     # Параллельно — тесты, которые трогают только своих пользователей и своих клиентов.
     # Остальные (routing, security, allowlist, web, collector, journal, live, history, ssh-harden) меняют общее
     # состояние сервера или ждут накопленного трафика — по очереди после них
-    PARALLEL_OK=" vless-reality vless-xhttp ss2022 tuic hysteria2 amneziawg links "
+    PARALLEL_OK=" vless-reality vless-xhttp ss2022 tuic mtproto hysteria2 amneziawg links "
     PAR=(); SEQ=()
     for t in "${TESTS[@]}"; do
         if [ "$SERIAL" = "0" ] && [[ "$PARALLEL_OK" == *" $t "* ]]; then PAR+=("$t"); else SEQ+=("$t"); fi

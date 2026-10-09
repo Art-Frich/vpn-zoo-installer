@@ -16,7 +16,7 @@
 # не прерывает. ZOO_SELFTEST=0 — без самопроверки.
 #
 # Флаги протоколов и параметры — через окружение, сохраняются в /etc/vpn-setup/config.env:
-#   ENABLE_XHTTP=0 ENABLE_TUIC=1 AWG_ENGINE=userspace SERVER_IP=1.2.3.4 sudo -E bash scripts/install.sh
+#   ENABLE_XHTTP=0 ENABLE_MTPROTO=1 AWG_ENGINE=userspace SERVER_IP=1.2.3.4 sudo -E bash scripts/install.sh
 # Изменённый параметр перезапускает фазу-владельца (HY2_HOP=1 → 05, RU_EGRESS=block → 07).
 # Протокол, выключенный флагом после установки (ENABLE_HY2=0), фаза выключает сама:
 # сервис/inbound остановлен, порт закрыт, манифест enabled=false (state=disabled).
@@ -44,6 +44,7 @@ PHASES=(
     "04b-vless-xhttp"
     "04c-ss2022"
     "04d-tuic"
+    "04e-mtproto"
     "05-hysteria2"
     "06-amneziawg"
     "07-routing"
@@ -60,6 +61,7 @@ phase_flag() {
         04b-*) echo ENABLE_XHTTP ;;
         04c-*) echo ENABLE_SS ;;
         04d-*) echo ENABLE_TUIC ;;
+        04e-*) echo ENABLE_MTPROTO ;;
         05-*) echo ENABLE_HY2 ;;
         06-*) echo ENABLE_AWG ;;
         08-*) echo ENABLE_WARP ;;
@@ -68,16 +70,16 @@ phase_flag() {
     esac
 }
 
-# Значение флага; без ключа в config.env — умолчание (ENABLE_* — 1, SSH_HARDEN — 0)
+# Значение флага; без ключа в config.env — умолчание (ENABLE_* — 1, SSH_HARDEN и ENABLE_MTPROTO — 0)
 flag_value() {
     local def=1
-    [ "$1" = "SSH_HARDEN" ] && def=0
+    case "$1" in SSH_HARDEN|ENABLE_MTPROTO) def=0 ;; esac
     printf '%s\n' "${!1:-$def}"
 }
 
 # Фазы, которые умеют выключать уже установленный протокол (запуск с флагом = 0)
 phase_can_disable() {
-    case "$1" in 01b-*|04-*|04b-*|04c-*|04d-*|05-*|06-*|08-*) return 0 ;; esac
+    case "$1" in 01b-*|04-*|04b-*|04c-*|04d-*|04e-*|05-*|06-*|08-*) return 0 ;; esac
     return 1
 }
 
@@ -87,7 +89,7 @@ phase_owns_key() {
     case "$phase:$key" in
         01b-*:SSH_HARDEN|01b-*:SSH_PORT) return 0 ;;
         03-*:PANEL_PORT|03-*:PANEL_PATH|03-*:PANEL_USER|03-*:PANEL_2FA|03-*:SUB_PUBLIC|03-*:DOMAIN) return 0 ;;
-        04-*:VLESS_*|04b-*:XHTTP_*|04c-*:SS_*|04d-*:TUIC_*) return 0 ;;
+        04-*:VLESS_*|04b-*:XHTTP_*|04c-*:SS_*|04d-*:TUIC_*|04e-*:MTPROTO_*) return 0 ;;
         05-*:HY2_RU_EGRESS|06-*:AWG_RU_EGRESS) return 1 ;;
         05-*:HY2_*|05-*:ENABLE_HY2_OBFS|06-*:AWG_*) return 0 ;;
         0[456]*:SERVER_IP|0[456]*:LABEL) return 0 ;;

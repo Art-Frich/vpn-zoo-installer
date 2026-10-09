@@ -17,7 +17,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _QR_RE = re.compile(r"^(?=[ ]*[█▀▄])[ █▀▄]{8,}(?=\r?$)", re.M)
 _PATTERNS = [
     # ссылки протоколов целиком: в них ключи и пароли
-    (re.compile(r"\b(vless|vmess|trojan|ss|hysteria2|hy2|tuic|vpn|wireguard|awg)://[^\s\"'<>]+", re.I), r"\1://" + MASK),
+    (re.compile(r"\b(vless|vmess|trojan|ss|hysteria2|hy2|tuic|vpn|wireguard|awg|tg)://[^\s\"'<>]+", re.I), r"\1://" + MASK),
     (re.compile(r"(Authorization\s*:\s*)(\S.*)", re.I), r"\1" + MASK),
     (re.compile(r"\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}", re.I), r"\1" + MASK),
     (re.compile(r"\b(PrivateKey|PresharedKey|Password)(\s*[=:]\s*)\S+", re.I), r"\1\2" + MASK),

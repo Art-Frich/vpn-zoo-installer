@@ -381,7 +381,7 @@ def listing(gs: Any, cat: clientcat.Catalog, group_id: str | None = None) -> lis
                 continue
             for cid in ids:
                 c = cat.client(cid)
-                if c is None or (cid, plat) in seen:
+                if c is None or c.get("builtin") or (cid, plat) in seen:   # Telegram уже стоит: ставить нечего
                     continue
                 seen.add((cid, plat))
                 found = None

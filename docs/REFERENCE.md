@@ -13,9 +13,10 @@
 | `amneziawg` | AmneziaWG 2.0 | UDP, случайный порт | вкл. | Полный L3-туннель, обфусцированный WireGuard; в клиентах нет локального прокси | AmneziaVPN ≥5.0.1.5, AmneziaWG ≥2.0, WG Tunnel ≥4.2, DefaultVPN (iOS), mihomo ≥1.19.14 |
 | `hysteria2-obfs` | Hysteria2 + Salamander | UDP, случайный порт | вкл. | QUIC, который не похож на QUIC: если режут по сигнатуре QUIC | hysteria, sing-box, mihomo, v2rayN/v2rayNG |
 | `tuic` | TUIC v5 | UDP, случайный порт | вкл. | Ещё один QUIC-протокол для клиентов на sing-box | sing-box/SFA/SFI, Hiddify, Karing, NekoBox, mihomo |
+| `mtproto` | MTProxy (MTProto Fake-TLS) | TCP, случайный порт | `ENABLE_MTPROTO=1` | Не VPN: прокси только для Telegram, ссылку `tg://proxy` открывает сам Telegram ([Только Telegram](#только-telegram-mtproxy)) | Telegram (Android, iPhone, Desktop) |
 | — | Cloudflare WARP | исходящий | `ENABLE_WARP=1` | Выход для echo-сервисов «мой IP» (и RU по флагу) не с адреса сервера | — |
 
-Движки: VLESS, XHTTP, SS-2022 и TUIC — Xray внутри [3x-ui](https://github.com/MHSanaei/3x-ui) v3.9.0 (Xray 26.9.30); Hysteria2 — standalone [HyNetworks/hysteria](https://github.com/HyNetworks/hysteria) v2.12.3; AmneziaWG — модуль ядра (DKMS) или `amneziawg-go`. Всё скачиваемое закреплено в [scripts/versions.env](../scripts/versions.env) и проверяется по sha256.
+Движки: VLESS, XHTTP, SS-2022 и TUIC — Xray внутри [3x-ui](https://github.com/MHSanaei/3x-ui) v3.9.0 (Xray 26.9.30), MTProxy — `mtg-multi` из той же сборки 3x-ui; Hysteria2 — standalone [HyNetworks/hysteria](https://github.com/HyNetworks/hysteria) v2.12.3; AmneziaWG — модуль ядра (DKMS) или `amneziawg-go`. Всё скачиваемое закреплено в [scripts/versions.env](../scripts/versions.env) и проверяется по sha256.
 
 **Важно про клиентов VLESS/XHTTP.** Xray 26.9.30 на сервере отклоняет ClientHello без X25519MLKEM768. Клиенты на sing-box (SFA/SFI, Hiddify, NekoBox, Karing), Shadowrocket и старые ядра Xray показывают «подключено», но трафика нет. Для VLESS и XHTTP берите клиент на ядре Xray ≥26.x. Hiddify на стенде (07.10.2026): VLESS и AmneziaWG не работают, TUIC и Shadowsocks работают, Hysteria2 и Salamander — без проверки сертификата (оговорка в админке); через него идёт всё устройство, поэтому в готовые варианты он не входит.
 
@@ -451,6 +452,18 @@ sudo zoo group set Бухгалтерия --install admin   # приложени
 
 Таблица — на странице группы и на шаге «Раздача»: приложение, версия, файл, размер, sha256, «Скачать». Хранятся две последние версии приложения, всего не больше 300 МБ и доли «Дистрибутивы» в [бюджете данных](#объём-данных-и-чистка). Файлы — в `/var/lib/vpn-zoo/dist/<приложение>/<версия>/`; сверить файл после скачивания: `sha256sum файл`.
 
+## Только Telegram (MTProxy)
+
+Для тех, кому нужен только Telegram (D63). Человек нажимает ссылку `tg://proxy?server=…&port=…&secret=…`, Telegram спрашивает «Подключить прокси» — и всё: VPN-приложения нет, через прокси идёт только Telegram, остальной телефон работает напрямую, банки и MAX VPN не видят. Работает на Android, iPhone и в Telegram Desktop.
+
+- **Включить:** карточка «MTProxy» на «Обзоре» → «Включить» (по умолчанию выключен) или `ENABLE_MTPROTO=1 sudo -E bash scripts/install.sh`. Фаза `04e-mtproto` создаёт inbound `mtproto` в 3x-ui v3.9.0 (его обслуживает `mtg-multi`, он ставится вместе с панелью), открывает порт в UFW и заводит owner.
+- **Раздать:** «Подключить людей» → вариант «Только Telegram» (протокол MTProxy, приложение Telegram на всех устройствах). Дальше всё как у VPN: «Подключить», карточки с QR, ZIP и CSV. Шага «Установите» нет — Telegram у человека уже есть. В «все включённые» протоколы группы MTProxy не входит: группе VPN его добавляют явно, отметкой в протоколах.
+- **Порт и домен:** 443/tcp занят REALITY, поэтому порт — случайный высокий, как у XHTTP (`MTPROTO_PORT`). Домен Fake-TLS выбирает тот же валидатор, что REALITY target (TLS 1.3, h2, без редиректа, не .ru и не apple/microsoft), но не тот, что у VLESS и XHTTP (`MTPROTO_DOMAIN`). Соединение без нашего секрета mtg пересылает на настоящий сайт этого домена: сканер видит его сертификат. Сменили домен — секреты всех людей переписываются, ссылки нужно разослать заново.
+- **Секрет у каждого свой.** «Отключить» или «Удалить» человека убирает его секрет из mtg, остальные не задеты; «Новые ключи» выдаёт новый секрет. Клиент 3x-ui у человека один на все протоколы панели (D18): отключение действует и на его VLESS, XHTTP, TUIC.
+- **Трафик:** mtg считает его по людям, панель складывает в общий счётчик клиента 3x-ui (D18). У человека «только Telegram» это и есть его трафик через MTProxy; у человека с VPN — сумма с Xray-протоколами.
+- **Проверка:** фаза проверяет, что порт слушает mtg и что на чужое соединение с SNI домена отвечает настоящий сайт с верным сертификатом. Самопроверка и пробник (`zoo probe`) делают рукопожатие Fake-TLS с секретом owner и сверяют подпись ответа mtg — так видно, что секрет принят. Сообщения Telegram через прокси пробник не гоняет.
+- **Чего ждать:** MTProxy — дополнение к VPN, а не замена. О волне блокировок MTProto-прокси в 2026 году есть только непроверенные сообщения (❓, [RISK-REDUCTION §7](RISK-REDUCTION.md#7-мифы-и-поправки)); если прокси перестанет подключаться, у человека остаётся VPN-вариант группы. Часы: mtg принимает рукопожатие, только если время клиента расходится с сервером не больше чем на 3 с (Telegram сверяет время сам; пробник на машине с уехавшими часами покажет HANDSHAKE_FAIL).
+
 ## Не работает или медленно
 
 Страница человека → «Не работает или медленно» — всегда над сообщениями (свёрнут, если тревог нет): проверка собрана из его протоколов и приложений; есть предупреждение — блок раскрыт. По порядку:
@@ -511,7 +524,7 @@ ENABLE_SS=1 RU_EGRESS=block sudo -E bash scripts/install.sh
 | Группа | Ключи | По умолчанию |
 |---|---|---|
 | Протоколы | `ENABLE_VLESS`, `ENABLE_XHTTP`, `ENABLE_HY2`, `ENABLE_HY2_OBFS`, `ENABLE_TUIC`, `ENABLE_AWG` | `1` |
-| | `ENABLE_SS`, `ENABLE_WARP` | `0` |
+| | `ENABLE_SS`, `ENABLE_WARP`, `ENABLE_MTPROTO` | `0` |
 | | `ENABLE_ZOO` (инструмент zoo, админка, самопроверка) | `1`; выключение после установки не реализовано |
 | Движки | `AWG_ENGINE=auto\|kernel\|userspace` | `auto`: модуль ядра, если DKMS собирается, иначе `amneziawg-go` |
 | | `HY2_ENGINE` | `apernet` (единственный) |
@@ -520,9 +533,10 @@ ENABLE_SS=1 RU_EGRESS=block sudo -E bash scripts/install.sh
 | | `ENABLE_BITTORRENT=1` — пропускать BT; `ROUTING_ECHO_EXTRA=a.com,b.com` — свои echo-домены | `0`, пусто |
 | Порты | `VLESS_PORT` | `443` |
 | | `HY2_PORT` | `443` (UDP) |
-| | `XHTTP_PORT`, `SS_PORT`, `TUIC_PORT`, `AWG_PORT`, `HY2_OBFS_PORT` | случайные высокие, выбираются один раз; никогда 1080, 3128, 8080, 9050, 2053, 54321 |
+| | `XHTTP_PORT`, `SS_PORT`, `TUIC_PORT`, `MTPROTO_PORT`, `AWG_PORT`, `HY2_OBFS_PORT` | случайные высокие, выбираются один раз; никогда 1080, 3128, 8080, 9050, 2053, 54321 |
 | VLESS | `VLESS_SNI` (+`VLESS_SNI_CHECK=0`), `VLESS_TARGET=host:port` | target выбирает валидатор из списка кандидатов |
 | XHTTP | `XHTTP_PLACEMENT=port\|fallback`, `XHTTP_SNI`, `XHTTP_PATH`, `XHTTP_MODE` | `port` (отдельный порт) |
+| MTProxy | `MTPROTO_DOMAIN` — домен Fake-TLS (сайт, на который mtg отправляет чужие соединения) | выбирает валидатор REALITY target, не совпадает с `VLESS_SNI` и `XHTTP_SNI` |
 | Hysteria2 | `HY2_SNI`, `HY2_MASQ_URL`, `HY2_HOP=1` + `HY2_HOP_RANGE` (port hopping) | `bing.com`, `40000-49999` |
 | AmneziaWG | `AWG_PROFILE=v2\|v3`, `AWG_RT=1`, `AWG_NETWORK`, `AWG_MTU`, `AWG_DNS`, `AWG_KEEPALIVE`, `AWG_NO_HWE=1` | `v2`, `10.66.66.0/24`, `1280`, Cloudflare DNS, `25` |
 | Сервер | `SERVER_IP`, `LABEL` (имя в ссылках), `SSH_PORTS` | определяются сами, `vpn` |
@@ -578,6 +592,7 @@ Geo-файлы маршрутизации обновляются отдельн�
 - **Пробник у пользователя:** проверен на стенде и с Windows 11 (PowerShell 5.1 + Docker Desktop: `git clone`, `scp`, `docker build`, `docker run -v "${PWD}\probe:/data"`, вариант без входа root); Docker Desktop на macOS и нативный Docker на Linux-десктопе не прогонялись.
 - **Не прогонялись режимы:** `XHTTP_PLACEMENT=fallback`, `AWG_PROFILE=v3`, смена `PANEL_*` после установки, `ENABLE_ZOO=0` после установки (выключения нет), `SUB_PUBLIC=1` (фазы подписки нет), кнопка обновления geo в админке.
 - **Закрытие SSH (`SSH_HARDEN=1`)** проверено на стенде (22.04 с `ssh.service`, 24.04 с `ssh.socket`, в том числе откат после перезагрузки), но не на боевом VPS: файрвол хостера, облачные образы с другими drop-in в `sshd_config.d`, `Match`-блоки (фаза проверяет их через `sshd -T -C` и предупреждает, если они оставляют пароль, но не правит) и `ListenAddress` с портом (фаза отказывается) не прогонялись. Откат таймером страхует и от этого.
+- **MTProxy (D63)** проверен на стенде (Ubuntu 24.04) без клиента Telegram: mtg слушает, на чужое соединение отвечает сайт домена Fake-TLS с верным сертификатом, рукопожатие Fake-TLS с секретом проходит (пробник сверяет подпись mtg), отключённый и удалённый человек не проходит. Импорт `tg://proxy` в Telegram на Android, iPhone и Desktop, работа сообщений через прокси и блокировки MTProxy у российских провайдеров не проверялись.
 - **Port hopping Hysteria** пробником не проверяется: hop-порты — DNAT на внешнем интерфейсе, с сервера они недостижимы; проверяется основной порт.
 - **Известные компромиссы:** TUIC-ссылка с `allow_insecure=1` без пина сертификата (в клиентах легко перехватить; пин есть только у пробника); токен пользователя Hysteria кратко виден в списке процессов; API Xray и мост TUIC на 127.0.0.1 без пароля (так устроен 3x-ui; из туннеля недоступны); geo-обновление проверяет целостность, но не пин; пакеты AWG из PPA не закреплены по версии; WARP не мониторится постоянно; исходящий порт 25 не закрыт.
 - Трафик проб `zoo-probe` входит в итоги по протоколам.

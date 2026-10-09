@@ -39,7 +39,10 @@ MODE_HINTS = {"self": "Приложения — из магазинов (v2rayN 
               "mixed": "Телефоны — из магазинов по сообщению; на компьютеры ставит ИТ (установщики — в «Дистрибутивах»)."}
 MODE_PICK = ("Рабочие телефоны тоже настраивает ИТ — «Всё ставит ИТ»; ИТ нет — «Всё ставят сами».")
 MODE_DEFAULT = "mixed"   # мастер: офис, где компьютеры рабочие, а телефоны личные
-PRESET_TITLES = {"simple": "Просто", "reliable": "Надёжно"}
+PRESET_TITLES = {"simple": "Просто", "reliable": "Надёжно", groups.TELEGRAM: "Только Telegram"}
+# что вместо строки «Через VPN» у варианта без VPN-приложений
+PRESET_HINTS = {groups.TELEGRAM: "Ссылка открывается в самом Telegram — VPN-приложение не нужно, остальное идёт напрямую. "
+                                 "Для тех, кому нужен только Telegram."}
 SETS_SHOWN = 4   # наборов в «сменить» (не считая «Не нужен»)
 # Полевой тест 05.10.2026 (находка 7): у VLESS+Vision новые соединения рвутся на части путей,
 # Hysteria2 и XHTTP устойчивы: предвыбор — Hysteria2, XHTTP и AmneziaWG
@@ -53,6 +56,7 @@ PURPOSE = {
     "vless-reality": "похож на обычный HTTPS, в полевом тесте часть соединений рвалась",
     "amneziawg": "список приложений Android — внутри файла",
     "ss2022": "по умолчанию выключен: в полевом тесте соединения теряли данные",
+    "mtproto": "только Telegram: ссылка открывается в самом Telegram, VPN-приложение не нужно",
 }
 ERRORS_SHOWN = 6
 DONE_ROWS_MAX = 3   # больше людей — на шаге раздачи не панели с QR каждого, а переход к карточкам
@@ -275,7 +279,7 @@ def proto_facts() -> list[Fact]:
 def suggest(facts: list[Fact], only: set[str] | None = None) -> list[str]:
     """Предвыбор: топ по клиентским пробам (если они есть), иначе дефолты из рабочих протоколов.
     only — допустимые протоколы (людям, которые ставят сами, — те, что входят одним QR)."""
-    facts = [f for f in facts if only is None or f.id in only]
+    facts = [f for f in facts if (only is None or f.id in only) and f.id not in groups.APP_PROXIES]
     ranked = sorted((f for f in facts if f.rank and f.rank["top"] and not f.down),
                     key=lambda f: (-f.rank["top"], -f.rank["score"] / max(f.rank["ctx"], 1)))  # type: ignore[index]
     ids = [f.id for f in ranked][:3]
@@ -582,6 +586,12 @@ def _via_line(d: Draft) -> Markup | None:
              class_="hint")
 
 
+def _proxies_only(d: Draft, managed: list[str]) -> bool:
+    """В группе только MTProxy: списка «через VPN» у неё нет — через прокси идёт один Telegram."""
+    protos = d.resolved(managed)
+    return bool(protos) and all(p in groups.APP_PROXIES for p in protos)
+
+
 def _via_choice(d: Draft) -> Markup:
     """Шаг «Люди»: что пойдёт через VPN — выбрать до раздачи, а не после (иначе раздавать дважды). Свёрнуто: обычно
     подходит общий список."""
@@ -801,6 +811,7 @@ def _preset_row(pr: dict[str, Any], cat: clients.Catalog, names: dict[str, str],
                       t("div", [t("span", names.get(p, p), class_="chip") for p in pr["protocols"]], class_="chips"),
                       t("span", groups.apps_line(cat, pr["plan"]), class_="hint"),
                       t("span", line, class_="hint") if via and (line := groups.via_line(cat, pr["plan"])) else None,
+                      t("span", PRESET_HINTS[pr["id"]], class_="hint") if pr["id"] in PRESET_HINTS else None,
                       t("span", why, class_="hint") if why else None, class_="opt-body"),
              t("button", "Выбрать", type="submit", name="go", value=pr["id"], class_="btn primary" if rec else "btn"),
              class_="opt preset" + (" sel" if chosen else "")), list(dict.fromkeys([*foreign, *issues]))
@@ -817,10 +828,11 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
     by_id = {f.id: f for f in facts}
     prs = groups.presets(cat, managed, d.install_mode)
     best = groups.recommended_preset(prs)
-    vias = {groups.via_line(cat, pr["plan"]) for pr in prs}
-    same = len(prs) > 1 and len(vias) == 1
-    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode, not same)
-            for pr in prs]
+    vpn = [pr for pr in prs if pr["id"] not in PRESET_HINTS]   # у «Только Telegram» вместо «Через VPN» — своя строка
+    vias = {groups.via_line(cat, pr["plan"]) for pr in vpn}
+    same = len(vpn) > 1 and len(vias) == 1
+    made = [_preset_row(pr, cat, names, by_id, d.preset == pr["id"], pr["id"] == best, d.install_mode,
+                        not same and pr["id"] not in PRESET_HINTS) for pr in prs]
     rows = [m[0] for m in made]
     where: dict[str, list[str]] = {}
     for pr, (_, notes) in zip(prs, made):
@@ -841,7 +853,7 @@ def _start_block(d: Draft, facts: list[Fact], managed: list[str]) -> Markup:
              t("div", t("span", "Оговорки", class_="label"), t("ul", legend, class_="cav-list"), class_="cav")
              if legend else None,
              t("p", NO_PEOPLE_DATA, " ", t("a", "Как получить замеры →", href="/probe", data_swap=True), class_="hint")
-             if any(not _preset_why(pr, names, by_id) for pr in prs) else None)
+             if any(not _preset_why(pr, names, by_id) for pr in vpn) else None)
 
 
 def _proto_summary(d: Draft, managed: list[str], names: dict[str, str]) -> Markup:
@@ -883,7 +895,7 @@ def _wizard(app: "App", req: "Request", step: int, d: Draft, errors: list[str] |
         body = [t("div", t("label", "Название группы", for_="name"),
                   t("input", type="text", name="name", id="name", value=d.name, required=True, maxlength=str(groups.NAME_MAX),
                     autocomplete="off", placeholder="например, Бухгалтерия"), class_="field"),
-                _users_block(d), _via_choice(d)]
+                _users_block(d), None if _proxies_only(d, managed) else _via_choice(d)]
         title, hint = STEPS[2], "Кого подключаем."
     last = step == 3
     nav = t("div",

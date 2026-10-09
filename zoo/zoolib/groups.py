@@ -43,7 +43,7 @@ MAIN_ID = "main"
 MAIN_NAME = "Основная"
 ALL = "*"
 # порядок протоколов при раздаче: фиксированный, группа хранит только набор
-PRIORITY = ("hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022")
+PRIORITY = ("hysteria2", "vless-xhttp", "amneziawg", "hysteria2-obfs", "tuic", "vless-reality", "ss2022", "mtproto")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 NAME_MAX = 40
 NEW_USERS_MAX = people.LINES_MAX
@@ -61,7 +61,9 @@ STORE_KINDS = ("play", "appstore")
 LINK_STORE_KINDS = STORE_KINDS + ("msstore",)   # магазины для порядка ссылок в тексте; в подборе — только STORE_KINDS
 # транспорт протокола: «Надёжно» берёт пару из разных (TCP + UDP)
 TRANSPORT = {"vless-reality": "tcp", "vless-xhttp": "tcp", "ss2022": "tcp", "hysteria2": "udp",
-             "hysteria2-obfs": "udp", "amneziawg": "udp", "tuic": "udp"}
+             "hysteria2-obfs": "udp", "amneziawg": "udp", "tuic": "udp", "mtproto": "tcp"}
+APP_PROXIES = manifests.APP_PROXIES   # MTProxy: только Telegram, выбирается группой явно (D63)
+TELEGRAM = "telegram"                 # готовый вариант «Только Telegram» (presets каталога)
 
 
 class GroupError(users.UserError):
@@ -112,8 +114,11 @@ def _norm_protocols(ids: list[str]) -> list[str]:
 
 
 def offered(protocols: list[str], selectable: list[str]) -> list[str]:
-    """Протоколы группы среди выбираемых, везде в порядке PRIORITY (у «всех включённых» — все выбираемые)."""
-    return by_priority(selectable if ALL in protocols else [p for p in protocols if p in selectable])
+    """Протоколы группы среди выбираемых, везде в порядке PRIORITY (у «всех включённых» — все выбираемые VPN, без
+    прокси одного приложения: MTProxy группа выбирает явно)."""
+    if ALL in protocols:
+        return by_priority(p for p in selectable if p not in APP_PROXIES)
+    return by_priority(p for p in protocols if p in selectable)
 
 
 @dataclass
@@ -183,7 +188,7 @@ class Group:
         """Модули, где участник получает учётки: протоколы группы среди включённых; вариант (hysteria2-obfs)
         даёт учётку своего модуля. variants — users.variant_modules(); не задан — читается здесь."""
         if self.all_protocols:
-            return list(managed)
+            return [m for m in managed if m not in APP_PROXIES]
         variants = users.variant_modules() if variants is None else variants
         return [m for m in by_priority(variants.get(p, p) for p in self.protocols) if m in managed]
 
@@ -693,7 +698,7 @@ def easy_protocols(cat: clientcat.Catalog) -> set[str]:
 def recommended_preset(prs: list[dict[str, Any]]) -> str | None:
     """Какой вариант советовать: первый без оговорок (clean), где ни одно устройство не осталось только на UDP (мобильные
     сети и офисный Wi-Fi режут его чаще TCP) — сейчас «Надёжно»; таких нет — первый без оговорок; у всех оговорки — никакой."""
-    clean = [p for p in prs if p.get("clean")]
+    clean = [p for p in prs if p.get("clean") and p["id"] != TELEGRAM]   # «Только Telegram» — не замена VPN
     both = [p["id"] for p in clean if not p.get("udp_only")]
     return both[0] if both else (clean[0]["id"] if clean else None)
 
@@ -745,7 +750,7 @@ def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
     devices = list(devices)
     easy = easy_protocols(cat)
     cands = [p for p in by_priority(available) if p in cat.protocols and not cat.protocols[p].get("pseudo")
-             and p not in SHAKY and (not any(mode_for(mode, ph) == "self" for ph in PHONES if ph in devices) or p in easy)]
+             and p not in SHAKY and p not in APP_PROXIES and (not any(mode_for(mode, ph) == "self" for ph in PHONES if ph in devices) or p in easy)]
 
     def make(pid: str, protos: list[str], plan: dict[str, list[str]] | None = None) -> dict[str, Any]:
         plan = suggest_set(cat, devices, protos, mode) if plan is None else plan
@@ -788,6 +793,10 @@ def presets(cat: clientcat.Catalog, available: list[str], mode: str = "self",
                                              sum(cands.index(p) for p in x["protocols"])), default=None)
     if reliable:
         out.append(reliable)
+    # «Только Telegram»: MTProxy включён — Telegram на всех устройствах, VPN-приложения не нужны
+    proxies = [p for p in by_priority(available) if p in APP_PROXIES and p in cat.protocols]
+    if proxies and (got := _pinned(cat, TELEGRAM, proxies, devices)):
+        out.append(make(TELEGRAM, *got))
     return out
 
 
@@ -797,7 +806,7 @@ def via_line(cat: clientcat.Catalog, chosen: dict[str, list[str]]) -> str:
     список не действует». Не описано ни у кого — пусто."""
     where: dict[str, list[str]] = {}
     for plat in cat.platforms:
-        ids = chosen.get(plat) or []
+        ids = [i for i in chosen.get(plat) or [] if not (cat.client(i) or {}).get("builtin")]   # Telegram — не VPN
         c = cat.client(ids[0]) if ids else None
         mode = cat.via(c, plat) if c else ""
         if mode:

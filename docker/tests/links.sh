@@ -117,6 +117,8 @@ elif u.scheme == "vpn":
     inner = json.loads(outer["containers"][0]["awg"]["last_config"])
     print("vpn\t" + json.dumps({"config": inner["config"], "psk": inner.get("psk_key", ""),
                                  "container": outer["containers"][0]["container"]}))
+elif u.scheme == "tg" and u.netloc == "proxy":
+    print("tg\t" + json.dumps({"server": q["server"], "port": int(q["port"]), "secret": q["secret"]}))
 else:
     print("unknown\t{}")
 '
@@ -201,6 +203,15 @@ while IFS=$'\t' read -r -u 3 id uri; do
             else
                 bad "$id: vpn:// не совпадает с .conf $LU"
             fi
+            continue ;;
+        tg)
+            # MTProxy: клиента Telegram на стенде нет — рукопожатие Fake-TLS с секретом из ссылки (подпись mtg)
+            # shellcheck disable=SC2016 # код Python, $ здесь не нужен
+            r="$(sx python3 -c 'import json, sys; sys.path.insert(0, "/repo/zoo")
+from zoolib.probe import mtproto
+c = json.loads(sys.argv[1]); print(mtproto.handshake(c["server"], c["port"], c["secret"], 8)[0])' "$cfg" 2>&1 || true)"
+            if [ "$r" = ok ]; then ok "$id: tg://proxy — секрет из ссылки принят (рукопожатие Fake-TLS)"
+            else bad "$id: tg://proxy — рукопожатие: $r"; fi
             continue ;;
         *) bad "$id: неизвестная схема ссылки: ${uri%%:*}"; continue ;;
     esac

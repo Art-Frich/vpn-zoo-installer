@@ -67,6 +67,7 @@ STATIC: dict[str, Ctl] = {c.id: c for c in (
     Ctl("vless-xhttp", "VLESS + XHTTP + REALITY", "04b-vless-xhttp", "ENABLE_XHTTP"),
     Ctl("ss2022", "Shadowsocks-2022", "04c-ss2022", "ENABLE_SS"),
     Ctl("tuic", "TUIC v5", "04d-tuic", "ENABLE_TUIC"),
+    Ctl("mtproto", "MTProxy для Telegram", "04e-mtproto", "ENABLE_MTPROTO"),
     Ctl("hysteria2", "Hysteria2", "05-hysteria2", "ENABLE_HY2"),
     Ctl("hysteria2-obfs", "Hysteria2 + Salamander", "05-hysteria2", "ENABLE_HY2_OBFS", requires="hysteria2"),
     Ctl("amneziawg", "AmneziaWG", "06-amneziawg", "ENABLE_AWG"),
@@ -140,7 +141,8 @@ def check(proto: str, action: str, ctls: dict[str, Ctl] | None = None) -> Ctl:
         if child:
             raise JobError(f"Выключить {ctls[proto].name} нельзя: сначала выключите VLESS XHTTP (он работает через VLESS).")
     gone = {proto} | _dependents(ctls, proto)
-    if not any(c.enabled and c.id not in gone for c in ctls.values()):
+    # MTProxy — только Telegram: доступа к VPN он не даёт и последним «оставшимся» не считается
+    if not any(c.enabled and c.id not in gone and c.id not in manifests.APP_PROXIES for c in ctls.values()):
         raise JobError("Это последний включённый протокол: выключив его, вы потеряете доступ. Сначала включите другой.")
     return ctl
 
