@@ -1080,6 +1080,8 @@ class HandoffPageTest(AppTestBase):
         self.assertIn("vless://masha@", keys)
         self.assertIn(">Скопировать сообщение</button>", body)
         self.assertIn('data-copy="msg-android"', body)
+        self.assertIn("Скопируйте сообщение и отправьте.", body, "одно сообщение на устройство — так и сказано")
+        self.assertNotIn("Отправьте по порядку", body)
         self.assertIn("Приложения — по протоколам.", body, "человек без группы: рекомендованные каталога")
         self.assertNotIn("Изменить для группы", body)
         self.assertNotIn("<textarea", main.split(">Подключить<")[1].split("Все ссылки и QR")[0], "инструкция — только для чтения")
