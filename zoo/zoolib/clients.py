@@ -49,6 +49,11 @@ class ClientsError(Exception):
 
 
 KEY_NOUNS = {"link": ("ссылку", "ссылки"), "file": ("файл", "файлы"), "qr": ("QR", "QR")}
+# Ссылки двух приложений одного устройства — разными сообщениями: «добавить из буфера» (Hiddify, v2rayNG, Happ) берёт
+# все ссылки скопированного текста, и VLESS попал бы в Hiddify, который его не умеет. Заголовок такого сообщения и
+# откуда шаг импорта велит копировать — одни слова.
+KEYS_FOR = "Ключи для «{app}» — только для вас, никому не пересылайте:"
+KEYS_FROM = "сообщения с ключами для «{app}»"
 
 
 def key_phrase(method: str, titles: list[str] | tuple[str, ...] = (), named: bool = True) -> str:
@@ -137,11 +142,15 @@ class Catalog:
         return (client.get("install_note") or {}).get(platform, "")
 
     def import_step(self, client: dict[str, Any], method: str, titles: list[str] | tuple[str, ...] = (),
-                    other: bool = False, named: bool = True) -> str:
+                    other: bool = False, named: bool = True, own_msg: bool = False) -> str:
         """Шаг импорта: «Скопируйте ссылку «VLESS XHTTP» из сообщения…»; titles — названия ключей, как они подписаны
         у человека (named=False — без названий: «ссылку»); other — QR с другого экрана («Открываете сообщение на другом
-        экране — …»)."""
-        text = client["import"][method].replace("{key}", key_phrase(method, titles, named))
+        экране — …»). own_msg — ссылки этого приложения в отдельном сообщении (KEYS_FOR): приложение из буфера берёт
+        все ссылки сразу, чужие ему туда попадать не должны."""
+        text = client["import"][method]
+        if own_msg and method == "link":
+            text = text.replace("{key} из сообщения", "{key} из " + KEYS_FROM.replace("{app}", client["name"]))
+        text = text.replace("{key}", key_phrase(method, titles, named))
         return self.raw["other_screen"] + text[:1].lower() + text[1:] if other else text
 
     def both_step(self, titles: list[str]) -> str:
@@ -151,16 +160,17 @@ class Catalog:
 
     def steps(self, client: dict[str, Any], platform: str, imports: list[tuple[str, list[str]]], apps: str = "",
               extras: Callable[[str], bool] = lambda proto: True, alt_qr: list[str] | None = None,
-              named: bool = True, one_way: bool = True, admin: bool = False) -> list[str]:
+              named: bool = True, one_way: bool = True, admin: bool = False, own_msg: bool = False) -> list[str]:
         """Шаги одного приложения после установки: импорт ключа ([(способ, названия ключей)]) и в том же шаге — QR с
         другого экрана как другой способ (alt_qr — названия; None — не предлагать), файлы-дополнения (extras — какие
         протоколы-файлы есть у человека), выбор приложений «через VPN» (apps — их названия), настройка. named —
         называть ключи (на устройстве два приложения: какой ключ в какое); ключей у приложения несколько — названы
         всегда, и в том же шаге — какой включать (отдельным шагом он читался как повтор импорта). one_way — сказать
-        «один способ из двух» (у второго приложения не повторяется). admin — ставит ИТ: шагов с правами администратора нет."""
+        «один способ из двух» (у второго приложения не повторяется). admin — ставит ИТ: шагов с правами администратора нет.
+        own_msg — ссылки приложения в отдельном сообщении (import_step)."""
         keys = list(dict.fromkeys(x for _, ts in imports for x in ts))
         named = named or len(keys) > 1
-        out = [self.import_step(client, m, ts, named=named) for m, ts in imports]
+        out = [self.import_step(client, m, ts, named=named, own_msg=own_msg) for m, ts in imports]
         if alt_qr is not None:
             alt = self.import_step(client, "qr", alt_qr, other=True, named=named)
             if out:   # другой способ, а не следующий шаг: иначе человек сделает оба и получит два подключения
@@ -225,6 +235,8 @@ def validate(raw: Any) -> None:
             need(set(st.get("warn_on", [])) <= set(c["platforms"]), f"{cid}: протокол {pid}: warn_on")
         need(set(c.get("import", {})) <= set(IMPORT_METHODS) and all("{key}" in v for v in c.get("import", {}).values()),
              f"{cid}: import — способы {IMPORT_METHODS}, в тексте {{key}}")
+        need("{key} из сообщения" in c.get("import", {}).get("link", "{key} из сообщения"),
+             f"{cid}: import.link — «{{key}} из сообщения» (Catalog.import_step меняет его на отдельное сообщение)")
         steps = c.get("per_app_steps", {})
         need(isinstance(steps, dict) and set(steps) <= set(c["platforms"]) - {"ios"}
              and all(isinstance(v, str) and v for v in steps.values()),
