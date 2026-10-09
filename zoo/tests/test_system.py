@@ -58,6 +58,58 @@ class SsTest(unittest.TestCase):
         bad = system.unexpected_public(socks, allowed)
         self.assertEqual([(s.proto, s.port) for s in bad], [("tcp", 2096)])
 
+    def test_udp_flow_sockets_of_proxies_are_not_listens(self):
+        # живой сервер: Xray открывает сокет на каждый UDP-поток клиента — порт из диапазона ядра
+        socks = system.parse_ss(
+            'udp UNCONN 0 0 *:37928 *:* users:(("xray-linux-amd6",pid=5,fd=30))\n'
+            'udp UNCONN 0 0 0.0.0.0:45001 0.0.0.0:* users:(("x-ui",pid=6,fd=31))\n'
+            'udp UNCONN 0 0 *:52000 *:* users:(("hysteria",pid=7,fd=9))\n'
+            'udp UNCONN 0 0 *:5353 *:* users:(("xray-linux-amd6",pid=5,fd=32))\n'
+            'udp UNCONN 0 0 0.0.0.0:40000 0.0.0.0:* users:(("dnsmasq",pid=8,fd=4))\n'
+            'tcp LISTEN 0 4096 *:41000 *:* users:(("xray-linux-amd6",pid=5,fd=33))\n')
+        eph = (32768, 60999)
+        bad = system.unexpected_public(socks, set(), ufw_open=None, ephemeral=eph)
+        self.assertEqual([(s.proto, s.port) for s in bad], [("udp", 5353), ("udp", 40000), ("tcp", 41000)],
+                         "UFW выключен: чужой UDP и UDP прокси вне диапазона — тревога")
+        bad = system.unexpected_public(socks, set(), ufw_open={("udp", 40000)}, ephemeral=eph)
+        self.assertEqual([(s.proto, s.port) for s in bad], [("udp", 40000), ("tcp", 41000)],
+                         "UFW включён: UDP — только если UFW его пропускает; TCP вне реестра — всегда")
+        self.assertEqual(len(system.unexpected_public(socks, set())), 6, "без диапазона и UFW — как раньше")
+
+    def test_parse_ufw_allowed(self):
+        text = ("Status: active\n\nTo                         Action      From\n"
+                "--                         ------      ----\n"
+                "Anywhere                   REJECT      80.94.92.55                # by Fail2Ban\n"
+                "22/tcp                     LIMIT       Anywhere\n"
+                "443/udp                    ALLOW       Anywhere                   # hysteria2\n"
+                "30925/udp (v6)             ALLOW       Anywhere (v6)              # vpn-zoo tuic\n"
+                "8080                       ALLOW IN    Anywhere\n"
+                "20000:20002/udp            ALLOW       Anywhere\n"
+                "9000/tcp                   DENY        Anywhere\n"
+                "OpenSSH                    ALLOW       Anywhere\n")
+        self.assertEqual(system.parse_ufw_allowed(text), {
+            ("tcp", 22), ("udp", 443), ("udp", 30925), ("tcp", 8080), ("udp", 8080),
+            ("udp", 20000), ("udp", 20001), ("udp", 20002)})
+        with mock.patch.object(system, "_ufw_status", return_value=(0, "Status: inactive\n")):
+            self.assertIsNone(system.ufw_allowed())
+            self.assertFalse(system.ufw_active())
+        with mock.patch.object(system, "_ufw_status", return_value=(0, text)):
+            self.assertIn(("udp", 443), system.ufw_allowed())
+            self.assertTrue(system.ufw_active())
+        with mock.patch.object(system, "_ufw_status", return_value=(127, "")):
+            self.assertIsNone(system.ufw_allowed())
+            self.assertIsNone(system.ufw_active())
+
+    def test_ephemeral_range(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "sys" / "net" / "ipv4" / "ip_local_port_range"
+            self.assertEqual(system.ephemeral_range(Path(d)), (32768, 60999), "нет файла — умолчание ядра")
+            f.parent.mkdir(parents=True)
+            f.write_text("10000\t20000\n", encoding="ascii")
+            self.assertEqual(system.ephemeral_range(Path(d)), (10000, 20000))
+            f.write_text("junk\n", encoding="ascii")
+            self.assertEqual(system.ephemeral_range(Path(d)), (32768, 60999))
+
     def test_registry_ports(self):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "ports.tsv"

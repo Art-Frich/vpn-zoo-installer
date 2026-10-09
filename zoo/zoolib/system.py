@@ -174,20 +174,66 @@ def unit_states(units: list[str]) -> dict[str, dict[str, str]]:
     return result
 
 
-_ufw_cache: tuple[float, bool | None] | None = None
+_ufw_cache: tuple[float, int, str] | None = None
+
+
+def _ufw_status() -> tuple[int, str]:
+    """`ufw status` (rc, stdout); стоит ~70 мс, поэтому кэшируется на 30 с."""
+    global _ufw_cache
+    if _ufw_cache and time.monotonic() - _ufw_cache[0] < 30:
+        return _ufw_cache[1], _ufw_cache[2]
+    rc, out, _ = run(["ufw", "status"])
+    _ufw_cache = (time.monotonic(), rc, out)
+    return rc, out
 
 
 def ufw_active() -> bool | None:
     """Включён ли UFW. Не по ufw.service: тот oneshot и остаётся inactive, если
-    `ufw enable` выполнили после загрузки. None — ufw не установлен.
-    `ufw status` стоит ~70 мс, поэтому результат кэшируется на 30 с."""
-    global _ufw_cache
-    if _ufw_cache and time.monotonic() - _ufw_cache[0] < 30:
-        return _ufw_cache[1]
-    rc, out, _ = run(["ufw", "status"])
-    value = None if rc == 127 else out.strip().startswith("Status: active")
-    _ufw_cache = (time.monotonic(), value)
-    return value
+    `ufw enable` выполнили после загрузки. None — ufw не установлен."""
+    rc, out = _ufw_status()
+    return None if rc == 127 else out.strip().startswith("Status: active")
+
+
+_UFW_RULE_RE = re.compile(r"^(\d+)(?::(\d+))?(?:/(tcp|udp))?(?:\s+\(v6\))?\s+(ALLOW|LIMIT)(?:\s+IN)?\s")
+
+
+def parse_ufw_allowed(text: str) -> set[tuple[str, int]]:
+    """(proto, port) из правил ALLOW/LIMIT вывода `ufw status`; «80» без протокола — оба,
+    диапазоны A:B раскрываются. Правила по адресу без порта («Anywhere ALLOW 1.2.3.4») и
+    профили приложений не учитываются."""
+    out: set[tuple[str, int]] = set()
+    for line in text.splitlines():
+        m = _UFW_RULE_RE.match(line.strip())
+        if not m:
+            continue
+        lo = int(m.group(1))
+        hi = int(m.group(2) or lo)
+        for proto in (m.group(3),) if m.group(3) else ("tcp", "udp"):
+            out.update((proto, p) for p in range(lo, min(hi, 65535) + 1))
+    return out
+
+
+def ufw_allowed() -> set[tuple[str, int]] | None:
+    """Порты, которые UFW пропускает снаружи; None — UFW выключен или не установлен (открыто всё)."""
+    rc, out = _ufw_status()
+    if rc != 0 or not out.strip().startswith("Status: active"):
+        return None
+    return parse_ufw_allowed(out)
+
+
+EPHEMERAL_DEFAULT = (32768, 60999)
+
+
+def ephemeral_range(proc: Path | None = None) -> tuple[int, int]:
+    """Диапазон локальных портов ядра для исходящих сокетов (net.ipv4.ip_local_port_range)."""
+    try:
+        lo, hi = (int(x) for x in ((proc or PROC) / "sys" / "net" / "ipv4" / "ip_local_port_range")
+                  .read_text().split()[:2])
+        if 0 < lo <= hi <= 65535:
+            return lo, hi
+    except (OSError, ValueError):
+        pass
+    return EPHEMERAL_DEFAULT
 
 
 # ---------- сокеты ----------
@@ -263,15 +309,33 @@ def registry_ports(ports_file: Path | None = None) -> set[tuple[str, int]]:
     return out
 
 
-def unexpected_public(sockets: list[Socket], allowed: set[tuple[str, int]]) -> list[Socket]:
-    """Сокеты на 0.0.0.0/::, которых нет среди разрешённых (реестр портов, SSH, манифесты)."""
+# Процессы, которые проксируют UDP: на каждый UDP-поток клиента открывают несвязанный (UNCONN)
+# сокет на 0.0.0.0 с портом из диапазона ядра — в `ss -uln` он неотличим от listen. comm в ss
+# обрезан до 15 символов («xray-linux-amd6»); TUIC в 3x-ui обслуживает сам процесс x-ui.
+UDP_PROXY_PROCS = ("xray", "x-ui", "hysteria", "sing-box", "tuic")
+
+
+def unexpected_public(sockets: list[Socket], allowed: set[tuple[str, int]],
+                      ufw_open: set[tuple[str, int]] | None = None,
+                      ephemeral: tuple[int, int] | None = None) -> list[Socket]:
+    """Сокеты на 0.0.0.0/::, которых нет среди разрешённых (реестр портов, SSH, манифесты).
+
+    TCP-listen вне реестра — всегда. UDP — не тревога, если это сокет UDP-потока прокси
+    (UDP_PROXY_PROCS, порт в ephemeral) или UFW включён (ufw_open не None) и порт не пропускает:
+    снаружи до него не дойти."""
     seen: set[tuple[str, int]] = set()
     out = []
     for s in sockets:
         key = (s.proto, s.port)
-        if s.public and key not in allowed and key not in seen:
-            seen.add(key)
-            out.append(s)
+        if not s.public or key in allowed or key in seen:
+            continue
+        if s.proto == "udp":
+            if ephemeral and ephemeral[0] <= s.port <= ephemeral[1] and s.process.startswith(UDP_PROXY_PROCS):
+                continue
+            if ufw_open is not None and key not in ufw_open:
+                continue
+        seen.add(key)
+        out.append(s)
     return out
 
 

@@ -165,7 +165,8 @@ def collect_slow(cfg: Config, with_xui: bool = True) -> dict[str, Any]:
     allowed = system.registry_ports() | {("tcp", p) for p in system.ssh_ports(sockets)}
     for m in good:
         allowed |= {(p, m.port) for p in m.protos}
-    exposed = [s.to_dict() for s in system.unexpected_public(sockets, allowed)]
+    exposed = [s.to_dict() for s in system.unexpected_public(
+        sockets, allowed, ufw_open=system.ufw_allowed() if firewall else None, ephemeral=system.ephemeral_range())]
     for s in exposed:
         problems.append(f"лишний listen на всех адресах: {s['port']}/{s['proto']} ({s['process'] or '?'})")
 
