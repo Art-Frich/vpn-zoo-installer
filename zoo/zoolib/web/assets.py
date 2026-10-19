@@ -711,6 +711,21 @@ JS = r"""
     if (!sel.matches || !sel.matches('select[data-group]') || !sel.form) return;
     var want = (sel.selectedOptions[0].getAttribute('data-protos') || '').split(' ');
     sel.form.querySelectorAll('input[name=proto]').forEach(function (c) { c.checked = want.indexOf(c.value) >= 0; });
+    proxyNote(sel.form);
+  });
+  // MTProxy вместе с VPN не выдаётся (D63): строка-объяснение видна, пока отмечены и он, и VPN
+  function proxyNote(form) {
+    var note = form.querySelector('[data-proxy-note]');
+    if (!note) return;
+    var proxies = note.getAttribute('data-proxy-note').split(' '), proxy = false, vpn = false;
+    form.querySelectorAll('input[name=proto]:checked').forEach(function (c) {
+      if (proxies.indexOf(c.value) >= 0) proxy = true; else vpn = true;
+    });
+    note.hidden = !(proxy && vpn);
+  }
+  document.addEventListener('change', function (ev) {
+    var el = ev.target;
+    if (el.matches && el.matches('input[name=proto]') && el.form) proxyNote(el.form);
   });
   // шаг «Приложения»: смена чипа устройства, набора или режима пересобирает блок — нажимается «Обновить» формы
   document.addEventListener('change', function (ev) {

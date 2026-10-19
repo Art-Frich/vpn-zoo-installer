@@ -90,7 +90,7 @@ def offered_to(u: users.User, g: groups.Group | None, selectable: list[str], var
     have = set(u.protocols)
     sees_all = g is None or g.all_protocols or u.custom or u.name == users.OWNER
     base = selectable if sees_all else g.offered(selectable)
-    return groups.by_priority(p for p in base if variants.get(p, p) in have)
+    return groups.by_priority(manifests.issued(p for p in base if variants.get(p, p) in have))   # MTProxy при VPN — нет (D63)
 
 
 @dataclass

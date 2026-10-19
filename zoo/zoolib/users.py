@@ -377,6 +377,8 @@ def _add_in(reg: Registry, name: str, note: str = "", only: list[str] | None = N
             groups.refresh_mirror(extra={name: grp.id})
     if grp is None and not system and not only:   # вне групп — все включённые VPN; MTProxy выдаётся только явно (D63)
         only = [p for p in managed_protocols()[0] if p not in manifests.APP_PROXIES] or None
+    if only and not system:   # MTProxy только набору без VPN (D63)
+        only = manifests.issued(only)
     targets, skipped = managed_protocols(only)
     if not targets:
         raise UserError("нет протоколов, куда можно добавить пользователя: "
@@ -916,7 +918,8 @@ def user_links(name: str, protocols: list[str] | None = None) -> tuple[list[prot
 
     Каталог clients/<name>/ не сканируется: там и секреты модулей (ключи, пароли).
     Модуль не ответил → ссылки и файлы из манифеста (если есть). Без реестра —
-    протоколы, в манифестах которых есть этот пользователь. Без фильтра protocols (или с
+    протоколы, в манифестах которых есть этот пользователь. Без фильтра protocols MTProxy
+    при VPN не показывается (D63). Без фильтра protocols (или с
     allowlist в нём) в конце — правила v2rayN пользователя (proto_id allowlist).
     Возвращает (ссылки, {id: ошибка}).
     """
@@ -935,6 +938,8 @@ def user_links(name: str, protocols: list[str] | None = None) -> tuple[list[prot
             # второй инстанс модуля (hysteria2-obfs): его ссылки отдаёт сам модуль
             protocols = [p for p in protocols
                          if not (p in by_id and p not in libs and shared_module(by_id[p], libs) in protocols)]
+        # MTProxy при VPN не выдаётся (D63): учётка может остаться (owner — для самопроверки фазы 04e), ссылки нет
+        protocols = manifests.issued(protocols)
 
     def one(pid: str) -> tuple[list[protolib.Link], str]:
         try:
