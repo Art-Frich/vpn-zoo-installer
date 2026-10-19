@@ -84,6 +84,22 @@ _routing_ssh_ports() {
     tr ',' '\n' <<< "${SSH_PORTS:-22}" | tr -d ' ' | awk '/^[0-9]+$/ && $1 >= 1 && $1 <= 65535' | sort -un | paste -sd, -
 }
 
+# Порт MTProxy (D63), если он включён: к нему на адрес сервера из туннеля тоже можно. Telegram
+# с прокси этого сервера при включённом VPN этого же сервера идёт через туннель на свой адрес
+_routing_mtproto_port() {
+    [ "${ENABLE_MTPROTO:-0}" = "1" ] || return 0
+    awk '/^[0-9]+$/ && $1 >= 1 && $1 <= 65535' <<< "${MTPROTO_PORT:-}"
+}
+
+# Домен Fake-TLS MTProxy, если MTProxy включён. Мост TUIC в 3x-ui v3.9.0 сниффит без routeOnly и
+# подменяет адрес назначения доменом из SNI — соединение Telegram ушло бы на сайт-прикрытие.
+# Правило zoo-mtproto (домен + порт) отправляет его в mtg на 127.0.0.1 — со своим allow: freedom
+# Xray 26 для входов vless, hysteria, shadowsocks сам блокирует частные адреса (getDefaultFinalRule)
+_routing_mtproto_domain() {
+    [ -n "$(_routing_mtproto_port)" ] || return 0
+    grep -E '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$' <<< "${MTPROTO_DOMAIN:-}" || true
+}
+
 # ---------- geo-файлы ----------
 
 # Разбор .dat (protobuf v2ray geoip/geosite) без зависимостей:
@@ -423,6 +439,7 @@ routing_xray_template_build() {
     jq -c --arg ru "$ru" --arg echo "$echo" --arg bt "$bt" --argjson ww "$with_warp" \
         --argjson wob "$warp_ob" --argjson win "$warp_in" \
         --arg self "$(routing_self_ips | paste -sd, -)" --arg sshp "$(_routing_ssh_ports)" \
+        --arg mtp "$(_routing_mtproto_port)" --arg mtd "$(_routing_mtproto_domain)" \
         --arg extra "$(routing_echo_domains | sed 's/^/domain:/' | paste -sd, -)" '
         def tagof($v): if $v == "warp" then "warp" elif $v == "block" then "blocked" else "direct" end;
         def default_rule: (.ruleTag == null) and (.outboundTag == "blocked")
@@ -433,7 +450,9 @@ routing_xray_template_build() {
         | ($rules | map(select(((.inboundTag // []) | index("api")) | not)
                     | select(((.ruleTag // "") | startswith("zoo-")) | not)
                     | select(default_rule | not))) as $owner
-        | ([{type: "field", ruleTag: "zoo-private", ip: ["geoip:private"], outboundTag: "blocked"}]
+        | ($mtp != "" and $mtd != "") as $mtr
+        | ((if $mtr then [{type: "field", ruleTag: "zoo-mtproto", network: "tcp", port: $mtp, domain: ["full:" + $mtd], outboundTag: "zoo-mtproto"}] else [] end)
+           + [{type: "field", ruleTag: "zoo-private", ip: ["geoip:private"], outboundTag: "blocked"}]
            + (if $ww == 1 then [{type: "field", ruleTag: "zoo-warp-in", inboundTag: ["zoo-warp-in"], outboundTag: "warp"}] else [] end)
            + (if $bt == "block" then [{type: "field", ruleTag: "zoo-bittorrent", protocol: ["bittorrent"], outboundTag: "blocked"}] else [] end)
            + [{type: "field", ruleTag: "zoo-echo",
@@ -449,17 +468,20 @@ routing_xray_template_build() {
         | .routing.rules = ($api + $zoo + $owner)
         | .routing.domainStrategy = (if $ru != "direct" then "IPIfNonMatch" else "AsIs" end)
         | .log = ((.log // {}) + {access: "none", dnsLog: false})
-        | .outbounds = ((.outbounds // []) | map(select(.tag != "warp")))
+        | .outbounds = ((.outbounds // []) | map(select(.tag != "warp" and .tag != "zoo-mtproto")))
         | (if any(.outbounds[]; .tag == "direct") then . else .outbounds = [{tag: "direct", protocol: "freedom", settings: {}}] + .outbounds end)
         | (if any(.outbounds[]; .tag == "blocked") then . else .outbounds += [{tag: "blocked", protocol: "blackhole", settings: {}}] end)
         | ($self | split(",") | map(select(. != ""))) as $sip
         | .outbounds |= map(if .tag == "direct" and .protocol == "freedom" then
               .settings = ((.settings // {}) as $s | $s + {finalRules: (
                   (if ($sip | length) > 0 and $sshp != "" then [{action: "allow", network: "tcp", port: $sshp, ip: $sip}] else [] end)
+                  + (if ($sip | length) > 0 and $mtp != "" then [{action: "allow", network: "tcp", port: $mtp, ip: $sip}] else [] end)
                   + [{action: "block", ip: (["geoip:private"] + $sip)}]
                   + (($s.finalRules // []) | map(select(any((.ip // [])[]; . == "geoip:private" or (. as $x | $sip | index($x) != null)) | not))))})
             else . end)
         | (if $ww == 1 then .outbounds += [$wob] else . end)
+        | (if $mtr then .outbounds += [{tag: "zoo-mtproto", protocol: "freedom", settings: {redirect: ("127.0.0.1:" + $mtp),
+              finalRules: [{action: "allow", network: "tcp", port: $mtp, ip: ["127.0.0.1"]}]}}] else . end)
         | .inbounds = ((.inbounds // []) | map(select(.tag != "zoo-warp-in")))
         | (if $ww == 1 then .inbounds += [$win] else . end)
         ' <<< "$cur"
@@ -546,17 +568,19 @@ routing_sniffing_fix() {
 
 # Текст ACL (первое совпадение сверху вниз). Встроенные outbound Hysteria: direct, reject
 routing_hy2_acl_text() {
-    local echo ru d out_e out_r
+    local echo ru d out_e out_r mtp
     echo="$(routing_echo_egress)"
     ru="$(routing_effective "${HY2_RU_EGRESS:-direct}")"
     out_e="$([ "$echo" = warp ] && echo warp || echo reject)"
     out_r="$(case "$ru" in warp) echo warp ;; block) echo reject ;; *) echo direct ;; esac)"
+    mtp="$(_routing_mtproto_port)"
     echo "# vpn-zoo 07-routing — генерируется, правки затрутся (install.sh --phase 07)"
-    # адреса сервера: мимо ufw к локальным сервисам нельзя, SSH можно (как finalRules Xray)
+    # адреса сервера: мимо ufw к локальным сервисам нельзя, SSH и MTProxy можно (как finalRules Xray)
     while read -r d; do
         [ -n "$d" ] || continue
         case "$d" in *:*) d="$d/128" ;; *) d="$d/32" ;; esac
         tr ',' '\n' <<< "$(_routing_ssh_ports)" | while read -r p; do [ -z "$p" ] || echo "direct($d, tcp/$p)"; done
+        [ -z "$mtp" ] || echo "direct($d, tcp/$mtp)"
         echo "reject($d)"
     done < <(routing_self_ips)
     echo "reject(geoip:private)"

@@ -11,7 +11,8 @@
 # Туннели (клиенты — отдельный контейнер в zoo-net, наружу только сервер):
 #   xray (VLESS, XHTTP, SS-2022), hysteria (Hy2, Salamander), sing-box (TUIC), awg —
 #   туннель работает; echo (api.ipify.org) не видит IP сервера; сервисы сервера на
-#   127.0.0.1 и на его адресах в обход ufw недоступны; SSH на адрес сервера доступен.
+#   127.0.0.1 и на его адресах в обход ufw недоступны; SSH на адрес сервера доступен; при
+#   включённом MTProxy (D63) рукопожатие Fake-TLS с секретом на адрес сервера проходит.
 #   Адрес сервера в стенде частный (его закрывает geoip:private), поэтому на lo сервера на
 #   время теста вешается публичный ALIAS_IP и маршрутизация переприменяется (Hy2 рестартует).
 # Код выхода 0 — всё PASS.
@@ -200,6 +201,16 @@ if sx test -f /etc/vpn-setup/protocols.d/tuic.json; then
         || fail "sing-box $SINGBOX_VERSION не поставился (sha256)"
 fi
 
+# MTProxy (D63): порт и секрет из манифеста, рукопожатие — пробником zoo в клиенте
+MT_PORT=""; MT_SECRET=""
+mt_manifest="$(sx cat /etc/vpn-setup/protocols.d/mtproto.json 2>/dev/null || true)"
+if [ -n "$mt_manifest" ] && [ "$(sx jq -r '.enabled != false' <<< "$mt_manifest")" = "true" ]; then
+    MT_PORT="$(sx jq -r '.port' <<< "$mt_manifest")"
+    MT_SECRET="$(sx jq -r '.probe.secret // empty' <<< "$mt_manifest")"
+    sx tar -C /repo -cf - zoo/zoolib | cx tar -C /tmp -xf - || fail "не скопировал zoolib в клиент"
+    info "MTProxy включён (порт $MT_PORT): проверяется и через туннели"
+fi
+
 # панель не видна из сети (ни на IP сервера, ни через его loopback)
 if cx timeout 3 bash -c "exec 3<>/dev/tcp/$SRV_IP/${PANEL_PORT:-1}" 2>/dev/null; then fail "панель доступна снаружи $SRV_IP:$PANEL_PORT"; else pass "панель недоступна снаружи ($SRV_IP:$PANEL_PORT)"; fi
 
@@ -257,6 +268,49 @@ check_tunnel() {
         out="$(cx curl --http0.9 -s --max-time 5 "$@" "http://$ALIAS_IP:${SSH_PORT:-22}/" 2>/dev/null || true)"
         [[ "$out" == SSH-* ]] && pass "[$name] SSH на адрес сервера через туннель доступен" || warn "[$name] SSH на $ALIAS_IP:${SSH_PORT:-22} через туннель не отвечает"
     fi
+    [ -z "$MT_PORT" ] || mt_check "$name" "${TUN_SOCKS:-}"
+}
+
+# Telegram с MTProxy этого сервера под его же VPN (D63): рукопожатие Fake-TLS с секретом на адрес
+# сервера; у прокси-туннелей — через их socks (без пароля), у AWG — напрямую по L3
+mt_check() {
+    local name="$1" socks="${2:-}" r
+    r="$(cx python3 - "$ALIAS_IP" "$MT_PORT" "$MT_SECRET" "$socks" <<'PY' 2>/dev/null || echo error
+import socket, struct, sys
+sys.path.insert(0, "/tmp/zoo")
+from zoolib.probe import mtproto
+host, port, secret, socks = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+direct = socket.create_connection
+
+def recvn(s, n):
+    b = b""
+    while len(b) < n:
+        c = s.recv(n - len(b))
+        if not c:
+            raise OSError("socks: соединение закрыто")
+        b += c
+    return b
+
+def via_socks(addr, timeout=None, *args, **kw):
+    s = direct(("127.0.0.1", int(socks)), timeout=timeout)
+    s.sendall(b"\x05\x01\x00")
+    if recvn(s, 2) != b"\x05\x00":
+        raise OSError("socks: нет входа без пароля")
+    s.sendall(b"\x05\x01\x00\x01" + socket.inet_aton(addr[0]) + struct.pack(">H", addr[1]))
+    rep = recvn(s, 4)
+    if rep[1] != 0:
+        raise OSError("socks: CONNECT отклонён")
+    recvn(s, {1: 4, 4: 16}.get(rep[3]) or recvn(s, 1)[0])
+    recvn(s, 2)
+    return s
+
+if socks:
+    mtproto.socket.create_connection = via_socks
+print(mtproto.handshake(host, port, secret, 8)[0])
+PY
+)"
+    [ "$r" = ok ] && pass "[$name] MTProxy на адресе сервера через туннель: рукопожатие с секретом прошло" \
+        || fail "[$name] MTProxy $ALIAS_IP:$MT_PORT через туннель: $r"
 }
 
 stop_clients() { cx sh -c "pkill -f '[r]un -c /tmp/sec-' ; pkill -f '[c]lient -c /tmp/sec-'; true"; sleep 1; }
@@ -284,6 +338,7 @@ for f in $(sx sh -c 'ls /etc/vpn-setup/protocols.d/ 2>/dev/null' | tr -d '\r'); 
         *) continue ;;
     esac
     sleep 2
+    TUN_SOCKS="$port"
     check_tunnel "$id" -x "socks5h://127.0.0.1:$port"
     stop_clients
 done
@@ -296,6 +351,7 @@ if sx test -f /etc/vpn-setup/protocols.d/amneziawg.json && [ "$(sx jq -r '.enabl
     cx sh -c "printf 'nameserver 1.1.1.1\n' > /etc/resolv.conf"
     if cx env WG_QUICK_USERSPACE_IMPLEMENTATION=/usr/local/bin/amneziawg-go awg-quick up awg0 >/dev/null 2>&1; then
         tip="$(sx jq -r '.probe.server_tunnel_ip // empty' /etc/vpn-setup/protocols.d/amneziawg.json)"
+        TUN_SOCKS=""
         check_tunnel awg
         if [ -n "$tip" ]; then
             h0="$(hits)"

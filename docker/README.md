@@ -44,6 +44,8 @@ docker/run-server.sh exec dev bash /repo/docker/xui-smoke.sh
 
 На Windows/Git Bash скрипты сами выставляют `MSYS_NO_PATHCONV=1`. Если запускаете `docker` руками, ставьте его перед командой, иначе Git Bash испортит пути `/sys/fs/cgroup` и `/repo`.
 
+**VPN с fake-IP на машине со стендом.** Hiddify в режиме «VPN» подменяет ответы DNS по UDP адресами из 198.18.0.0/15 (замечено 19.10.2026). Маршрутизация сервера блокирует их как частные (`geoip:private`), и тесты туннелей (`security`, `routing`) падают на «туннель не работает», хотя установка и самопроверка проходят. На время прогона переведите DNS сервера стенда на TCP — его Hiddify не подменял: `docker exec zoo-NAME sh -c 'printf "nameserver 1.1.1.1\noptions use-vc\n" > /etc/resolv.conf'`.
+
 ## Окружение `ZOO_TEST_ENV=docker`
 
 Это контракт между стендом и инсталлером. Стенд передаёт `ZOO_TEST_ENV=docker` в каждый `docker exec` и в окружение контейнера. В `scripts/lib.sh`:

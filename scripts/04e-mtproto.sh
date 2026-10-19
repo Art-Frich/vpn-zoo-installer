@@ -11,8 +11,21 @@ set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/xui.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/reality-target.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/proto-mtproto.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/routing.sh"
 config_load
 detect_arch >/dev/null
+
+# Из туннеля на адрес сервера можно только на SSH и на порт MTProxy (D25): Telegram с этим прокси
+# при включённом VPN этого же сервера идёт через туннель. Переключатель в админке запускает одну
+# фазу (install.sh --phase 04e), поэтому правила Xray и ACL Hysteria пересобираются здесь
+mtproto_routing_refresh() {
+    [ "$(state_get 07-routing)" = "done" ] || return 0
+    if routing_xray_apply && routing_hy2_apply; then
+        log_ok "маршрутизация: порт MTProxy на адресе сервера из туннеля $([ "${ENABLE_MTPROTO:-0}" = "1" ] && echo открыт || echo закрыт)"
+    else
+        log_warn "маршрутизация не переприменилась: под VPN этого сервера Telegram может не подключаться к MTProxy — sudo bash $SCRIPTS_DIR/install.sh --phase 07-routing"
+    fi
+}
 
 [ -n "${SERVER_IP:-}" ] || die "SERVER_IP не задан (config.env)"
 xui_wait_api 60 || die "API 3x-ui не отвечает — сначала фаза 03-3xui"
@@ -21,6 +34,7 @@ if [ "${ENABLE_MTPROTO:-0}" != "1" ]; then
     MTPROTO_PORT="$(config_get MTPROTO_PORT)"
     proto_mtproto_disable
     log_ok "ENABLE_MTPROTO=${ENABLE_MTPROTO:-0}: MTProxy выключен, порт закрыт"
+    mtproto_routing_refresh
     exit 0
 fi
 
@@ -144,6 +158,7 @@ fi
 
 proto_mtproto_manifest_refresh || die "не удалось записать манифест $MTPROTO_ID"
 mark_owned mtproto
+mtproto_routing_refresh
 
 log_ok "MTProxy готов: $SERVER_IP:$MTPROTO_PORT/tcp, Fake-TLS $MTPROTO_DOMAIN, ссылка owner — $ZOO_CLIENTS_DIR/owner/mtproto.txt"
 log_info "людям — группа с протоколом MTProxy (мастер «Подключить», вариант «Только Telegram»)"
