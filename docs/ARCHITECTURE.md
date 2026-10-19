@@ -31,7 +31,7 @@ research/YYYY-MM-DD/          исследования
 | 04b | `04b-vless-xhttp.sh` | VLESS XHTTP+REALITY (запасной TCP) |
 | 04c | `04c-ss2022.sh` | Shadowsocks-2022 (запасной не-TLS) через 3x-ui |
 | 04d | `04d-tuic.sh` | TUIC v5 через 3x-ui (флаг); закреплённый sing-box в `/usr/local/lib/vpn-zoo/bin` — клиент самопроверки TUIC (не сервис, не в PATH) |
-| 04e | `04e-mtproto.sh` | MTProxy для Telegram (Fake-TLS, D63): inbound `mtproto` 3x-ui (процесс `mtg-multi` из сборки панели), выключен по умолчанию (`ENABLE_MTPROTO=0`); секрет у каждого пользователя свой |
+| 04e | `04e-mtproto.sh` | MTProxy для Telegram (Fake-TLS, D63): inbound `mtproto` 3x-ui (процесс `mtg-multi` из сборки панели), выключен по умолчанию (`ENABLE_MTPROTO=0`); секрет у каждого пользователя свой; при включении и выключении сама пересобирает шаблон Xray и ACL Hysteria (порт MTProxy из туннеля, D25), если 07 выполнена |
 | 05 | `05-hysteria2.sh` | Hysteria2 закреплённой версии, `auth.type: command` (D17), pinSHA256, опционально Salamander-инстанс и port hopping |
 | 06 | `06-amneziawg.sh` | AmneziaWG: движок kernel (DKMS) или userspace (amneziawg-go), уникальные параметры на каждую установку |
 | 07 | `07-routing.sh` | Анти-утечки: echo-сервисы → WARP или блок, RU-egress (opt-in), sniffing, geo-файлы и таймер обновления |
