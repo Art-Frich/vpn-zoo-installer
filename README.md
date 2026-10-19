@@ -7,7 +7,7 @@ VPN для команды в России на одном сервере: нес
 
 ## Установить
 
-На чистой Ubuntu 22.04/24.04 под root:
+На чистой Ubuntu 22.04/24.04 под root (какой VPS взять — [выбор сервера](docs/REFERENCE.md#выбор-сервера)):
 
 ```bash
 apt-get update && apt-get install -y git && git clone https://github.com/Art-Frich/vpn-zoo-installer.git /opt/vpn-zoo-src && bash /opt/vpn-zoo-src/scripts/install.sh
