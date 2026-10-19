@@ -110,7 +110,8 @@ def mode_for(mode: str, plat: str) -> str:
 
 
 def _norm_protocols(ids: list[str]) -> list[str]:
-    return [ALL] if ALL in ids or not ids else by_priority(ids)
+    """MTProxy вместе с VPN не хранится: Telegram и так идёт через VPN (D63, manifests.issued)."""
+    return [ALL] if ALL in ids or not ids else by_priority(manifests.issued(ids))
 
 
 def offered(protocols: list[str], selectable: list[str]) -> list[str]:
@@ -118,7 +119,7 @@ def offered(protocols: list[str], selectable: list[str]) -> list[str]:
     прокси одного приложения: MTProxy группа выбирает явно)."""
     if ALL in protocols:
         return by_priority(p for p in selectable if p not in APP_PROXIES)
-    return by_priority(p for p in protocols if p in selectable)
+    return by_priority(p for p in manifests.issued(protocols) if p in selectable)
 
 
 @dataclass
@@ -245,6 +246,7 @@ class Groups:
         self.obfs_split = 0          # метка: Salamander выбирается отдельно, прежним группам с Hysteria2 он добавлен (_migrate)
         self.clients_filled = 0      # метка: группам без набора приложений один раз подобран набор (_migrate)
         self.main_preset = 0         # метка: «Основной» один раз дан набор рекомендованного варианта (_migrate)
+        self.proxy_alone = 0         # метка: у людей с VPN один раз убран MTProxy (_migrate, D63)
 
     @classmethod
     def load(cls) -> "Groups":
@@ -266,6 +268,7 @@ class Groups:
         gs.obfs_split = 1 if data.get("obfs_split") == 1 else 0
         gs.clients_filled = 1 if data.get("clients_filled") == 1 else 0
         gs.main_preset = 1 if data.get("main_preset") == 1 else 0
+        gs.proxy_alone = 1 if data.get("proxy_alone") == 1 else 0
         return gs
 
     def save(self) -> None:
@@ -278,6 +281,8 @@ class Groups:
             data["clients_filled"] = self.clients_filled
         if self.main_preset:
             data["main_preset"] = self.main_preset
+        if self.proxy_alone:
+            data["proxy_alone"] = self.proxy_alone
         atomic_write_json(self.path, data)
         self.exists = True
 
@@ -977,11 +982,28 @@ def _fill_clients(gs: Groups) -> None:
     gs.clients_filled = 1
 
 
+def _proxy_pending(gs: Groups) -> bool:
+    return gs.exists and not gs.proxy_alone
+
+
+def _drop_proxies(ureg: users.Registry) -> None:
+    """Один раз (метка proxy_alone): MTProxy вместе с VPN не выдаётся (D63) — у таких людей его учётка убирается тем же
+    применением протоколов, что и при правке группы; группы при записи теряют его сами (_norm_protocols). owner не
+    трогается: его учётку MTProxy проверяет фаза 04e, а показы её скрывают (users.user_links)."""
+    if not ureg.exists:
+        return
+    wanted = {u.name: manifests.issued(u.protocols) for u in ureg.visible()
+              if u.name != users.OWNER and manifests.mixes_proxy(u.protocols)}
+    if wanted:
+        users._apply_protocols(ureg, wanted)
+
+
 def _migrate(gs: Groups, ureg: users.Registry) -> bool:
     """«Основная» и все пользователи без группы — в неё, с текущими настройками: протоколы «*»
     (как раньше: всё включённое), у кого набор меньше — custom (группа его не трогает).
     Один раз (метка obfs_split) группам с Hysteria2 добавляется Salamander (_obfs_pending).
     Один раз (метка clients_filled) группам без набора приложений подбирается набор (_fill_clients).
+    Один раз (метка proxy_alone) у людей с VPN убирается MTProxy (_drop_proxies, D63).
     Один раз (метка custom_recomputed в groups.json) custom у участников «Основной» пересчитывается по
     тому же правилу: серверы, перенесённые прежним кодом, получили неверные флаги. Идемпотентно.
     True — что-то записано."""
@@ -1010,6 +1032,11 @@ def _migrate(gs: Groups, ureg: users.Registry) -> bool:
         changed = True
     if _fill_pending(gs):
         _fill_clients(gs)
+        gs.save()
+        changed = True
+    if _proxy_pending(gs):
+        _drop_proxies(ureg)
+        gs.proxy_alone = 1
         gs.save()
         changed = True
     main = gs.get(MAIN_ID)
@@ -1046,7 +1073,7 @@ def _pending(gs: Groups, ureg: users.Registry) -> bool:
     """Нужна ли запись миграции (проверка без блокировки: страницы читают её на каждом показе)."""
     if not gs.exists:
         return ureg.exists
-    if _obfs_pending(gs) or _fill_pending(gs) or _main_pending(gs):
+    if _obfs_pending(gs) or _fill_pending(gs) or _main_pending(gs) or _proxy_pending(gs):
         return True
     if gs.get(MAIN_ID) is None:
         return False
@@ -1227,6 +1254,7 @@ def update(ref: str, name: str | None = None, protocols: list[str] | None = None
             new_protocols = [p for p in g.protocols if p not in drop]
             if not new_protocols:
                 raise GroupError("выберите хотя бы один протокол")
+        new_protocols = _norm_protocols(new_protocols)
         new_clients = clean_clients(clients, new_protocols) if clients is not None else g.clients
         new_allow = clean_allow(allow) if allow is not KEEP else g.allowlist
         protos_changed = new_protocols != g.protocols
@@ -1572,6 +1600,8 @@ def cmd_group_list(args: argparse.Namespace, cfg: Any) -> int:
 
 
 def cmd_group_add(args: argparse.Namespace, cfg: Any) -> int:
+    if args.proto and manifests.mixes_proxy(args.proto):
+        output.warn(manifests.PROXY_WITH_VPN)
     allow = None
     if args.allow:
         allow = _allow_lists(args.allow, allowlist.Allowlist.load())
@@ -1586,6 +1616,8 @@ def cmd_group_add(args: argparse.Namespace, cfg: Any) -> int:
 
 
 def cmd_group_set(args: argparse.Namespace, cfg: Any) -> int:
+    if args.proto and manifests.mixes_proxy(args.proto):
+        output.warn(manifests.PROXY_WITH_VPN)
     allow: Any = KEEP
     if args.allow_common:
         allow = None

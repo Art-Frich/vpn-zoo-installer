@@ -489,7 +489,7 @@ def users_list(app: "App", req: "Request") -> "Response":
                  _add_devices(),
                  t("div", t("span", "Протоколы:", class_="label"), t("div", protos, class_="checks"),
                    t("div", "Отмечены протоколы группы; другой набор станет «своим», и группа его не тронет.",
-                     class_="hint"), class_="field")
+                     class_="hint"), proxy_note(managed, preset, manifests.PROXY_WITH_VPN_USER), class_="field")
                  if protos else alert_list([("warn", "Нет протоколов, куда можно добавить пользователя.")]),
                  method="post", action="/users", class_="stack", data_swap=True)
     verify, missing = (verify_card() if req.query.get("verify") else (None, False))
@@ -515,6 +515,15 @@ def users_list(app: "App", req: "Request") -> "Response":
     if notes:
         parts.append(t("div", notes, class_="chips"))
     return app.render(req, "Пользователи", parts, active="/users")
+
+
+def proxy_note(shown: list[str], selected: Any, text: str) -> Markup | None:
+    """Строка «Telegram уже идёт через VPN…» под галочками протоколов: видна, пока MTProxy отмечен вместе с VPN
+    (скрипт переключает её на ходу, D63). MTProxy среди галочек нет — строки нет."""
+    if not any(p in manifests.APP_PROXIES for p in shown):
+        return None
+    return t("p", text, class_="hint", data_proxy_note=" ".join(manifests.APP_PROXIES),
+             hidden=None if manifests.mixes_proxy(selected) else True)
 
 
 def _add_devices() -> Markup | None:

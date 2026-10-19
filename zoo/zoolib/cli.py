@@ -114,6 +114,8 @@ def _report(rep: users.OpReport, as_json: bool) -> int:
 
 
 def cmd_user_add(args: argparse.Namespace, cfg: Config) -> int:
+    if args.proto and manifests.mixes_proxy(args.proto):
+        output.warn(manifests.PROXY_WITH_VPN_USER)
     rep = users.add_user(args.name, note=args.note or "", only=args.proto, partial=args.partial, group=args.group)
     code = _report(rep, args.json)
     if rep.ok and not args.json:

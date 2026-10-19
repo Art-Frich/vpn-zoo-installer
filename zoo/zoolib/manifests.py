@@ -20,6 +20,24 @@ LAYER_ALIASES = {"tcp,udp": "tcp+udp", "udp+tcp": "tcp+udp", "tcp/udp": "tcp+udp
 # прокси одного приложения (MTProxy — только Telegram), не VPN: в «все включённые» группы, в готовые VPN-варианты
 # мастера и в «последний включённый протокол» не входят — их выбирают отдельно (D63)
 APP_PROXIES = ("mtproto",)
+# Telegram с VPN и так идёт через туннель (allowlist): MTProxy выдаётся только набору без VPN (D63)
+PROXY_WITH_VPN = "Telegram уже идёт через VPN — MTProxy в этой группе не выдаётся"
+PROXY_WITH_VPN_USER = "Telegram уже идёт через VPN — MTProxy в этом наборе не выдаётся"
+
+
+def issued(ids: Any) -> list[str]:
+    """Набор протоколов, который выдаётся: есть хоть один VPN — прокси одного приложения отбрасываются (D63).
+    «*» и служебные id (allowlist) VPN не считаются: «*» прокси и так не включает."""
+    ids = list(ids)
+    if any(p not in APP_PROXIES and p not in ("*", "allowlist") for p in ids):
+        return [p for p in ids if p not in APP_PROXIES]
+    return ids
+
+
+def mixes_proxy(ids: Any) -> bool:
+    """В наборе прокси одного приложения вместе с VPN — его не выдадут (issued)."""
+    ids = list(ids)
+    return any(p in APP_PROXIES for p in ids) and issued(ids) != ids
 
 # одно название протокола на всех экранах; подсказки (title=) с тем же названием или длинным именем манифеста не нужны
 TITLES = {"hysteria2": "Hysteria2", "hysteria2-obfs": "Hysteria2 + Salamander", "vless-xhttp": "VLESS XHTTP",

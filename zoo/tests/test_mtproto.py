@@ -362,3 +362,67 @@ class UsersTest(unittest.TestCase):
             for name in ("masha", "kolya"):
                 self.assertEqual(users.list_users().get(name).protocols, ["hysteria2"], name)
                 self.assertNotIn(name, env.proto_users("mtproto"))
+
+
+class WithVpnTest(unittest.TestCase):
+    """MTProxy выдаётся только набору без VPN (D63): вместе с VPN он отбрасывается при записи."""
+
+    def test_issued_and_mixed(self):
+        self.assertEqual(manifests.issued(["hysteria2", "mtproto"]), ["hysteria2"])
+        self.assertEqual(manifests.issued(["mtproto"]), ["mtproto"])
+        self.assertEqual(manifests.issued(["mtproto", "allowlist"]), ["mtproto", "allowlist"], "файл v2rayN — не VPN")
+        self.assertTrue(manifests.mixes_proxy(["mtproto", "tuic"]))
+        self.assertFalse(manifests.mixes_proxy(["mtproto"]))
+        self.assertFalse(manifests.mixes_proxy(["tuic"]))
+
+    def test_group_drops_mtproto_next_to_vpn(self):
+        g = groups.Group("g1", "Офис", protocols=["mtproto", "hysteria2"])
+        self.assertEqual(g.protocols, ["hysteria2"])
+        self.assertEqual(groups.Group.from_dict({"id": "g2", "protocols": ["vless-xhttp", "mtproto"]}).protocols,
+                         ["vless-xhttp"])
+        self.assertEqual(groups.offered(["hysteria2", "mtproto"], ["mtproto"]), [], "VPN выключен — прокси не всплывает")
+
+    def test_note_line_follows_selection(self):
+        from zoolib.web import userviews
+        self.assertIsNone(userviews.proxy_note(["hysteria2"], ["hysteria2"], manifests.PROXY_WITH_VPN))
+        shown = str(userviews.proxy_note(["hysteria2", "mtproto"], ["hysteria2", "mtproto"], manifests.PROXY_WITH_VPN))
+        self.assertIn(manifests.PROXY_WITH_VPN, shown)
+        self.assertNotIn("hidden", shown)
+        self.assertIn("hidden", str(userviews.proxy_note(["hysteria2", "mtproto"], ["mtproto"], manifests.PROXY_WITH_VPN)))
+
+
+@needs_bash
+class WithVpnUsersTest(unittest.TestCase):
+    def test_custom_set_and_one_time_cleanup(self):
+        import json
+        from tests.helpers import ZooEnv
+        from zoolib import paths, users
+        with ZooEnv() as env:
+            for pid in ("hysteria2", "mtproto"):
+                env.add_protocol(pid)
+            users.bootstrap()
+            groups.ensure()
+            users.add_user("ivan", only=["hysteria2", "mtproto"])
+            self.assertEqual(users.list_users().get("ivan").protocols, ["hysteria2"])
+            self.assertNotIn("ivan", env.proto_users("mtproto"))
+            users.add_user("tg", only=["mtproto"])
+            self.assertEqual(users.list_users().get("tg").protocols, ["mtproto"], "только Telegram — выдаётся")
+            # сервер до правила: группа с VPN и MTProxy, у участника учётки обоих
+            users.add_user("petya")
+            users.apply_protocols({"petya": ["hysteria2", "mtproto"]})
+            self.assertIn("petya", env.proto_users("mtproto"))
+            data = json.loads(paths.groups_file().read_text(encoding="utf-8"))
+            data.pop("proxy_alone", None)
+            data["groups"][0]["protocols"] = ["hysteria2", "mtproto"]
+            paths.groups_file().write_text(json.dumps(data), encoding="utf-8")
+            groups.ensure()
+            self.assertNotIn("petya", env.proto_users("mtproto"))
+            self.assertEqual(users.list_users().get("petya").protocols, ["hysteria2"])
+            self.assertIn("tg", env.proto_users("mtproto"), "набор без VPN не тронут")
+            saved = json.loads(paths.groups_file().read_text(encoding="utf-8"))
+            self.assertEqual(saved["groups"][0]["protocols"], ["hysteria2"])
+            self.assertEqual(saved.get("proxy_alone"), 1)
+            # owner: учётка MTProxy для самопроверки фазы 04e остаётся, но ссылки ему не показываются
+            self.assertIn("mtproto", users.list_users().get("owner").protocols)
+            self.assertNotIn("mtproto", {ln.proto_id for ln in users.user_links("owner")[0]})
+            self.assertIn("mtproto", {ln.proto_id for ln in users.user_links("owner", ["mtproto"])[0]})

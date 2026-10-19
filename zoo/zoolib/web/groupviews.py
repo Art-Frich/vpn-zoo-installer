@@ -312,7 +312,8 @@ def _protocols_block(facts: list[Fact], selected: list[str], carried: list[str] 
                                   if kept else ""), class_="hint"), class_="opt-body")
         items.append(t("label", t("input", type="checkbox", name="drop", value=pid), body, class_="opt off")
                      if kept else t("div", body, class_="opt off"))
-    return t("div", items, class_="opts")
+    note = userviews.proxy_note([f.id for f in facts], selected, manifests.PROXY_WITH_VPN)
+    return t("div", t("div", items, class_="opts"), note) if note is not None else t("div", items, class_="opts")
 
 
 def _not_selectable(shown: set[str]) -> list[tuple[str, str, str]]:
