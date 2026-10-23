@@ -1,0 +1,151 @@
+{
+ "key": "github",
+ "findings": [
+  {
+   "claim": "Main anti-censorship board: the thread on mass IP bans in Russia records waves on Aug 4 and Sep 21, 2026 against popular VPS hosters, including Reality servers and IPs running only AmneziaWG. The last activity is Oct 15. Nothing new was posted in the thread on Oct 16-24.",
+   "evidence": "Opened 2026-09-30: 'a lot of reality proxy servers (self-steal included) and even ips with only amneziawg ... were banned', mostly popular VPS providers (FirstByte ~3k/29k, VeeSP ~5k/30k, Play2Go ~2k/37k, Fornex 596/24k). Oct 2: on one VPS, TCP was blocked across Russia while UDP and ICMP still worked. Oct 15: 'vps №2 was unblocked, i didn't change anything' after the owner stopped connecting to it.",
+   "source_url": "https://github.com/net4people/bbs/issues/671",
+   "source_date": "2026-10-15",
+   "kind": "github",
+   "isps_regions": "All of Russia; popular VPS hosters (u1host not named)",
+   "supports": "hoster_or_subnet_block"
+  },
+  {
+   "claim": "No issue with the Russia label on net4people/bbs was opened or updated between Oct 16 and Oct 24, 2026. A new mass wave on Oct 23 has not been recorded on the main research board, at least not yet.",
+   "evidence": "label:Russia sorted by updated: latest updates are #671 (Oct 15), #650 (Oct 12), #603 (Oct 6). Recent non-Russia activity: #676 Iran (Oct 18-22), #672 (Oct 23).",
+   "source_url": "https://github.com/net4people/bbs/issues?q=label%3ARussia%20sort%3Aupdated-desc",
+   "source_date": "2026-10-24",
+   "kind": "github",
+   "isps_regions": "Russia",
+   "supports": "background"
+  },
+  {
+   "claim": "Hysteria app/v2.13.0 was released on Oct 5 and is the latest release. It contains no security fixes, no protocol changes and nothing about Russia. The last release marked as a security release was v2.9.2 (May 23).",
+   "evidence": "Notes: QUIC sniffing fix for multi-packet ClientHello, sniff.timeout now TCP-only, sing-tun v0.9.6, route.strict removed, Chrome QUIC fingerprint updated to Chrome 154, ECH log fix, quic-go v0.63.0. Neither 'urgent', 'vulnerability' nor 'GHSA' appears. v2.9.2: 'important security fixes' (UDP ACL bypass, trailing-dot ACL bypass, sniff OOM).",
+   "source_url": "https://github.com/HyNetworks/hysteria/releases/tag/app/v2.13.0",
+   "source_date": "2026-10-05",
+   "kind": "github",
+   "isps_regions": "n/a",
+   "supports": "background"
+  },
+  {
+   "claim": "The 'urgent' flag in the Hysteria update checker comes from the api.hy2.io/v1/update response. The flag is only written to the log; it does not stop the server or change how it works.",
+   "evidence": "utils/update.go: UpdateResponse {update, lver, url, urgent bool}. app/cmd/update.go logs \"update available\" with zap.Bool(\"urgent\", resp.Urgent) and checks again every 24 hours. No code branches on Urgent.",
+   "source_url": "https://raw.githubusercontent.com/apernet/hysteria/master/app/cmd/update.go",
+   "source_date": "unknown",
+   "kind": "github",
+   "isps_regions": "n/a",
+   "supports": "background"
+  },
+  {
+   "claim": "HyNetworks/hysteria has no Russia blocking issues opened Oct 15-24. Issue #1683 (UDP blocking in Russia, mobile networks, Aeza hoster) dates from September and drew a positive reply that hy2 works. The maintainer closed it as not planned.",
+   "evidence": "#1683 opened 2026-09-17 (TLS handshake timeout on mobile, server on Aeza). 2026-09-27 commenter: hy2 works normally on mobile and home internet, change the hoster, 'Aeza has been banned for a long time'. Closed 2026-10-02. Issues created after Oct 1: only #1702 and #1710.",
+   "source_url": "https://github.com/HyNetworks/hysteria/issues/1683",
+   "source_date": "2026-09-27",
+   "kind": "github",
+   "isps_regions": "Russia, mobile networks; hoster Aeza",
+   "supports": "working_fine"
+  },
+  {
+   "claim": "Issue #1710 (Oct 22) has the same symptom: the server is up but no client packets appear in its logs. It is a Chinese user (logs in +08:00), not Russia, so it is not evidence of a Russian wave.",
+   "evidence": "'server up and running' on :443, client on win11 cannot connect, no client connections in server log; timestamps 2026-10-22 +08:00; no mention of Russia.",
+   "source_url": "https://github.com/HyNetworks/hysteria/issues/1710",
+   "source_date": "2026-10-22",
+   "kind": "github",
+   "isps_regions": "Probably China",
+   "supports": "background"
+  },
+  {
+   "claim": "XTLS/Xray-core issues Oct 15-24 contain no reports of mass blocking in Russia, only bugs. Background from Oct 11-13 (#7131): TSPU targets the Chrome 133 uTLS fingerprint and freezes connections once a connection-count limit is exceeded. That is DPI on the TLS fingerprint, not a full IP block.",
+   "evidence": "#7131: RPRX 2026-10-13 'Chrome 133 指纹早就被 TSPU 针对了'. Yota test: chrome133 handshake timeout ~8.4 s, while chrome155, firefox and qq connect in ~700 ms. Habr data: 3 simultaneous connections pass, the 4th triggers a 120 s freeze. No IP bans reported. Issue list Oct 15-24: #7243, #7220, #7192 and others, all bugs.",
+   "source_url": "https://github.com/XTLS/Xray-core/issues/7131",
+   "source_date": "2026-10-13",
+   "kind": "github",
+   "isps_regions": "Russia; Yota mobile",
+   "supports": "background"
+  },
+  {
+   "claim": "Xray-core discussion #7115 states as general knowledge that QUIC to foreign IPs is normally blocked in Russia. That fits the observed loss of UDP traffic from Russian networks, but it is not new.",
+   "evidence": "Search snippet: 'QUIC is normally blocked for foreign IPs in Russia and Iran, which hurts connection quality' (issue opened ~Oct 10, 2026).",
+   "source_url": "https://github.com/XTLS/Xray-core/issues/7115",
+   "source_date": "2026-10-10",
+   "kind": "github",
+   "isps_regions": "Russia (general)",
+   "supports": "udp_quic_block"
+  },
+  {
+   "claim": "Issue lists for 3x-ui, amnezia-client, hiddify-app and sing-box for Oct 15-24 contain no reports of Russian blocking (UDP, AWG, Reality, IP). They show only ordinary bugs and feature requests.",
+   "evidence": "3x-ui #6856-#6911: routing geoip:ru questions, Reality+Hiddify compatibility bug #6872. amnezia #3296-#3318: split tunneling, iOS stability (#3307 has no mention of blocking). hiddify #2380-#2389. sing-box #4637-#4658: Hysteria2 cert parse, TUN bugs.",
+   "source_url": "https://github.com/MHSanaei/3x-ui/issues?q=is%3Aissue%20sort%3Acreated-desc",
+   "source_date": "2026-10-24",
+   "kind": "github",
+   "isps_regions": "n/a",
+   "supports": "background"
+  },
+  {
+   "claim": "The repository of configs for Russia (igareck) has no mass complaints for Oct 21-24. #388 (Oct 21) says the whitelist configs have not worked for a month, with no ISP named. #389 (Oct 23) is a protocol proposal, not an outage report.",
+   "evidence": "#388 opened 2026-10-21: '~15 servers, all red', no comments, no ISP. #389 opened 2026-10-23: dynamic padding and fallback proposal, mentions RKN/TSPU in general terms.",
+   "source_url": "https://github.com/igareck/vpn-configs-for-russia/issues/388",
+   "source_date": "2026-10-21",
+   "kind": "github",
+   "isps_regions": "Russia, whitelists (probably mobile)",
+   "supports": "background"
+  },
+  {
+   "claim": "Key point for interpretation: Planeta (the Ekaterinburg-2000 group, LLC Sozvezdie N) has belonged to the Rostelecom group since December 2020 and serves both Ekaterinburg and Nizhny Tagil. A Sverdlovsk oblast user on GitHub writes 'Rostelecom (formerly Planeta)'. The Tagil connection is therefore not an independent ISP, and the failure on both lines does not show a nationwide event.",
+   "evidence": "ComNews 2020-12-17: Rostelecom closed the purchase of 100% of Sozvezdie N, which controls the Planeta brand. Planeta operates in Ekaterinburg, Nizhny Tagil, Kamensk-Uralsky, Krasnouralsk and Berezovsky. Flowseal #18270 (2026-10-21): 'Ростелеком (бывшая планета) Свердловская область'.",
+   "source_url": "https://www.comnews.ru/content/212262/2020-12-17/2020-w51/rostelekom-priobrel-veduschego-internet-provaydera-ekaterinburga-i-sverdlovskoy-oblasti",
+   "source_date": "2020-12-17",
+   "kind": "news",
+   "isps_regions": "Rostelecom / Planeta (Ekaterinburg-2000), Ekaterinburg, Nizhny Tagil",
+   "supports": "background"
+  },
+  {
+   "claim": "In the same days, the Ekaterinburg region showed signs of TSPU activity for another service, YouTube video. It was broken from about Oct 19 to 22 for Planeta, Rostelecom, MTS and Insis customers and recovered on its own on Oct 23. This confirms regional rule changes, but not specifically against VPNs.",
+   "evidence": "#18292 (2026-10-22/23): users from Ekaterinburg (Planeta, MTS, Rostelecom); 2026-10-23 sentartemiy: 'внезапно снова заработал', 'Видимо на тспу что то решили протестить и теперь откатили'. One user says 'вместе с варпом работает'. Nobody reports a full VPN or UDP outage.",
+   "source_url": "https://github.com/Flowseal/zapret-discord-youtube/issues/18292",
+   "source_date": "2026-10-23",
+   "kind": "github",
+   "isps_regions": "Planeta/Rostelecom/MTS Ekaterinburg; TTK Rostov, Komi; Sotrudnik Biysk",
+   "supports": "regional_outage"
+  },
+  {
+   "claim": "On Oct 23 there were scattered, speculative mentions of a 'new wave of RKN blocks' (Telegram on Dom.ru) and session drops on Rostelecom in Perm krai. Participants dispute both, and they say nothing about VPN, UDP or IP blocks.",
+   "evidence": "#18321 (2026-10-23, Dom.ru): 'вероятно ... совпало по времени с новой волной блокировок от ркн', while a neighbor on the same operator says Telegram works. #18319 (2026-10-23, Rostelecom, Perm krai): drops every 10 minutes; commenters point to the router or cable (100% loss at 10.10.10.1).",
+   "source_url": "https://github.com/Flowseal/zapret-discord-youtube/issues/18321",
+   "source_date": "2026-10-23",
+   "kind": "github",
+   "isps_regions": "Dom.ru (region not given); Rostelecom Perm krai",
+   "supports": "background"
+  },
+  {
+   "claim": "Background on u1host: in late 2025 users moved to u1host after blocks on Aeza and it worked. A 2026 forum post claims RKN blocked 'almost all' u1host VPS. Neither shows anything about Oct 23.",
+   "evidence": "ClusterM/vpn-how-to #20 (2025-10-21) 'Ростелеком блокирует vless-xray, через МТС работает': moving from Aeza to u1host fixed it. nozikov/vless-relay-setup #46 (2026-05-29) 'Просто перестало работать' on a u1host host. otvet.mail.ru (2026, search snippet, page not opened): almost all u1host VPS were blocked by RKN.",
+   "source_url": "https://github.com/ClusterM/vpn-how-to/issues/20",
+   "source_date": "2025-10-21",
+   "kind": "github",
+   "isps_regions": "Rostelecom; hoster u1host",
+   "supports": "hoster_or_subnet_block"
+  },
+  {
+   "claim": "Background from a commercial service: in August 2026 Xeovo described another wave of Hysteria2 server blocking in Russia as targeted IP blocking rather than detection of the protocol.",
+   "evidence": "Post 2026-08-18: only 120/298 proxies working. 'targeted IP blocking', 'Western hosting providers facing strict blocking in Siberia'. Aug 26-27: only 2-3 working Hy2 locations. No updates in October.",
+   "source_url": "https://hub.xeovo.com/posts/211-hysteria2-servers-are-blocked-in-russia-again",
+   "source_date": "2026-08-18",
+   "kind": "forum",
+   "isps_regions": "Russia, Siberia, St. Petersburg",
+   "supports": "targeted_ip"
+  },
+  {
+   "claim": "Background: a hoster made an official statement about mass IP blocking through TSPU on Aug 4, 2026, affecting several large hosters and more than 20 VPN services. Waves have recurred every 6-7 weeks (Aug 4, Sep 21), so Oct 23 would fit the pattern, but there is no confirmation for it.",
+   "evidence": "Search snippet: VirtualDC news 2026-08-04 'О массовой блокировке IP-адресов (ТСПУ/РКН) — официальная позиция компании'. Its April 2026 note says a new IP issued to a client is almost always blocked again.",
+   "source_url": "https://news.vdc.ru/2026/08/04/o-massovoj-blokirovke-ip-adresov-tspurkn-oficzialnaya-pozicziya-kompanii/",
+   "source_date": "2026-08-04",
+   "kind": "official",
+   "isps_regions": "All of Russia; hosting networks",
+   "supports": "hoster_or_subnet_block"
+  }
+ ],
+ "mass_event_signal": "weak",
+ "summary": "На GitHub за 18–24 октября 2026 года признаков новой массовой волны против VPN нет. Ни в net4people/bbs (последнее обновление по России 15.10), ни в трекерах hysteria, Xray-core, 3x-ui, amnezia-client, hiddify и sing-box нет тредов о блокировке UDP, Hysteria2, Reality или AWG, при этом GitHub обычно отстаёт от Telegram и форумов на несколько дней. В фоне видны предыдущие волны блокировок по IP популярных VPS-хостеров (4 августа и 21 сентября), в том числе Reality и чистых AWG, а UDP/QUIC к зарубежным IP в России режется давно. Поэтому версия «заблокировали подсеть хостера или конкретный IP» правдоподобна, но для 23 октября не подтверждена. Важно: «Планета» (Екатеринбург-2000) с декабря 2020 года принадлежит группе Ростелеком и работает и в Екатеринбурге, и в Нижнем Тагиле, так что сбой на двух линиях — не независимая проверка, а скорее одна и та же инфраструктура и ТСПУ. 19–23 октября в Екатеринбурге ТСПУ действительно что-то меняли, но это касалось YouTube, и 23-го его откатили. Hysteria v2.13.0 (5 октября) не содержит ни исправлений безопасности, ни изменений протокола, а флаг urgent только пишется в лог и ни на что не влияет."
+}
