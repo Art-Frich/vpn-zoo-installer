@@ -25,7 +25,7 @@ case "$SERVER" in zoo-*) ;; *) SERVER="zoo-$SERVER" ;; esac
 # sing-box для TUIC-клиента: пины из scripts/versions.env (значения ниже — запасные)
 # shellcheck source=../../scripts/versions.env
 . "$(dirname "${BASH_SOURCE[0]}")/../../scripts/versions.env"
-SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.2}"
+SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.3}"
 SINGBOX_SHA256_amd64="${SINGBOX_SHA256_amd64:-a684484d7477d1437282ee411f4d131d0340aaad60a7868841ebd5d87dd8a0c6}"
 SINGBOX_SHA256_arm64="${SINGBOX_SHA256_arm64:-b43a1fb1bda131c6653576741ce527eb2bdeab7c9308ca90ee8b972abb7e4a7f}"
 

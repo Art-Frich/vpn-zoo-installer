@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# lib/proto-tuic.sh — TUIC v5 нативным сервером 3x-ui v3.9.0 (protocol "tuic").
+# lib/proto-tuic.sh — TUIC v5 нативным сервером 3x-ui v3.9.0–v3.10.x (protocol "tuic").
 # Функции для фазы 04d, zoo и 99. source'ится после lib.sh и lib/xui.sh.
 #
-# Как устроено в 3x-ui v3.9.0: QUIC-сервер TUIC живёт в процессе x-ui (не в Xray), слушает
+# Как устроено в 3x-ui v3.9.0 (в v3.10.2 internal/tuic тот же): QUIC-сервер TUIC живёт в процессе x-ui (не в Xray), слушает
 # TUIC_PORT/udp и отдаёт расшифрованный трафик в Xray через SOCKS-inbound на
 # 127.0.0.1:(64001 + (id-1) % N) с тем же тегом, что у inbound (маршрутизация Xray по
 # inboundTag работает). Сертификат — самоподписанный, клиенту нужен пин или allow_insecure.

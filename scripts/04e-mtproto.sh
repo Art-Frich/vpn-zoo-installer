@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 04e-mtproto.sh — MTProxy для Telegram (MTProto Fake-TLS) нативным inbound 3x-ui v3.9.0 (D63).
+# 04e-mtproto.sh — MTProxy для Telegram (MTProto Fake-TLS) нативным inbound 3x-ui v3.9.0–v3.10.x (D63).
 # Флаг ENABLE_MTPROTO, по умолчанию 0: включается переключателем в админке или ENABLE_MTPROTO=1.
 # Режим «Только Telegram»: человеку не нужно VPN-приложение — ссылка tg://proxy открывается в
 # Telegram, остальное на телефоне идёт напрямую. Случайный высокий TCP-порт (MTPROTO_PORT: 443
@@ -40,8 +40,9 @@ fi
 
 panel_ver="$(xui_panel_version)"
 case "$panel_ver" in
-    3.9.*) ;;
-    *) die "MTProxy проверен только на inbound mtproto 3x-ui 3.9.x, а установлена $panel_ver" ;;
+    # 3.10: в internal/mtproto добавлен только необязательный лимит рукопожатий (выключен)
+    3.9.*|3.10.*) ;;
+    *) die "MTProxy проверен только на inbound mtproto 3x-ui 3.9.x–3.10.x, а установлена $panel_ver" ;;
 esac
 [ -x "$(proto_mtproto_bin)" ] || die "нет $(proto_mtproto_bin): панель 3x-ui поставлена без mtg — переустановите фазу 03-3xui"
 

@@ -76,8 +76,8 @@ check "setting/all" xui_settings_get
 
 check "inbounds/del" xui_inbound_del "$id"
 [ -z "$(xui_inbound_find_by_port "$PORT")" ] && ok "inbound удалён" || bad "inbound не удалился"
-# v3.9.0: клиенты удалённого inbound остаются «сиротами» (inboundIds=[])
-[ "$(xui_client_get zoo-smoke-a | jq -c '.inboundIds')" = "[]" ] && ok "zoo-smoke-a осиротел (ожидаемо для v3.9.0)" || bad "zoo-smoke-a: неожиданная привязка"
+# v3.9.0–v3.10.2: клиенты удалённого inbound остаются «сиротами» (inboundIds=[])
+[ "$(xui_client_get zoo-smoke-a | jq -c '.inboundIds')" = "[]" ] && ok "zoo-smoke-a осиротел (ожидаемо для v3.9.0–v3.10.2)" || bad "zoo-smoke-a: неожиданная привязка"
 check "clients/del осиротевшего" xui_client_del zoo-smoke-a
 xui_client_exists zoo-smoke-a && bad "zoo-smoke-a не удалился" || ok "zoo-smoke-a удалён"
 [ "$(xui_client_del_orphans)" -ge 0 ] && ok "clients/delOrphans" || bad "clients/delOrphans"

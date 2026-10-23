@@ -166,8 +166,22 @@ zoo_up() {
         "$ZOO_IMAGE:$distro" >/dev/null
 
     zoo_wait_systemd "$name"
+    zoo_dns_fix "$name"
     zoo_sync "$name" "$modes"
     zoo_log "$name: готов, IP в $ZOO_NET: $(zoo_ip "$name")"
+}
+
+# VPN с fake-IP на хосте (Hiddify «VPN») отвечает на DNS по UDP адресами 198.18.0.0/15, а
+# маршрутизация сервера режет их как частные (geoip:private): тесты туннелей падают ложно.
+# Ответы по TCP Hiddify не подменяет — переводим резолвер контейнера на TCP
+zoo_dns_fix() {
+    local name="$1" ip
+    ip="$(docker exec "$name" getent ahostsv4 github.com 2>/dev/null | awk 'NR==1{print $1}')"
+    case "$ip" in
+        198.18.*|198.19.*)
+            docker exec "$name" sh -c 'printf "nameserver 1.1.1.1\noptions use-vc\n" > /etc/resolv.conf'
+            zoo_log "$name: DNS хоста отдаёт fake-IP ($ip) — резолвер переведён на 1.1.1.1 по TCP" ;;
+    esac
 }
 
 # Запуск install.sh так, как велит README (из корня репо, ./scripts/install.sh).
