@@ -2,9 +2,15 @@
 # run-server.sh — жизненный цикл тестового сервера (Ubuntu + systemd в контейнере)
 #
 #   docker/run-server.sh build [24.04|22.04]
-#   docker/run-server.sh up NAME [--distro 24.04|22.04] [--modes git|fs]
+#   docker/run-server.sh up NAME [--distro 24.04|22.04] [--modes git|fs] [--snapshot TAG]
 #   docker/run-server.sh sync NAME [--modes git|fs]
 #   docker/run-server.sh install NAME [VAR=val ...] [-- аргументы install.sh]
+#   docker/run-server.sh snapshot NAME TAG        # заморозить установленный сервер в образ
+#   docker/run-server.sh snapshots                # список снапшотов
+#
+# Снапшот экономит 10–15 минут установки на каждый прогон: `up NAME --snapshot TAG`
+# стартует с готовой установки и сам переводит её на новый IP контейнера
+# (install.sh с новым SERVER_IP перезапускает только фазы, зависящие от адреса).
 #   docker/run-server.sh exec NAME команда [аргументы...]
 #   docker/run-server.sh shell NAME
 #   docker/run-server.sh ip NAME
@@ -22,6 +28,7 @@ ZOO_DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ZOO_REPO_ROOT="$(cd "$ZOO_DOCKER_DIR/.." && pwd)"
 ZOO_NET="zoo-net"
 ZOO_IMAGE="zoo-test-server"
+ZOO_SNAP_IMAGE="zoo-snap"
 ZOO_DEFAULT_DISTRO="24.04"
 
 zoo_log()  { echo "[zoo] $*" >&2; }
@@ -60,8 +67,11 @@ zoo_build() {
 }
 
 zoo_net_ensure() {
+    # параллельные up создают сеть наперегонки: проигравший видит её уже созданной
     docker network inspect "$ZOO_NET" >/dev/null 2>&1 \
-        || docker network create --label zoo.harness=1 "$ZOO_NET" >/dev/null
+        || docker network create --label zoo.harness=1 "$ZOO_NET" >/dev/null 2>&1 \
+        || docker network inspect "$ZOO_NET" >/dev/null 2>&1 \
+        || zoo_die "не удалось создать сеть $ZOO_NET"
 }
 
 zoo_exists() { docker container inspect "$1" >/dev/null 2>&1; }
@@ -137,17 +147,24 @@ zoo_sync() {
 
 zoo_up() {
     local name; name="$(zoo_name "$1")"; shift
-    local distro="$ZOO_DEFAULT_DISTRO" modes="git"
+    local distro="$ZOO_DEFAULT_DISTRO" modes="git" snap="" image
     while [ $# -gt 0 ]; do
         case "$1" in
-            --distro) distro="$2"; shift 2 ;;
-            --modes)  modes="$2"; shift 2 ;;
+            --distro)   distro="$2"; shift 2 ;;
+            --modes)    modes="$2"; shift 2 ;;
+            --snapshot) snap="$2"; shift 2 ;;
             *) zoo_die "up: неизвестный аргумент $1" ;;
         esac
     done
     zoo_check_distro "$distro"
 
-    docker image inspect "$ZOO_IMAGE:$distro" >/dev/null 2>&1 || zoo_build "$distro"
+    if [ -n "$snap" ]; then
+        image="$ZOO_SNAP_IMAGE:$snap"
+        docker image inspect "$image" >/dev/null 2>&1 || zoo_die "нет снапшота $image (docker/run-server.sh snapshots)"
+    else
+        image="$ZOO_IMAGE:$distro"
+        docker image inspect "$image" >/dev/null 2>&1 || zoo_build "$distro"
+    fi
     zoo_net_ensure
 
     if zoo_exists "$name"; then
@@ -155,20 +172,38 @@ zoo_up() {
         docker rm -f "$name" >/dev/null
     fi
 
-    zoo_log "$name: старт ($ZOO_IMAGE:$distro, сеть $ZOO_NET)"
-    docker run -d --name "$name" --hostname "$name" \
+    zoo_log "$name: старт ($image, сеть $ZOO_NET)"
+    # hostname не берём из имени при снапшоте: он вписан в установку (сертификаты, логи)
+    docker run -d --name "$name" --hostname "$([ -n "$snap" ] && docker image inspect -f '{{index .Config.Labels "zoo.snap.host"}}' "$image" || echo "$name")" \
         --label zoo.harness=1 --label zoo.role=server \
         --network "$ZOO_NET" \
         --privileged --cgroupns=host \
         -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
         --tmpfs /run --tmpfs /run/lock \
         -e ZOO_TEST_ENV=docker \
-        "$ZOO_IMAGE:$distro" >/dev/null
+        "$image" >/dev/null
 
     zoo_wait_systemd "$name"
     zoo_dns_fix "$name"
     zoo_sync "$name" "$modes"
+    if [ -n "$snap" ]; then
+        zoo_log "$name: снапшот $snap — перевожу установку на IP $(zoo_ip "$name")"
+        zoo_install "$name" >/dev/null || zoo_die "$name: install.sh после снапшота упал — docker exec $name tail -50 /var/log/vpn-zoo/install-*.log"
+    fi
     zoo_log "$name: готов, IP в $ZOO_NET: $(zoo_ip "$name")"
+}
+
+# Установленный сервер → образ zoo-snap:TAG. docker commit приостанавливает контейнер на
+# время снимка, БД x-ui и users.json попадают в образ целостными; /run — tmpfs, не попадает
+zoo_snapshot() {
+    local name tag="${2:-}"; name="$(zoo_name "${1:-}")"
+    [ -n "$tag" ] || zoo_die "snapshot: нужен TAG"
+    zoo_is_ours "$name" || zoo_die "контейнер $name создан не стендом — не трогаю"
+    docker exec "$name" test -f /etc/vpn-setup/config.env || zoo_die "$name: сервер не установлен (нет config.env)"
+    docker commit --pause \
+        --change "LABEL zoo.snap.host=$(docker container inspect -f '{{.Config.Hostname}}' "$name")" \
+        "$name" "$ZOO_SNAP_IMAGE:$tag" >/dev/null
+    zoo_log "снапшот $ZOO_SNAP_IMAGE:$tag из $name готов"
 }
 
 # VPN с fake-IP на хосте (Hiddify «VPN») отвечает на DNS по UDP адресами 198.18.0.0/15, а
@@ -229,6 +264,8 @@ zoo_main() {
         shell)   docker exec -it -w /repo -e ZOO_TEST_ENV=docker "$(zoo_name "$1")" bash ;;
         ip)      zoo_ip "$1" ;;
         down)    zoo_down "${1:-}" ;;
+        snapshot)  zoo_snapshot "${1:-}" "${2:-}" ;;
+        snapshots) docker images "$ZOO_SNAP_IMAGE" --format '{{.Tag}}\t{{.CreatedSince}}\t{{.Size}}' ;;
         ""|-h|--help) sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
         *) zoo_die "неизвестная команда: $cmd (см. --help)" ;;
     esac
