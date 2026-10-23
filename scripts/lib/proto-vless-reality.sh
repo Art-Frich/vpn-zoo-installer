@@ -12,7 +12,7 @@ PVR_REMARK="zoo-vless-reality"
 PVR_FLOW="xtls-rprx-vision"
 PVR_FP="chrome"
 
-PVR_NOTES="Клиенты на ядре Xray, совместимые с сервером Xray 26.9.30 (с 26.9.8 REALITY отклоняет ClientHello без X25519MLKEM768): v2rayN ≥7.25, v2rayNG ≥2.2.6, Happ, INCY, Streisand, Throne (ядро Xray), mihomo ≥1.19.31 (Clash Verge Rev, FlClash — только fp=chrome и support-x25519mlkem768=true, импорт через подписку/YAML). НЕ работают: sing-box и всё на нём (SFA/SFI, Hiddify, NekoBox, Karing), Shadowrocket — «подключено, но трафика нет». Отпечаток chrome (допустимы firefox/safari), не randomized/ios/edge."
+PVR_NOTES="Клиенты на ядре Xray, совместимые с сервером Xray 26.10.10 (с 26.9.8 REALITY отклоняет ClientHello без X25519MLKEM768): v2rayN ≥7.25, v2rayNG ≥2.2.6, Happ, INCY, Streisand, Throne (ядро Xray), mihomo ≥1.19.31 (Clash Verge Rev, FlClash — только fp=chrome и support-x25519mlkem768=true, импорт через подписку/YAML). НЕ работают: sing-box и всё на нём (SFA/SFI, Hiddify, NekoBox, Karing), Shadowrocket — «подключено, но трафика нет». Отпечаток chrome (допустимы firefox/safari), не randomized/ios/edge."
 
 _pvr_name_ok() { zoo_user_valid "$1"; }
 

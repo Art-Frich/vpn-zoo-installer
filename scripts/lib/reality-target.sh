@@ -2,7 +2,7 @@
 # lib/reality-target.sh — выбор и проверка REALITY target (D10).
 # source'ится после lib.sh и lib/xui.sh (нужен xui_xray_bin).
 #
-# Требования к target (XTLS/REALITY, Xray 26.9.30): TLS 1.3, группа X25519MLKEM768
+# Требования к target (XTLS/REALITY, Xray 26.10.10; с 26.9.8 без изменений): TLS 1.3, группа X25519MLKEM768
 # или X25519 без HRR, запись Certificate ≤17 KiB, h2, без редиректа на чужой хост,
 # SAN покрывает SNI. Желательно ML-KEM и цепочка ≥3500 Б (запас под ML-DSA-65).
 # Не .ru/.su/.рф/.ir/.cn и не apple/icloud/microsoft: на них Xray ≥26.7.28 пишет warning,

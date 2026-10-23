@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/proto-mtproto.sh — MTProxy для Telegram (MTProto Fake-TLS) нативным inbound 3x-ui v3.9.0.
+# lib/proto-mtproto.sh — MTProxy для Telegram (MTProto Fake-TLS) нативным inbound 3x-ui v3.9.0–v3.10.x.
 # Функции для фазы 04e, zoo и 99. source'ится после lib.sh и lib/xui.sh.
 #
 # Как устроено в 3x-ui v3.9.0: Xray MTProto не умеет — inbound "mtproto" обслуживает отдельный

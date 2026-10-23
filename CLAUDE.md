@@ -114,7 +114,7 @@ bash docker/test.sh --mode full --tests all --distro 22.04 --name e2e22 --keep
 | Что | Где |
 |---|---|
 | Xray (конфиг, REALITY, XHTTP, routing) | https://xtls.github.io/en/config/ · github.com/XTLS/Xray-core (релизы, pre-release!) · github.com/XTLS/REALITY |
-| 3x-ui | github.com/MHSanaei/3x-ui, исходники на теге `v3.9.0` (`internal/web/...`), OpenAPI на живой панели `/panel/api/openapi.json` (после входа), advisories `/security/advisories` |
+| 3x-ui | github.com/MHSanaei/3x-ui, исходники на теге `v3.10.2` (`internal/web/...`), OpenAPI на живой панели `/panel/api/openapi.json` (после входа), advisories `/security/advisories` |
 | Hysteria2 | https://v2.hysteria.network/docs/ (Full-Server-Config, URI-Scheme, Port-Hopping), github.com/HyNetworks/hysteria (теги `app/vX`) |
 | AmneziaWG | github.com/amnezia-vpn: `amneziawg-go`, `amneziawg-tools`, `amneziawg-linux-kernel-module` (сломанные ядра #259), `amnezia-client`; https://docs.amnezia.org/documentation/amnezia-wg/ |
 | sing-box | github.com/SagerNet/sing-box (клиент TUIC, совместимость REALITY #4520) |

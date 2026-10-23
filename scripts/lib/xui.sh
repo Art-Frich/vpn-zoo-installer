@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lib/xui.sh — единственный адаптер к 3x-ui (CLI x-ui и REST /panel/api).
-# Сверено с исходниками тега v3.9.0 (internal/web/controller/*.go, main.go)
+# Сверено с исходниками тега v3.9.0 (internal/web/controller/*.go, main.go); v3.10.2 — по диффу
+# v3.9.0...v3.10.2: в API только добавления (протокол masque, warp regMasque), эндпоинты адаптера те же
 # и живыми вызовами на стенде. source'ится после lib.sh:
 #   . "$SCRIPTS_DIR/lib/xui.sh"
 #
@@ -23,7 +24,7 @@ xui_xray_bin() {
 
 # ---------- CLI (работает без запущенной панели, пишет прямо в БД) ----------
 
-# Версия установленной панели без «v»: 3.9.0
+# Версия установленной панели без «v»: 3.10.2
 xui_cli_version() { [ -x "$XUI_BIN" ] && "$XUI_BIN" -v 2>/dev/null | tr -d '[:space:]'; }
 
 # x-ui setting не возвращает ненулевой код при ошибке — проверяем вывод
