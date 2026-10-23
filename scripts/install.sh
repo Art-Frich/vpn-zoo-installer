@@ -251,7 +251,7 @@ skip_reason() {
         if phase_can_disable "$phase" && [[ "$(state_get "$phase")" =~ ^(done|failed|pending)$ ]]; then
             echo "@disable"; return
         fi
-        echo "выключена ($flag=${!flag})"; return
+        echo "выключена ($flag=$(flag_value "$flag"))"; return
     fi
     [ "$RERUN" = "0" ] && is_done "$phase" || return 0
     [ -z "$(changed_key_for "$phase")" ] || return 0
