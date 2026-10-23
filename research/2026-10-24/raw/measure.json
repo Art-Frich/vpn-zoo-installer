@@ -1,0 +1,195 @@
+{
+ "key": "measure",
+ "measurements": [
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "ping ICMP x3 (20:07 UTC 23.10)",
+   "probe": "20 RU probes, magic=Russia (mostly datacenters: Moscow/SPb/Novosibirsk/Khabarovsk/Vladivostok/Tomsk/Kemerovo/Taganrog/Obninsk), id 2NP3paoC0z5xPb1RM00021N5j",
+   "result": "12/20 at 0% loss (Timeweb 50ms, Selectel SPb 38ms, Cloud.ru 41ms, Yandex.Cloud 46ms, IOT 40ms, Selectel Msk 46ms, Adman Nsk 88ms, PG-19 Taganrog 52ms, Misaka Khabarovsk 133ms, EuroByte 47ms, Beget SPb 54ms, GIS Nsk 81ms); 8/20 at 100% loss (Mediasoft Msk, Tomsk AS31357, PortTelekom Vladivostok, GIS Kemerovo, Alex Group SPb, MTS AS8359 Novosibirsk, VPS SPb AS200487, OKB Progress Msk)"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.150 (same /24 neighbor, u1host VM)",
+   "test": "ping ICMP x3 (21:08 UTC), same 20 probes reused",
+   "probe": "same 20 RU probes as above",
+   "result": "20/20 at 0% loss, including all 8 probes that had 100% loss to .107 -> ICMP drop is specific to .107"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "TCP-ping port 443 x3 (20:08 UTC)",
+   "probe": "20 RU probes, magic=Russia, id 2dSarUTDlO7f5w8xV00021N5k",
+   "result": "16/20 at 100% loss; OK: Selectel SPb AS49505 3/3 38ms, Adman Novosibirsk 3/3 85ms, GIS Novosibirsk AS207713 3/3 79ms, Misaka Khabarovsk 1/3"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "TCP-ping port 8443 x3 (20:08 UTC)",
+   "probe": "20 RU probes, magic=Russia",
+   "result": "17/20 at 100% loss; partial: GIS Novosibirsk 2/3, PG-19 Taganrog 1/3, Adman Novosibirsk 1/3"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.150",
+   "test": "TCP-ping port 443 x3 (21:08 UTC), same 20 probes reused",
+   "probe": "same 20 RU probes as TCP443 run above",
+   "result": "20/20 at 0% loss (38-152ms). Neighbor in the same /24 on the same port is reachable from every probe."
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "TCP-ping port 443 x3 (21:09 UTC)",
+   "probe": "40 RU probes magic=Russia (36 Moscow/SPb DCs + Novosibirsk, Tomsk, Kemerovo, Khabarovsk, Vladivostok, Tambov, Taganrog, Obninsk), id 2oYwRvM36ASPVhJfI00021N6i",
+   "result": "35/40 at 100% loss. Exceptions: TIME-HOST Moscow AS212913 3/3 46ms; Adman Novosibirsk 2/3; Happy Technologies Moscow 1/3; Beget Moscow 1/3. Selectel SPb, GIS Novosibirsk, Khabarovsk passed at 20:08 but were 0/3 at 21:09, so coverage grew within an hour."
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.150",
+   "test": "TCP-ping port 443 x3 (21:10 UTC), same 40 probes reused",
+   "probe": "same 40 RU probes",
+   "result": "40/40 at 0% loss (41-155ms)"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "ping ICMP x3 (20:08 and again 21:12 UTC)",
+   "probe": "Eyeball ISPs: Nizhny Novgorod RU AS12389 Rostelecom; Kostroma RU AS12389 Rostelecom; Novosibirsk RU AS8359 MTS (x2); Ufa RU AS3216 Vimpelcom; Moscow RU AS3216 Vimpelcom; Moscow RU AS42610 National Cable Networks (no Globalping probes exist in AS31499 Planeta, AS9049 ER-Telecom, AS31133 MegaFon, AS12668, AS25159, AS8402, AS20485)",
+   "result": "6/7 at 100% loss both times; only Vimpelcom Moscow 3/3 (66ms)"
+  },
+  {
+   "tool": "Globalping",
+   "target": "1.1.1.1",
+   "test": "ping ICMP x3 (21:07 UTC), control",
+   "probe": "same 7 eyeball probes",
+   "result": "7/7 at 0% loss (0.4-51ms): probes are healthy"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.150",
+   "test": "ping ICMP x3 + TCP-ping 443 x3 (21:07 UTC), control",
+   "probe": "same 7 eyeball probes (Rostelecom NN/Kostroma, MTS Nsk x2, Vimpelcom Ufa/Msk, NCN Msk)",
+   "result": "ICMP 7/7 at 0% loss (44-98ms); TCP443 7/7 at 0% loss (44-98ms)"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "TCP-ping port 443 x3 (21:07 UTC)",
+   "probe": "same 7 eyeball probes",
+   "result": "6/7 at 100% loss; Vimpelcom Moscow 2/3 (65ms)"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.100 (another /24 neighbor, also u1host VM)",
+   "test": "TCP-ping port 443 x3 (21:12 UTC)",
+   "probe": "same 7 eyeball probes",
+   "result": "7/7 at 100% loss (including Vimpelcom Moscow). A second IP in the /24 is blocked the same way."
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "ping ICMP + TCP-ping 443 + TCP-ping 22 (20:08-21:12 UTC)",
+   "probe": "Yekaterinburg RU AS41925 Izet Telecom Ural; Nizhny Tagil RU AS206873 GalaxyStar; Warsaw PL AS9085 Supermedia (non-RU control in the same set)",
+   "result": "Ekb and Tagil: ICMP 0/3, TCP443 0/3, TCP22 0/3 (100% loss). Warsaw at the same moments: ICMP 3/3 21ms, TCP443 3/3 19.6ms, TCP22 3/3 20ms"
+  },
+  {
+   "tool": "Globalping",
+   "target": "1.1.1.1 / 144.31.252.150 / 144.31.252.100",
+   "test": "ICMP + TCP-ping 443 controls (21:07-21:12 UTC)",
+   "probe": "Yekaterinburg AS41925 Izet Telecom Ural; Nizhny Tagil AS206873 GalaxyStar",
+   "result": "1.1.1.1 ICMP 3/3 (23ms / 25ms). .150 ICMP 3/3 (65 / 72ms) and TCP443 3/3 (65 / 78ms). .100 TCP443 0/3 on both (Warsaw 3/3)"
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107 vs 144.31.252.150",
+   "test": "mtr ICMP x3, plus mtr TCP:443 for Ural probes (21:08-21:12 UTC)",
+   "probe": "Yekaterinburg AS41925 Izet; Nizhny Tagil AS206873 GalaxyStar; Kostroma AS12389 Rostelecom; Nizhny Novgorod AS12389 Rostelecom",
+   "result": ".107: all 4 traces stop inside the access ISP. Izet: 147.45.113.1 > 87.249.216.165 > *. GalaxyStar: 185.173.176.1 > *. RT Kostroma: 192.168.1.1 > 213.59.207.72 > *. RT NN: 172.29.14.23 > *. The TCP:443 mtr shows the same. .150: all 4 traces complete in 9-10 hops over the same backbone (Izet > RT 2.63.212.133 > 178.18.236.208 > 109.206.242.89/95 > AS49418 45.89.62.21 > 144.31.252.150; Tagil goes via ER-Telecom 188.234.144.30). The drop is at the ISP edge (TSPU-like), not on the transit path or at the hoster."
+  },
+  {
+   "tool": "Globalping",
+   "target": "144.31.252.107",
+   "test": "TCP-ping 443 and 22 x3 (20:13 and 21:11 UTC)",
+   "probe": "Amsterdam NL AS214677 Deluxhost, Amsterdam NL AS60781 LeaseWeb / AS31898 Oracle, Falkenstein DE AS24940 Hetzner, Nuremberg DE AS24940 Hetzner, Almaty KZ AS202422 G-Core, Almaty KZ AS58061 Scalaxy, Minsk BY AS6697 Beltelecom, Minsk BY AS25106 MTS",
+   "result": "All 0% loss on 443 and 22 (NL 9-15ms, DE 5-7ms, KZ 99-128ms, BY 29-35ms). The server is reachable globally, including from KZ and BY."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "144.31.252.107",
+   "test": "ping ICMP x4 (20:10 UTC)",
+   "probe": "ru1 Moscow AS14576, ru2 Moscow AS210644, ru3 St Petersburg AS210644, plus de1, de4, fr2, kz1, nl1, nl2, pl2, se1, tr1, us1",
+   "result": "All 13 nodes 4/4 OK (ru1 48ms, ru2 41ms, ru3 38ms). On these DC paths ICMP passes."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "144.31.252.107:22 / :443 / :8443",
+   "test": "TCP connect (20:10 UTC, repeated 20:50 UTC)",
+   "probe": "ru1 Moscow AS14576, ru2 Moscow AS210644, ru3 SPb AS210644, plus 10 non-RU nodes",
+   "result": "ru1 and ru2: 'Connection timed out' on every port, both rounds (22 and 2053 too). ru3 SPb: CONNECTED on 22/443/8443 (38-39ms) both rounds. All non-RU nodes CONNECTED (DE 2-9ms, NL 10-14ms, KZ 92-100ms, TR 38ms, US 153ms)."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "144.31.252.0/24 neighbors :443 and :22",
+   "test": "TCP connect (20:20-20:30 UTC)",
+   "probe": "nl1, ru1 Moscow AS14576, ru2 Moscow AS210644, ru3 SPb AS210644",
+   "result": "16 hosts have 443 or 22 open from NL. 14 connect from ru1/ru2: .1, .3, .5, .8, .12, .40, .50, .90, .101, .110, .150, .180, .200 (PTR queuev4.vk.com), .220, .230, .254. Only .107 (target) and .100 time out from ru1/ru2 while passing from nl1/ru3. ICMP to .100 is OK from all RU nodes, the same pattern as .107. The block is per-IP, not per-subnet or per-hoster."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "1.1.1.1:443, 9.9.9.9:443, ICMP 1.1.1.1",
+   "test": "TCP connect / ping control (20:20 UTC)",
+   "probe": "ru1, ru2, ru3, nl1, de4",
+   "result": "All CONNECTED / 4/4 OK. Foreign traffic in general is not blocked on these nodes."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "72.4.71.232 (u1host FI) and 185.121.12.185 (owner's other VPS)",
+   "test": "ping + TCP 22/443 (20:20 UTC)",
+   "probe": "ru1, ru2, ru3, nl1, de4",
+   "result": "CONTROL INVALID: both time out from every node, including NL and DE (ICMP 0/4, TCP 22/443 timeout). They are down or firewalled, so they cannot serve as controls."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "144.31.252.107:443/udp",
+   "test": "check-udp",
+   "probe": "13 nodes incl. ru1-3",
+   "result": "NON-INFORMATIVE: 'timeout' everywhere, including NL/DE. Hysteria does not answer random UDP, so this test cannot tell open from blocked."
+  },
+  {
+   "tool": "check-host.net",
+   "target": "144.31.252.107 ports",
+   "test": "TCP connect, server-side state drift (20:35-20:50 UTC)",
+   "probe": "kz1, ru3, nl1, de4, tr1",
+   "result": "CAVEAT: the server's port state changed during the run. At ~20:35 UTC, 443 returned 'refused' from kz1/ru3 and 2053 became open. By ~20:50 UTC 443 was open again, and 8443 and 2053 timed out from every node, non-RU included. Someone was reconfiguring the server. The 8443 data after 20:35 is unusable. The 21:07-21:12 Globalping 443/22 results are valid because NL/DE/KZ/BY/PL connected in the same minutes."
+  },
+  {
+   "tool": "RIPEstat looking-glass",
+   "target": "144.31.252.0/24",
+   "test": "BGP visibility",
+   "probe": "RRC13 Moscow (5 peers), RRC00/RRC03 Amsterdam, RRC12 Frankfurt",
+   "result": "The /24 is announced by AS213877 (U1 Digital Services) via AS49418 and visible from all collectors, including Moscow through AS12389 Rostelecom (path 20764 12389 49418 213877). This is not a BGP-level block."
+  },
+  {
+   "tool": "antifilter.download",
+   "target": "144.31.252.107",
+   "test": "lookup in RKN registry IP dumps ip.lst / ipsum.lst / allyouneed.lst (Last-Modified 22.10 22:38 UTC)",
+   "probe": "n/a (public registry dump)",
+   "result": "Not listed, and no 144.31.252.x entry at all (46 other 144.31.x IPs are listed). The block does not come from the public registry, as expected for TSPU VPN blocking."
+  },
+  {
+   "tool": "ping-admin.ru free test",
+   "target": "https://144.31.252.107",
+   "test": "HTTPS check from ~77 RU city points",
+   "probe": "n/a",
+   "result": "ERRORED: the form needs JavaScript and the POST returned the empty form 3 times. No data."
+  },
+  {
+   "tool": "Globalping (quota)",
+   "target": "n/a",
+   "test": "rate limit",
+   "probe": "n/a",
+   "result": "The anonymous quota (250/h per IP) was shared with sibling agents and ran out at ~20:15 UTC. The control batch ran after the reset at 21:07 UTC. Nothing was lost, only delayed."
+  }
+ ],
+ "verdict": "This is an IP-level block of 144.31.252.107 enforced across Russia. It is not specific to one ISP or one region, and it does not cover the whole subnet or the whole hoster. Confidence that it is Russia-wide and per-IP: high.\n\nHow the evidence fits together:\n(1) The same single IP is dropped from unrelated ISPs in different regions. Home lines: Rostelecom Nizhny Novgorod and Kostroma, MTS Novosibirsk x2, Vimpelcom Ufa, NCN Moscow. Ural: Izet Telecom Yekaterinburg and GalaxyStar Nizhny Tagil (upstream ER-Telecom). About 35 of 40 RU datacenter networks drop it too. This matches the owner's own Rostelecom Yekaterinburg test. Every one of these probes is healthy: 1.1.1.1 answers at 0% loss.\n(2) The neighbor 144.31.252.150 in the same /24 is reachable from all of the same probes at the same time: TCP 443 40/40 + 20/20 + 7/7 + 2/2, ICMP 20/20 + 7/7 + 2/2. A further 14 of 16 live neighbors are reachable from the Moscow check-host nodes. So the block is not on the subnet, the hoster (AS213877 u1host) or the transit path, and foreign traffic in general is not blocked.\n(3) Traceroutes to .107 stop at the first or second hop inside each access ISP. Traceroutes to .150 cross the same Rostelecom / ER-Telecom backbone to AS49418 and finish. So the drop happens at the ISP edge, where RKN's TSPU filters sit, on a list pushed to every ISP. It is not a BGP problem: the route is visible in Moscow via AS12389. The IP is also not in the public RKN registry.\n(4) Outside Russia the server is reachable everywhere: NL, DE, PL, KZ, BY, TR, US all 0% loss.\n\nIs this a mass wave ('вышел пост')? The mechanism is a targeted per-IP listing, not a blanket ban on foreign hosting. But it is probably part of a wider sweep of VPN endpoints. A second IP in the same /24 (.100, another u1host VM) is blocked exactly the same way. The friend's separate server broke the same day. And coverage grew while I was measuring: Selectel SPb, GIS Novosibirsk and Khabarovsk could still connect at 20:08 UTC but not at 21:09 UTC. Confidence that it belongs to a wider wave: medium. Measurements cannot prove the date the IP was listed or the cause; the colleague angle cannot be excluded either.\n\nThe block is not complete everywhere yet. check-host ru3 (St Petersburg, AS210644) connected on every port in both rounds, and TIME-HOST Moscow, Vimpelcom Moscow (2/3) and Adman Novosibirsk (2/3) mostly got through. That fits the Planeta (AS31499) SSTP session still being alive: either Planeta's filter has not picked the IP up yet, or the flow was established before the block. There are no Globalping probes in AS31499, ER-Telecom, MegaFon or the Nizhny Tagil eyeball ISPs, so I could not test Planeta directly.\n\nICMP behaves differently by network. Home ISPs drop ICMP as well. Many datacenter paths, including both Moscow check-host nodes, let ICMP through and drop TCP.\n\nCaveats: the server's own port state changed during the run (at ~20:35-20:50 UTC, 443 was refused and 8443/2053 toggled), so the 8443 data from after 20:35 is unusable. The 443/22 results are paired with simultaneous non-RU successes and are valid. The two control servers 72.4.71.232 and 185.121.12.185 were unreachable from everywhere, so they could not be used. The UDP check and ping-admin.ru gave no usable data.\n\nPractical consequence: a new IP from the same hoster, or even from the same /24, should work until it is detected and listed. Moving the endpoint fixes it; nothing on the server needs fixing."
+}
