@@ -244,12 +244,23 @@ curl -s -m 10 -c "$cj" "$B/login" -o /tmp/jr-login.html
 lc=$(grep -o "name=\"lc\" value=\"[^\"]*\"" /tmp/jr-login.html | sed "s/.*value=\"//;s/\"//")
 curl -s -m 10 -b "$cj" -c "$cj" -d "lc=$lc&token=$ZOO_WEB_TOKEN&next=/" "$B/login" -o /dev/null
 curl -s -m 10 -b "$cj" "$B/journal?period=24h"
+echo "<!--zoo-own-->"
+curl -s -m 10 -b "$cj" "$B/journal?period=24h&own=1"
 rm -f "$cj" /tmp/jr-login.html')"
-if grep -q 'не учтены: ваши входы и служебные адреса' <<< "$page" && grep -q 'Стучались в закрытые порты' <<< "$page" && grep -q 'Перебор SSH' <<< "$page"; then
-    pass "страница «Атаки»: группы и строка «не учтены» на месте"
+own_page="${page#*<!--zoo-own-->}"
+page="${page%%<!--zoo-own-->*}"
+# адреса стенда приватные: в сводку не входят (группы — строкой «попыток не было»), они — на странице «не учтены»
+if grep -q 'не учтены: ваши входы и служебные адреса' <<< "$page" && grep -q 'попыток не было' <<< "$page"; then
+    pass "страница «Атаки»: строка «не учтены» и группы на месте"
 else
     fail "страница «Атаки» без ожидаемого содержимого"
 fi
+if grep -q "$S1" <<< "$own_page" && grep -q "$S2" <<< "$own_page" && grep -q "$S3" <<< "$own_page"; then
+    pass "страница «не учтены»: адреса стенда $S1, $S2, $S3 с причиной"
+else
+    fail "страница «не учтены» без адресов стенда"
+fi
+page="$page$own_page"
 if grep -qE '(src|href|action)="https?://' <<< "$page"; then fail "страница «Атаки» ссылается наружу"; else pass "страница «Атаки» ничего внешнего не подгружает"; fi
 
 echo

@@ -29,7 +29,7 @@ SINGBOX_VERSION="${SINGBOX_VERSION:-1.14.3}"
 SINGBOX_SHA256_amd64="${SINGBOX_SHA256_amd64:-a684484d7477d1437282ee411f4d131d0340aaad60a7868841ebd5d87dd8a0c6}"
 SINGBOX_SHA256_arm64="${SINGBOX_SHA256_arm64:-b43a1fb1bda131c6653576741ce527eb2bdeab7c9308ca90ee8b972abb7e4a7f}"
 
-SMALL_URLS=(https://www.gstatic.com/generate_204 http://cp.cloudflare.com/)
+SMALL_URLS=(https://www.gstatic.com/generate_204 http://cp.cloudflare.com/generate_204)
 BIG_URL="https://speed.cloudflare.com/__down?bytes=2000000"
 BIG_BYTES=2000000
 TEST_USER="zt-$PROTO-$$"
