@@ -105,8 +105,9 @@ srv zoo probe --local --quiet --json --tag ci-server --upload-mb 1 > "$TMP/local
 check "отчёт сервера: context.tag и mode" jqf "$TMP/local.json" '.mode == "local" and .context.tag == "ci-server"'
 check "отчёт сервера: settings (5 замеров, отдача 1 МБ, загрузка 5 МБ)" \
     jqf "$TMP/local.json" '.settings.latency_samples == 5 and .settings.upload_bytes == 1000000 and .settings.large_bytes == 5000000'
-check "у каждого работающего протокола: задержка (10 замеров, p90 ≥ медианы) и загрузка" jqf "$TMP/local.json" '
-    [.results[] | select(.verdict == "OK" or .verdict == "SLOW")] as $w
+# MTProxy (kind mtproto) — вердикт по рукопожатию, запросов через него нет: метрик у него не бывает
+check "у каждого работающего протокола (кроме MTProxy): задержка (10 замеров, p90 ≥ медианы) и загрузка" jqf "$TMP/local.json" '
+    [.results[] | select((.verdict == "OK" or .verdict == "SLOW") and .kind != "mtproto")] as $w
     | ($w | length) > 0 and all($w[];
         .metrics.latency.sent == 10 and .metrics.latency.median_ms > 0
         and .metrics.latency.p90_ms >= .metrics.latency.median_ms
@@ -147,8 +148,8 @@ check "клиентский отчёт: mode, tag, device, direct_ip" \
 ctx_json="$(jqv "$REPORT" '.context | tojson')"
 check "клиентский отчёт: в context нет IP" no_ip_text "$ctx_json"
 info "контекст: $ctx_json"
-check "клиентский отчёт: метрики у работающих протоколов" jqf "$REPORT" '
-    [.results[] | select(.verdict == "OK" or .verdict == "SLOW")] as $w
+check "клиентский отчёт: метрики у работающих протоколов (кроме MTProxy)" jqf "$REPORT" '
+    [.results[] | select((.verdict == "OK" or .verdict == "SLOW") and .kind != "mtproto")] as $w
     | ($w | length) > 0 and all($w[]; .metrics.latency.median_ms > 0 and .metrics.download.mbps > 0)'
 n_client="$(jqv "$REPORT" '.results | length')"
 jsonl=("$TMP"/hist/*.jsonl)
@@ -190,8 +191,13 @@ check "rank: оценки 0..100 по убыванию, топ только из
 want="$(jqv "$REPORT" '[.results[] | select(.verdict == "OK" or .verdict == "SLOW") | .id] | sort | join(",")')"
 got="$(jqv "$TMP/rank.json" '[.rank[] | select(.context == "ci-mobile") | .protocols[] | select(.ok == 1) | .proto] | sort | join(",")')"
 check "rank: протоколы с успехом = OK/SLOW отчёта клиента ($want)" test -n "$want" -a "$got" = "$want"
-check "rank: у топа есть задержка и скорость" jqf "$TMP/rank.json" '
-    [.rank[] | select(.context == "ci-mobile") | .top[]] | length > 0 and all(.[]; .latency_ms > 0 and .down_mbps > 0)'
+hs_only="$(jqv "$REPORT" '[.results[] | select(.kind == "mtproto") | .id] | tojson')"
+# один прогон — не рейтинг (rank.py: ranked=false, top пуст); числа — у самих протоколов
+check "rank: один прогон не ранжируется, у сработавших (кроме MTProxy) есть задержка и скорость" jqf "$TMP/rank.json" "$hs_only as \$hs | "'
+    [.rank[] | select(.context == "ci-mobile")][0] as $c
+    | $c.ranked == false and ($c.top | length) == 0
+    and ([$c.protocols[] | select(.ok > 0) | select(.proto as $p | $hs | index($p) | not)]
+         | length > 0 and all(.[]; .latency_ms > 0 and .down_mbps > 0))'
 srv zoo probe --rank --tag ci-mobile > "$TMP/rank.txt"
 rank_txt="$(cat "$TMP/rank.txt")"
 check "rank (текст): метка, «мало данных», формула" has_all "$rank_txt" ci-mobile "мало данных" "оценка ="
@@ -250,8 +256,12 @@ check "pull повторно: новых .age нет" present "$TMP/pull2.log" "
 hs push root@stand --tag ci-push --device ci-pusher "$REPORT" > "$TMP/push.log" 2>&1 || { fail "history.sh push"; cat "$TMP/push.log"; }
 check "push: отчёт записан на сервер с новой меткой" \
     test "$(sql "SELECT COUNT(*) FROM reports WHERE tag = 'ci-push' AND device = 'ci-pusher'")" = 1
-dec="$(hs decrypt -i "$TMP/keys/key" "${raws[0]}" 2>/dev/null || true)"
-check "history.sh decrypt: расшифровывает сырой отчёт" has_all "$dec" '"type":' "zoo-probe-report"
+if command -v age >/dev/null 2>&1; then
+    dec="$(hs decrypt -i "$TMP/keys/key" "${raws[0]}" 2>/dev/null || true)"
+    check "history.sh decrypt: расшифровывает сырой отчёт" has_all "$dec" '"type":' "zoo-probe-report"
+else
+    info "history.sh decrypt пропущен: на этой машине нет age (scripts/history.sh install-age)"
+fi
 
 # ---------- 6. админка ----------
 winfo="$(srv zoo web --info --json)"

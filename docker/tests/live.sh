@@ -7,7 +7,8 @@
 # Запускать после установки с фазой 09 (лучше после тестов протоколов). Проверки:
 #   - юниты zoo-live.timer, zoo-live.path, zoo-job.path включены и ждут; у zoo-live.service Nice=10, CPUQuota=30%;
 #   - `systemctl start zoo-live.service`: у каждого включённого протокола строка в таблице live — задержка,
-#     джиттер и (в первый раз) скорость; повторный запуск скорость не меряет; цифры нагрузки (время, CPU,
+#     джиттер и (в первый раз) скорость, у MTProxy — только вердикт по рукопожатию; zoo-live.timer на время
+#     теста остановлен; повторный запуск скорость не меряет; цифры нагрузки (время, CPU,
 #     байты на eth0) печатаются как есть;
 #   - ↻: POST /live/<протокол> → live-req → zoo-live.path → zoo-live-req.service → новая строка, заявка забрана;
 #     повторный POST в первую минуту отклонён;
@@ -54,6 +55,9 @@ srv test -x /usr/local/bin/zoo || { echo "на $SRV нет zoo (фаза 09)" >&
 
 protos="$(srv bash -c 'cat /etc/vpn-setup/protocols.d/*.json' \
     | srv jq -r 'select(.enabled != false and .users_backend != "none") | .id' | tr -d '\r')"
+# MTProxy: вердикт по рукопожатию Fake-TLS, запросов через него нет — ни задержки, ни скорости (ARCHITECTURE §7)
+hs_only="$(srv bash -c 'cat /etc/vpn-setup/protocols.d/*.json' | srv jq -r 'select(.probe.kind == "mtproto") | .id' | tr -d '\r')"
+is_hs_only() { grep -qx "$1" <<< "$hs_only"; }
 
 # ---------- 1. юниты ----------
 for u in zoo-live.timer zoo-live.path zoo-job.path; do
@@ -67,6 +71,11 @@ case "$lim" in
 esac
 
 # ---------- 2. замер по таймеру ----------
+# таймер (OnBootSec=2min, потом раз в 10 мин) не должен замерять параллельно: его прогон уже решил,
+# кому качать, а `systemctl start` дождался бы его вместо своего
+srv systemctl stop zoo-live.timer
+trap 'srv systemctl start zoo-live.timer >/dev/null 2>&1 || true' EXIT
+wait_for "[ \"\$(srv systemctl is-active zoo-live.service | tr -d '\r')\" != activating ]" 600 || true
 sql "DELETE FROM live; DELETE FROM meta WHERE key LIKE 'live_speed:%'" >/dev/null 2>&1 \
     || { sql "DELETE FROM live" >/dev/null; sql "DELETE FROM meta WHERE key LIKE 'live_speed:%'" >/dev/null; }
 read -r -a n0 <<< "$(netb)"; t0="$(now_ms)"
@@ -75,10 +84,17 @@ t1="$(now_ms)"; read -r -a n1 <<< "$(netb)"
 cpu="$(srv systemctl show zoo-live.service -p CPUUsageNSec --value | tr -d '\r')"
 info "прогон со скоростью: $((t1 - t0)) мс, CPU $((cpu / 1000000)) мс, eth0 rx +$((n1[0] - n0[0])) tx +$((n1[1] - n0[1])) Б, протоколов: $(wc -w <<< "$protos")"
 for p in $protos; do
-    row="$(sql "SELECT ok, COALESCE(rtt_ms, ''), COALESCE(jitter_ms, ''), COALESCE(mbps, ''), bytes, verdict FROM live WHERE proto = '$p' ORDER BY ts DESC LIMIT 1")"
+    # «|», а не таб: таб — пробельный IFS, пустые поля (джиттер, скорость) схлопнулись бы
+    row="$(sql "SELECT ok || '|' || COALESCE(rtt_ms, '') || '|' || COALESCE(jitter_ms, '') || '|' || COALESCE(mbps, '') || '|' || bytes || '|' || verdict FROM live WHERE proto = '$p' ORDER BY ts DESC LIMIT 1" | tr -d '\r')"
     if [ -z "$row" ]; then fail "$p: нет строки в live"; continue; fi
-    IFS=$'\t' read -r ok rtt jit mbps nbytes verdict <<< "$row"
-    if [ "$ok" = 1 ] && [ -n "$rtt" ] && [ -n "$mbps" ] && [ "$nbytes" -gt 0 ]; then
+    IFS='|' read -r ok rtt jit mbps nbytes verdict <<< "$row"
+    if is_hs_only "$p"; then
+        if [ "$ok" = 1 ] && [ -z "$mbps" ] && [ "$nbytes" = 0 ]; then
+            pass "$p: $verdict по рукопожатию, без задержки и скорости (через MTProxy запросов нет)"
+        else
+            fail "$p: ожидался вердикт по рукопожатию без загрузки: $row"
+        fi
+    elif [ "$ok" = 1 ] && [ -n "$rtt" ] && [ -n "$mbps" ] && [ "$nbytes" -gt 0 ]; then
         pass "$p: $verdict, задержка $rtt мс, джиттер ${jit:-—} мс, скорость $mbps Мбит/с, скачано $nbytes Б"
     else
         fail "$p: ожидалась задержка и скорость в первом прогоне: $row"
@@ -89,8 +105,9 @@ srv systemctl start zoo-live.service
 t1="$(now_ms)"; read -r -a n1 <<< "$(netb)"
 cpu="$(srv systemctl show zoo-live.service -p CPUUsageNSec --value | tr -d '\r')"
 info "лёгкий прогон: $((t1 - t0)) мс, CPU $((cpu / 1000000)) мс, eth0 rx +$((n1[0] - n0[0])) tx +$((n1[1] - n0[1])) Б"
-count="$(wc -w <<< "$protos")"
-light="$(sql "SELECT COUNT(*) FROM (SELECT proto FROM live GROUP BY proto HAVING COUNT(*) = 2 AND SUM(mbps IS NULL) = 1)")"
+count=0; in_list=""
+for p in $protos; do is_hs_only "$p" || { count=$((count + 1)); in_list="$in_list${in_list:+,}'$p'"; }; done
+light="$(sql "SELECT COUNT(*) FROM (SELECT proto FROM live WHERE proto IN (${in_list:-''}) GROUP BY proto HAVING COUNT(*) = 2 AND SUM(mbps IS NULL) = 1)" | tr -d '\r')"
 if [ "$light" = "$count" ]; then
     pass "повторный запуск: у каждого протокола второй замер без скорости (раз в 55 мин)"
 else
