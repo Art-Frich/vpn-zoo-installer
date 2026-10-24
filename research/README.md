@@ -62,3 +62,10 @@
 | [block-<old-ip-dashed>_24-10-26.md](2026-10-24/block-<old-ip-dashed>_24-10-26.md) | Сбой 23.10 на боевом сервере u1host NL: точечный бан IPv4 по всей РФ (TCP+UDP, ICMP частично), соседи по /24 и хостер живы, «поста» не было, IPv6 не забанен; фон волн банов IP хостеров с августа, рейтинг банов u1host 19/42 за 30 дней, что делать при переезде |
 | [raw/](2026-10-24/raw/) | `ntc-forums.json`, `github.json`, `news-telegram.json`, `regional.json`, `hoster.json`, `measure.json` (Globalping/check-host/RIPEstat) |
 
+## 2026-10-25
+
+| Документ | О чём |
+|---|---|
+| [white-ips_25-10-26.md](2026-10-25/white-ips_25-10-26.md) | Белые списки мобильного интернета: официальный перечень Минцифры (сервисы, не IP) против IP-фильтрации у операторов, какие облака и /24 проходят (Yandex Cloud, VK Cloud и др.) по состоянию на 2026, как получить и проверить белый IP, каскад и его риски, свежие сдвиги сентября–октября |
+| [raw/](2026-10-25/raw/) | `forums.json`, `github.json`, `official.json`, `clouds.json`, `practice.json` |
+
