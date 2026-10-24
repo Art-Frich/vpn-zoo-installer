@@ -16,7 +16,7 @@ zoo-probe ── <префикс>-cnet ── <префикс>-censor ── zoo
 | `clean` | без правил | все `OK` или `SLOW` |
 | `drop-udp` | `-p udp -d <сервер> -j DROP` | UDP (Hysteria2, AWG, TUIC) — `UDP_BLOCKED`; TCP — `OK`/`SLOW` |
 | `ip-block` | DROP всего к серверу и от него | все `IP_BLOCKED` |
-| `freeze-16k` | `-p tcp -s <сервер> -m connbytes --connbytes 16384: --connbytes-dir reply --connbytes-mode bytes -j DROP` | TCP — `FREEZE_16K`; UDP — `OK`/`SLOW` |
+| `freeze-16k` | `-p tcp -s <сервер> -m connbytes --connbytes 16384: --connbytes-dir reply --connbytes-mode bytes -j DROP` | TCP — `FREEZE_16K`; UDP и MTProxy (только рукопожатие, < 16 КБ) — `OK`/`SLOW` |
 | `rst-tls` | `-m u32`: в начале TCP-нагрузки запись TLS Handshake `16 03 00..03` с типом `01` (ClientHello) → `REJECT --reject-with tcp-reset` | TCP с TLS/REALITY (VLESS, XHTTP) — `HANDSHAKE_FAIL`; SS-2022 и UDP — `OK`/`SLOW` |
 | `port-block` | `-p tcp -d <сервер> --dport ${ZOO_CENSOR_PORT:-443} -j DROP` (в прогон по умолчанию не входит: `ZOO_PROBE_PROFILES=port-block`) | TCP на 443 (VLESS-REALITY) — `IP_BLOCKED` с причиной «блокировка порта»; остальные — `OK`/`SLOW` |
 

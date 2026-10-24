@@ -84,6 +84,12 @@ listening() { [ -n "$(sx ss -Htln "sport = :$1" 2>/dev/null)" ]; }
 ufw_has() { sx ufw status 2>/dev/null | grep -qE "^$1/tcp +(ALLOW|LIMIT)"; }
 jail_ports() { sx awk -F'= *' '/^port/ {print $2}' /etc/fail2ban/jail.d/vpn-zoo.local; }
 state_of() { sx bash -c "grep '^$1=' /var/lib/vpn-setup/state | tail -n 1 | cut -d= -f2"; }
+# SSH-порты в finalRules outbound direct (первое правило, routing.sh). Не первый "port" файла: при MTProxy
+# раньше идут его правило маршрутизации и разрешение порта MTProxy
+xray_ssh_ports() {
+    sx jq -r '[.outbounds[] | select(.tag == "direct") | .settings.finalRules[0] | select(.action == "allow") | .port][0] // ""' \
+        /usr/local/x-ui/bin/config.json 2>/dev/null | tr -d '\r' || true
+}
 
 # Исходный SSH без SSH-сессии: SSH_HARDEN=0 дважды (переходный шаг и закрытие порта фазы,
 # второе — с SSH_CONFIRM_FORCE=1, как из консоли хостера)
@@ -267,8 +273,8 @@ if [ "$FULL" = "1" ]; then
         && pass "99 печатает туннель на текущий порт $OLD" || fail "99: туннель не на $OLD"
     acl="$(sx cat /etc/hysteria/acl.txt 2>/dev/null || true)"
     grep -q "tcp/$NEW)" <<< "$acl" && grep -q "tcp/$OLD)" <<< "$acl" && pass "07: Hysteria ACL пускает на оба SSH-порта" || fail "07: ACL без $OLD/$NEW"
-    xp="$(sx grep -o '"port": *"[0-9,]*"' /usr/local/x-ui/bin/config.json 2>/dev/null | head -n 1 || true)"
-    grep -q "$NEW" <<< "$xp" && grep -q "\"$OLD\|$OLD," <<< "$xp" && pass "07: Xray finalRules пускают на оба порта ($xp)" || fail "07: Xray finalRules: $xp"
+    xp="$(xray_ssh_ports)"
+    grep -qE "(^|,)$NEW(,|$)" <<< "$xp" && grep -qE "(^|,)$OLD(,|$)" <<< "$xp" && pass "07: Xray finalRules пускают на оба порта ($xp)" || fail "07: Xray finalRules: $xp"
 fi
 
 out="$(remote_install "$OLD" "SSH_CONFIRM=1" --phase 01b 2>&1)" && rc=0 || rc=$?
@@ -305,8 +311,8 @@ if [ "$FULL" = "1" ]; then
     step "g) полная установка: после подтверждения"
     acl="$(sx cat /etc/hysteria/acl.txt 2>/dev/null || true)"
     grep -q "tcp/$NEW)" <<< "$acl" && ! grep -q "tcp/$OLD)" <<< "$acl" && pass "07 переприменена: ACL Hysteria только на $NEW" || fail "07: ACL после подтверждения"
-    xp="$(sx grep -o '"port": *"[0-9,]*"' /usr/local/x-ui/bin/config.json 2>/dev/null | head -n 1 || true)"
-    [ "$(tr -dc '0-9,' <<< "${xp#*:}")" = "$NEW" ] && pass "07: Xray finalRules только $NEW" || fail "07: Xray finalRules: $xp"
+    xp="$(xray_ssh_ports)"
+    [ "$xp" = "$NEW" ] && pass "07: Xray finalRules только $NEW" || fail "07: Xray finalRules: $xp"
     sx grep -q "ssh -N -p $NEW -L" /root/CREDENTIALS.md && sx grep -q "scp -P $NEW " /root/CREDENTIALS.md \
         && pass "CREDENTIALS.md: ssh -p $NEW и scp -P $NEW" || fail "CREDENTIALS.md без нового порта"
     wi="$(sx zoo web --info 2>&1 || true)"
