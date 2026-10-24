@@ -177,12 +177,14 @@ exit_ip="$(cl curl -sS --max-time 15 -x socks5h://127.0.0.1:10808 https://www.cl
 [ "$exit_ip" = "$egress" ] && pass "owner: IP выхода через туннель = IP сервера ($exit_ip)" || fail "owner: IP выхода «$exit_ip», у сервера $egress"
 
 # UDP через туннель: DNS-запрос A example.com на локальный UDP-форвард (порт+100) → 1.1.1.1:53.
-# Напрямую UDP из клиента закрыт iptables, ответ может прийти только через туннель
+# Напрямую UDP из клиента закрыт iptables, ответ может прийти только через туннель.
+# Читаем ровно одну датаграмму (dd count=1): «head -c N» ждёт N байт и при ответе короче N
+# (у example.com теперь одна A-запись, ~45 байт) висит до timeout и ничего не печатает
 udp_dns() {
     # shellcheck disable=SC2016 # $1 подставляется снаружи, остальное — для bash в клиенте
     cl bash -c 'exec 3<>/dev/udp/127.0.0.1/'"$1"'
         printf "\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01" >&3
-        timeout 5 head -c 64 <&3 | od -An -tx1 | tr -d " \n" | head -c 8' 2>/dev/null || true
+        timeout 5 dd bs=1500 count=1 <&3 2>/dev/null | od -An -tx1 | tr -d " \n" | head -c 8' 2>/dev/null || true
 }
 r=""; for _ in 1 2 3; do r="$(udp_dns 10908)"; [ "${r:0:4}" = "1234" ] && break; sleep 2; done
 [ "${r:0:4}" = "1234" ] && pass "owner: UDP через туннель (DNS 1.1.1.1:53) → ответ" || fail "owner: UDP через туннель не прошёл (ответ «$r»)"
