@@ -5,7 +5,8 @@
     clean       все — OK или SLOW
     drop-udp    UDP — UDP_BLOCKED, TCP — OK/SLOW
     ip-block    все — IP_BLOCKED
-    freeze-16k  TCP — FREEZE_16K, UDP — OK/SLOW
+    freeze-16k  TCP — FREEZE_16K, UDP и MTProxy — OK/SLOW (у MTProxy только рукопожатие: меньше 16 КБ,
+                заморозку им не увидеть — ARCHITECTURE §7)
     rst-tls     TCP с TLS/REALITY — HANDSHAKE_FAIL, остальные — OK/SLOW
     port-block  TCP на порту 443 — IP_BLOCKED (причина — блокировка порта), остальные — OK/SLOW
 SKIPPED (нет клиента) не считается провалом. Вывод: TSV «протокол, вердикт, ожидалось, итог»;
@@ -29,7 +30,7 @@ def expected(profile: str, r: dict) -> set[str]:
     if profile == "ip-block":
         return {"IP_BLOCKED"}
     if profile == "freeze-16k":
-        return WORKING if udp else {"FREEZE_16K"}
+        return WORKING if udp or r.get("kind") == "mtproto" else {"FREEZE_16K"}
     if profile == "rst-tls":
         return {"HANDSHAKE_FAIL"} if (not udp and r.get("tls")) else WORKING
     if profile == "port-block":

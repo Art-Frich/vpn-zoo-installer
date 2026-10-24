@@ -275,8 +275,12 @@ check "pull повторно: новых .age нет" present "$TMP/pull2.log" "
 hs push root@stand --tag ci-push --device ci-pusher "$REPORT" > "$TMP/push.log" 2>&1 || { fail "history.sh push"; cat "$TMP/push.log"; }
 check "push: отчёт записан на сервер с новой меткой" \
     test "$(sql "SELECT COUNT(*) FROM reports WHERE tag = 'ci-push' AND device = 'ci-pusher'")" = 1
-dec="$(hs decrypt -i "$TMP/keys/key" "${raws[0]}" 2>/dev/null || true)"
-check "history.sh decrypt: расшифровывает сырой отчёт" has_all "$dec" '"type":' "zoo-probe-report"
+if command -v age >/dev/null 2>&1; then
+    dec="$(hs decrypt -i "$TMP/keys/key" "${raws[0]}" 2>/dev/null || true)"
+    check "history.sh decrypt: расшифровывает сырой отчёт" has_all "$dec" '"type":' "zoo-probe-report"
+else
+    info "history.sh decrypt пропущен: на этой машине нет age (scripts/history.sh install-age)"
+fi
 
 # ---------- 6. админка ----------
 winfo="$(srv zoo web --info --json)"
