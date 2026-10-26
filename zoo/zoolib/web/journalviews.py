@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 SCOPE_BADGE = {"own": ("свой", "info"), "local": ("служебный", "muted")}
 KIND_BADGE = {"port-scan": "warn", "ssh-auth": "bad", "ssh-scan": "warn", "ssh-limit": "warn", "ssh-ban": "ok",
-              "hy2-auth": "bad", "reality-probe": "bad", "panel-login": "muted", "web-login": "muted"}
+              "hy2-auth": "bad", "reality-probe": "bad", "tls-cut": "warn", "panel-login": "muted", "web-login": "muted"}
 
 
 SORT_TITLES = {"n": "по числу", "last": "по давности"}
@@ -107,7 +107,7 @@ def _group_cards(data: dict[str, Any]) -> Markup:
                           t("div", chips, class_="chips") if chips else None, cls="proto"))
     tracked = data.get("reality_tracked", False)
     quiet = ["REALITY, Hysteria2" if g["key"] == "proxy" and tracked else journal.GROUP_QUIET[g["key"]]
-             for g in data["groups"] if not g["n"]]
+             for g in data["groups"] if not g["n"] and (tracked or g["key"] != "cut")]
     return join(t("div", cards, class_="grid") if cards else None,
                 t("p", ", ".join(quiet) + " — попыток не было", class_="quiet") if quiet else None,
                 t("p", "REALITY — " + journal.REALITY_UNTRACKED, class_="quiet") if not tracked else None)
@@ -171,7 +171,7 @@ def _help(data: dict[str, Any]) -> Markup:
     return join(
         t("p", t("strong", "Что значат виды событий"), " — нажмите на вид"),
         t("div", [_kind_badge(k) for k in journal.KIND_HELP
-                  if data.get("reality_tracked") or k != "reality-probe"], class_="chips"),
+                  if data.get("reality_tracked") or journal.KINDS[k][0] != "xray"], class_="chips"),
         t("p", t("strong", "Чего мы не видим")),
         t("ul", [t("li", t("strong", b["what"] + ": "), b["why"]) for b in data["blind"]]),
         t("p", "ufw пишет блокировки не чаще 3 в минуту на весь сервер, поэтому число попыток по портам — "
@@ -347,6 +347,8 @@ def _build(data: dict[str, Any], app: "App") -> tuple[list[Any], list[Any]]:
             problems.append(("warn", f"Последний разбор журнала {human_duration(run['age'])} назад — "
                                      "проверьте zoo-collector.timer."))
     problems += app.cached("journal-alerts", 60, journal.alerts)
+    if cut := app.cached("journal-cuts", 60, journal.cut_alert):
+        problems.append(("warn", cut))
     t_ = data["totals"]
     top = data["top_ips"][0] if data["top_ips"] else None
     skipped = data["hidden"]["own"] + data["hidden"]["local"]

@@ -296,8 +296,13 @@ def trouble_card(user: users.User, g: groups.Group | None, c: support.Contacts,
     try:
         from .. import journal
         rejects = journal.key_rejects()
+        cut = journal.cut_alert()
     except Exception:  # noqa: BLE001
-        rejects = 0
+        rejects, cut = 0, ""
+    if cut and any(p.startswith("vless") for p in user.protocols):
+        items.append(("warn", "Сейчас VLESS обрывается у многих: рукопожатие не доходит до сервера, похоже, режут по "
+                              "пути. Пусть включит Hysteria2 или TUIC; нет их у него — добавьте группе.",
+                      t("a", "Атаки", href="/journal?period=24h&kind=tls-cut")))
     if rejects and any(p.startswith("hysteria2") for p in user.protocols):
         items.append(("info", f"Hysteria2 отказал по неверному ключу {rejects} раз за сутки (чей ключ, не видно): если "
                               "это он, у него старый ключ — перешлите сообщение.", t("a", "Атаки", href="/journal")))

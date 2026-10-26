@@ -162,6 +162,18 @@ class ParseOthersTest(unittest.TestCase):
         self.assertEqual((ev.kind, ev.ip), ("reality-probe", "172.22.0.3"))
         self.assertIsNone(journal.parse_xray("REALITY remoteAddr: 172.22.0.3:35574", NOW))
 
+    def test_xray_hello_lost_is_a_cut_not_a_probe(self):
+        # строка из полевых заметок 26.04.2026: TCP открыто, ClientHello не пришёл
+        cut = ("2026/04/26 12:00:01.000001 [Info] transport/internet/tcp: REALITY: processed invalid connection "
+               "from 95.24.10.7:51234: failed to read client hello")
+        ev = journal.parse_xray(cut, NOW)
+        self.assertEqual((ev.kind, ev.ip), ("tls-cut", "95.24.10.7"))
+        self.assertEqual(journal.parse_xui(cut, NOW).kind, "tls-cut", "строки Xray приходят из журнала x-ui")
+        probe = ("2026/04/26 12:00:02.000001 [Info] transport/internet/tcp: REALITY: processed invalid connection "
+                 "from 95.24.10.7:51235: REALITY: failed to verify client")
+        self.assertEqual(journal.parse_xray(probe, NOW).kind, "reality-probe")
+        self.assertEqual(journal.KINDS["tls-cut"][2], "cut", "своя группа: не «проверяли, прокси ли это»")
+
     def test_panel_logins(self):
         ev = journal.parse_xui('WARNING - failed login: username="nouser", IP="127.0.0.1", reason="invalid credentials"',
                                NOW)
@@ -434,7 +446,7 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(a["ports"], [22, 3389])
         self.assertEqual(a["kinds"], {"port-scan": 8, "ssh-auth": 4})
         groups = {g["key"]: (g["n"], g["ips"]) for g in d["groups"]}
-        self.assertEqual(groups, {"ports": (9, 2), "ssh": (4, 1), "proxy": (2, 1), "login": (0, 0)})
+        self.assertEqual(groups, {"ports": (9, 2), "ssh": (4, 1), "proxy": (2, 1), "cut": (0, 0), "login": (0, 0)})
         ports = {p["port"]: p["n"] for p in d["top_ports"]}
         self.assertEqual(ports, {3389: 6, 22: 7, 443: 2})
         self.assertEqual({c["cc"]: c["n"] for c in d["countries"]}, {"CN": 12, "DE": 3})
@@ -504,6 +516,72 @@ class ReportTest(unittest.TestCase):
             journal.store(con, [Event(NOW - 60, "port-scan", "172.22.0.9", 80)] * 500, NOW)
         con.close()
         self.assertEqual(journal.alerts(NOW), [])
+
+
+class CutTest(unittest.TestCase):
+    """«failed to read client hello»: тревога — когда много разных адресов за окно, а не один сканер."""
+
+    def setUp(self):
+        self.env = ZooEnv().__enter__()
+        self.addCleanup(self.env.__exit__, None, None, None)
+        p = mock.patch("zoolib.journal.server_nets", return_value=[ipaddress.ip_network("45.9.9.9/32")])
+        p.start()
+        self.addCleanup(p.stop)
+
+    def store(self, events):
+        con = journal.connect()
+        with con:
+            journal.store(con, events, NOW)
+        con.close()
+
+    @staticmethod
+    def wave(n_ips, per_ip, ago=120, net="95.24.10."):
+        return [Event(NOW - ago, "tls-cut", f"{net}{i + 1}", 443) for i in range(n_ips) for _ in range(per_ip)]
+
+    def test_many_sources_alert(self):
+        self.store(self.wave(journal.CUT_MIN_IPS, journal.CUT_MIN // journal.CUT_MIN_IPS))
+        self.assertEqual(journal.cuts(NOW), {"n": journal.CUT_MIN, "ips": journal.CUT_MIN_IPS})
+        text = journal.cut_alert(NOW)
+        self.assertIn("Рукопожатия TCP к серверу обрываются у многих клиентов (5 адресов", text)
+        self.assertIn("Hysteria2, TUIC", text)
+
+    def test_one_scanner_is_not_a_cut(self):
+        self.store(self.wave(1, 500))
+        self.assertEqual(journal.cuts(NOW), {"n": 500, "ips": 1})
+        self.assertEqual(journal.cut_alert(NOW), "")
+
+    def test_below_thresholds(self):
+        self.store(self.wave(journal.CUT_MIN_IPS - 1, 50))
+        self.assertEqual(journal.cut_alert(NOW), "", "адресов мало")
+        self.store([Event(NOW - 60, "tls-cut", "91.240.118.9", 443)])
+        self.assertTrue(journal.cut_alert(NOW), "пятый адрес — уже тревога")
+
+    def test_few_lines_from_many_sources(self):
+        self.store(self.wave(10, 1))
+        self.assertEqual(journal.cuts(NOW)["ips"], 10)
+        self.assertEqual(journal.cut_alert(NOW), "", "строк меньше CUT_MIN")
+
+    def test_window_is_current_and_previous_hour(self):
+        self.store(self.wave(10, 5, ago=3 * 3600))
+        self.assertEqual(journal.cuts(NOW), {"n": 0, "ips": 0})
+        self.assertEqual(journal.cut_alert(NOW), "")
+
+    def test_local_and_server_addresses_do_not_count(self):
+        self.store(self.wave(10, 5, net="172.22.0.") + [Event(NOW - 60, "tls-cut", "45.9.9.9", 443)] * 50)
+        self.assertEqual(journal.cuts(NOW), {"n": 0, "ips": 0})
+
+    def test_cuts_are_not_an_attack_spike(self):
+        self.store(self.wave(20, 30))
+        self.assertEqual(journal.alerts(NOW), [], "600 обрывов — не «всплеск попыток»")
+        self.assertTrue(journal.cut_alert(NOW))
+
+    def test_report_keeps_cut_apart_from_probes(self):
+        self.store(self.wave(3, 2) + [Event(NOW - 60, "reality-probe", "185.220.101.5", 443)])
+        d = journal.report("24h", now=NOW)
+        g = {x["key"]: x for x in d["groups"]}
+        self.assertEqual((g["cut"]["n"], g["cut"]["ips"]), (6, 3))
+        self.assertEqual(g["proxy"]["n"], 1)
+        self.assertTrue(d["reality_tracked"], "строки есть — уровень Info кто-то включил")
 
 
 class CliTest(unittest.TestCase):
@@ -1166,6 +1244,22 @@ class JournalPageTest(AppTestBase):
         resp, body = self.c.get("/")
         self.assertEqual(resp.status, 200)
         self.assertIn("Журнал атак: за этот час 400", body)
+
+    def test_cut_alert_on_overview_and_page(self):
+        now = int(time.time())
+        con = journal.connect()
+        with con:
+            journal.store(con, [Event(now - 30, "tls-cut", f"95.24.10.{i}", 443) for i in range(1, 9)] * 5, now)
+        con.close()
+        self.app.invalidate()
+        _, body = self.c.get("/")
+        msg = body.split("Рукопожатия TCP к серверу обрываются у многих клиентов (8 адресов")
+        self.assertEqual(len(msg), 2, "одна тревога на «Обзоре»")
+        self.assertIn('href="/groups"', msg[1].split("</li>")[0])
+        self.assertNotIn("Журнал атак: за этот час", body, "обрывы — не всплеск атак")
+        _, body = self.c.get("/journal?period=24h")
+        self.assertIn("Рукопожатия TCP к серверу обрываются", body)
+        self.assertIn("Рукопожатие не дошло до сервера", body)
 
     def test_page_requires_login(self):
         self.c.cookies.clear()

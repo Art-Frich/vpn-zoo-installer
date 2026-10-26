@@ -14,7 +14,8 @@
                 error молчит, на info пишет адреса и имена пользователей, на debug — их назначения)
     xray        «REALITY: processed invalid connection» — Xray пишет её на уровне Info, а на нём в журнал
                 попадают и назначения пользователей, поэтому по умолчанию строки нет (D32); разбор
-                оставлен на случай, если владелец поднимет уровень сам
+                оставлен на случай, если владелец поднимет уровень сам. С причиной «failed to read client
+                hello» — отдельный вид tls-cut: TCP открыто, а ClientHello не пришёл (D64)
     3x-ui, zoo-web   неудачные входы в панели (слушают только loopback)
 
 Чего здесь нет и не будет: трафик и назначения пользователей VPN. Пишутся только адрес источника,
@@ -57,6 +58,8 @@ F2B_LOG = Path("/var/log/fail2ban.log")
 F2B_TAIL = 4 * 1024 * 1024
 SPIKE_MIN = 100             # событий за час для тревоги на обзоре
 SPIKE_FACTOR = 5            # и во столько раз больше обычного
+CUT_MIN_IPS = 5             # обрывов рукопожатия: разных внешних адресов за текущий и прошлый час (D64)
+CUT_MIN = 20                # и строк за то же окно; один сканер, который подключается и молчит, — один адрес
 EPHEMERAL_FROM = 32768      # начало ip_local_port_range Linux (и эфемерных портов клиентов за NAT AmneziaWG)
 
 # вид события → (источник, подпись, группа)
@@ -68,6 +71,7 @@ KINDS: dict[str, tuple[str, str, str]] = {
     "ssh-ban": ("fail2ban", "бан fail2ban", "ssh"),
     "hy2-auth": ("hysteria", "Hysteria2: неверный ключ", "proxy"),
     "reality-probe": ("xray", "REALITY: чужой клиент", "proxy"),
+    "tls-cut": ("xray", "REALITY: обрыв", "cut"),
     "panel-login": ("3x-ui", "вход в 3x-ui", "login"),
     "web-login": ("zoo-web", "вход в админку zoo", "login"),
 }
@@ -114,6 +118,14 @@ KIND_HELP: dict[str, tuple[str, str, str, str]] = {
         "Нет: без ключа REALITY отвечает как настоящий сайт-прикрытие.",
         "Соединение ушло на сайт-прикрытие: сертификат и ответы его, а не ваши.",
         "Единичные — норма. Лавина с одного адреса — активная проверка: попробуйте другой SNI (VLESS_SNI, REFERENCE)."),
+    "tls-cut": (
+        "К порту VLESS открылось TCP-соединение, но начало TLS (ClientHello) так и не пришло: REALITY закрыл его "
+        "по таймауту.",
+        "Нет. С одного адреса — сканер, который подключается и молчит. С многих адресов за час — скорее ваши люди: "
+        "по пути к серверу режут рукопожатие TLS.",
+        "Соединение закрыто, данных не было.",
+        "Тревога на «Обзоре» — переключите людей на UDP (Hysteria2, TUIC). Не помогает и UDP — нужен новый IP "
+        "(REFERENCE, «Выбор сервера»)."),
     "panel-login": (
         "Неудачный вход в панель 3x-ui.",
         "Панель слушает только 127.0.0.1 (установщик это проверяет): снаружи на неё не зайти.",
@@ -129,21 +141,25 @@ GROUPS: dict[str, str] = {
     "ports": "Стучались в закрытые порты",
     "ssh": "Перебор SSH",
     "proxy": "Проверяли, прокси ли это",
+    "cut": "Рукопожатие не дошло до сервера",
     "login": "Входы в панели",
 }
 # как группа называется в строке «…— попыток не было»; REALITY добавляется, только если он отслеживается
-GROUP_QUIET: dict[str, str] = {"ports": "закрытые порты", "ssh": "SSH", "proxy": "Hysteria2", "login": "панели"}
+GROUP_QUIET: dict[str, str] = {"ports": "закрытые порты", "ssh": "SSH", "proxy": "Hysteria2", "cut": "обрывы рукопожатий",
+                               "login": "панели"}
 REALITY_UNTRACKED = "не отслеживается (так задумано: иначе в логах были бы сайты пользователей)"
 # реакция защиты, а не атака: в «событий» не считается
 DEFENCE_KINDS = {"ssh-ban"}
+# обрыв по пути, а не попытка взлома: во всплеск попыток не входит, у него своя тревога (cut_alert)
+CUT_KINDS = {"tls-cut"}
 OWN_LOGIN = "own-login"     # не событие журнала: адрес успешного входа по ключу
 
 SCOPE_TITLES = {"own": "свой", "local": "служебный"}
 
 BLIND = [
-    ("REALITY", "Чужие клиенты REALITY не видны: Xray пишет их только на уровне Info, а на нём в журнал попадают "
-                "и назначения пользователей. Следы ищите косвенно: адрес, стучавшийся в закрытые порты, "
-                "скорее всего щупал и 443."),
+    ("REALITY", "Чужие клиенты REALITY и обрывы рукопожатий по пути не видны: Xray пишет их только на уровне Info, "
+                "а на нём в журнал попадают и назначения пользователей. Следы ищите косвенно: адрес, стучавшийся "
+                "в закрытые порты, скорее всего щупал и 443."),
     ("AmneziaWG", "Неверные рукопожатия AmneziaWG не логируются ни в ядре, ни в amneziawg-go: пакеты без "
                   "верной обфускации молча отбрасываются."),
     ("Hysteria2 + Salamander", "Пакеты с неверным паролем Salamander отбрасываются до разбора запроса: "
@@ -305,7 +321,8 @@ def parse_f2b(line: str) -> Event | None:
 
 
 _HY2 = re.compile(r"^reject (\S+)$")
-_XRAY = re.compile(r"REALITY: processed invalid connection from (\S+?): ")
+_XRAY = re.compile(r"REALITY: processed invalid connection from (\S+?): (.*)")
+_HELLO_LOST = re.compile(r"failed to read client ?hello", re.I)
 _XUI = re.compile(r'failed login: .*\bIP="([^"]+)"')
 _WEB = re.compile(r"^zoo-web: POST /login (?:401|429)$")
 
@@ -323,7 +340,9 @@ def parse_xray(msg: str, ts: int) -> Event | None:
     if not m:
         return None
     ip, _ = _addr_port(m.group(1))
-    return Event(ts, "reality-probe", ip) if ip else None
+    if not ip:
+        return None
+    return Event(ts, "tls-cut" if _HELLO_LOST.search(m.group(2)) else "reality-probe", ip)
 
 
 def parse_xui(msg: str, ts: int) -> Event | None:
@@ -890,7 +909,7 @@ def report(period: str = "24h", now: float | None = None, include_local: bool = 
             if 0 <= i < n:
                 series[group][i] += int(cnt)
         out["totals"]["bans"] = sum(by_kind.get(k, 0) for k in DEFENCE_KINDS)
-        if by_kind.get("reality-probe") and not tracked:  # записи есть — значит, строку кто-то включил
+        if (by_kind.get("reality-probe") or by_kind.get("tls-cut")) and not tracked:  # записи есть — строку кто-то включил
             out["reality_tracked"] = True
             out["blind"] = [b for b in out["blind"] if b["what"] != "REALITY"]
         case = "CASE kind " + " ".join(f"WHEN '{k}' THEN '{KINDS[k][2]}'" for k in attack) + " END"
@@ -1278,9 +1297,9 @@ def alerts(now: float | None = None) -> list[tuple[str, str]]:
         hour = traffic.align(now, RES_1H)
         since = hour - 7 * 86400
         hidden, _ = _hidden_ips(con, since, RES_1H, False)
+        quiet = sorted(DEFENCE_KINDS | CUT_KINDS)
         rows = con.execute("SELECT ts, ip, SUM(n) AS n FROM hits WHERE res = ? AND ts >= ? AND kind NOT IN (%s) "
-                           "GROUP BY ts, ip" % ",".join("?" * len(DEFENCE_KINDS)),
-                           (RES_1H, since, *sorted(DEFENCE_KINDS))).fetchall()
+                           "GROUP BY ts, ip" % ",".join("?" * len(quiet)), (RES_1H, since, *quiet)).fetchall()
     except sqlite3.Error:
         return []
     finally:
@@ -1295,6 +1314,41 @@ def alerts(now: float | None = None) -> list[tuple[str, str]]:
         return [("warn", f"Журнал атак: за этот час {cur} попыток (обычно около {base:.0f} в час) — "
                          "подробности на странице «Атаки» или в zoo journal")]
     return []
+
+
+def cuts(now: float | None = None) -> dict[str, int]:
+    """Обрывы рукопожатия REALITY за текущий и прошлый час: {n — строк, ips — разных внешних адресов}. Свои
+    адреса считаются (вы тоже клиент), служебные и сам сервер — нет."""
+    out = {"n": 0, "ips": 0}
+    con = _con()
+    if con is None:
+        return out
+    since = traffic.align(time.time() if now is None else now, RES_1H) - 3600
+    marks = ",".join("?" * len(CUT_KINDS))
+    try:
+        rows = con.execute(f"SELECT ip, SUM(n) FROM hits WHERE res = ? AND ts >= ? AND kind IN ({marks}) GROUP BY ip",
+                           (RES_1H, since, *sorted(CUT_KINDS))).fetchall()
+    except sqlite3.Error:
+        return out
+    finally:
+        con.close()
+    server = server_nets()
+    for ip, n in rows:
+        a = _addr(ip)
+        if not _is_global(ip) or any(a in s for s in server if s.version == a.version):
+            continue
+        out["n"] += int(n)
+        out["ips"] += 1
+    return out
+
+
+def cut_alert(now: float | None = None) -> str:
+    """Тревога «режут по пути»: много разных адресов за окно — это люди, а не один сканер. Пусто — ниже порога."""
+    c = cuts(now)
+    if c["ips"] < CUT_MIN_IPS or c["n"] < CUT_MIN:
+        return ""
+    return (f"Рукопожатия TCP к серверу обрываются у многих клиентов ({c['ips']} адресов за последние два часа) — "
+            "вероятно, режут по пути. Переключите людей на UDP-протоколы (Hysteria2, TUIC).")
 
 
 def health() -> list[str]:
@@ -1369,6 +1423,8 @@ def _render(d: dict[str, Any]) -> None:
             output.warn(f"последний разбор {output.human_duration(run['age'])} назад — проверь zoo-collector.timer")
     for h in d.get("health", []):
         output.warn(h)
+    if d.get("cut_alert"):
+        output.warn(d["cut_alert"])
     print()
     print(output.color("Не видим: " + "; ".join(b["what"] for b in d["blind"]) + " (подробности — админка, «Атаки»).",
                        "dim"))
@@ -1394,5 +1450,6 @@ def cmd_journal(args: argparse.Namespace, cfg: Config) -> int:
         output.error(str(e))
         return 2
     data["health"] = health()
+    data["cut_alert"] = cut_alert()
     output.emit(data, args.json, _render)
     return 0

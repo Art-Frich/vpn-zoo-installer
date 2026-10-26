@@ -222,6 +222,19 @@ class PagesTest(AppTestBase):
         self.assertIn("подключался ни разу", re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body)))
         self.assertIn('href="/handoff?u=petya"', body, "ни разу — переслать сообщение")
 
+    def test_cut_hint_for_vless_people(self):
+        from unittest import mock
+        from zoolib.web import userviews
+        hint = "Сейчас VLESS обрывается у многих"
+        with mock.patch.object(userviews, "_broken", return_value=set()):
+            _, body = self.c.get("/users/masha")
+            self.assertNotIn(hint, body, "обрывов нет — подсказки нет")
+            with mock.patch("zoolib.journal.cut_alert", return_value="режут"):
+                _, body = self.c.get("/users/masha")
+        self.assertIn(hint, body)
+        self.assertIn("Пусть включит Hysteria2 или TUIC", body)
+        self.assertIn('href="/journal?period=24h&amp;kind=tls-cut"', body)
+
     def test_overview_names_silent_people(self):
         _, body = self.c.get("/")
         text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", body))

@@ -208,6 +208,8 @@ def collect_alerts(app: "App", st: dict[str, Any], csrf: str = "") -> list[tuple
         out.append(("warn", "Трафик ещё не собирался: первое снятие — в течение 5 минут после установки"))
     out += protoviews.alerts()
     out += app.cached("journal-alerts", 60, journal.alerts)
+    if cut := app.cached("journal-cuts", 60, journal.cut_alert):
+        out.append(("warn", cut, t("a", "Группы", href="/groups")))
     out += app.cached("storage-alerts", 60, lambda: storage.alerts(app.cfg()))
     return out
 

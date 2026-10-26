@@ -196,7 +196,8 @@ class NoDuplicatesTest(GroupWebBase):
             journal.store(con, [Event(jnow - 60, "port-scan", "45.155.205.10", 3389)] * 4
                           + [Event(jnow - 50, "ssh-auth", "91.240.118.5", 22)] * 2
                           + [Event(jnow - 40, "port-scan", "45.155.205.11", 81)] * 3
-                          + [Event(jnow - 30, "hy2-auth", "185.220.101.5", 443)], jnow)
+                          + [Event(jnow - 30, "hy2-auth", "185.220.101.5", 443)]
+                          + [Event(jnow - 20, "tls-cut", f"95.24.10.{i}", 443) for i in range(1, 7)] * 4, jnow)
             con.execute("UPDATE ips SET cc = 'CN' WHERE ip = ?", ("45.155.205.10",))
         con.close()
         self.logs_fixture()
